@@ -8,7 +8,6 @@ import sys
 from multiprocessing import Pool
 
 import torch
-from arclib import arc
 from torchtune.config._parse import TuneRecipeArgumentParser
 from torchtune.config._utils import _merge_yaml_and_cli_args
 from torchtune.models.llama3 import llama3_tokenizer
@@ -26,6 +25,7 @@ from ttt.preprocess import get_augmenters, process_task
 
 sys.path.append("third_party/torchtune/recipes/")
 import lora_finetune_single_device
+# from third_party.torchtune.recipes import lora_finetune_single_device
 
 
 def save_adapter_config(
@@ -79,12 +79,6 @@ parser.add_argument(
     "--num_tasks", type=int, default=None, help="Number of tasks to process for limited evaluation."
 )
 parser.add_argument(
-    "--base_checkpoint",
-    type=str,
-    default="checkpoints/pretrained/all_in_fix_final_checkpoints/",
-    help="path to the pretrained checkpoint",
-)
-parser.add_argument(
     "--lora_checkpoints_folder",
     type=str,
     default="checkpoints/ttt/all_in_fix_final_lora_clean/",
@@ -94,7 +88,7 @@ parser.add_argument(
     "--quantization", type=str, default=None, help="Quantization type bitsandbytes or none"
 )
 parser.add_argument("--max_tokens", type=int, default=8192, help="Max tokens")
-parser.add_argument("--cpus", type=int, default=64, help="Number of cpus")
+parser.add_argument("--cpus", type=int, default=16, help="Number of cpus")
 parser.add_argument(
     "--lora_config",
     type=str,
@@ -226,7 +220,8 @@ else:
     # conf.model.lora_to_output = False
 
 # print conf
-print(conf)
+from pprint import pprint
+pprint(dict(conf))
 
 tokenizer = llama3_tokenizer(conf.tokenizer.path)
 
@@ -346,10 +341,10 @@ for task in arc_test_tasks:
     try:
         adapter_path = f"{args.experiment_folder}/{task_id}/adapter_model.bin"
         # if exist continue
-        if os.path.exists(adapter_path):
-            print(f"Adapter for {task_id} already exists, skipping")
-            continue
-        test_file = f"{args.experiment_folder}/{task_id}/td_True_ttd_False_ttdwa_False_ad_True_trd_False.jsonl"
+        # if os.path.exists(adapter_path):
+        #     print(f"Adapter for {task_id} already exists, skipping")
+        #     continue
+
         train_with_a_test_data(
             task_id,
             recipe,

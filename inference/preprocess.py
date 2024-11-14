@@ -80,7 +80,7 @@ def format_and_filter(formatter: Any, tokenizer: Any, task: Task) -> Dict[str, A
     encoded_task = formatter.encode(task)
     if encoded_task[0] is None:
         return None
-    data = {"input": encoded_task[0], "output": encoded_task[1]}
+    data = {"input": encoded_task[0], "output": encoded_task[1]} # pairs, then answer
     # just to get the total tokens
     # this is kind of using output
     # but normally in test we will have outputs filled by input

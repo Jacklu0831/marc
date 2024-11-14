@@ -188,7 +188,7 @@ if args.add_diff_format:
 
     formatters.append(input_diff_formatter)
 
-tokenizer = AutoTokenizer.from_pretrained(args.pretrained_checkpoint)
+tokenizer = AutoTokenizer.from_pretrained(args.pretrained_checkpoint, cache_dir=f'downloaded_models/{args.pretrained_checkpoint}_cache')
 
 task_name_to_processed_data = get_preprocessed_tasks(
     tasks,
@@ -211,10 +211,12 @@ for info in valid_tasks:
 example_task = valid_tasks[0]
 example_task_id = example_task["task"].name.split("-")[0]
 
+print()
 print("Example Task Information:")
 print(f"Task Name: {example_task['task'].name}")
 print(f"Number of Queries: {len(example_task['queries'])}")
-print("Example Query:" + example_task["queries"][0]["text"])
+print("Example Query")
+print(example_task["queries"][0]["text"])
 
 # lora_path = f"{args.lora_checkpoints_folder}/{example_task_id}/"
 # abstract away

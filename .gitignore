@@ -161,3 +161,8 @@ tags
 
 test.ipynb
 generated_codes/
+
+penv/
+downloaded_models/
+train_outputs/
+inference_outputs/
