@@ -40,7 +40,7 @@ def initialize_engine(
         max_lora_rank=max_lora_rank,
         enforce_eager=enforce_eager,
         quantization=quantization,
-        lora_target_modules=lora_target_modules,
+        # lora_target_modules=lora_target_modules,
         load_format="bitsandbytes" if quantization else "auto",
         max_model_len=8192,
         gpu_memory_utilization=0.9

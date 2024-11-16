@@ -29,12 +29,12 @@ model:
 # Tokenizer
 tokenizer:
   _component_: torchtune.models.llama3.llama3_tokenizer
-  path: checkpoints/base/Meta-Llama-3.1-8B-Instruct/original/tokenizer.model
+  path: checkpoints/pretrained/Llama-3.1-ARC-Potpourri-Transduction-8B/tokenizer.model
   max_seq_len: null
 
 checkpointer:
   _component_: torchtune.training.FullModelHFCheckpointer
-  checkpoint_dir: /raid/lingo/akyurek/git/arc/weights/hf_model_last/
+  checkpoint_dir: checkpoints/pretrained/Llama-3.1-ARC-Potpourri-Transduction-8B/
   checkpoint_files: [
      model-00001-of-00004.safetensors,
      model-00002-of-00004.safetensors,
@@ -42,7 +42,7 @@ checkpointer:
      model-00004-of-00004.safetensors,
   ]
   recipe_checkpoint: # recipe_state.pt
-  output_dir: /raid/lingo/akyurek/git/arc/experiments/lora/model_weights/
+  output_dir: experiments/ttt/Llama-3.1-ARC-Potpourri-Transduction-8B/
   model_type: LLAMA3
 
 resume_from_checkpoint: False
@@ -80,7 +80,7 @@ gradient_accumulation_steps: 16
 compile: False
 
 # Logging
-output_dir: /raid/lingo/akyurek/git/arc/experiments/lora
+output_dir: experiments/ttt/Llama-3.1-ARC-Potpourri-Transduction-8B/
 metric_logger:
   _component_: torchtune.training.metric_logging.DiskLogger
   log_dir: ${output_dir}

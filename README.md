@@ -133,6 +133,8 @@ python predict.py \
 # For Llama3 and 3.1 models
 conda create -n vllm python=3.10
 conda activate vllm
+# this includes very minimal edits to 0.5.4 to, you can try
+# pip install vllm==0.5.4 instead of exact install
 pip install vllm@git+https://github.com/ekinakyurek/vllm.git@ekin/torchtunecompat
 pip install -r requirements
 ```
