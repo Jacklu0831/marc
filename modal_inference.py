@@ -23,11 +23,11 @@ def check_cuda():
     import vllm
     print("VLLM version:", vllm.__version__)
     predict_main(
-        data_file="/kaggle/input/arc-prize-2024/arc-agi_evaluation_challenges.json",
-        solution_file="/kaggle/input/arc-prize-2024/arc-agi_evaluation_solutions.json",
-        pretrained_checkpoint="checkpoints/pretrained/Llama-3.1-ARC-Potpourri-Transduction-8B/",
-        experiment_folder="experiments/tti/debug/",
-        lora_checkpoints_folder="experiments/ttt/debug/",
+        data_file="/kaggle/input/arc-prize-2024/arc-agi_evaluation_challenges.json", # needs to be read from volume
+        solution_file="/kaggle/input/arc-prize-2024/arc-agi_evaluation_solutions.json", # needs to be read from volume if available
+        pretrained_checkpoint="checkpoints/pretrained/Llama-3.1-ARC-Potpourri-Transduction-8B/", # needs to be read from volume
+        experiment_folder="experiments/tti/debug/", # needs to write to volume, should be readable by us
+        lora_checkpoints_folder="experiments/ttt/debug/", # needs to read from volume
         temperature=0.0,
         n_sample=1,
         max_lora_rank=128,
