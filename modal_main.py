@@ -37,7 +37,7 @@ def main():
     chunk_size = len(data) // MAX_MACHINES + (len(data) % MAX_MACHINES > 0)
     data_chunks = [dict(list(data.items())[i:i + chunk_size]) for i in range(0, len(data), chunk_size)]
 
-    list_of_submissions = pipeline.starmap([(chunk,) for chunk in data_chunks])
+    list_of_submissions = pipeline.starmap([(chunk,) for chunk in data_chunks], return_exceptions=True)
 
     # merge the submissions
     submission = {}
