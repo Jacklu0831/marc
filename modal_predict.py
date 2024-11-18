@@ -1,10 +1,7 @@
 import os
-os.chdir("/workspace/main/")
-
 from predict import main as predict_main
 
 assert os.path.exists("data.json")
-
 assert os.path.exists("experiments/ttt/modal/")
 
 predict_main(
@@ -18,5 +15,4 @@ predict_main(
     include_n=[1],
     barc_format=True,
     new_format=False,
-#     ids=ids,
 )

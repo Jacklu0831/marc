@@ -1,6 +1,4 @@
 import os
-os.chdir("/workspace/main/")
-
 from test_time_train import main as ttt_main
 
 assert os.path.exists("data.json")
@@ -18,5 +16,4 @@ ttt_main(
     lora_to_output=True,
     barc_format=True,
     new_format=False,
-    # ids=ids,
 )
