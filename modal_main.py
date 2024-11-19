@@ -6,10 +6,10 @@ import json
 
 app = modal.App("marc-torchtune-custom-container")
 image = modal.Image.from_registry("hanguo97/marc:0.8")
-# copy a file to image
-image = image.copy_local_file("configs/ttt/8.1B_lora_single_device.yaml", "/workspace/main/configs/ttt/8.1B_lora_single_device.yaml")
-image = image.copy_local_file("modal_predict.py", "/workspace/main/modal_predict.py")
-image = image.copy_local_file("modal_ttt.py", "/workspace/main/modal_ttt.py")
+# copy a file to image (only if there is an update)
+# image = image.copy_local_file("configs/ttt/8.1B_lora_single_device.yaml", "/workspace/main/configs/ttt/8.1B_lora_single_device.yaml")
+# image = image.copy_local_file("modal_predict.py", "/workspace/main/modal_predict.py")
+# image = image.copy_local_file("modal_ttt.py", "/workspace/main/modal_ttt.py")
 volume = modal.Volume.from_name("checkpoints")
 
 # TODO: make H100/A100 for real submission
