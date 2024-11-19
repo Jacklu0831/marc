@@ -1,22 +1,54 @@
+from asyncio import sleep
 from typing import Dict, List
 import modal
 import os
 import subprocess
 import json
+import time
+import argparse
 
-VOLUME_NAME = "checkpoints"
-# modal volume create {VOLUME_NAME}
-# modal volume put {VOLUME_NAME} Llama-3.1-ARC-Potpourri-Transduction-8B checkpoints/pretrained/Llama-3.1-ARC-Potpourri-Transduction-8B
+VOLUME_NAME = "marc_checkpoints"
 VOLUME_DIR = "/checkpoints"
 
 
 app = modal.App("marc-torchtune-custom-container")
-image = modal.Image.from_registry("hanguo97/marc:0.8")
-image = image.run_commands(["cd /workspace/main/ && git pull origin modal"])
-image = image.run_commands([
-    f"[ ! -e /workspace/main/checkpoints/pretrained/Llama-3.1-ARC-Potpourri-Transduction-8B ] && ln -s {VOLUME_DIR}/checkpoints/pretrained/Llama-3.1-ARC-Potpourri-Transduction-8B /workspace/main/checkpoints/pretrained/Llama-3.1-ARC-Potpourri-Transduction-8B"
-])
+
+image = modal.Image.from_registry("hanguo97/marc:0.8")\
+    .run_commands(["cd /workspace/main/ && git pull origin modal"])\
+    .run_commands([
+    f"[ ! -e /workspace/main/checkpoints/pretrained/Llama-3.1-ARC-Potpourri-Transduction-8B ] && mkdir -p /workspace/main/checkpoints/pretrained/ && ln -s {VOLUME_DIR}/checkpoints/pretrained/Llama-3.1-ARC-Potpourri-Transduction-8B /workspace/main/checkpoints/pretrained/Llama-3.1-ARC-Potpourri-Transduction-8B"
+])\
+    .pip_install("huggingface_hub[cli]")
 volume = modal.Volume.from_name(VOLUME_NAME)
+
+
+@app.function(image=image, volumes={VOLUME_DIR: volume}, timeout=240)
+def download():
+    # check if checkpoint path exists
+    if not os.path.exists(f"{VOLUME_DIR}/checkpoints/pretrained/"):
+        # download the checkpoint with huggingface
+        cmd = f"mkdir -p {VOLUME_DIR}/checkpoints/pretrained/ && huggingface-cli download ekinakyurek/Llama-3.1-ARC-Potpourri-Transduction-8B  --include '*'  --local-dir {VOLUME_DIR}/checkpoints/pretrained/Llama-3.1-ARC-Potpourri-Transduction-8B"
+        result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
+        print(result)
+    else:
+        # maybe a parallel process is downloading the checkpoint
+        TIMEOUT=180
+        FILES = ["model-0000{0}-of-00004.safetensors".format(i+1) for i in range(4)]
+        start_time = time.time()
+        # list dir
+        print("BEFORE: ", os.listdir(f"{VOLUME_DIR}/checkpoints/pretrained/Llama-3.1-ARC-Potpourri-Transduction-8B"))
+        while True:
+            if all(os.path.exists(f"{VOLUME_DIR}/checkpoints/pretrained/Llama-3.1-ARC-Potpourri-Transduction-8B/{file}") for file in FILES):
+                print("All checkpoint files are available.")
+                break
+            elif time.time() - start_time > TIMEOUT:
+                raise TimeoutError("Timeout reached while waiting for checkpoint files.")
+            else:
+                print("Waiting for checkpoint files to be available...")
+                time.sleep(5)
+
+        print("AFTER: ", os.listdir(f"{VOLUME_DIR}/checkpoints/pretrained/Llama-3.1-ARC-Potpourri-Transduction-8B"))
+        time.sleep(5)
 
 
 # TODO: make sure the timout is enough
@@ -44,6 +76,8 @@ def pipeline(data: Dict):
 
 @app.local_entrypoint()
 def main():
+    # call the download function
+    download.remote()
     # TODO: Adjust this for optimal strategy
     MAX_MACHINES = 400
 
