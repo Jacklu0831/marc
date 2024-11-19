@@ -4,14 +4,23 @@ import os
 import subprocess
 import json
 
+VOLUME_NAME = "checkpoints"
+# modal volume create {VOLUME_NAME}
+# modal volume put {VOLUME_NAME} Llama-3.1-ARC-Potpourri-Transduction-8B checkpoints/pretrained/Llama-3.1-ARC-Potpourri-Transduction-8B
+VOLUME_DIR = "/checkpoints"
+
+
 app = modal.App("marc-torchtune-custom-container")
 image = modal.Image.from_registry("hanguo97/marc:0.8")
 image = image.run_commands(["cd /workspace/main/ && git pull origin modal"])
-volume = modal.Volume.from_name("checkpoints")
+image = image.run_commands([
+    f"[ ! -e /workspace/main/checkpoints/pretrained/Llama-3.1-ARC-Potpourri-Transduction-8B ] && ln -s {VOLUME_DIR}/checkpoints/pretrained/Llama-3.1-ARC-Potpourri-Transduction-8B /workspace/main/checkpoints/pretrained/Llama-3.1-ARC-Potpourri-Transduction-8B"
+])
+volume = modal.Volume.from_name(VOLUME_NAME)
 
 
 # TODO: make sure the timout is enough
-@app.function(gpu="H100", image=image, volumes={"/checkpoints": volume}, timeout=1200)
+@app.function(gpu="H100", image=image, volumes={VOLUME_DIR: volume}, timeout=1200)
 def pipeline(data: Dict):
     # Use subprocess to execute the script
     with open("/workspace/main/data.json", "w") as f:

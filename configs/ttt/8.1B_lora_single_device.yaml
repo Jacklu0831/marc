@@ -29,7 +29,7 @@ model:
 # Tokenizer
 tokenizer:
   _component_: torchtune.models.llama3.llama3_tokenizer
-  path: /checkpoints/checkpoints/pretrained/Llama-3.1-ARC-Potpourri-Transduction-8B/tokenizer.model
+  path: checkpoints/pretrained/Llama-3.1-ARC-Potpourri-Transduction-8B/tokenizer.model
   max_seq_len: null
 
 checkpointer:
