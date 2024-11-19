@@ -49,15 +49,17 @@ def main():
     # Test for the first 5 chunks
     list_of_submissions = pipeline.starmap([(chunk,) for chunk in data_chunks[:2]], return_exceptions=True)
 
-    submission = {}
+    merged_submission = {}
     for submission in list_of_submissions:
         # check if the submission is a dict
         if isinstance(submission, dict):
             for key, value in submission.items():
-                submission[key] = value
+                merged_submission[key] = value
+        else:
+            print("error in submission: ", submission)
 
     with open(f"marc_submission.json", "w") as f:
-        f.write(json.dumps(submission))
+        f.write(json.dumps(merged_submission))
 
 
 
