@@ -5,10 +5,14 @@ import os
 import subprocess
 import json
 import time
-import argparse
+
 
 VOLUME_NAME = "marc_checkpoints"
 VOLUME_DIR = "/checkpoints"
+BATCH_SIZE = 1
+MAX_CONCURRENCY = 10
+CHALLENGE_FILE = "/kaggle/input/arc-prize-2024/arc-agi_evaluation_challenges.json"
+MAX_NUM_BATCHES = 2
 
 
 app = modal.App("marc-torchtune-custom-container")
@@ -52,7 +56,7 @@ def download():
 
 
 # TODO: make sure the timout is enough
-@app.function(gpu="H100", image=image, volumes={VOLUME_DIR: volume}, timeout=1200)
+@app.function(gpu="H100", image=image, volumes={VOLUME_DIR: volume}, timeout=1200, concurrency_limit=MAX_CONCURRENCY)
 def pipeline(data: Dict):
     # Use subprocess to execute the script
     with open("/workspace/main/data.json", "w") as f:
@@ -78,19 +82,20 @@ def pipeline(data: Dict):
 def main():
     # call the download function
     download.remote()
-    # TODO: Adjust this for optimal strategy
-    MAX_MACHINES = 400
 
-    with open("/kaggle/input/arc-prize-2024/arc-agi_evaluation_challenges.json", "r") as f:
+    with open(CHALLENGE_FILE, "r") as f:
         data = json.load(f)
 
     # Split the data into chunks
-    chunk_size = len(data) // MAX_MACHINES + (len(data) % MAX_MACHINES > 0)
-    data_chunks = [dict(list(data.items())[i:i + chunk_size]) for i in range(0, len(data), chunk_size)]
+    data_chunks = [dict(list(data.items())[i:i + BATCH_SIZE]) for i in range(0, len(data), BATCH_SIZE)]
     print(f"Split data into {len(data_chunks)} chunks")
+    # print length of each chunk
+    for i, chunk in enumerate(data_chunks):
+        print(f"Chunk {i} has {len(chunk)} items")
 
     # Test for the first 5 chunks
-    list_of_submissions = pipeline.starmap([(chunk,) for chunk in data_chunks[:2]], return_exceptions=True)
+    max_num_batches = MAX_NUM_BATCHES if MAX_NUM_BATCHES else len(data_chunks)
+    list_of_submissions = pipeline.starmap([(chunk,) for chunk in data_chunks[:max_num_batches]], return_exceptions=True)
 
     merged_submission = {}
     for submission in list_of_submissions:
