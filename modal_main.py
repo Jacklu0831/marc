@@ -51,12 +51,19 @@ def main():
 
     merged_submission = {}
     for submission in list_of_submissions:
-        # check if the submission is a dict
-        if isinstance(submission, dict):
-            for key, value in submission.items():
-                merged_submission[key] = value
-        else:
-            print("error in submission: ", submission)
+        # NOTE: seems like the remote output is serialized as string, so we need to deserialize it
+        if isinstance(submission, str):
+            try:
+                submission = json.loads(submission)
+                for key, value in submission.items():
+                    merged_submission[key] = value
+            except Exception as err:
+                print("error in submission: ", submission, " error: ", err)
+                continue
+
+
+        for key, value in submission.items():
+            merged_submission[key] = value
 
     with open(f"marc_submission.json", "w") as f:
         f.write(json.dumps(merged_submission))
