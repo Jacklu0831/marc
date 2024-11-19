@@ -37,7 +37,7 @@ def main(
     seed: int = 0,
     data_file: str = "/kaggle/input/arc-prize-2024/arc-agi_evaluation_challenges.json",
     solution_file: str = "/kaggle/input/arc-prize-2024/arc-agi_evaluation_solutions.json",
-    num_examples: int = 419,
+    num_examples: int = 500,
     pretrained_checkpoint: str = "checkpoints/pretrained/multi_format_model/",
     lora_checkpoints_folder: str = None,
     quantization: str = None,

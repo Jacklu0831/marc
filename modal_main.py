@@ -6,13 +6,11 @@ import json
 
 app = modal.App("marc-torchtune-custom-container")
 image = modal.Image.from_registry("hanguo97/marc:0.8")
-# copy a file to image (only if there is an update)
-# image = image.copy_local_file("configs/ttt/8.1B_lora_single_device.yaml", "/workspace/main/configs/ttt/8.1B_lora_single_device.yaml")
-# image = image.copy_local_file("modal_predict.py", "/workspace/main/modal_predict.py")
-# image = image.copy_local_file("modal_ttt.py", "/workspace/main/modal_ttt.py")
+image = image.run_commands(["cd /workspace/main/ && git pull origin modal"])
 volume = modal.Volume.from_name("checkpoints")
 
-# TODO: make H100/A100 for real submission
+
+# TODO: make sure the timout is enough
 @app.function(gpu="H100", image=image, volumes={"/checkpoints": volume}, timeout=1200)
 def pipeline(data: Dict):
     # Use subprocess to execute the script
@@ -37,6 +35,7 @@ def pipeline(data: Dict):
 
 @app.local_entrypoint()
 def main():
+    # TODO: Adjust this for optimal strategy
     MAX_MACHINES = 400
 
     with open("/kaggle/input/arc-prize-2024/arc-agi_evaluation_challenges.json", "r") as f:
@@ -48,12 +47,14 @@ def main():
     print(f"Split data into {len(data_chunks)} chunks")
 
     # Test for the first 5 chunks
-    list_of_submissions = pipeline.starmap([(chunk,) for chunk in data_chunks[:5]], return_exceptions=True)
+    list_of_submissions = pipeline.starmap([(chunk,) for chunk in data_chunks[:2]], return_exceptions=True)
 
-    # merge the submissions
     submission = {}
-    for sub in list_of_submissions:
-        submission.update(sub)
+    for submission in list_of_submissions:
+        # check if the submission is a dict
+        if isinstance(submission, dict):
+            for key, value in submission.items():
+                submission[key] = value
 
     with open(f"marc_submission.json", "w") as f:
         f.write(json.dumps(submission))
