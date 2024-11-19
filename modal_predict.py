@@ -6,7 +6,7 @@ assert os.path.exists("experiments/ttt/modal/")
 
 predict_main(
     data_file="data.json",
-    pretrained_checkpoint="checkpoints/pretrained/Llama-3.1-ARC-Potpourri-Transduction-8B/",
+    pretrained_checkpoint="/checkpoints/checkpoints/pretrained/Llama-3.1-ARC-Potpourri-Transduction-8B/",
     experiment_folder="experiments/tti/modal/",
     lora_checkpoints_folder="experiments/ttt/modal/",
     temperature=0.0,
