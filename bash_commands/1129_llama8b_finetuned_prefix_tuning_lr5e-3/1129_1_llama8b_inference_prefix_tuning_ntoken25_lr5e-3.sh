@@ -1,10 +1,10 @@
-# python make_sbatch.py --time 48 --bash_files bash_commands/1126_2_llama1b_inference_prefix_tuning_ntoken25_lr1e-3.sh
+# python make_sbatch.py --time 48 --bash_files bash_commands/1129_llama8b_finetuned_prefix_tuning_lr5e-3/1129_1_llama8b_inference_prefix_tuning_ntoken25_lr5e-3.sh
 
 # ntoken25 epoch1
 python predict_prefix_tuning.py \
-    --experiment_folder inference_outputs/experiments/1126_2_llama1b_inference_prefix_tuning_ntoken25_lr1e-3_epoch1 \
+    --experiment_folder inference_outputs/experiments/1126_2_llama1b_inference_prefix_tuning_ntoken25_lr5e-3_epoch1 \
     --pretrained_checkpoint downloaded_models/meta-llama/Llama-3.2-1B-Instruct \
-    --pt_checkpoints_folder train_outputs/1126_0_llama1b_ttt_prefix_tuning_lr1e-3_ntoken25 \
+    --pt_checkpoints_folder train_outputs/1126_0_llama1b_ttt_prefix_tuning_lr5e-3_ntoken25 \
     --num_virtual_tokens 25 \
     --pt_epoch 1 \
     --temperature 0.0 \
@@ -16,9 +16,9 @@ python predict_prefix_tuning.py \
 
 # ntoken25 epoch3
 python predict_prefix_tuning.py \
-    --experiment_folder inference_outputs/experiments/1126_2_llama1b_inference_prefix_tuning_ntoken25_lr1e-3_epoch3 \
+    --experiment_folder inference_outputs/experiments/1126_2_llama1b_inference_prefix_tuning_ntoken25_lr5e-3_epoch3 \
     --pretrained_checkpoint downloaded_models/meta-llama/Llama-3.2-1B-Instruct \
-    --pt_checkpoints_folder train_outputs/1126_0_llama1b_ttt_prefix_tuning_lr1e-3_ntoken25 \
+    --pt_checkpoints_folder train_outputs/1126_0_llama1b_ttt_prefix_tuning_lr5e-3_ntoken25 \
     --num_virtual_tokens 25 \
     --pt_epoch 3 \
     --temperature 0.0 \
@@ -30,9 +30,9 @@ python predict_prefix_tuning.py \
 
 # ntoken25 epoch5
 python predict_prefix_tuning.py \
-    --experiment_folder inference_outputs/experiments/1126_2_llama1b_inference_prefix_tuning_ntoken25_lr1e-3_epoch5 \
+    --experiment_folder inference_outputs/experiments/1126_2_llama1b_inference_prefix_tuning_ntoken25_lr5e-3_epoch5 \
     --pretrained_checkpoint downloaded_models/meta-llama/Llama-3.2-1B-Instruct \
-    --pt_checkpoints_folder train_outputs/1126_0_llama1b_ttt_prefix_tuning_lr1e-3_ntoken25 \
+    --pt_checkpoints_folder train_outputs/1126_0_llama1b_ttt_prefix_tuning_lr5e-3_ntoken25 \
     --num_virtual_tokens 25 \
     --pt_epoch 5 \
     --temperature 0.0 \
@@ -44,9 +44,9 @@ python predict_prefix_tuning.py \
 
 # ntoken25 epoch7
 python predict_prefix_tuning.py \
-    --experiment_folder inference_outputs/experiments/1126_2_llama1b_inference_prefix_tuning_ntoken25_lr1e-3_epoch7 \
+    --experiment_folder inference_outputs/experiments/1126_2_llama1b_inference_prefix_tuning_ntoken25_lr5e-3_epoch7 \
     --pretrained_checkpoint downloaded_models/meta-llama/Llama-3.2-1B-Instruct \
-    --pt_checkpoints_folder train_outputs/1126_0_llama1b_ttt_prefix_tuning_lr1e-3_ntoken25 \
+    --pt_checkpoints_folder train_outputs/1126_0_llama1b_ttt_prefix_tuning_lr5e-3_ntoken25 \
     --num_virtual_tokens 25 \
     --pt_epoch 7 \
     --temperature 0.0 \
@@ -58,9 +58,9 @@ python predict_prefix_tuning.py \
 
 # ntoken25 epoch9
 python predict_prefix_tuning.py \
-    --experiment_folder inference_outputs/experiments/1126_2_llama1b_inference_prefix_tuning_ntoken25_lr1e-3_epoch9 \
+    --experiment_folder inference_outputs/experiments/1126_2_llama1b_inference_prefix_tuning_ntoken25_lr5e-3_epoch9 \
     --pretrained_checkpoint downloaded_models/meta-llama/Llama-3.2-1B-Instruct \
-    --pt_checkpoints_folder train_outputs/1126_0_llama1b_ttt_prefix_tuning_lr1e-3_ntoken25 \
+    --pt_checkpoints_folder train_outputs/1126_0_llama1b_ttt_prefix_tuning_lr5e-3_ntoken25 \
     --num_virtual_tokens 25 \
     --pt_epoch 9 \
     --temperature 0.0 \

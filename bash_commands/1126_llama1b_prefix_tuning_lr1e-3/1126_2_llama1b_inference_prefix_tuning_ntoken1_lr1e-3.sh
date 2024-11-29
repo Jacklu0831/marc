@@ -3,7 +3,7 @@
 # ntoken1 epoch1
 python predict_prefix_tuning.py \
     --experiment_folder inference_outputs/experiments/1126_2_llama1b_inference_prefix_tuning_ntoken1_lr1e-3_epoch1 \
-    --pretrained_checkpoint meta-llama/Llama-3.1-8B-Instruct \
+    --pretrained_checkpoint downloaded_models/meta-llama/Llama-3.2-1B-Instruct \
     --pt_checkpoints_folder train_outputs/1126_0_llama1b_ttt_prefix_tuning_lr1e-3_ntoken1 \
     --num_virtual_tokens 1 \
     --pt_epoch 1 \
@@ -17,7 +17,7 @@ python predict_prefix_tuning.py \
 # ntoken1 epoch3
 python predict_prefix_tuning.py \
     --experiment_folder inference_outputs/experiments/1126_2_llama1b_inference_prefix_tuning_ntoken1_lr1e-3_epoch3 \
-    --pretrained_checkpoint meta-llama/Llama-3.1-8B-Instruct \
+    --pretrained_checkpoint downloaded_models/meta-llama/Llama-3.2-1B-Instruct \
     --pt_checkpoints_folder train_outputs/1126_0_llama1b_ttt_prefix_tuning_lr1e-3_ntoken1 \
     --num_virtual_tokens 1 \
     --pt_epoch 3 \
@@ -31,7 +31,7 @@ python predict_prefix_tuning.py \
 # ntoken1 epoch5
 python predict_prefix_tuning.py \
     --experiment_folder inference_outputs/experiments/1126_2_llama1b_inference_prefix_tuning_ntoken1_lr1e-3_epoch5 \
-    --pretrained_checkpoint meta-llama/Llama-3.1-8B-Instruct \
+    --pretrained_checkpoint downloaded_models/meta-llama/Llama-3.2-1B-Instruct \
     --pt_checkpoints_folder train_outputs/1126_0_llama1b_ttt_prefix_tuning_lr1e-3_ntoken1 \
     --num_virtual_tokens 1 \
     --pt_epoch 5 \
@@ -45,7 +45,7 @@ python predict_prefix_tuning.py \
 # ntoken1 epoch7
 python predict_prefix_tuning.py \
     --experiment_folder inference_outputs/experiments/1126_2_llama1b_inference_prefix_tuning_ntoken1_lr1e-3_epoch7 \
-    --pretrained_checkpoint meta-llama/Llama-3.1-8B-Instruct \
+    --pretrained_checkpoint downloaded_models/meta-llama/Llama-3.2-1B-Instruct \
     --pt_checkpoints_folder train_outputs/1126_0_llama1b_ttt_prefix_tuning_lr1e-3_ntoken1 \
     --num_virtual_tokens 1 \
     --pt_epoch 7 \
@@ -59,7 +59,7 @@ python predict_prefix_tuning.py \
 # ntoken1 epoch9
 python predict_prefix_tuning.py \
     --experiment_folder inference_outputs/experiments/1126_2_llama1b_inference_prefix_tuning_ntoken1_lr1e-3_epoch9 \
-    --pretrained_checkpoint meta-llama/Llama-3.1-8B-Instruct \
+    --pretrained_checkpoint downloaded_models/meta-llama/Llama-3.2-1B-Instruct \
     --pt_checkpoints_folder train_outputs/1126_0_llama1b_ttt_prefix_tuning_lr1e-3_ntoken1 \
     --num_virtual_tokens 1 \
     --pt_epoch 9 \
