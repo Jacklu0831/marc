@@ -12,6 +12,7 @@ template = """#!/bin/bash
 #SBATCH --mem=$MEMGB
 $GPULINE
 #SBATCH --job-name=$JOBNAME
+#SBATCH --output=slurm_outs/%j.out
 
 module purge
 

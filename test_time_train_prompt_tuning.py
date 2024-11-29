@@ -1,4 +1,3 @@
-from typing import List
 import argparse
 import copy
 import functools
@@ -26,47 +25,8 @@ from utils.preprocess import get_augmenters, process_task
 
 
 sys.path.append("third_party/torchtune/recipes/")
-import lora_finetune_single_device
-# from third_party.torchtune.recipes import lora_finetune_single_device
-
-
-def save_adapter_config(
-    path: str,
-    base_model_path: str,
-    lora_rank: int = 64,
-    peft_type: str = "LORA",
-    lora_alpha: float = 16.0,
-    lora_attn_modules: List[str] = ["q_proj", "v_proj"],
-    lora_to_mlp: bool = True,
-    lora_to_output: bool = False,
-):
-    # This config is used by VLLM
-    # Target modules is not the same as we use in training, but rather inclusive of all
-    # because I was getting weird bugs in VLLM part
-    target_modules = []
-    if lora_to_mlp:
-        target_modules += ["gate_proj", "down_proj", "up_proj"]
-    if lora_to_output:
-        target_modules += ["lm_head"]
-    if lora_attn_modules:
-        target_modules += lora_attn_modules
-
-    config = {
-        "base_model_name_or_path": base_model_path,
-        "bias": "none",
-        "fan_in_fan_out": False,
-        "inference_mode": True,
-        "init_lora_weights": True,
-        "lora_alpha": lora_alpha,
-        "lora_dropout": 0.0,
-        "modules_to_save": None,
-        "peft_type": peft_type,
-        "r": lora_rank,
-        "target_modules": target_modules,
-        "task_type": "CAUSAL_LM",
-    }
-    with open(path, "w") as f:
-        json.dump(config, f)
+import prompt_tuning_single_device
+# from third_party.torchtune.recipes import prompt_tuning_single_device
 
 
 parser = argparse.ArgumentParser(description="Process some integers.")
@@ -79,19 +39,13 @@ parser.add_argument(
 )
 parser.add_argument("--num_tasks", type=int, default=None, help="Number of tasks to process for limited evaluation.")
 parser.add_argument("--num_max_per_task", type=int, default=250, help="Number of tasks to process for limited evaluation.")
-parser.add_argument(
-    "--lora_checkpoints_folder",
-    type=str,
-    default="checkpoints/ttt/all_in_fix_final_lora_clean/",
-    help="LoRA checkpoints folder, if none then base model is used",
-)
 parser.add_argument("--quantization", type=str, default=None, help="Quantization type bitsandbytes or none")
 parser.add_argument("--max_tokens", type=int, default=8192, help="Max tokens")
 parser.add_argument("--cpus", type=int, default=16, help="Number of cpus")
 parser.add_argument(
-    "--lora_config",
+    "--pt_config",
     type=str,
-    default="configs/ttt/8B_lora_single_device.yaml",
+    default="configs/ttt/1B_prompt_tuning_single_device.yaml",
     help="LoRA config file",
 )
 parser.add_argument(
@@ -111,12 +65,6 @@ parser.add_argument("--batch_size", type=int, default=2, help="Batch size")
 parser.add_argument("--gradient_accumulation_steps", type=int, default=1, help="Gradient accumulation steps")
 parser.add_argument("--learning_rate", type=float, default=1e-4, help="Learning rate")
 parser.add_argument("--compile", type=bool, default=True, help="Compile setting")
-parser.add_argument("--lora_rank", type=int, default=64, help="LoRA rank")
-parser.add_argument("--lora_alpha", type=float, default=16.0, help="LoRA alpha")
-parser.add_argument("--lora_attn_modules", type=str, nargs="+", default=["q_proj", "v_proj"], help="LoRA parameters")
-parser.add_argument("--lora_to_mlp", type=bool, default=True, help="Apply LoRA to MLP")
-parser.add_argument("--lora_to_output", type=bool, default=False, help="Apply LoRA to output")
-parser.add_argument("--lora_dropout", type=float, default=0.0, help="LoRA dropout")
 parser.add_argument("--weight_decay", type=float, default=0.01, help="Weight decay")
 parser.add_argument(
     "--base_checkpoint_dir",
@@ -127,6 +75,8 @@ parser.add_argument(
 parser.add_argument("--new_format", action="store_true", help="Whether to use the new format or not")
 parser.add_argument("--barc_format", action="store_true", help="Whether to use the barc format or not")
 parser.add_argument("--no_transform", action="store_true", help="Whether to use the new format or not")
+# prompt tuning
+parser.add_argument("--num_virtual_tokens", type=int, default=4, help="number of virtual tokens")
 
 
 args = parser.parse_args()
@@ -171,9 +121,9 @@ else:
 # Load config
 conf = _merge_yaml_and_cli_args(
     *TuneRecipeArgumentParser(
-        description="LORA",
+        description="PromptTuning",
         formatter_class=argparse.RawDescriptionHelpFormatter,
-    ).parse_known_args(["--config={}".format(args.lora_config)])
+    ).parse_known_args(["--config={}".format(args.pt_config)])
 )
 
 # Update conf with argparse settings
@@ -184,16 +134,9 @@ conf.batch_size = args.batch_size
 conf.gradient_accumulation_steps = args.gradient_accumulation_steps
 conf.optimizer.lr = args.learning_rate
 conf.compile = False  # we will do it ourselves
-conf.model.lora_rank = args.lora_rank
-conf.model.lora_alpha = args.lora_alpha
-conf.model.lora_attn_modules = args.lora_attn_modules
-conf.model.apply_lora_to_mlp = args.lora_to_mlp
-conf.model.lora_dropout = args.lora_dropout
-conf.checkpointer.checkpoint_dir = args.base_checkpoint_dir
 conf.seed = args.seed
 conf.output_dir = f"{args.experiment_folder}"
-if "llama3_2" not in conf.model._component_:
-    conf.model.apply_lora_to_output = args.lora_to_output # ignore lora_to_output for llama3_2
+conf.model.prompt_tuning.num_virtual_tokens = args.num_virtual_tokens
 
 random.seed(args.seed)
 np.random.seed(args.seed)
@@ -216,6 +159,7 @@ processor = functools.partial(
     permute_n=args.permute_n,
     Nmax=args.num_max_per_task,
     seed=args.seed,
+    num_virtual_tokens=args.num_virtual_tokens,
 )
 with Pool(args.cpus) as p:
     # this does use the tokenizer, but only for figuring out lengths
@@ -251,113 +195,52 @@ for task, task_train_data in zip(arc_test_tasks, data):
         dst.write(first_line)
 
 
-def train_with_a_test_data(
-    task_id: str,
-    recipe,
-    conf,
-    experiment_folder: str,
-    model=None,
-    adapter=None,
-):
-    recipe.cleanup()
-
-    lconf = copy.deepcopy(conf)
-    lconf.dataset.source = f"{experiment_folder}/{task_id}"
-    lconf.output_dir = f"{experiment_folder}/{task_id}"
-    lconf.metric_logger.log_dir = f"{experiment_folder}/{task_id}"
-    lconf.checkpointer.output_dir = f"{experiment_folder}/{task_id}"
-
-    with open(f"{experiment_folder}/{task_id}/td_False_ttd_False_ttdwa_False_ad_True_trd_False.jsonl") as f:
-        train_data_size = sum(1 for _ in f)
-    print("Train data size: ", train_data_size)
-
-    total_steps = (train_data_size * lconf.epochs) // (
-        lconf.batch_size * lconf.gradient_accumulation_steps
-    )
-    lconf.lr_scheduler.num_warmup_steps = total_steps // 10
-
-    print(f"====CONFIG FOR {task_id}====")
-    for k, v in lconf.items():
-        print(f"{k}: {v}")
-    print("=============================")
-
-    recipe._output_dir = lconf.output_dir
-    recipe.total_epochs = lconf.epochs
-    recipe._gradient_accumulation_steps = lconf.gradient_accumulation_steps
-    recipe.global_step = 0
-    recipe.epochs_run = 0
-    recipe.seed = lora_finetune_single_device.training.set_seed(lconf.seed)
-    recipe.setup(cfg=lconf, model=model, adapter=adapter)
-
-    for layer in recipe._model.layers:
-        layer.attn.kv_cache = None
-        recipe._model.causal_mask = None
-
-    recipe.train()
-    recipe._optimizer = None
-    return recipe._model
-
-
 # initialize model
-recipe = lora_finetune_single_device.LoRAFinetuneRecipeSingleDevice(conf)
+recipe = prompt_tuning_single_device.PromptTuningRecipeSingleDevice(conf)
 recipe.setup(cfg=conf)
-model = recipe._model
 device = recipe._device
-adapter = copy.deepcopy(lora_finetune_single_device.get_adapter_params(model))
+prompt_encoder_embeddings = copy.deepcopy(recipe._prompt_encoder.embedding.weight.data)
 
 for task in arc_test_tasks:
     task_id = task.name.replace("-0", "")
     print(f"Trying task {task_id}")
     try:
-        adapter_path = f"{args.experiment_folder}/{task_id}/adapter_model.bin"
-        # if os.path.exists(adapter_path):
-        #     print(f"Adapter for {task_id} already exists, skipping")
-        #     continue
+        recipe.cleanup()
 
-        # passing in previously saved adapter to replace model params
-        train_with_a_test_data(
-            task_id,
-            recipe,
-            conf,
-            experiment_folder=args.experiment_folder,
-            model=model,
-            adapter=adapter,
+        lconf = copy.deepcopy(conf)
+        lconf.dataset.source = f"{args.experiment_folder}/{task_id}"
+        lconf.output_dir = f"{args.experiment_folder}/{task_id}"
+        lconf.metric_logger.log_dir = f"{args.experiment_folder}/{task_id}"
+        lconf.checkpointer.output_dir = f"{args.experiment_folder}/{task_id}"
+
+        with open(f"{args.experiment_folder}/{task_id}/td_False_ttd_False_ttdwa_False_ad_True_trd_False.jsonl") as f:
+            train_data_size = sum(1 for _ in f)
+        print("Train data size: ", train_data_size)
+
+        total_steps = (train_data_size * lconf.epochs) // (
+            lconf.batch_size * lconf.gradient_accumulation_steps
         )
+        lconf.lr_scheduler.num_warmup_steps = total_steps // 10
 
-        # save adapter
-        final_adapter = lora_finetune_single_device.get_adapter_params(model)
-        replacements = {
-            "_orig_mod.": "",
-            "layers.": "base_model.model.model.layers.",
-            "w1": "gate_proj",
-            "w2": "down_proj",
-            "w3": "up_proj",
-            ".attn": ".self_attn",
-            "_checkpoint_wrapped_module.": "",
-            "lora_b": "lora_B",
-            "lora_a": "lora_A",
-            "output.lora_": "base_model.model.lm_head.lora_",
-        }
-        saved_dict = {}
-        for name, param in final_adapter.items():
-            for old, new in replacements.items():
-                name = name.replace(old, new)
-            saved_dict[name] = param
-        torch.save(saved_dict, adapter_path)
-        saved_dict = None
+        print(f"====CONFIG FOR {task_id}====")
+        for k, v in lconf.items():
+            print(f"{k}: {v}")
+        print("=============================")
 
-        # save adapter config
-        adapter_config_path = f"{args.experiment_folder}/{task_id}/adapter_config.json"
-        save_adapter_config(
-            adapter_config_path,
-            args.base_checkpoint_dir,
-            lora_rank=args.lora_rank,
-            lora_alpha=args.lora_alpha,
-            lora_attn_modules=args.lora_attn_modules,
-            lora_to_mlp=args.lora_to_mlp,
-            lora_to_output=args.lora_to_output,
-        )
+        recipe._output_dir = lconf.output_dir
+        recipe.total_epochs = lconf.epochs
+        recipe._gradient_accumulation_steps = lconf.gradient_accumulation_steps
+        recipe.global_step = 0
+        recipe.epochs_run = 0
+        recipe.seed = prompt_tuning_single_device.training.set_seed(lconf.seed)
+        recipe.setup(cfg=lconf, prompt_encoder_embeddings=prompt_encoder_embeddings)
 
+        for layer in recipe._model.layers:
+            layer.attn.kv_cache = None
+            recipe._model.causal_mask = None
+
+        recipe.train()
+        recipe._optimizer = None
     except Exception as e:
         print(e)
         print("Error training for ", task_id)

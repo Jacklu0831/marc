@@ -2,17 +2,13 @@ import argparse
 import glob
 import json
 import os
-
-from vllm.lora.request import LoRARequest
+from tqdm import tqdm
 
 import numpy as np
 import torch
-from transformers import (
-    AutoTokenizer,
-)
-from vllm.lora.request import LoRARequest
+from transformers import AutoTokenizer, AutoModelForCausalLM
 from vllm.prompt_adapter.request import PromptAdapterRequest
-
+from peft import get_peft_model, PrefixTuningConfig
 import arclib.messagers
 from arclib.arc import (
     make_submission,
@@ -30,7 +26,7 @@ from arclib.representers import (
     TextTaskRepresenter,
 )
 from arclib.voting import vote
-from inference.engine import get_sampling_params, initialize_engine, process_requests
+from inference.engine import get_sampling_params
 from inference.preprocess import get_preprocessed_tasks
 
 
@@ -61,23 +57,14 @@ parser.add_argument(
     help="path to the pretrained checkpoint",
 )
 parser.add_argument(
-    "--lora_checkpoints_folder",
-    type=str,
-    default=None,
-    help="LoRA checkpoints folder, if none then base model is used",
-)
-parser.add_argument(
     "--pt_checkpoints_folder",
     type=str,
     default=None,
-    help="Prompt tuning checkpoints folder, if none then base model is used",
+    help="Prefix tuning checkpoints folder, if none then base model is used",
 )
 parser.add_argument("--num_virtual_tokens", type=int, default=4, help="number of virtual tokens")
 parser.add_argument("--pt_epoch", type=int, default=0, help="Prompt tuning checkpoints folder, if none then base model is used")
 parser.add_argument("--max_prompt_adapters", type=int, default=4, help="max nunmber of adapters at once")
-parser.add_argument(
-    "--quantization", type=str, default=None, help="Qusantization type bitsandbytes or none"
-)
 parser.add_argument("--max_tokens", type=int, default=8192, help="Max tokens")
 parser.add_argument("--temperature", type=float, default=0.0, help="Temperature for sampling")
 parser.add_argument(
@@ -91,12 +78,6 @@ parser.add_argument(
     type=str,
     default="arclib.messagers.GPTTextMessageRepresenterV2",
     help="formatter for the task, better to be same with the one used for training",
-)
-parser.add_argument(
-    "--max_lora_rank",
-    type=int,
-    default=64,
-    help="Max lora rank, should be same with the one used for training",
 )
 parser.add_argument(
     "--include_n",
@@ -121,11 +102,9 @@ parser.add_argument(
 parser.add_argument(
     "--add_diff_format", action="store_true", help="Whether to use the new format or not"
 )
-
 parser.add_argument(
-    "--use_all_lora", action="store_true", help="single trained lora"
+    "--use_base_model", action="store_true", help="Whether to use the new format or not"
 )
-
 args = parser.parse_args()
 
 # set seed
@@ -141,20 +120,12 @@ os.makedirs(args.experiment_folder, exist_ok=True)
 
 tasks = read_tasks_from_single_file(args.data_file, solution_file=args.solution_file, test=True)
 
-# get lora paths and filter tasks if necessary
-id_to_lora_path = {}
-if args.lora_checkpoints_folder is not None:
-    id_to_lora_path = {}
-    for lora_path in glob.glob(f"{args.lora_checkpoints_folder}/*/adapter_model.bin"):
-        lora_id = lora_path.split("/")[-2]
-        id_to_lora_path[lora_id] = lora_path
-
 # get pt paths and filter tasks if necessary
 id_to_pt_path = {}
 if args.pt_checkpoints_folder is not None:
     id_to_pt_path = {}
-    for pt_path in glob.glob(f"{args.pt_checkpoints_folder}/*/*_embeddings.pt"):
-        epoch = int(pt_path.split('/')[-1].split('_')[0][5:]) # get epoch number
+    for pt_path in glob.glob(f"{args.pt_checkpoints_folder}/*/checkpoint-epoch*.pt"):
+        epoch = int(pt_path[pt_path.rfind('checkpoint-epoch'):][16:-3])
         if epoch == args.pt_epoch:
             pt_id = pt_path.split('/')[-2]
             id_to_pt_path[pt_id] = pt_path
@@ -208,20 +179,28 @@ if args.add_diff_format:
 
     formatters.append(input_diff_formatter)
 
-tokenizer = AutoTokenizer.from_pretrained(args.pretrained_checkpoint, cache_dir=f'downloaded_models/{args.pretrained_checkpoint}_cache')
+tokenizer = AutoTokenizer.from_pretrained(args.pretrained_checkpoint, torch_dtype=torch.bfloat16, cache_dir=f'{args.pretrained_checkpoint}_cache')
 
 task_name_to_processed_data = get_preprocessed_tasks(
     tasks,
     tokenizer,
     formatters,
     max_tokens=args.max_tokens,
-    id_to_lora_path=id_to_lora_path,
     id_to_pt_path=id_to_pt_path,
     include_n=args.include_n,
     permute_n=args.permute_n,
 )
 valid_tasks = [info for key, info in task_name_to_processed_data.items() if info["valid"]]
 invalid_tasks = [info for key, info in task_name_to_processed_data.items() if not info["valid"]]
+
+# prediction has an extra part
+for i in range(len(valid_tasks)):
+    for query in valid_tasks[i]['queries']:
+        split_text = query['text'].split('\n')
+        split_text.pop(1)
+        split_text.pop(1)
+        split_text.pop(1)
+        query['text'] = '\n'.join(split_text)
 
 print("Len of valid tasks:", len(valid_tasks))
 print("Len of invalid tasks:", len(invalid_tasks))
@@ -239,40 +218,8 @@ print(f"Number of Queries: {len(example_task['queries'])}")
 print("Example Query")
 print(example_task["queries"][0]["text"])
 
-# lora config
-lora_path_idxs = list(id_to_lora_path.keys())
-lora_adapter_config = {}
-if len(lora_path_idxs) > 0:
-    with open(id_to_lora_path[lora_path_idxs[0]].replace("adapter_model.bin", "adapter_config.json")) as f:
-        lora_adapter_config = json.load(f)
-# {'base_model_name_or_path': 'downloaded_models/meta-llama/Llama-3.2-1B-Instruct',
-#  'bias': 'none',
-#  'fan_in_fan_out': False,
-#  'inference_mode': True,
-#  'init_lora_weights': True,
-#  'lora_alpha': 16.0,
-#  'lora_dropout': 0.0,
-#  'modules_to_save': None,
-#  'peft_type': 'LORA',
-#  'r': 128,
-#  'target_modules': ['gate_proj', 'down_proj', 'up_proj', 'q_proj', 'v_proj'],
-#  'task_type': 'CAUSAL_LM'}
-
 # pt config
 pt_path_idxs = list(id_to_pt_path.keys())
-
-# init engine
-engine = initialize_engine(
-    model=args.pretrained_checkpoint,
-    quantization=args.quantization,
-    max_lora_rank=lora_adapter_config.get("r", args.max_lora_rank),
-    enable_lora=args.lora_checkpoints_folder is not None,
-    enable_prompt_adapter=args.pt_checkpoints_folder is not None,
-    max_prompt_adapters=args.max_prompt_adapters,
-    max_prompt_adapter_token=args.num_virtual_tokens,
-    enforce_eager=False,
-    lora_target_modules=lora_adapter_config.get("target_modules", None),
-)
 
 # abstract away
 inputs_to_the_engine = []
@@ -280,21 +227,6 @@ inputs_to_remember = {}
 for i, info in enumerate(valid_tasks):
     name = info["task"].name
     idx, no = name.split("-")
-    # lora or no
-    if args.lora_checkpoints_folder is not None:
-        lora_path = id_to_lora_path[idx]
-        lora_path = os.path.dirname(lora_path)
-        # get the parent folder
-        if args.use_all_lora:
-            lora_path = os.path.join(os.path.dirname(lora_path), "all/")
-        lora_index = lora_path_idxs.index(idx)
-        lora_request = LoRARequest(
-            lora_name=idx + no,
-            lora_int_id=lora_index,
-            lora_path=lora_path
-        )
-    else:
-        lora_request = None
     # prompt tuning or no
     if args.pt_checkpoints_folder is not None:
         pt_path = id_to_pt_path[idx]
@@ -320,18 +252,65 @@ for i, info in enumerate(valid_tasks):
         )
         new_idx = name + "-" + str(j)
         inputs_to_the_engine.append(
-            (test_input["text"], sampling_param, lora_request, pt_request, new_idx)
+            (test_input["text"], sampling_param, pt_request, new_idx)
         )
         assert new_idx not in inputs_to_remember
         inputs_to_remember[new_idx] = test_input
 
 
+# base model
+tokenizer.pad_token = tokenizer.eos_token
+model = AutoModelForCausalLM.from_pretrained(args.pretrained_checkpoint, torch_dtype=torch.bfloat16, cache_dir=f'{args.pretrained_checkpoint}_cache', device_map="auto")
+
+# prefix tuning
+if not args.use_base_model:
+    prefix_config = PrefixTuningConfig(
+        task_type="CAUSAL_LM",
+        num_virtual_tokens=args.num_virtual_tokens,
+        encoder_hidden_size=model.config.hidden_size,
+        inference_mode=True,
+    )
+    model = get_peft_model(model, prefix_config)
+    model.prompt_encoder['default'].embedding.weight.data = model.prompt_encoder['default'].embedding.weight.data.to(torch.bfloat16)
+    model.print_trainable_parameters()
+
+terminators = [
+    tokenizer.eos_token_id,
+    tokenizer.convert_tokens_to_ids("<|eot_id|>")
+]
+
+# inference
 print(f"Number of input queries to the engine: {len(inputs_to_the_engine)}")
+outputs_by_key = {}
+for text, sampling_params, pt_request, new_idx in tqdm(inputs_to_the_engine):
+    # load embeds
+    if not args.use_base_model:
+        loaded_embeds = torch.load(pt_request.prompt_adapter_local_path).to('cuda')
+        assert model.prompt_encoder['default'].embedding.weight.data.shape == loaded_embeds.shape
+        model.prompt_encoder['default'].embedding.weight.data.copy_(loaded_embeds)
+    # text process?
+    find_start = text.find("<|begin_of_text|>") + len("<|begin_of_text|>")
+    text = text[find_start:]
+    # inference
+    inputs = tokenizer(text, return_tensors="pt").to("cuda")
+    outputs = model.generate(
+        input_ids=inputs["input_ids"],
+        attention_mask=inputs['attention_mask'],
+        max_new_tokens=sampling_params.max_tokens,
+        num_return_sequences=sampling_params.n,
+        do_sample=False,
+        eos_token_id=terminators,
+        # repetition_penalty=sampling_params.repetition_penalty,
+        # eos_token_id=tokenizer.eos_token_id,
+        # pad_token_id=tokenizer.eos_token_id,
+    )
+    input_len = inputs["input_ids"].shape[-1] # BS1
+    assert all(torch.equal(output[:input_len], inputs['input_ids'][0]) for output in outputs)
+    decoded_outputs = [tokenizer.decode(output[input_len:], skip_special_tokens=True) for output in outputs]
+    print(decoded_outputs[0])
+    print()
+    outputs_by_key[new_idx] = decoded_outputs
 
-# engine.model_executor.driver_worker.model_runner.model.model.embed_tokens.base_layer.weight.shape
-# engine.model_executor.driver_worker.model_runner.model.model.embed_tokens.emb_layer.weight.shape
-
-outputs_by_key = process_requests(engine, inputs_to_the_engine)
 
 for key in list(outputs_by_key.keys()):
     inverter = inputs_to_remember[key]["inverter"]

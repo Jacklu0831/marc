@@ -151,14 +151,16 @@ def get_preprocessed_tasks(
     max_tokens: int = 8192,
     include_n: List[int] = [0],
     id_to_lora_path: Dict[str, str] = {},
+    id_to_pt_path: Dict[str, str] = {},
     permute_n: int = 2,
 ) -> Dict[str, Dict[str, Any]]:
     task_name_to_processed_data = {}
-    print("len(id_to_lora_path)", len(id_to_lora_path))
     for task in tasks:
         task_name = task.name
         task_id = task_name.split("-")[0]
         if len(id_to_lora_path) > 0 and task_id not in id_to_lora_path:
+            task_name_to_processed_data[task_name] = {"valid": False, "task": task, "queries": []}
+        if len(id_to_pt_path) > 0 and task_id not in id_to_pt_path:
             task_name_to_processed_data[task_name] = {"valid": False, "task": task, "queries": []}
         else:
             task_name_to_processed_data[task_name] = get_preprocessed_tasks_single(

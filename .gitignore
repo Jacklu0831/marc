@@ -166,3 +166,7 @@ penv/
 downloaded_models/
 train_outputs/
 inference_outputs/
+.cache/
+depre/
+sbatch_files/
+slurm_outs/

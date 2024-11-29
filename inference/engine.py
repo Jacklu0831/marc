@@ -27,9 +27,11 @@ def initialize_engine(
     model: str,
     enforce_eager: bool = False,
     enable_lora: bool = True,
+    enable_prompt_adapter: bool = True,
+    max_prompt_adapters: int = 1,
+    max_prompt_adapter_token: int = 4,
     max_lora_rank: int = 64,
     quantization: Optional[str] = None,
-    lora_repo: Optional[str] = None,
     lora_target_modules: Optional[List[str]] = None,
 ) -> LLMEngine:
     """Initialize the LLMEngine."""
@@ -37,6 +39,9 @@ def initialize_engine(
     engine_args = EngineArgs(
         model=model,
         enable_lora=enable_lora,
+        enable_prompt_adapter=enable_prompt_adapter,
+        max_prompt_adapters=max_prompt_adapters,
+        max_prompt_adapter_token=max_prompt_adapter_token,
         max_lora_rank=max_lora_rank,
         enforce_eager=enforce_eager,
         quantization=quantization,
@@ -56,10 +61,10 @@ def process_requests(
     all_outputs: Dict[str, List[str]] = {}
     while test_prompts or engine.has_unfinished_requests():
         if test_prompts:
-            prompt, sampling_param, lora_request, idx = test_prompts.pop(0)
+            prompt, sampling_param, lora_request, pt_request, idx = test_prompts.pop(0)
             find_start = prompt.find("<|begin_of_text|>") + len("<|begin_of_text|>")
             prompt = prompt[find_start:]
-            engine.add_request(idx, prompt, sampling_param, lora_request=lora_request)
+            engine.add_request(idx, prompt, sampling_param, lora_request=lora_request, prompt_adapter_request=pt_request)
 
         request_outputs: List[RequestOutput] = engine.step()
 

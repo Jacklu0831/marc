@@ -58,17 +58,21 @@ def accuracy(task, attempts):
 
 
 def hamming_distance(task, attempt):
-    output = task.test_example.output
-    attempt = np.array(attempt)
-    output_size = output.shape[0] * output.shape[1]
-    # if shapes are different find the minimum shape
-    min_width = min(output.shape[1], attempt.shape[1])
-    min_height = min(output.shape[0], attempt.shape[0])
-    output = output[:min_height, :min_width]
-    attempt = attempt[:min_height, :min_width]
-    # remaining number of elementx
-    additional_elements = output_size - (min_height * min_width)
-    return (int(np.sum(output != attempt)) + additional_elements) / output_size
+    try:
+        output = task.test_example.output
+        attempt = np.array(attempt)
+        output_size = output.shape[0] * output.shape[1]
+        # if shapes are different find the minimum shape
+        min_width = min(output.shape[1], attempt.shape[1])
+        min_height = min(output.shape[0], attempt.shape[0])
+        output = output[:min_height, :min_width]
+        attempt = attempt[:min_height, :min_width]
+        # remaining number of elementx
+        additional_elements = output_size - (min_height * min_width)
+        return (int(np.sum(output != attempt)) + additional_elements) / output_size
+    except:
+        print(f'error computing hamming distance between\n{task}\nand\n{attempt}')
+        return 1
 
 
 def evaluate(
