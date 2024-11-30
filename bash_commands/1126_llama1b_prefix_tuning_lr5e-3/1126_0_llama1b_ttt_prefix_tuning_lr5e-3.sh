@@ -3,7 +3,7 @@
 
 # ttt prefix tuning with llama1b ntoken1
 python test_time_train_prefix_tuning.py \
-    --pt_config configs/ttt/1B_prefix_tuning_single_device.yaml \
+    --tokenizer_path downloaded_models/meta-llama/Llama-3.2-1B-Instruct/original/tokenizer.model \
     --base_checkpoint_dir downloaded_models/meta-llama/Llama-3.2-1B-Instruct \
     --experiment_folder train_outputs/1126_0_llama1b_ttt_prefix_tuning_lr5e-3_ntoken1 \
     --data_file kaggle_dataset/arc-agi_evaluation_challenges_selected.json \
@@ -15,7 +15,7 @@ python test_time_train_prefix_tuning.py \
 
 # ttt prefix tuning with llama1b ntoken3
 python test_time_train_prefix_tuning.py \
-    --pt_config configs/ttt/1B_prefix_tuning_single_device.yaml \
+    --tokenizer_path downloaded_models/meta-llama/Llama-3.2-1B-Instruct/original/tokenizer.model \
     --base_checkpoint_dir downloaded_models/meta-llama/Llama-3.2-1B-Instruct \
     --experiment_folder train_outputs/1126_0_llama1b_ttt_prefix_tuning_lr5e-3_ntoken3 \
     --data_file kaggle_dataset/arc-agi_evaluation_challenges_selected.json \
@@ -27,7 +27,7 @@ python test_time_train_prefix_tuning.py \
 
 # ttt prefix tuning with llama1b ntoken5
 python test_time_train_prefix_tuning.py \
-    --pt_config configs/ttt/1B_prefix_tuning_single_device.yaml \
+    --tokenizer_path downloaded_models/meta-llama/Llama-3.2-1B-Instruct/original/tokenizer.model \
     --base_checkpoint_dir downloaded_models/meta-llama/Llama-3.2-1B-Instruct \
     --experiment_folder train_outputs/1126_0_llama1b_ttt_prefix_tuning_lr5e-3_ntoken5 \
     --data_file kaggle_dataset/arc-agi_evaluation_challenges_selected.json \
@@ -39,7 +39,7 @@ python test_time_train_prefix_tuning.py \
 
 # ttt prefix tuning with llama1b ntoken10
 python test_time_train_prefix_tuning.py \
-    --pt_config configs/ttt/1B_prefix_tuning_single_device.yaml \
+    --tokenizer_path downloaded_models/meta-llama/Llama-3.2-1B-Instruct/original/tokenizer.model \
     --base_checkpoint_dir downloaded_models/meta-llama/Llama-3.2-1B-Instruct \
     --experiment_folder train_outputs/1126_0_llama1b_ttt_prefix_tuning_lr5e-3_ntoken10 \
     --data_file kaggle_dataset/arc-agi_evaluation_challenges_selected.json \
@@ -51,7 +51,7 @@ python test_time_train_prefix_tuning.py \
 
 # ttt prefix tuning with llama1b ntoken25
 python test_time_train_prefix_tuning.py \
-    --pt_config configs/ttt/1B_prefix_tuning_single_device.yaml \
+    --tokenizer_path downloaded_models/meta-llama/Llama-3.2-1B-Instruct/original/tokenizer.model \
     --base_checkpoint_dir downloaded_models/meta-llama/Llama-3.2-1B-Instruct \
     --experiment_folder train_outputs/1126_0_llama1b_ttt_prefix_tuning_lr5e-3_ntoken25 \
     --data_file kaggle_dataset/arc-agi_evaluation_challenges_selected.json \
@@ -63,7 +63,7 @@ python test_time_train_prefix_tuning.py \
 
 # ttt prefix tuning with llama1b ntoken50
 python test_time_train_prefix_tuning.py \
-    --pt_config configs/ttt/1B_prefix_tuning_single_device.yaml \
+    --tokenizer_path downloaded_models/meta-llama/Llama-3.2-1B-Instruct/original/tokenizer.model \
     --base_checkpoint_dir downloaded_models/meta-llama/Llama-3.2-1B-Instruct \
     --experiment_folder train_outputs/1126_0_llama1b_ttt_prefix_tuning_lr5e-3_ntoken50 \
     --data_file kaggle_dataset/arc-agi_evaluation_challenges_selected.json \

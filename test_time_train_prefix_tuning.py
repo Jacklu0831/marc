@@ -9,10 +9,8 @@ import numpy as np
 from typing import Dict
 
 import torch
-from torchtune.config._parse import TuneRecipeArgumentParser
-from torchtune.config._utils import _merge_yaml_and_cli_args
 from torchtune.models.llama3 import llama3_tokenizer
-from torchtune import config
+from torchtune.datasets import arc_dataset
 
 import arclib.messagers
 from arclib.arc import read_tasks_from_single_file
@@ -27,7 +25,7 @@ from utils.preprocess import get_augmenters, process_task
 import torch
 import torch.nn.functional as F
 from torch.nn.utils.rnn import pad_sequence
-from transformers import AutoTokenizer, AutoModelForCausalLM, TrainingArguments, Trainer
+from transformers import AutoModelForCausalLM, TrainingArguments, Trainer
 from datasets import Dataset
 from peft import PrefixTuningConfig, get_peft_model
 
@@ -46,12 +44,6 @@ parser.add_argument("--num_max_per_task", type=int, default=250, help="Number of
 parser.add_argument("--quantization", type=str, default=None, help="Quantization type bitsandbytes or none")
 parser.add_argument("--max_tokens", type=int, default=8192, help="Max tokens")
 parser.add_argument("--cpus", type=int, default=16, help="Number of cpus")
-parser.add_argument(
-    "--pt_config",
-    type=str,
-    default="configs/ttt/1B_prefix_tuning_single_device.yaml",
-    help="LoRA config file",
-)
 parser.add_argument(
     "--experiment_folder", type=str, default="experiments/ttt/new/", help="submission folder"
 )
@@ -76,15 +68,34 @@ parser.add_argument(
     default="checkpoints/pretrained/multi_format_model/",
     help="Checkpoint directory",
 )
+parser.add_argument(
+    "--tokenizer_path",
+    type=str,
+    default="downloaded_models/meta-llama/Llama-3.2-1B-Instruct/original/tokenizer.model",
+)
 parser.add_argument("--new_format", action="store_true", help="Whether to use the new format or not")
 parser.add_argument("--barc_format", action="store_true", help="Whether to use the barc format or not")
 parser.add_argument("--no_transform", action="store_true", help="Whether to use the new format or not")
 # prompt tuning
 parser.add_argument("--num_virtual_tokens", type=int, default=4, help="number of virtual tokens")
 
-
 args = parser.parse_args()
 os.makedirs(args.experiment_folder, exist_ok=True)
+random.seed(args.seed)
+np.random.seed(args.seed)
+torch.manual_seed(args.seed)
+
+print("#### BEGIN ALL ARGUMENTS ####")
+for arg in vars(args):
+    print(f"{arg}: {getattr(args, arg)}")
+print("#### END ALL ARGUMENTS ####\n")
+
+
+
+
+
+
+##### BEGIN DATA
 
 arc_test_tasks = read_tasks_from_single_file(args.data_file, test=True)
 arc_test_tasks = [task for task in arc_test_tasks if "-0" in task.name]
@@ -122,35 +133,7 @@ elif args.barc_format:
 else:
     formatter = arclib.messagers.GPTTextMessageRepresenterV2()
 
-# Load config
-conf = _merge_yaml_and_cli_args(
-    *TuneRecipeArgumentParser(
-        description="PromptTuning",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-    ).parse_known_args(["--config={}".format(args.pt_config)])
-)
-
-# Update conf with argparse settings
-conf.dataset.unmask_outputs = args.unmask_outputs # true
-conf.dataset.train_on_input = args.train_on_input # false
-conf.epochs = args.epochs
-conf.batch_size = args.batch_size
-conf.gradient_accumulation_steps = args.gradient_accumulation_steps
-conf.optimizer.lr = args.learning_rate
-conf.compile = False  # we will do it ourselves
-conf.seed = args.seed
-conf.output_dir = f"{args.experiment_folder}"
-
-random.seed(args.seed)
-np.random.seed(args.seed)
-torch.manual_seed(args.seed)
-
-# print conf
-from pprint import pprint
-pprint(dict(conf))
-
-# data
-tokenizer = llama3_tokenizer(conf.tokenizer.path)
+tokenizer = llama3_tokenizer(args.tokenizer_path)
 augmenters_to_apply = []
 if not args.no_transform:
     augmenters_to_apply = get_augmenters(include_basic=True, include_size=True, include_chain=True, include_repeat=True)
@@ -169,7 +152,6 @@ with Pool(args.cpus) as p:
     data = p.map(processor, arc_test_tasks)
 # data = [processor(task) for task in arc_test_tasks]
 assert len(data) == len(arc_test_tasks)
-del tokenizer
 
 for task, task_train_data in zip(arc_test_tasks, data):
     task_id = task.name.replace("-0", "")
@@ -182,26 +164,6 @@ for task, task_train_data in zip(arc_test_tasks, data):
     with open(f"{args.experiment_folder}/{task_id}/td_False_ttd_False_ttdwa_False_ad_True_trd_False.jsonl", "r") as src, open(f"{args.experiment_folder}/{task_id}/td_True_ttd_False_ttdwa_False_ad_True_trd_False.jsonl", "w") as dst:
         first_line = src.readline()
         dst.write(first_line)
-
-
-
-
-
-
-
-# base model
-tokenizer = AutoTokenizer.from_pretrained(args.base_checkpoint_dir, torch_dtype=torch.bfloat16, cache_dir=f'{args.base_checkpoint_dir}_cache')
-tokenizer.pad_token = tokenizer.eos_token
-model = AutoModelForCausalLM.from_pretrained(args.base_checkpoint_dir, torch_dtype=torch.bfloat16, cache_dir=f'{args.base_checkpoint_dir}_cache', device_map="auto")
-
-# prefix tuning
-prefix_config = PrefixTuningConfig(
-    task_type="CAUSAL_LM",
-    num_virtual_tokens=args.num_virtual_tokens,
-    encoder_hidden_size=model.config.hidden_size
-)
-model = get_peft_model(model, prefix_config)
-model.print_trainable_parameters()
 
 # data tokenizer and collator
 def padded_collate_sft(batch, padding_idx=0, ignore_idx=-100):
@@ -232,8 +194,33 @@ def padded_collate_sft(batch, padding_idx=0, ignore_idx=-100):
         )
     return {"input_ids": input_ids.long(), "labels": labels.long()}
 
+collate_fn = functools.partial(padded_collate_sft, padding_idx=tokenizer.pad_id, ignore_idx=-100)
+
+##### END DATA
 
 
+
+
+
+##### START DATA
+
+model = AutoModelForCausalLM.from_pretrained(args.base_checkpoint_dir, torch_dtype=torch.bfloat16, cache_dir=f'{args.base_checkpoint_dir}_cache', device_map="auto")
+prefix_config = PrefixTuningConfig(
+    task_type="CAUSAL_LM",
+    num_virtual_tokens=args.num_virtual_tokens,
+    encoder_hidden_size=model.config.hidden_size
+)
+model = get_peft_model(model, prefix_config)
+model.print_trainable_parameters()
+
+##### END DATA
+
+
+
+
+
+
+##### BEGIN CUSTOM TRAINER SAVE CKPT
 
 def _maybe_log_save_evaluate(self, tr_loss, grad_norm, model, trial, epoch, ignore_keys_for_eval):
     if self.control.should_log and self.state.global_step > self._globalstep_last_logged:
@@ -270,10 +257,13 @@ def _maybe_log_save_evaluate(self, tr_loss, grad_norm, model, trial, epoch, igno
 
 Trainer._maybe_log_save_evaluate = _maybe_log_save_evaluate
 
+##### END CUSTOM TRAINER SAVE CKPT
 
-# train
-torchtune_tokenizer = config.instantiate(conf.tokenizer)
-collate_fn = functools.partial(padded_collate_sft, padding_idx=torchtune_tokenizer.pad_id, ignore_idx=-100)
+
+
+
+
+##### BEGIN TRAIN
 
 saved_prefix = copy.deepcopy(model.prompt_encoder['default'].embedding.weight.data)
 for task in arc_test_tasks:
@@ -286,8 +276,13 @@ for task in arc_test_tasks:
         model.prompt_encoder['default'].embedding.weight.grad = None
 
         # get dataset
-        conf.dataset.source = f"{args.experiment_folder}/{task_id}"
-        ds = config.instantiate(conf.dataset, torchtune_tokenizer)
+        ds = arc_dataset(
+            tokenizer=tokenizer,
+            source=f"{args.experiment_folder}/{task_id}",
+            train_on_input=args.train_on_input,
+            unmask_outputs=args.unmask_outputs,
+            cache_dir='.cache/'
+        )
         all_input_ids, all_label = [], []
         for i in range(len(ds)):
             data = ds[i]
@@ -313,7 +308,7 @@ for task in arc_test_tasks:
             model=model,
             args=training_args,
             train_dataset=train_dataset,
-            tokenizer=torchtune_tokenizer,
+            tokenizer=tokenizer,
             data_collator=collate_fn,
         )
         trainer.train()
@@ -322,3 +317,5 @@ for task in arc_test_tasks:
         print(e)
         print("Error training for ", task_id)
         continue
+
+##### END TRAIN
