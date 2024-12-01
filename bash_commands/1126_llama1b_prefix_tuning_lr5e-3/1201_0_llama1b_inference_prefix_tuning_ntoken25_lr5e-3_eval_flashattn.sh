@@ -1,8 +1,8 @@
-# python make_sbatch.py --time 48 --bash_files bash_commands/1129_llama8b_finetuned_prefix_tuning_lr5e-3/1129_1_llama8b_inference_prefix_tuning_ntoken25_lr5e-3.sh
+# python make_sbatch.py --time 48 --bash_files bash_commands/1126_llama1b_prefix_tuning_lr5e-3/1201_0_llama1b_inference_prefix_tuning_ntoken25_lr5e-3_eval_flashattn.sh
 
-# ntoken25 epoch1
+# ntoken25 epoch1 eval
 python predict_prefix_tuning.py \
-    --experiment_folder inference_outputs/experiments/1126_2_llama1b_inference_prefix_tuning_ntoken25_lr5e-3_epoch1 \
+    --experiment_folder inference_outputs/experiments/1201_0_llama1b_inference_prefix_tuning_ntoken25_lr5e-3_eval_epoch1_flashattn \
     --pretrained_checkpoint downloaded_models/meta-llama/Llama-3.2-1B-Instruct \
     --pt_checkpoints_folder train_outputs/1126_0_llama1b_ttt_prefix_tuning_lr5e-3_ntoken25 \
     --num_virtual_tokens 25 \
@@ -12,11 +12,12 @@ python predict_prefix_tuning.py \
     --data_file kaggle_dataset/arc-agi_evaluation_challenges_selected.json \
     --solution_file kaggle_dataset/arc-agi_evaluation_solutions_selected.json \
     --include_n=1 \
-    --new_format
+    --new_format \
+    --flash_attn
 
-# ntoken25 epoch3
+# ntoken25 epoch3 eval
 python predict_prefix_tuning.py \
-    --experiment_folder inference_outputs/experiments/1126_2_llama1b_inference_prefix_tuning_ntoken25_lr5e-3_epoch3 \
+    --experiment_folder inference_outputs/experiments/1201_0_llama1b_inference_prefix_tuning_ntoken25_lr5e-3_eval_epoch3_flashattn \
     --pretrained_checkpoint downloaded_models/meta-llama/Llama-3.2-1B-Instruct \
     --pt_checkpoints_folder train_outputs/1126_0_llama1b_ttt_prefix_tuning_lr5e-3_ntoken25 \
     --num_virtual_tokens 25 \
@@ -26,11 +27,12 @@ python predict_prefix_tuning.py \
     --data_file kaggle_dataset/arc-agi_evaluation_challenges_selected.json \
     --solution_file kaggle_dataset/arc-agi_evaluation_solutions_selected.json \
     --include_n=1 \
-    --new_format
+    --new_format \
+    --flash_attn
 
-# ntoken25 epoch5
+# ntoken25 epoch5 eval
 python predict_prefix_tuning.py \
-    --experiment_folder inference_outputs/experiments/1126_2_llama1b_inference_prefix_tuning_ntoken25_lr5e-3_epoch5 \
+    --experiment_folder inference_outputs/experiments/1201_0_llama1b_inference_prefix_tuning_ntoken25_lr5e-3_eval_epoch5_flashattn \
     --pretrained_checkpoint downloaded_models/meta-llama/Llama-3.2-1B-Instruct \
     --pt_checkpoints_folder train_outputs/1126_0_llama1b_ttt_prefix_tuning_lr5e-3_ntoken25 \
     --num_virtual_tokens 25 \
@@ -40,11 +42,12 @@ python predict_prefix_tuning.py \
     --data_file kaggle_dataset/arc-agi_evaluation_challenges_selected.json \
     --solution_file kaggle_dataset/arc-agi_evaluation_solutions_selected.json \
     --include_n=1 \
-    --new_format
+    --new_format \
+    --flash_attn
 
-# ntoken25 epoch7
+# ntoken25 epoch7 eval
 python predict_prefix_tuning.py \
-    --experiment_folder inference_outputs/experiments/1126_2_llama1b_inference_prefix_tuning_ntoken25_lr5e-3_epoch7 \
+    --experiment_folder inference_outputs/experiments/1201_0_llama1b_inference_prefix_tuning_ntoken25_lr5e-3_eval_epoch7_flashattn \
     --pretrained_checkpoint downloaded_models/meta-llama/Llama-3.2-1B-Instruct \
     --pt_checkpoints_folder train_outputs/1126_0_llama1b_ttt_prefix_tuning_lr5e-3_ntoken25 \
     --num_virtual_tokens 25 \
@@ -54,11 +57,12 @@ python predict_prefix_tuning.py \
     --data_file kaggle_dataset/arc-agi_evaluation_challenges_selected.json \
     --solution_file kaggle_dataset/arc-agi_evaluation_solutions_selected.json \
     --include_n=1 \
-    --new_format
+    --new_format \
+    --flash_attn
 
-# ntoken25 epoch9
+# ntoken25 epoch9 eval
 python predict_prefix_tuning.py \
-    --experiment_folder inference_outputs/experiments/1126_2_llama1b_inference_prefix_tuning_ntoken25_lr5e-3_epoch9 \
+    --experiment_folder inference_outputs/experiments/1201_0_llama1b_inference_prefix_tuning_ntoken25_lr5e-3_eval_epoch9_flashattn \
     --pretrained_checkpoint downloaded_models/meta-llama/Llama-3.2-1B-Instruct \
     --pt_checkpoints_folder train_outputs/1126_0_llama1b_ttt_prefix_tuning_lr5e-3_ntoken25 \
     --num_virtual_tokens 25 \
@@ -68,4 +72,11 @@ python predict_prefix_tuning.py \
     --data_file kaggle_dataset/arc-agi_evaluation_challenges_selected.json \
     --solution_file kaggle_dataset/arc-agi_evaluation_solutions_selected.json \
     --include_n=1 \
-    --new_format
+    --new_format \
+    --flash_attn
+
+# Submitted batch job 54142842
+# Submitted batch job 54142843
+# Submitted batch job 54142844
+# Submitted batch job 54142845
+# Submitted batch job 54142846

@@ -28,88 +28,35 @@ from arclib.representers import (
 from arclib.voting import vote
 from inference.engine import get_sampling_params
 from inference.preprocess import get_preprocessed_tasks
+from accelerate.utils import set_seed
 
 
 parser = argparse.ArgumentParser(description="Process some integers.")
-parser.add_argument("--seed", type=int, default=0, help="Random seed")
-parser.add_argument(
-    "--data_file",
-    type=str,
-    default="/kaggle/input/arc-prize-2024/arc-agi_evaluation_challenges.json",
-    help="Data file path to evaluate",
-)
-parser.add_argument(
-    "--solution_file",
-    type=str,
-    default="/kaggle/input/arc-prize-2024/arc-agi_evaluation_solutions.json",
-    help="Solution file path to evaluate",
-)
-parser.add_argument(
-    "--num_examples",
-    type=int,
-    default=419,
-    help="Number of examples to process for limited evaluation.",
-)
-parser.add_argument(
-    "--pretrained_checkpoint",
-    type=str,
-    default="checkpoints/pretrained/multi_format_model/",
-    help="path to the pretrained checkpoint",
-)
-parser.add_argument(
-    "--pt_checkpoints_folder",
-    type=str,
-    default=None,
-    help="Prefix tuning checkpoints folder, if none then base model is used",
-)
-parser.add_argument("--num_virtual_tokens", type=int, default=4, help="number of virtual tokens")
+# data
+parser.add_argument("--data_file", type=str, default="kaggle_dataset/arc-agi_evaluation_challenges_selected.json", help="Data file path to evaluate")
+parser.add_argument("--solution_file", type=str, default="kaggle_dataset/arc-agi_evaluation_solutions_selected.json", help="Solution file path to evaluate")
+parser.add_argument("--num_tasks", type=int, default=10000, help="Number of examples to process for limited evaluation.")
+parser.add_argument("--new_format", action="store_true", help="Whether to use the new format or not")
+parser.add_argument("--barc_format", action="store_true", help="Whether to use the new format or not")
+parser.add_argument("--add_diff_format", action="store_true", help="Whether to use the new format or not")
+parser.add_argument("--include_n", type=int, nargs="+", default=[1], help="Which leave-n tasks to include, it is generally 1 for test time trained model, 0 for base model")
+parser.add_argument("--permute_n", type=int, default=2, help="Number of permutations to generate for each leave-n task")
+# model
+parser.add_argument("--pretrained_checkpoint", type=str, default="downloaded_models/meta-llama/Llama-3.2-1B-Instruct", help="path to the pretrained checkpoint")
+parser.add_argument("--pt_checkpoints_folder", type=str, required=True, help="Prefix tuning checkpoints folder, if none then base model is used")
 parser.add_argument("--pt_epoch", type=int, default=0, help="Prompt tuning checkpoints folder, if none then base model is used")
-parser.add_argument("--max_prompt_adapters", type=int, default=4, help="max nunmber of adapters at once")
+parser.add_argument("--train_mode", action="store_true", help="Whether to use the new format or not")
+parser.add_argument("--flash_attn", action="store_true", help="Whether to use the new format or not")
+# prefix tuning
+parser.add_argument("--num_virtual_tokens", type=int, default=4, help="number of virtual tokens")
 parser.add_argument("--max_tokens", type=int, default=8192, help="Max tokens")
 parser.add_argument("--temperature", type=float, default=0.0, help="Temperature for sampling")
-parser.add_argument(
-    "--n_sample", type=int, default=1, help="Number of samples to generate per input"
-)
-parser.add_argument(
-    "--experiment_folder", type=str, default="experiments/tti/new/", help="submission folder"
-)
-parser.add_argument(
-    "--formatter",
-    type=str,
-    default="arclib.messagers.GPTTextMessageRepresenterV2",
-    help="formatter for the task, better to be same with the one used for training",
-)
-parser.add_argument(
-    "--include_n",
-    type=int,
-    nargs="+",
-    default=[1],
-    help="Which leave-n tasks to include, it is generally 1 for test time trained model, 0 for base model",
-)
-parser.add_argument(
-    "--permute_n",
-    type=int,
-    default=2,
-    help="Number of permutations to generate for each leave-n task",
-)
-parser.add_argument(
-    "--new_format", action="store_true", help="Whether to use the new format or not"
-)
-
-parser.add_argument(
-    "--barc_format", action="store_true", help="Whether to use the new format or not"
-)
-parser.add_argument(
-    "--add_diff_format", action="store_true", help="Whether to use the new format or not"
-)
-parser.add_argument(
-    "--use_base_model", action="store_true", help="Whether to use the new format or not"
-)
+# sampling
+parser.add_argument("--n_sample", type=int, default=1, help="Number of samples to generate per input")
+# misc
+parser.add_argument("--experiment_folder", type=str, default="experiments/tti/new/", help="submission folder")
+parser.add_argument("--seed", type=int, default=0, help="Random seed")
 args = parser.parse_args()
-
-# set seed
-np.random.seed(args.seed)
-torch.manual_seed(args.seed)
 
 # print args
 print("Arguments:")
@@ -117,24 +64,11 @@ for arg in vars(args):
     print(f"{arg}: {getattr(args, arg)}")
 
 os.makedirs(args.experiment_folder, exist_ok=True)
+set_seed(args.seed)
+
 
 tasks = read_tasks_from_single_file(args.data_file, solution_file=args.solution_file, test=True)
-
-# get pt paths and filter tasks if necessary
-id_to_pt_path = {}
-if args.pt_checkpoints_folder is not None:
-    id_to_pt_path = {}
-    for pt_path in glob.glob(f"{args.pt_checkpoints_folder}/*/checkpoint-epoch*.pt"):
-        epoch = int(pt_path[pt_path.rfind('checkpoint-epoch'):][16:-3])
-        if epoch == args.pt_epoch:
-            pt_id = pt_path.split('/')[-2]
-            id_to_pt_path[pt_id] = pt_path
-
-if args.num_examples is not None:
-    # shuffle
-    np.random.seed(args.seed)
-    np.random.shuffle(tasks)
-    tasks = tasks[: args.num_examples]
+tasks = tasks[: args.num_tasks]
 
 formatters = []
 if args.new_format:
@@ -179,7 +113,18 @@ if args.add_diff_format:
 
     formatters.append(input_diff_formatter)
 
-tokenizer = AutoTokenizer.from_pretrained(args.pretrained_checkpoint, torch_dtype=torch.bfloat16, cache_dir=f'{args.pretrained_checkpoint}_cache')
+if args.flash_attn:
+    tokenizer = AutoTokenizer.from_pretrained(args.pretrained_checkpoint, cache_dir=f'{args.pretrained_checkpoint}_cache', torch_dtype=torch.bfloat16, attn_implementation="flash_attention_2")
+else:
+    tokenizer = AutoTokenizer.from_pretrained(args.pretrained_checkpoint, cache_dir=f'{args.pretrained_checkpoint}_cache', torch_dtype=torch.bfloat16)
+
+# get pt paths and filter tasks if necessary
+id_to_pt_path = {}
+for pt_path in glob.glob(f"{args.pt_checkpoints_folder}/*/checkpoint-epoch*.pt"):
+    epoch = int(pt_path[pt_path.rfind('checkpoint-epoch'):][16:-3])
+    if epoch == args.pt_epoch:
+        pt_id = pt_path.split('/')[-2]
+        id_to_pt_path[pt_id] = pt_path
 
 task_name_to_processed_data = get_preprocessed_tasks(
     tasks,
@@ -260,19 +205,21 @@ for i, info in enumerate(valid_tasks):
 
 # base model
 tokenizer.pad_token = tokenizer.eos_token
-model = AutoModelForCausalLM.from_pretrained(args.pretrained_checkpoint, torch_dtype=torch.bfloat16, cache_dir=f'{args.pretrained_checkpoint}_cache', device_map="auto")
+if args.flash_attn:
+    model = AutoModelForCausalLM.from_pretrained(args.pretrained_checkpoint, cache_dir=f'{args.pretrained_checkpoint}_cache', device_map="auto", torch_dtype=torch.bfloat16, attn_implementation="flash_attention_2")
+else:
+    model = AutoModelForCausalLM.from_pretrained(args.pretrained_checkpoint, cache_dir=f'{args.pretrained_checkpoint}_cache', device_map="auto", torch_dtype=torch.bfloat16)
 
 # prefix tuning
-if not args.use_base_model:
-    prefix_config = PrefixTuningConfig(
-        task_type="CAUSAL_LM",
-        num_virtual_tokens=args.num_virtual_tokens,
-        encoder_hidden_size=model.config.hidden_size,
-        inference_mode=True,
-    )
-    model = get_peft_model(model, prefix_config)
-    model.prompt_encoder['default'].embedding.weight.data = model.prompt_encoder['default'].embedding.weight.data.to(torch.bfloat16)
-    model.print_trainable_parameters()
+prefix_config = PrefixTuningConfig(
+    task_type="CAUSAL_LM",
+    num_virtual_tokens=args.num_virtual_tokens,
+    encoder_hidden_size=model.config.hidden_size,
+    inference_mode=True,
+)
+model = get_peft_model(model, prefix_config)
+# model.prompt_encoder['default'].embedding.weight.data = model.prompt_encoder['default'].embedding.weight.data.to(torch.bfloat16)
+model.print_trainable_parameters()
 
 terminators = [
     tokenizer.eos_token_id,
@@ -282,12 +229,13 @@ terminators = [
 # inference
 print(f"Number of input queries to the engine: {len(inputs_to_the_engine)}")
 outputs_by_key = {}
+if not args.train_mode:
+    model.eval()
 for text, sampling_params, pt_request, new_idx in tqdm(inputs_to_the_engine):
     # load embeds
-    if not args.use_base_model:
-        loaded_embeds = torch.load(pt_request.prompt_adapter_local_path).to('cuda')
-        assert model.prompt_encoder['default'].embedding.weight.data.shape == loaded_embeds.shape
-        model.prompt_encoder['default'].embedding.weight.data.copy_(loaded_embeds)
+    loaded_embeds = torch.load(pt_request.prompt_adapter_local_path).to('cuda')
+    assert model.prompt_encoder['default'].embedding.weight.data.shape == loaded_embeds.shape
+    model.prompt_encoder['default'].embedding.weight.data.copy_(loaded_embeds)
     # text process?
     find_start = text.find("<|begin_of_text|>") + len("<|begin_of_text|>")
     text = text[find_start:]

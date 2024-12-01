@@ -167,6 +167,8 @@ def get_formatted_data(
     augmenters: List[Augmenter],
     formatter: MessageRepresenter,
     tokenizer,
+    rng,
+    Nmax,
     leave_n: int = 1,
     permute_n: int = 1,
     seed: int = 0,
@@ -184,6 +186,10 @@ def get_formatted_data(
         if formatted["total_tokens"] < max_tokens - num_virtual_tokens:
             formatted_data.append(formatted)
 
+    if len(formatted_data) > Nmax:
+        rng.shuffle(formatted_data)
+        formatted_data = formatted_data[:Nmax]
+
     return formatted_data
 
 
@@ -196,24 +202,24 @@ def process_task(
     Nmax: int = 250,
     seed: int = 0,
     num_virtual_tokens: int = 0,
+    include_leave_3: bool = False,
 ):
     rng = np.random.RandomState(seed)
 
-    leave_1_train_data = get_formatted_data(
-        task, augmenters, formatter, tokenizer, leave_n=1, permute_n=permute_n, seed=seed, num_virtual_tokens=num_virtual_tokens,
+    data = get_formatted_data(
+        task, augmenters, formatter, tokenizer, rng=rng, Nmax=Nmax, leave_n=1, permute_n=permute_n, seed=seed, num_virtual_tokens=num_virtual_tokens,
     )
-    leave_2_train_data = get_formatted_data(
-        task, augmenters, formatter, tokenizer, leave_n=2, permute_n=permute_n, seed=seed, num_virtual_tokens=num_virtual_tokens,
+    if len(data) == Nmax:
+        return data
+
+    data += get_formatted_data(
+        task, augmenters, formatter, tokenizer, rng=rng, Nmax=Nmax - len(data), leave_n=2, permute_n=permute_n, seed=seed, num_virtual_tokens=num_virtual_tokens,
     )
+    if len(data) == Nmax:
+        return data
 
-    train = leave_1_train_data
-
-    if len(train) == 0:
-        train = leave_2_train_data
-    elif len(train) < Nmax:
-        train += leave_2_train_data[: Nmax - len(train)]
-    elif len(train) > Nmax:
-        rng.shuffle(train)
-        train = train[:Nmax]
-
-    return train
+    if include_leave_3:
+        data += get_formatted_data(
+            task, augmenters, formatter, tokenizer, rng=rng, Nmax=Nmax - len(data), leave_n=3, permute_n=permute_n, seed=seed, num_virtual_tokens=num_virtual_tokens,
+        )
+    return data
