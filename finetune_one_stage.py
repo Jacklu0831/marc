@@ -32,7 +32,7 @@ from peft import PrefixTuningConfig, LoraConfig, get_peft_model
 
 parser = argparse.ArgumentParser(description="Process some integers.")
 # model
-parser.add_argument("--base_checkpoint_dir", type=str, default="checkpoints/pretrained/multi_format_model/")
+parser.add_argument("--base_checkpoint_dir", type=str, default="downloaded_models/meta-llama/Llama-3.2-1B-Instruct")
 parser.add_argument("--tokenizer_path", type=str, default="downloaded_models/meta-llama/Llama-3.2-1B-Instruct/original/tokenizer.model")
 parser.add_argument("--flash_attn", action="store_true", help="Whether to use the new format or not")
 # data
@@ -193,18 +193,12 @@ collate_fn = functools.partial(padded_collate_sft, padding_idx=tokenizer.pad_id,
 
 
 ##### START MODEL
+
 if args.flash_attn:
     model = AutoModelForCausalLM.from_pretrained(args.base_checkpoint_dir, cache_dir=f'{args.base_checkpoint_dir}_cache', device_map="auto", attn_implementation="flash_attention_2")
 else:
     model = AutoModelForCausalLM.from_pretrained(args.base_checkpoint_dir, cache_dir=f'{args.base_checkpoint_dir}_cache', device_map="auto", torch_dtype=torch.bfloat16)
 
-# add prefix tuning
-prefix_config = PrefixTuningConfig(
-    task_type="CAUSAL_LM",
-    num_virtual_tokens=args.num_virtual_tokens,
-    encoder_hidden_size=model.config.hidden_size
-)
-model = get_peft_model(model, prefix_config)
 # add lora
 if args.use_lora:
     lora_config = LoraConfig(
@@ -215,15 +209,28 @@ if args.use_lora:
         target_modules=args.lora_target_modules,
     )
     model = get_peft_model(model, lora_config)
-    # prefix tuning weight still requires grad
-    model.prompt_encoder.default.embedding.weight.requires_grad = True
+# add prefix tuning
+prefix_config = PrefixTuningConfig(
+    task_type="CAUSAL_LM",
+    num_virtual_tokens=args.num_virtual_tokens,
+    encoder_hidden_size=model.config.hidden_size
+)
+model = get_peft_model(model, prefix_config)
+# lora/unet requires grad
+if args.use_lora:
+    for n, p in model.named_parameters():
+        if 'lora' in n:
+            p.requires_grad = True
 else:
-    for p in model.parameters():
+    for n, p in model.named_parameters():
         p.requires_grad = True
+# for n, p in model.named_parameters(): print(n, p.requires_grad)
 # cast float16
 if args.float16:
     model = model.to(torch.bfloat16)
 model.print_trainable_parameters()
+# lora: trainable params: 76,955,648 || all params: 1,312,770,048 || trainable%: 5.8621
+# unet: trainable params: 1,236,224,000 || all params: 1,236,224,000 || trainable%: 100.0000
 
 ##### END MODEL
 
@@ -235,7 +242,7 @@ model.print_trainable_parameters()
 
 ##### BEGIN TRAIN
 
-saved_prefix = copy.deepcopy(model.prompt_encoder['default'].embedding.weight.data)
+saved_prefix = copy.deepcopy(model.prompt_encoder.default.embedding.weight.data)
 
 for outer_epoch in range(args.outer_epochs):
     print(f'BEGINNING EPOCH {outer_epoch}')
@@ -248,8 +255,12 @@ for outer_epoch in range(args.outer_epochs):
         try:
             # reset prompt embeddings, not loras
             # TODO: option to reuse prompt embeddings
-            model.prompt_encoder['default'].embedding.weight.data = saved_prefix
-            model.prompt_encoder['default'].embedding.weight.grad = None
+            model.prompt_encoder.default.embedding.weight.data.copy_(saved_prefix)
+            model.prompt_encoder.default.embedding.weight.grad = None
+
+            # prompt_encoder_old = copy.deepcopy(model.prompt_encoder.default.embedding.weight.data)
+            # lora_old = copy.deepcopy(model.base_model.model.model.layers[0].mlp.gate_proj.lora_A.default.weight)
+            # weight_old = copy.deepcopy(model.base_model.model.layers[0].mlp.gate_proj.weight)
 
             # get dataset
             ds = arc_dataset(
@@ -269,7 +280,7 @@ for outer_epoch in range(args.outer_epochs):
             # training
             training_args = TrainingArguments(
                 output_dir=output_dir,
-                evaluation_strategy="no",
+                eval_strategy="no",
                 save_strategy="no",
                 learning_rate=args.learning_rate,
                 per_device_train_batch_size=args.batch_size,
@@ -290,6 +301,10 @@ for outer_epoch in range(args.outer_epochs):
                 data_collator=collate_fn,
             )
             trainer.train()
+
+            # prompt_encoder_new = copy.deepcopy(model.prompt_encoder['default'].embedding.weight.data)
+            # lora_new = copy.deepcopy(model.base_model.model.model.layers[0].mlp.gate_proj.lora_A.default.weight)
+            # weight_new = copy.deepcopy(model.base_model.model.layers[0].mlp.gate_proj.weight)
 
         except Exception as e:
             print(e)

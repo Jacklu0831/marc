@@ -78,9 +78,9 @@ python test_time_train_prefix_tuning.py \
     --new_format \
     --flash_attn
 
-# Submitted batch job 54143902
-# Submitted batch job 54143903
-# Submitted batch job 54143904
-# Submitted batch job 54143905
-# Submitted batch job 54143906
-# Submitted batch job 54143907
+# Submitted batch job 54154425
+# Submitted batch job 54154426
+# Submitted batch job 54154427
+# Submitted batch job 54154428
+# Submitted batch job 54154429
+# Submitted batch job 54154430

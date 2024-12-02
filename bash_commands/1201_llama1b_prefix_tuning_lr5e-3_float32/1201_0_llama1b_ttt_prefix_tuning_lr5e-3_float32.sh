@@ -73,9 +73,9 @@ python test_time_train_prefix_tuning.py \
     --learning_rate 5e-3 \
     --new_format
 
-# Submitted batch job 54134010
-# Submitted batch job 54134011
-# Submitted batch job 54134012
-# Submitted batch job 54134013
-# Submitted batch job 54134014
-# Submitted batch job 54134015
+# Submitted batch job 54154419
+# Submitted batch job 54154420
+# Submitted batch job 54154421
+# Submitted batch job 54154422
+# Submitted batch job 54154423
+# Submitted batch job 54154424

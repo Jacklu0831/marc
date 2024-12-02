@@ -78,3 +78,10 @@ python test_time_train_prefix_tuning.py \
     --learning_rate 5e-3 \
     --new_format \
     --flash_attn
+
+# Submitted batch job 54154570
+# Submitted batch job 54154571
+# Submitted batch job 54154572
+# Submitted batch job 54154573
+# Submitted batch job 54154574
+# Submitted batch job 54154575

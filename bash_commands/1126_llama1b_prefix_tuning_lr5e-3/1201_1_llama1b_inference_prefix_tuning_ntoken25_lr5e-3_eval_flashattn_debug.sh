@@ -1,8 +1,8 @@
-# python make_sbatch.py --time 48 --bash_files bash_commands/1126_llama1b_prefix_tuning_lr5e-3/1201_0_llama1b_inference_prefix_tuning_ntoken25_lr5e-3_eval_flashattn.sh
+# python make_sbatch.py --time 48 --bash_files bash_commands/1126_llama1b_prefix_tuning_lr5e-3/1201_1_llama1b_inference_prefix_tuning_ntoken25_lr5e-3_eval_flashattn_debug.sh
 
-# ntoken25 epoch1 eval
+# ntoken25 epoch1 eval debug
 python predict_prefix_tuning.py \
-    --experiment_folder inference_outputs/experiments/1201_0_llama1b_inference_prefix_tuning_ntoken25_lr5e-3_eval_epoch1_flashattn \
+    --experiment_folder inference_outputs/experiments/1201_0_llama1b_inference_prefix_tuning_ntoken25_lr5e-3_eval_epoch1_flashattn_debug \
     --pretrained_checkpoint downloaded_models/meta-llama/Llama-3.2-1B-Instruct \
     --pt_checkpoints_folder train_outputs/1126_0_llama1b_ttt_prefix_tuning_lr5e-3_ntoken25 \
     --num_virtual_tokens 25 \
@@ -15,9 +15,9 @@ python predict_prefix_tuning.py \
     --new_format \
     --flash_attn
 
-# ntoken25 epoch3 eval
+# ntoken25 epoch3 eval debug
 python predict_prefix_tuning.py \
-    --experiment_folder inference_outputs/experiments/1201_0_llama1b_inference_prefix_tuning_ntoken25_lr5e-3_eval_epoch3_flashattn \
+    --experiment_folder inference_outputs/experiments/1201_0_llama1b_inference_prefix_tuning_ntoken25_lr5e-3_eval_epoch3_flashattn_debug \
     --pretrained_checkpoint downloaded_models/meta-llama/Llama-3.2-1B-Instruct \
     --pt_checkpoints_folder train_outputs/1126_0_llama1b_ttt_prefix_tuning_lr5e-3_ntoken25 \
     --num_virtual_tokens 25 \
@@ -30,9 +30,9 @@ python predict_prefix_tuning.py \
     --new_format \
     --flash_attn
 
-# ntoken25 epoch5 eval
+# ntoken25 epoch5 eval debug
 python predict_prefix_tuning.py \
-    --experiment_folder inference_outputs/experiments/1201_0_llama1b_inference_prefix_tuning_ntoken25_lr5e-3_eval_epoch5_flashattn \
+    --experiment_folder inference_outputs/experiments/1201_0_llama1b_inference_prefix_tuning_ntoken25_lr5e-3_eval_epoch5_flashattn_debug \
     --pretrained_checkpoint downloaded_models/meta-llama/Llama-3.2-1B-Instruct \
     --pt_checkpoints_folder train_outputs/1126_0_llama1b_ttt_prefix_tuning_lr5e-3_ntoken25 \
     --num_virtual_tokens 25 \
@@ -45,9 +45,9 @@ python predict_prefix_tuning.py \
     --new_format \
     --flash_attn
 
-# ntoken25 epoch7 eval
+# ntoken25 epoch7 eval debug
 python predict_prefix_tuning.py \
-    --experiment_folder inference_outputs/experiments/1201_0_llama1b_inference_prefix_tuning_ntoken25_lr5e-3_eval_epoch7_flashattn \
+    --experiment_folder inference_outputs/experiments/1201_0_llama1b_inference_prefix_tuning_ntoken25_lr5e-3_eval_epoch7_flashattn_debug \
     --pretrained_checkpoint downloaded_models/meta-llama/Llama-3.2-1B-Instruct \
     --pt_checkpoints_folder train_outputs/1126_0_llama1b_ttt_prefix_tuning_lr5e-3_ntoken25 \
     --num_virtual_tokens 25 \
@@ -60,9 +60,9 @@ python predict_prefix_tuning.py \
     --new_format \
     --flash_attn
 
-# ntoken25 epoch9 eval
+# ntoken25 epoch9 eval debug
 python predict_prefix_tuning.py \
-    --experiment_folder inference_outputs/experiments/1201_0_llama1b_inference_prefix_tuning_ntoken25_lr5e-3_eval_epoch9_flashattn \
+    --experiment_folder inference_outputs/experiments/1201_0_llama1b_inference_prefix_tuning_ntoken25_lr5e-3_eval_epoch9_flashattn_debug \
     --pretrained_checkpoint downloaded_models/meta-llama/Llama-3.2-1B-Instruct \
     --pt_checkpoints_folder train_outputs/1126_0_llama1b_ttt_prefix_tuning_lr5e-3_ntoken25 \
     --num_virtual_tokens 25 \
@@ -75,8 +75,8 @@ python predict_prefix_tuning.py \
     --new_format \
     --flash_attn
 
-# Submitted batch job 54142842 # 9
-# Submitted batch job 54142843 # 9
-# Submitted batch job 54142844 # 7
-# Submitted batch job 54142845 # 9
-# Submitted batch job 54142846 # 10
+# Submitted batch job 54155323
+# Submitted batch job 54155324
+# Submitted batch job 54155325
+# Submitted batch job 54155326
+# Submitted batch job 54155327
