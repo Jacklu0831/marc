@@ -38,7 +38,7 @@ parser.add_argument("--tokenizer_path", type=str, default="downloaded_models/met
 parser.add_argument("--flash_attn", action="store_true", help="Whether to use the new format or not")
 # data
 parser.add_argument("--data_file", type=str, default="kaggle_dataset/arc-agi_training_combined.json")
-parser.add_argument("--num_workers", type=int, default=16, help="Number of workers")
+parser.add_argument("--num_workers", type=int, default=8, help="Number of workers")
 parser.add_argument("--new_format", action="store_true", help="Whether to use the new format or not")
 parser.add_argument("--barc_format", action="store_true", help="Whether to use the barc format or not")
 parser.add_argument("--no_transform", action="store_true", help="Whether to use the new format or not")
@@ -50,14 +50,17 @@ parser.add_argument("--num_tasks", type=int, default=10000, help="Number of task
 parser.add_argument("--num_max_per_task", type=int, default=250, help="Number of tasks to process for limited evaluation.")
 # train args
 parser.add_argument("--outer_epochs", type=int, default=10, help="Number of epochs")
+parser.add_argument("--start_prefix_epochs", type=int, default=None, help="Number of epochs")
 parser.add_argument("--prefix_epochs", type=int, default=2, help="Number of epochs")
 parser.add_argument("--net_epochs", type=int, default=2, help="Number of epochs")
+parser.add_argument("--logging_steps", type=int, default=10, help="Number of epochs")
 parser.add_argument("--prefix_lr", type=float, default=5e-3, help="Learning rate")
 parser.add_argument("--net_lr", type=float, default=5e-5, help="Learning rate")
 parser.add_argument("--batch_size", type=int, default=2, help="Batch size")
 parser.add_argument("--weight_decay", type=float, default=0.01, help="Weight decay")
 # prefix tuning
 parser.add_argument("--num_virtual_tokens", type=int, default=25, help="number of virtual tokens")
+parser.add_argument("--reuse_prefix", action="store_true", help="Whether to use the new format or not")
 # lora
 parser.add_argument("--lora_rank", type=int, default=128)
 parser.add_argument("--lora_alpha", type=float, default=16.0)
@@ -75,6 +78,8 @@ os.makedirs(args.experiment_folder, exist_ok=True)
 random.seed(args.seed)
 np.random.seed(args.seed)
 torch.manual_seed(args.seed)
+if args.start_prefix_epochs is None:
+    args.start_prefix_epochs = args.prefix_epochs
 
 print("#### BEGIN ALL ARGUMENTS ####")
 for arg in vars(args):
@@ -144,6 +149,7 @@ with Pool(args.num_workers) as p:
 # data = [processor(task) for task in arc_test_tasks]
 assert len(data) == len(arc_test_tasks)
 
+empty_tasks = set()
 for task, task_train_data in zip(arc_test_tasks, data):
     task_id = task.name.replace("-0", "")
     os.makedirs(f"{args.experiment_folder}/{task_id}", exist_ok=True)
@@ -151,6 +157,7 @@ for task, task_train_data in zip(arc_test_tasks, data):
     with open(f"{args.experiment_folder}/{task_id}/td_False_ttd_False_ttdwa_False_ad_True_trd_False.jsonl", "w") as f:
         if len(task_train_data) == 0:
             print(f'{task_id} has no data')
+            empty_tasks.add(task_id)
         for td in task_train_data:
             print(json.dumps(td), file=f)
     # placeholder test file for torchtune
@@ -247,105 +254,122 @@ print(f'found {count_params(prompt_encoder_params)} prompt encoder params')
 
 ##### BEGIN TRAIN
 
-saved_prefix = copy.deepcopy(model.prompt_encoder.default.embedding.weight.data)
+saved_model_forward = model.forward
+init_prefix = copy.deepcopy(model.prompt_encoder.default.embedding.weight.data)
+task_id_to_last_prefix = {}
 
 for outer_epoch in range(args.outer_epochs):
     print(f'\nBEGINNING EPOCH {outer_epoch}')
 
     for task in arc_test_tasks:
         task_id = task.name.replace("-0", "")
-        output_dir = f"{args.experiment_folder}/{task_id}"
-        print(f"Trying task {task_id}")
-
-        try:
-            # get dataset
-            ds = arc_dataset(
-                tokenizer=tokenizer,
-                source=output_dir,
-                train_on_input=args.train_on_input,
-                unmask_outputs=args.unmask_outputs,
-                cache_dir='.cache/'
-            )
-            all_input_ids, all_label = [], []
-            for i in range(len(ds)):
-                data = ds[i]
-                all_input_ids.append(data['tokens'])
-                all_label.append(data['labels'])
-            train_dataset = Dataset.from_dict({'input_ids': all_input_ids, 'labels': all_label})
-
-            ##### BEGIN STAGE ONE
-            print("\nbegin stage one...")
-            # TODO: option to reuse prompt embeddings
-            model.prompt_encoder.default.embedding.weight.data.copy_(saved_prefix)
-            set_requires_grad(net_params, False)
-            set_requires_grad(prompt_encoder_params, True)
-            for p in model.parameters(): p.grad = None
-
-            # training
-            training_args1 = TrainingArguments(
-                output_dir=output_dir,
-                eval_strategy="no",
-                save_strategy="no",
-                learning_rate=args.prefix_lr,
-                per_device_train_batch_size=args.batch_size,
-                num_train_epochs=args.prefix_epochs,
-                weight_decay=args.weight_decay,
-                logging_dir=output_dir,
-                logging_steps=10,
-                report_to="none",
-                lr_scheduler_type='constant',
-                dataloader_num_workers=args.num_workers,
-                bf16=args.flash_attn,
-            )
-            trainer1 = Trainer(
-                model=model,
-                args=training_args1,
-                train_dataset=train_dataset,
-                tokenizer=tokenizer,
-                data_collator=collate_fn,
-            )
-            trainer1.train()
-            del trainer1
-            gc.collect()
-            ##### END STAGE ONE
-
-            ##### BEGIN STAGE TWO
-            print("\nbegin stage two...")
-            set_requires_grad(net_params, True)
-            set_requires_grad(prompt_encoder_params, False)
-            for p in model.parameters(): p.grad = None
-            # training
-            training_args2 = TrainingArguments(
-                output_dir=output_dir,
-                eval_strategy="no",
-                save_strategy="no",
-                learning_rate=args.net_lr,
-                per_device_train_batch_size=args.batch_size,
-                num_train_epochs=args.net_epochs,
-                weight_decay=args.weight_decay,
-                logging_dir=output_dir,
-                logging_steps=10,
-                report_to="none",
-                lr_scheduler_type='constant',
-                dataloader_num_workers=args.num_workers,
-                bf16=args.flash_attn,
-            )
-            trainer2 = Trainer(
-                model=model,
-                args=training_args2,
-                train_dataset=train_dataset,
-                tokenizer=tokenizer,
-                data_collator=collate_fn,
-            )
-            trainer2.train()
-            del trainer2
-            gc.collect()
-            ##### END STAGE TWO
-
-        except Exception as e:
-            print(e)
-            print("Error training for ", task_id)
+        if task_id in empty_tasks:
             continue
+
+        output_dir = f"{args.experiment_folder}/{task_id}"
+        print(f"Training task {task_id}")
+
+        # get dataset
+        ds = arc_dataset(
+            tokenizer=tokenizer,
+            source=output_dir,
+            train_on_input=args.train_on_input,
+            unmask_outputs=args.unmask_outputs,
+        )
+        all_input_ids, all_label = [], []
+        for i in range(len(ds)):
+            data = ds[i]
+            all_input_ids.append(data['tokens'])
+            all_label.append(data['labels'])
+        train_dataset = Dataset.from_dict({'input_ids': all_input_ids, 'labels': all_label})
+
+        ##### BEGIN STAGE ONE
+        print("\nbegin stage one...")
+
+        if args.reuse_prefix and task_id in task_id_to_last_prefix:
+            last_prefix = torch.load(task_id_to_last_prefix[task_id], weights_only=True)
+            model.prompt_encoder.default.embedding.weight.data = last_prefix
+            print('loaded prefix at', task_id_to_last_prefix[task_id])
+        else:
+            model.prompt_encoder.default.embedding.weight.data = init_prefix
+
+        set_requires_grad(net_params, False)
+        set_requires_grad(prompt_encoder_params, True)
+        for p in model.parameters(): p.grad = None
+
+        # training
+        prefix_epochs = args.start_prefix_epochs if outer_epoch == 0 else args.prefix_epochs
+        training_args1 = TrainingArguments(
+            output_dir=output_dir,
+            eval_strategy="no",
+            save_strategy="no",
+            learning_rate=args.prefix_lr,
+            per_device_train_batch_size=args.batch_size,
+            num_train_epochs=prefix_epochs,
+            weight_decay=args.weight_decay,
+            logging_dir=output_dir,
+            logging_steps=args.logging_steps,
+            report_to="none",
+            lr_scheduler_type='constant',
+            dataloader_num_workers=args.num_workers,
+            bf16=args.flash_attn,
+        )
+        trainer1 = Trainer(
+            model=model,
+            args=training_args1,
+            train_dataset=train_dataset,
+            processing_class=tokenizer,
+            data_collator=collate_fn,
+        )
+        trainer1.train()
+
+        del trainer1
+        gc.collect()
+        model.forward = saved_model_forward
+
+        if args.reuse_prefix:
+            output_path = os.path.join(output_dir, f'prefix-outer-epoch{outer_epoch}.pt')
+            torch.save(model.prompt_encoder.default.embedding.weight.data, output_path)
+            if task_id in task_id_to_last_prefix:
+                os.remove(task_id_to_last_prefix[task_id])
+            task_id_to_last_prefix[task_id] = output_path
+            print('saved prefix to', output_path)
+        ##### END STAGE ONE
+
+        ##### BEGIN STAGE TWO
+        print("\nbegin stage two...")
+        set_requires_grad(net_params, True)
+        set_requires_grad(prompt_encoder_params, False)
+        for p in model.parameters(): p.grad = None
+        # training
+        training_args2 = TrainingArguments(
+            output_dir=output_dir,
+            eval_strategy="no",
+            save_strategy="no",
+            learning_rate=args.net_lr,
+            per_device_train_batch_size=args.batch_size,
+            num_train_epochs=args.net_epochs,
+            weight_decay=args.weight_decay,
+            logging_dir=output_dir,
+            logging_steps=args.logging_steps,
+            report_to="none",
+            lr_scheduler_type='constant',
+            dataloader_num_workers=args.num_workers,
+            bf16=args.flash_attn,
+        )
+        trainer2 = Trainer(
+            model=model,
+            args=training_args2,
+            train_dataset=train_dataset,
+            processing_class=tokenizer,
+            data_collator=collate_fn,
+        )
+        trainer2.train()
+
+        del trainer2
+        gc.collect()
+        model.forward = saved_model_forward
+        ##### END STAGE TWO
 
     output_path = os.path.join(args.experiment_folder, f'checkpoint-outer-epoch{outer_epoch}.pt')
     if args.use_lora:

@@ -15,7 +15,8 @@ python finetune_two_stage.py \
     --outer_epochs 100 \
     --prefix_lr 5e-3 \
     --net_lr 1e-4 \
-    --flash_attn
+    --flash_attn \
+    --float16
 
 # finetune unet two stage netlr5e-5
 python finetune_two_stage.py \
@@ -29,7 +30,8 @@ python finetune_two_stage.py \
     --outer_epochs 100 \
     --prefix_lr 5e-3 \
     --net_lr 5e-5 \
-    --flash_attn
+    --flash_attn \
+    --float16
 
 # finetune unet two stage netlr1e-5
 python finetune_two_stage.py \
@@ -43,7 +45,8 @@ python finetune_two_stage.py \
     --outer_epochs 100 \
     --prefix_lr 5e-3 \
     --net_lr 1e-5 \
-    --flash_attn
+    --flash_attn \
+    --float16
 
 # finetune unet two stage netlr5e-6
 python finetune_two_stage.py \
@@ -57,9 +60,29 @@ python finetune_two_stage.py \
     --outer_epochs 100 \
     --prefix_lr 5e-3 \
     --net_lr 5e-6 \
-    --flash_attn
+    --flash_attn \
+    --float16
 
+# (recursion depth exceeded?)
 # Submitted batch job 54154548
 # Submitted batch job 54154549
 # Submitted batch job 54154550
 # Submitted batch job 54154551
+
+# num worker set to 8, float16, still depth exceeded
+# Submitted batch job 54185050
+# Submitted batch job 54185051
+# Submitted batch job 54185052
+# Submitted batch job 54185053
+
+# saving model forward
+# Submitted batch job 54213329
+# Submitted batch job 54213330
+# Submitted batch job 54213331
+# Submitted batch job 54213332
+
+# fix copy_()
+# Submitted batch job 54227270
+# Submitted batch job 54227271
+# Submitted batch job 54227272
+# Submitted batch job 54227273

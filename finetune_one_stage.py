@@ -6,6 +6,7 @@ import os
 from multiprocessing import Pool
 import random
 import numpy as np
+import gc
 
 import torch
 from torchtune.models.llama3 import llama3_tokenizer
@@ -37,7 +38,7 @@ parser.add_argument("--tokenizer_path", type=str, default="downloaded_models/met
 parser.add_argument("--flash_attn", action="store_true", help="Whether to use the new format or not")
 # data
 parser.add_argument("--data_file", type=str, default="kaggle_dataset/arc-agi_training_combined.json")
-parser.add_argument("--num_workers", type=int, default=16, help="Number of workers")
+parser.add_argument("--num_workers", type=int, default=8, help="Number of workers")
 parser.add_argument("--new_format", action="store_true", help="Whether to use the new format or not")
 parser.add_argument("--barc_format", action="store_true", help="Whether to use the barc format or not")
 parser.add_argument("--no_transform", action="store_true", help="Whether to use the new format or not")
@@ -141,6 +142,7 @@ with Pool(args.num_workers) as p:
 # data = [processor(task) for task in arc_test_tasks]
 assert len(data) == len(arc_test_tasks)
 
+empty_tasks = set()
 for task, task_train_data in zip(arc_test_tasks, data):
     task_id = task.name.replace("-0", "")
     os.makedirs(f"{args.experiment_folder}/{task_id}", exist_ok=True)
@@ -148,6 +150,7 @@ for task, task_train_data in zip(arc_test_tasks, data):
     with open(f"{args.experiment_folder}/{task_id}/td_False_ttd_False_ttdwa_False_ad_True_trd_False.jsonl", "w") as f:
         if len(task_train_data) == 0:
             print(f'{task_id} has no data')
+            empty_tasks.add(task_id)
         for td in task_train_data:
             print(json.dumps(td), file=f)
     # placeholder test file for torchtune
@@ -242,6 +245,7 @@ model.print_trainable_parameters()
 
 ##### BEGIN TRAIN
 
+saved_model_forward = model.forward
 saved_prefix = copy.deepcopy(model.prompt_encoder.default.embedding.weight.data)
 
 for outer_epoch in range(args.outer_epochs):
@@ -249,67 +253,66 @@ for outer_epoch in range(args.outer_epochs):
 
     for task in arc_test_tasks:
         task_id = task.name.replace("-0", "")
-        output_dir = f"{args.experiment_folder}/{task_id}"
-        print(f"Trying task {task_id}")
-
-        try:
-            # reset prompt embeddings, not loras
-            # TODO: option to reuse prompt embeddings
-            model.prompt_encoder.default.embedding.weight.data.copy_(saved_prefix)
-            model.prompt_encoder.default.embedding.weight.grad = None
-
-            # prompt_encoder_old = copy.deepcopy(model.prompt_encoder.default.embedding.weight.data)
-            # lora_old = copy.deepcopy(model.base_model.model.model.layers[0].mlp.gate_proj.lora_A.default.weight)
-            # weight_old = copy.deepcopy(model.base_model.model.layers[0].mlp.gate_proj.weight)
-
-            # get dataset
-            ds = arc_dataset(
-                tokenizer=tokenizer,
-                source=output_dir,
-                train_on_input=args.train_on_input,
-                unmask_outputs=args.unmask_outputs,
-                cache_dir='.cache/'
-            )
-            all_input_ids, all_label = [], []
-            for i in range(len(ds)):
-                data = ds[i]
-                all_input_ids.append(data['tokens'])
-                all_label.append(data['labels'])
-            train_dataset = Dataset.from_dict({'input_ids': all_input_ids, 'labels': all_label})
-
-            # training
-            training_args = TrainingArguments(
-                output_dir=output_dir,
-                eval_strategy="no",
-                save_strategy="no",
-                learning_rate=args.learning_rate,
-                per_device_train_batch_size=args.batch_size,
-                num_train_epochs=args.inner_epochs,
-                weight_decay=args.weight_decay,
-                logging_dir=output_dir,
-                logging_steps=10,
-                report_to="none",
-                lr_scheduler_type='constant',
-                dataloader_num_workers=args.num_workers,
-                bf16=args.flash_attn,
-            )
-            trainer = Trainer(
-                model=model,
-                args=training_args,
-                train_dataset=train_dataset,
-                tokenizer=tokenizer,
-                data_collator=collate_fn,
-            )
-            trainer.train()
-
-            # prompt_encoder_new = copy.deepcopy(model.prompt_encoder['default'].embedding.weight.data)
-            # lora_new = copy.deepcopy(model.base_model.model.model.layers[0].mlp.gate_proj.lora_A.default.weight)
-            # weight_new = copy.deepcopy(model.base_model.model.layers[0].mlp.gate_proj.weight)
-
-        except Exception as e:
-            print(e)
-            print("Error training for ", task_id)
+        if task_id in empty_tasks:
             continue
+
+        output_dir = f"{args.experiment_folder}/{task_id}"
+        print(f"Training task {task_id}")
+
+        # reset prompt embeddings, not loras
+        # TODO: option to reuse prompt embeddings
+        model.prompt_encoder.default.embedding.weight.data = saved_prefix
+        model.prompt_encoder.default.embedding.weight.grad = None
+
+        # prompt_encoder_old = copy.deepcopy(model.prompt_encoder.default.embedding.weight.data)
+        # lora_old = copy.deepcopy(model.base_model.model.model.layers[0].mlp.gate_proj.lora_A.default.weight)
+        # weight_old = copy.deepcopy(model.base_model.model.layers[0].mlp.gate_proj.weight)
+
+        # get dataset
+        ds = arc_dataset(
+            tokenizer=tokenizer,
+            source=output_dir,
+            train_on_input=args.train_on_input,
+            unmask_outputs=args.unmask_outputs,
+        )
+        all_input_ids, all_label = [], []
+        for i in range(len(ds)):
+            data = ds[i]
+            all_input_ids.append(data['tokens'])
+            all_label.append(data['labels'])
+        train_dataset = Dataset.from_dict({'input_ids': all_input_ids, 'labels': all_label})
+
+        # training
+        training_args = TrainingArguments(
+            output_dir=output_dir,
+            eval_strategy="no",
+            save_strategy="no",
+            learning_rate=args.learning_rate,
+            per_device_train_batch_size=args.batch_size,
+            num_train_epochs=args.inner_epochs,
+            weight_decay=args.weight_decay,
+            logging_dir=output_dir,
+            logging_steps=10,
+            report_to="none",
+            lr_scheduler_type='constant',
+            dataloader_num_workers=args.num_workers,
+            bf16=args.flash_attn,
+        )
+        trainer = Trainer(
+            model=model,
+            args=training_args,
+            train_dataset=train_dataset,
+            processing_class=tokenizer,
+            data_collator=collate_fn,
+        )
+        trainer.train()
+        del trainer
+        gc.collect()
+        model.forward = saved_model_forward
+
+        # prompt_encoder_new = copy.deepcopy(model.prompt_encoder['default'].embedding.weight.data)
+        # lora_new = copy.deepcopy(model.base_model.model.model.layers[0].mlp.gate_proj.lora_A.default.weight)
+        # weight_new = copy.deepcopy(model.base_model.model.layers[0].mlp.gate_proj.weight)
 
     output_path = os.path.join(args.experiment_folder, f'checkpoint-outer-epoch{outer_epoch}.pt')
     if args.use_lora:

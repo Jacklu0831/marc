@@ -1,11 +1,16 @@
 import json
 import csv
 
-csv_path = 'task_info_selected.csv'
+# csv_path = 'task_info_selected.csv'
+# inp_path = 'kaggle_dataset/arc-agi_evaluation_challenges.json'
+# out_path = 'kaggle_dataset/arc-agi_evaluation_challenges_selected.json'
+# inp_path = 'kaggle_dataset/arc-agi_evaluation_solutions.json'
+# out_path = 'kaggle_dataset/arc-agi_evaluation_solutions_selected.json'
+csv_path = 'task_info_selected_easy.csv'
 inp_path = 'kaggle_dataset/arc-agi_evaluation_challenges.json'
-out_path = 'kaggle_dataset/arc-agi_evaluation_challenges_selected.json'
+out_path = 'kaggle_dataset/arc-agi_evaluation_challenges_selected_easy.json'
 inp_path = 'kaggle_dataset/arc-agi_evaluation_solutions.json'
-out_path = 'kaggle_dataset/arc-agi_evaluation_solutions_selected.json'
+out_path = 'kaggle_dataset/arc-agi_evaluation_solutions_selected_easy.json'
 
 with open(csv_path, mode='r') as file:
     csv_reader = csv.reader(file)

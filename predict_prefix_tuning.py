@@ -47,6 +47,7 @@ parser.add_argument("--pt_checkpoints_folder", type=str, required=True, help="Pr
 parser.add_argument("--pt_epoch", type=int, default=0, help="Prompt tuning checkpoints folder, if none then base model is used")
 parser.add_argument("--train_mode", action="store_true", help="Whether to use the new format or not")
 parser.add_argument("--flash_attn", action="store_true", help="Whether to use the new format or not")
+parser.add_argument("--float16", action="store_true", help="Whether to use the new format or not")
 # prefix tuning
 parser.add_argument("--num_virtual_tokens", type=int, default=4, help="number of virtual tokens")
 parser.add_argument("--max_tokens", type=int, default=8192, help="Max tokens")
@@ -218,7 +219,8 @@ prefix_config = PrefixTuningConfig(
     inference_mode=True,
 )
 model = get_peft_model(model, prefix_config)
-# model.prompt_encoder['default'].embedding.weight.data = model.prompt_encoder['default'].embedding.weight.data.to(torch.bfloat16)
+if args.float16:
+    model = model.to(torch.bfloat16)
 model.print_trainable_parameters()
 
 terminators = [
@@ -233,9 +235,9 @@ if not args.train_mode:
     model.eval()
 for text, sampling_params, pt_request, new_idx in tqdm(inputs_to_the_engine):
     # load embeds
-    loaded_embeds = torch.load(pt_request.prompt_adapter_local_path).to('cuda')
-    assert model.prompt_encoder['default'].embedding.weight.data.shape == loaded_embeds.shape
-    model.prompt_encoder['default'].embedding.weight.data.copy_(loaded_embeds)
+    loaded_embeds = torch.load(pt_request.prompt_adapter_local_path, weights_only=True).to(model.device)
+    assert model.prompt_encoder.default.embedding.weight.data.shape == loaded_embeds.shape
+    model.prompt_encoder.default.embedding.weight.data = loaded_embeds
     # text process?
     find_start = text.find("<|begin_of_text|>") + len("<|begin_of_text|>")
     text = text[find_start:]

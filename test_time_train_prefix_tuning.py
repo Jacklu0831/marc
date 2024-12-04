@@ -5,6 +5,7 @@ import json
 import os
 from multiprocessing import Pool
 from typing import Dict
+import gc
 
 import torch
 from torchtune.models.llama3 import llama3_tokenizer
@@ -36,7 +37,7 @@ parser.add_argument("--tokenizer_path", type=str, default="downloaded_models/met
 parser.add_argument("--flash_attn", action="store_true", help="Whether to use the new format or not")
 # data
 parser.add_argument("--data_file", type=str, default="kaggle_dataset/arc-agi_evaluation_challenges.json")
-parser.add_argument("--num_workers", type=int, default=16, help="Number of workers")
+parser.add_argument("--num_workers", type=int, default=8, help="Number of workers")
 parser.add_argument("--new_format", action="store_true", help="Whether to use the new format or not")
 parser.add_argument("--barc_format", action="store_true", help="Whether to use the barc format or not")
 parser.add_argument("--no_transform", action="store_true", help="Whether to use the new format or not")
@@ -49,9 +50,11 @@ parser.add_argument("--num_max_per_task", type=int, default=250, help="Number of
 # train args
 parser.add_argument("--epochs", type=int, default=2, help="Number of epochs")
 parser.add_argument("--batch_size", type=int, default=2, help="Batch size")
+parser.add_argument("--grad_accum", type=int, default=1, help="Batch size")
 parser.add_argument("--weight_decay", type=float, default=0.01, help="Weight decay")
 parser.add_argument("--learning_rate", type=float, default=1e-4, help="Learning rate")
 parser.add_argument("--float16", action="store_true", help="Whether to use the new format or not")
+parser.add_argument("--logging_steps", type=int, default=10, help="Batch size")
 # prompt tuning
 parser.add_argument("--num_virtual_tokens", type=int, default=4, help="number of virtual tokens")
 # misc
@@ -77,6 +80,9 @@ print("#### END ALL ARGUMENTS ####\n")
 arc_test_tasks = read_tasks_from_single_file(args.data_file, test=True)
 arc_test_tasks = [task for task in arc_test_tasks if "-0" in task.name]
 arc_test_tasks = arc_test_tasks[: args.num_tasks]
+
+# arc_test_tasks = [t for t in arc_test_tasks if '0a1d4ef5' in t.name]
+
 arc_test_ids = [task.name.replace("-0", "") for task in arc_test_tasks]
 print("Number of train tasks: ", len(arc_test_tasks))
 
@@ -129,11 +135,15 @@ with Pool(args.num_workers) as p:
 # data = [processor(task) for task in arc_test_tasks]
 assert len(data) == len(arc_test_tasks)
 
+empty_tasks = set()
 for task, task_train_data in zip(arc_test_tasks, data):
     task_id = task.name.replace("-0", "")
     os.makedirs(f"{args.experiment_folder}/{task_id}", exist_ok=True)
     # save data for torchtune
     with open(f"{args.experiment_folder}/{task_id}/td_False_ttd_False_ttdwa_False_ad_True_trd_False.jsonl", "w") as f:
+        if len(task_train_data) == 0:
+            print(f'{task_id} has no data')
+            empty_tasks.add(task_id)
         for td in task_train_data:
             print(json.dumps(td), file=f)
     # placeholder test file for torchtune
@@ -244,65 +254,61 @@ Trainer._maybe_log_save_evaluate = _maybe_log_save_evaluate
 
 ##### BEGIN TRAIN
 
+saved_model_forward = model.forward
 saved_prefix = copy.deepcopy(model.prompt_encoder.default.embedding.weight.data)
 for task in arc_test_tasks:
     task_id = task.name.replace("-0", "")
-    print(f"Trying task {task_id}")
-
-    def train_fn(batch_size, grad_accum):
-        # reset model
-        model.prompt_encoder.default.embedding.weight.data.copy_(saved_prefix)
-        model.prompt_encoder.default.embedding.weight.grad = None
-
-        # get dataset
-        ds = arc_dataset(
-            tokenizer=tokenizer,
-            source=f"{args.experiment_folder}/{task_id}",
-            train_on_input=args.train_on_input,
-            unmask_outputs=args.unmask_outputs,
-            cache_dir='.cache/'
-        )
-        all_input_ids, all_label = [], []
-        for i in range(len(ds)):
-            data = ds[i]
-            all_input_ids.append(data['tokens'])
-            all_label.append(data['labels'])
-        train_dataset = Dataset.from_dict({'input_ids': all_input_ids, 'labels': all_label})
-
-        # training
-        training_args = TrainingArguments(
-            output_dir=f"{args.experiment_folder}/{task_id}",
-            evaluation_strategy="no",
-            save_strategy="epoch",
-            learning_rate=args.learning_rate,
-            per_device_train_batch_size=batch_size,
-            gradient_accumulation_steps=grad_accum,
-            num_train_epochs=args.epochs,
-            weight_decay=args.weight_decay,
-            logging_dir=f"{args.experiment_folder}/{task_id}",
-            logging_steps=10,
-            report_to="none",
-            lr_scheduler_type='constant',
-            dataloader_num_workers=args.num_workers,
-            bf16=args.flash_attn,
-        )
-        trainer = Trainer(
-            model=model,
-            args=training_args,
-            train_dataset=train_dataset,
-            tokenizer=tokenizer,
-            data_collator=collate_fn,
-        )
-        trainer.train()
-
-    try:
-        train_fn(batch_size=args.batch_size, grad_accum=1)
-    except Exception as e:
-        try:
-            train_fn(batch_size=1, grad_accum=args.batch_size)
-        except Exception as e:
-            print(e)
-            print("Error training for ", task_id)
+    if task_id in empty_tasks:
             continue
+
+    output_dir = f"{args.experiment_folder}/{task_id}"
+    print(f"Training task {task_id}")
+
+    # reset model
+    model.prompt_encoder.default.embedding.weight.data = saved_prefix
+    model.prompt_encoder.default.embedding.weight.grad = None
+
+    # get dataset
+    ds = arc_dataset(
+        tokenizer=tokenizer,
+        source=output_dir,
+        train_on_input=args.train_on_input,
+        unmask_outputs=args.unmask_outputs,
+    )
+    all_input_ids, all_label = [], []
+    for i in range(len(ds)):
+        data = ds[i]
+        all_input_ids.append(data['tokens'])
+        all_label.append(data['labels'])
+    train_dataset = Dataset.from_dict({'input_ids': all_input_ids, 'labels': all_label})
+
+    # training
+    training_args = TrainingArguments(
+        output_dir=output_dir,
+        evaluation_strategy="no",
+        save_strategy="epoch",
+        learning_rate=args.learning_rate,
+        per_device_train_batch_size=args.batch_size,
+        gradient_accumulation_steps=args.grad_accum,
+        num_train_epochs=args.epochs,
+        weight_decay=args.weight_decay,
+        logging_dir=output_dir,
+        logging_steps=args.logging_steps,
+        report_to="none",
+        lr_scheduler_type='constant',
+        dataloader_num_workers=args.num_workers,
+        bf16=args.flash_attn,
+    )
+    trainer = Trainer(
+        model=model,
+        args=training_args,
+        train_dataset=train_dataset,
+        tokenizer=tokenizer,
+        data_collator=collate_fn,
+    )
+    trainer.train()
+    del trainer
+    gc.collect()
+    model.forward = saved_model_forward
 
 ##### END TRAIN

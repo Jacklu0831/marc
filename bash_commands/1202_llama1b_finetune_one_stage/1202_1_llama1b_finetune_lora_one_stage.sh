@@ -13,6 +13,7 @@ python finetune_one_stage.py \
     --inner_epochs 2 \
     --outer_epochs 100 \
     --flash_attn \
+    --float16 \
     --learning_rate 5e-3 \
     --use_lora
 
@@ -26,6 +27,7 @@ python finetune_one_stage.py \
     --inner_epochs 2 \
     --outer_epochs 100 \
     --flash_attn \
+    --float16 \
     --learning_rate 1e-3 \
     --use_lora
 
@@ -39,6 +41,7 @@ python finetune_one_stage.py \
     --inner_epochs 2 \
     --outer_epochs 100 \
     --flash_attn \
+    --float16 \
     --learning_rate 5e-4 \
     --use_lora
 
@@ -52,6 +55,7 @@ python finetune_one_stage.py \
     --inner_epochs 2 \
     --outer_epochs 100 \
     --flash_attn \
+    --float16 \
     --learning_rate 1e-4 \
     --use_lora
 
@@ -65,11 +69,34 @@ python finetune_one_stage.py \
     --inner_epochs 2 \
     --outer_epochs 100 \
     --flash_attn \
+    --float16 \
     --learning_rate 5e-5 \
     --use_lora
 
+# (recursion depth exceeded?)
 # Submitted batch job 54154581
 # Submitted batch job 54154582
 # Submitted batch job 54154583
 # Submitted batch job 54154584
 # Submitted batch job 54154585
+
+# num worker set to 8, float16, still depth exceeded
+# Submitted batch job 54185113
+# Submitted batch job 54185114
+# Submitted batch job 54185115
+# Submitted batch job 54185116
+# Submitted batch job 54185117
+
+# save model forward
+# Submitted batch job 54213369
+# Submitted batch job 54213370
+# Submitted batch job 54213371
+# Submitted batch job 54213372
+# Submitted batch job 54213373
+
+# fix copy_()
+# Submitted batch job 54227339
+# Submitted batch job 54227340
+# Submitted batch job 54227341
+# Submitted batch job 54227342
+# Submitted batch job 54227343
