@@ -94,7 +94,7 @@ python finetune_one_stage.py \
 # Submitted batch job 54213372
 # Submitted batch job 54213373
 
-# fix copy_()
+# fix copy_() (just cancelled in order to investigate float16)
 # Submitted batch job 54227339
 # Submitted batch job 54227340
 # Submitted batch job 54227341

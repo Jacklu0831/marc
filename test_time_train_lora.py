@@ -4,8 +4,7 @@ import functools
 import json
 import os
 from multiprocessing import Pool
-import random
-import numpy as np
+from typing import Dict
 import gc
 
 import torch
@@ -27,17 +26,17 @@ import torch.nn.functional as F
 from torch.nn.utils.rnn import pad_sequence
 from transformers import AutoModelForCausalLM, TrainingArguments, Trainer
 from datasets import Dataset
-from peft import PrefixTuningConfig, LoraConfig, get_peft_model
-
+from peft import LoraConfig, get_peft_model
+from accelerate.utils import set_seed
 
 
 parser = argparse.ArgumentParser(description="Process some integers.")
 # model
-parser.add_argument("--base_checkpoint_dir", type=str, default="downloaded_models/meta-llama/Llama-3.2-1B-Instruct")
+parser.add_argument("--base_checkpoint_dir", type=str, default="checkpoints/pretrained/multi_format_model/")
 parser.add_argument("--tokenizer_path", type=str, default="downloaded_models/meta-llama/Llama-3.2-1B-Instruct/original/tokenizer.model")
 parser.add_argument("--flash_attn", action="store_true", help="Whether to use the new format or not")
 # data
-parser.add_argument("--data_file", type=str, default="kaggle_dataset/arc-agi_training_combined.json")
+parser.add_argument("--data_file", type=str, default="kaggle_dataset/arc-agi_evaluation_challenges.json")
 parser.add_argument("--num_workers", type=int, default=8, help="Number of workers")
 parser.add_argument("--new_format", action="store_true", help="Whether to use the new format or not")
 parser.add_argument("--barc_format", action="store_true", help="Whether to use the barc format or not")
@@ -49,13 +48,14 @@ parser.add_argument("--max_tokens", type=int, default=8192, help="Max tokens")
 parser.add_argument("--num_tasks", type=int, default=10000, help="Number of tasks to process for limited evaluation.")
 parser.add_argument("--num_max_per_task", type=int, default=250, help="Number of tasks to process for limited evaluation.")
 # train args
-parser.add_argument("--outer_epochs", type=int, default=10, help="Number of epochs")
-parser.add_argument("--inner_epochs", type=int, default=2, help="Number of epochs")
+parser.add_argument("--epochs", type=int, default=2, help="Number of epochs")
 parser.add_argument("--batch_size", type=int, default=2, help="Batch size")
+parser.add_argument("--grad_accum", type=int, default=1, help="Batch size")
 parser.add_argument("--weight_decay", type=float, default=0.01, help="Weight decay")
 parser.add_argument("--learning_rate", type=float, default=1e-4, help="Learning rate")
-# prefix tuning
-parser.add_argument("--num_virtual_tokens", type=int, default=25, help="number of virtual tokens")
+parser.add_argument("--float16", action="store_true", help="Whether to use the new format or not")
+parser.add_argument("--gradient_checkpointing", action="store_true", help="Whether to use the new format or not")
+parser.add_argument("--logging_steps", type=int, default=10, help="Batch size")
 # lora
 parser.add_argument("--lora_rank", type=int, default=128)
 parser.add_argument("--lora_alpha", type=float, default=16.0)
@@ -65,14 +65,10 @@ parser.add_argument("--use_lora", action="store_true", help="Whether to use the 
 # misc
 parser.add_argument("--experiment_folder", type=str, default="experiments/ttt/new/", help="submission folder")
 parser.add_argument("--seed", type=int, default=0, help="Random seed")
-parser.add_argument("--float16", action="store_true", help="Whether to use the new format or not")
-
 
 args = parser.parse_args()
 os.makedirs(args.experiment_folder, exist_ok=True)
-random.seed(args.seed)
-np.random.seed(args.seed)
-torch.manual_seed(args.seed)
+set_seed(args.seed)
 
 print("#### BEGIN ALL ARGUMENTS ####")
 for arg in vars(args):
@@ -89,6 +85,9 @@ print("#### END ALL ARGUMENTS ####\n")
 arc_test_tasks = read_tasks_from_single_file(args.data_file, test=True)
 arc_test_tasks = [task for task in arc_test_tasks if "-0" in task.name]
 arc_test_tasks = arc_test_tasks[: args.num_tasks]
+
+arc_test_tasks = [t for t in arc_test_tasks if '08573cc6' in t.name]
+
 arc_test_ids = [task.name.replace("-0", "") for task in arc_test_tasks]
 print("Number of train tasks: ", len(arc_test_tasks))
 
@@ -133,8 +132,6 @@ processor = functools.partial(
     permute_n=args.permute_n,
     Nmax=args.num_max_per_task,
     seed=args.seed,
-    num_virtual_tokens=args.num_virtual_tokens,
-    include_leave_3=True,
 )
 with Pool(args.num_workers) as p:
     # this does use the tokenizer, but only for figuring out lengths
@@ -196,44 +193,25 @@ collate_fn = functools.partial(padded_collate_sft, padding_idx=tokenizer.pad_id,
 
 
 ##### START MODEL
-
 if args.flash_attn:
     model = AutoModelForCausalLM.from_pretrained(args.base_checkpoint_dir, cache_dir=f'{args.base_checkpoint_dir}_cache', device_map="auto", attn_implementation="flash_attention_2")
 else:
     model = AutoModelForCausalLM.from_pretrained(args.base_checkpoint_dir, cache_dir=f'{args.base_checkpoint_dir}_cache', device_map="auto", torch_dtype=torch.bfloat16)
 
-# add lora
-if args.use_lora:
-    lora_config = LoraConfig(
-        task_type="CAUSAL_LM",
-        r=args.lora_rank,  # Rank of the LoRA layer
-        lora_alpha=args.lora_alpha,
-        lora_dropout=args.lora_dropout,
-        target_modules=args.lora_target_modules,
-    )
-    model = get_peft_model(model, lora_config)
-# add prefix tuning
-prefix_config = PrefixTuningConfig(
+lora_config = LoraConfig(
     task_type="CAUSAL_LM",
-    num_virtual_tokens=args.num_virtual_tokens,
-    encoder_hidden_size=model.config.hidden_size
+    r=args.lora_rank,  # Rank of the LoRA layer
+    lora_alpha=args.lora_alpha,
+    lora_dropout=args.lora_dropout,
+    target_modules=args.lora_target_modules,
 )
-model = get_peft_model(model, prefix_config)
-# lora/unet requires grad
-if args.use_lora:
-    for n, p in model.named_parameters():
-        if 'lora' in n:
-            p.requires_grad = True
-else:
-    for n, p in model.named_parameters():
-        p.requires_grad = True
-# for n, p in model.named_parameters(): print(n, p.requires_grad)
-# cast float16
+model.enable_input_require_grads()
+model = get_peft_model(model, lora_config)
+
 if args.float16:
     model = model.to(torch.bfloat16)
+
 model.print_trainable_parameters()
-# lora: trainable params: 76,955,648 || all params: 1,312,770,048 || trainable%: 5.8621
-# unet: trainable params: 1,236,224,000 || all params: 1,236,224,000 || trainable%: 100.0000
 
 ##### END MODEL
 
@@ -242,86 +220,112 @@ model.print_trainable_parameters()
 
 
 
+##### BEGIN CUSTOM TRAINER SAVE CKPT
+
+def _maybe_log_save_evaluate(self, tr_loss, grad_norm, model, trial, epoch, ignore_keys_for_eval):
+    if self.control.should_log and self.state.global_step > self._globalstep_last_logged:
+        logs: Dict[str, float] = {}
+
+        # all_gather + mean() to get average loss over all processes
+        tr_loss_scalar = self._nested_gather(tr_loss).mean().item()
+
+        # reset tr_loss to zero
+        tr_loss -= tr_loss
+
+        logs["loss"] = round(tr_loss_scalar / (self.state.global_step - self._globalstep_last_logged), 4)
+        if grad_norm is not None:
+            logs["grad_norm"] = grad_norm.detach().item() if isinstance(grad_norm, torch.Tensor) else grad_norm
+        logs["learning_rate"] = self._get_learning_rate()
+
+        self._total_loss_scalar += tr_loss_scalar
+        self._globalstep_last_logged = self.state.global_step
+        self.store_flos()
+
+        self.log(logs)
+
+    if self.control.should_save:
+        # begin custom code
+        output_path = os.path.join(self.args.output_dir, f'checkpoint-epoch{epoch+1}.pt')
+        lora_params = {n: p.data for n, p in model.named_parameters() if 'lora' in n}
+        torch.save(lora_params, output_path)
+        print('checkpoint saved to', output_path)
+        # end custom code
+        self.control = self.callback_handler.on_save(self.args, self.state, self.control)
+
+Trainer._maybe_log_save_evaluate = _maybe_log_save_evaluate
+
+##### END CUSTOM TRAINER SAVE CKPT
+
+
+
+
 
 ##### BEGIN TRAIN
 
 saved_model_forward = model.forward
-saved_prefix = copy.deepcopy(model.prompt_encoder.default.embedding.weight.data)
+saved_lora_params = {n: copy.deepcopy(p.data) for n, p in model.named_parameters() if 'lora' in n}
 
-for outer_epoch in range(args.outer_epochs):
-    print(f'BEGINNING EPOCH {outer_epoch}')
-
-    for task in arc_test_tasks:
-        task_id = task.name.replace("-0", "")
-        if task_id in empty_tasks:
+for task in arc_test_tasks:
+    task_id = task.name.replace("-0", "")
+    if task_id in empty_tasks:
             continue
 
-        output_dir = f"{args.experiment_folder}/{task_id}"
-        print(f"Training task {task_id}")
+    output_dir = f"{args.experiment_folder}/{task_id}"
+    print(f"Training task {task_id}")
 
-        # reset prompt embeddings, not loras
-        # TODO: option to reuse prompt embeddings
-        model.prompt_encoder.default.embedding.weight.data = saved_prefix
-        model.prompt_encoder.default.embedding.weight.grad = None
+    for n, p in model.named_parameters():
+        if n in saved_lora_params:
+            p.data = saved_lora_params[n]
+            p.grad = None
 
-        # prompt_encoder_old = copy.deepcopy(model.prompt_encoder.default.embedding.weight.data)
-        # lora_old = copy.deepcopy(model.base_model.model.model.layers[0].mlp.gate_proj.lora_A.default.weight)
-        # weight_old = copy.deepcopy(model.base_model.model.layers[0].mlp.gate_proj.weight)
+    # get dataset
+    ds = arc_dataset(
+        tokenizer=tokenizer,
+        source=output_dir,
+        train_on_input=args.train_on_input,
+        unmask_outputs=args.unmask_outputs,
+    )
+    all_input_ids, all_label = [], []
+    for i in range(len(ds)):
+        data = ds[i]
+        all_input_ids.append(data['tokens'])
+        all_label.append(data['labels'])
+    train_dataset = Dataset.from_dict({'input_ids': all_input_ids, 'labels': all_label})
 
-        # get dataset
-        ds = arc_dataset(
-            tokenizer=tokenizer,
-            source=output_dir,
-            train_on_input=args.train_on_input,
-            unmask_outputs=args.unmask_outputs,
-        )
-        all_input_ids, all_label = [], []
-        for i in range(len(ds)):
-            data = ds[i]
-            all_input_ids.append(data['tokens'])
-            all_label.append(data['labels'])
-        train_dataset = Dataset.from_dict({'input_ids': all_input_ids, 'labels': all_label})
+    # training
+    lora_params = [p.data for n, p in model.named_parameters() if 'lora' in n]
+    optimizer = torch.optim.AdamW(lora_params, args.learning_rate, fused=True)
 
-        # training
-        training_args = TrainingArguments(
-            output_dir=output_dir,
-            eval_strategy="no",
-            save_strategy="no",
-            learning_rate=args.learning_rate,
-            per_device_train_batch_size=args.batch_size,
-            num_train_epochs=args.inner_epochs,
-            weight_decay=args.weight_decay,
-            logging_dir=output_dir,
-            logging_steps=10,
-            report_to="none",
-            lr_scheduler_type='constant',
-            dataloader_num_workers=args.num_workers,
-            bf16=args.flash_attn,
-        )
-        trainer = Trainer(
-            model=model,
-            args=training_args,
-            train_dataset=train_dataset,
-            processing_class=tokenizer,
-            data_collator=collate_fn,
-        )
-        trainer.train()
-        del trainer
-        gc.collect()
-        model.forward = saved_model_forward
-
-        # prompt_encoder_new = copy.deepcopy(model.prompt_encoder['default'].embedding.weight.data)
-        # lora_new = copy.deepcopy(model.base_model.model.model.layers[0].mlp.gate_proj.lora_A.default.weight)
-        # weight_new = copy.deepcopy(model.base_model.model.layers[0].mlp.gate_proj.weight)
-
-    output_path = os.path.join(args.experiment_folder, f'checkpoint-outer-epoch{outer_epoch}.pt')
-    if args.use_lora:
-        lora_state_dict = {n: p for n, p in model.state_dict().items() if "lora" in n}
-        torch.save(lora_state_dict, output_path)
-        print('lora saved to', output_path)
-    else:
-        unet_state_dict = {n: p for n, p in model.state_dict().items() if "prompt_encoder" not in n}
-        torch.save(unet_state_dict, output_path)
-        print('unet saved to', output_path)
+    training_args = TrainingArguments(
+        output_dir=output_dir,
+        evaluation_strategy="no",
+        # save_strategy="epoch",
+        save_strategy="no",
+        learning_rate=args.learning_rate,
+        per_device_train_batch_size=args.batch_size,
+        gradient_accumulation_steps=args.grad_accum,
+        num_train_epochs=args.epochs,
+        weight_decay=args.weight_decay,
+        logging_dir=output_dir,
+        logging_steps=args.logging_steps,
+        report_to="none",
+        lr_scheduler_type='constant',
+        dataloader_num_workers=args.num_workers,
+        # bf16=args.flash_attn,
+        gradient_checkpointing=args.gradient_checkpointing,
+        bf16=args.float16,
+    )
+    trainer = Trainer(
+        model=model,
+        args=training_args,
+        train_dataset=train_dataset,
+        tokenizer=tokenizer,
+        data_collator=collate_fn,
+        optimizers=(optimizer, None),
+    )
+    trainer.train()
+    del trainer
+    gc.collect()
+    model.forward = saved_model_forward
 
 ##### END TRAIN

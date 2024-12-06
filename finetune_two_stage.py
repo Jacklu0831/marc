@@ -1,3 +1,4 @@
+import glob
 import argparse
 import copy
 import functools
@@ -48,9 +49,11 @@ parser.add_argument("--permute_n", type=int, default=1, help="Permute n")
 parser.add_argument("--max_tokens", type=int, default=8192, help="Max tokens")
 parser.add_argument("--num_tasks", type=int, default=10000, help="Number of tasks to process for limited evaluation.")
 parser.add_argument("--num_max_per_task", type=int, default=250, help="Number of tasks to process for limited evaluation.")
+parser.add_argument("--extra_leave_n", type=int, default=0, help="Train on input setting")
 # train args
 parser.add_argument("--outer_epochs", type=int, default=10, help="Number of epochs")
-parser.add_argument("--start_prefix_epochs", type=int, default=None, help="Number of epochs")
+parser.add_argument("--prefix_steps", type=int, default=-1, help="Number of epochs")
+parser.add_argument("--net_steps", type=int, default=-1, help="Number of epochs")
 parser.add_argument("--prefix_epochs", type=int, default=2, help="Number of epochs")
 parser.add_argument("--net_epochs", type=int, default=2, help="Number of epochs")
 parser.add_argument("--logging_steps", type=int, default=10, help="Number of epochs")
@@ -61,6 +64,7 @@ parser.add_argument("--weight_decay", type=float, default=0.01, help="Weight dec
 # prefix tuning
 parser.add_argument("--num_virtual_tokens", type=int, default=25, help="number of virtual tokens")
 parser.add_argument("--reuse_prefix", action="store_true", help="Whether to use the new format or not")
+parser.add_argument("--pt_checkpoints_folder", type=str, default=None, help="Prefix tuning checkpoints folder, if none then base model is used")
 # lora
 parser.add_argument("--lora_rank", type=int, default=128)
 parser.add_argument("--lora_alpha", type=float, default=16.0)
@@ -78,8 +82,6 @@ os.makedirs(args.experiment_folder, exist_ok=True)
 random.seed(args.seed)
 np.random.seed(args.seed)
 torch.manual_seed(args.seed)
-if args.start_prefix_epochs is None:
-    args.start_prefix_epochs = args.prefix_epochs
 
 print("#### BEGIN ALL ARGUMENTS ####")
 for arg in vars(args):
@@ -141,7 +143,7 @@ processor = functools.partial(
     Nmax=args.num_max_per_task,
     seed=args.seed,
     num_virtual_tokens=args.num_virtual_tokens,
-    include_leave_3=True,
+    extra_leave_n=args.extra_leave_n,
 )
 with Pool(args.num_workers) as p:
     # this does use the tokenizer, but only for figuring out lengths
@@ -205,7 +207,7 @@ collate_fn = functools.partial(padded_collate_sft, padding_idx=tokenizer.pad_id,
 ##### START MODEL
 
 if args.flash_attn:
-    model = AutoModelForCausalLM.from_pretrained(args.base_checkpoint_dir, cache_dir=f'{args.base_checkpoint_dir}_cache', device_map="auto", attn_implementation="flash_attention_2")
+    model = AutoModelForCausalLM.from_pretrained(args.base_checkpoint_dir, cache_dir=f'{args.base_checkpoint_dir}_cache', device_map="auto", torch_dtype=torch.bfloat16, attn_implementation="flash_attention_2")
 else:
     model = AutoModelForCausalLM.from_pretrained(args.base_checkpoint_dir, cache_dir=f'{args.base_checkpoint_dir}_cache', device_map="auto", torch_dtype=torch.bfloat16)
 
@@ -247,6 +249,16 @@ print(f'found {count_params(prompt_encoder_params)} prompt encoder params')
 # found 76,546,048 net params
 # found 409600 prompt encoder params
 
+# get pt paths and filter tasks if necessary
+id_to_pt_path = {}
+if args.pt_checkpoints_folder is not None:
+    for pt_path in glob.glob(f"{args.pt_checkpoints_folder}/*/checkpoint-epoch*.pt"):
+        epoch = int(pt_path[pt_path.rfind('checkpoint-epoch'):][16:-3])
+        if epoch == args.pt_epoch:
+            pt_id = pt_path.split('/')[-2]
+            id_to_pt_path[pt_id] = pt_path
+    assert all(t.name.replace("-0", "") in id_to_pt_path for t in arc_test_tasks)
+
 ##### END MODEL
 
 
@@ -286,26 +298,34 @@ for outer_epoch in range(args.outer_epochs):
         ##### BEGIN STAGE ONE
         print("\nbegin stage one...")
 
-        if args.reuse_prefix and task_id in task_id_to_last_prefix:
-            last_prefix = torch.load(task_id_to_last_prefix[task_id], weights_only=True)
+        if outer_epoch == 0 or not args.reuse_prefix:
+            if args.pt_checkpoints_folder is not None:
+                loaded_prefix = torch.load(id_to_pt_path[task_id], weights_only=True).to(model.device)
+                assert model.prompt_encoder.default.embedding.weight.data.shape == loaded_prefix.shape
+                model.prompt_encoder.default.embedding.weight.data = loaded_prefix
+                print('loaded prefix at', id_to_pt_path[task_id])
+            else:
+                model.prompt_encoder.default.embedding.weight.data = init_prefix
+                print('setting prefix to the random initialization')
+        else:
+            last_prefix = torch.load(task_id_to_last_prefix[task_id], weights_only=True).to(model.device)
+            assert model.prompt_encoder.default.embedding.weight.data.shape == last_prefix.shape
             model.prompt_encoder.default.embedding.weight.data = last_prefix
             print('loaded prefix at', task_id_to_last_prefix[task_id])
-        else:
-            model.prompt_encoder.default.embedding.weight.data = init_prefix
 
         set_requires_grad(net_params, False)
         set_requires_grad(prompt_encoder_params, True)
         for p in model.parameters(): p.grad = None
 
         # training
-        prefix_epochs = args.start_prefix_epochs if outer_epoch == 0 else args.prefix_epochs
         training_args1 = TrainingArguments(
             output_dir=output_dir,
             eval_strategy="no",
             save_strategy="no",
             learning_rate=args.prefix_lr,
             per_device_train_batch_size=args.batch_size,
-            num_train_epochs=prefix_epochs,
+            num_train_epochs=args.prefix_epochs,
+            max_steps=args.prefix_steps,
             weight_decay=args.weight_decay,
             logging_dir=output_dir,
             logging_steps=args.logging_steps,
@@ -332,6 +352,7 @@ for outer_epoch in range(args.outer_epochs):
             torch.save(model.prompt_encoder.default.embedding.weight.data, output_path)
             if task_id in task_id_to_last_prefix:
                 os.remove(task_id_to_last_prefix[task_id])
+                print('removed prefix at', task_id_to_last_prefix[task_id])
             task_id_to_last_prefix[task_id] = output_path
             print('saved prefix to', output_path)
         ##### END STAGE ONE
@@ -349,6 +370,7 @@ for outer_epoch in range(args.outer_epochs):
             learning_rate=args.net_lr,
             per_device_train_batch_size=args.batch_size,
             num_train_epochs=args.net_epochs,
+            max_steps=args.net_steps,
             weight_decay=args.weight_decay,
             logging_dir=output_dir,
             logging_steps=args.logging_steps,

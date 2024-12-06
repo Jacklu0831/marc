@@ -86,6 +86,7 @@ python finetune_two_stage.py \
 # Submitted batch job 54213336
 
 # fix copy_()
+# killed because float16 is bad
 # Submitted batch job 54227330
 # Submitted batch job 54227331
 # Submitted batch job 54227332

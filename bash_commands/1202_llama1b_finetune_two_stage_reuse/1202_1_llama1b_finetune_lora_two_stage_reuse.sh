@@ -75,6 +75,7 @@ python finetune_two_stage.py \
     --reuse_prefix \
     --use_lora
 
+# killed because float16 is bad
 # Submitted batch job 54255542
 # Submitted batch job 54255543
 # Submitted batch job 54255544

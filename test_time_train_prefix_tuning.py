@@ -47,6 +47,7 @@ parser.add_argument("--permute_n", type=int, default=1, help="Permute n")
 parser.add_argument("--max_tokens", type=int, default=8192, help="Max tokens")
 parser.add_argument("--num_tasks", type=int, default=10000, help="Number of tasks to process for limited evaluation.")
 parser.add_argument("--num_max_per_task", type=int, default=250, help="Number of tasks to process for limited evaluation.")
+parser.add_argument("--extra_leave_n", type=int, default=0, help="Train on input setting")
 # train args
 parser.add_argument("--epochs", type=int, default=2, help="Number of epochs")
 parser.add_argument("--batch_size", type=int, default=2, help="Batch size")
@@ -80,9 +81,6 @@ print("#### END ALL ARGUMENTS ####\n")
 arc_test_tasks = read_tasks_from_single_file(args.data_file, test=True)
 arc_test_tasks = [task for task in arc_test_tasks if "-0" in task.name]
 arc_test_tasks = arc_test_tasks[: args.num_tasks]
-
-# arc_test_tasks = [t for t in arc_test_tasks if '0a1d4ef5' in t.name]
-
 arc_test_ids = [task.name.replace("-0", "") for task in arc_test_tasks]
 print("Number of train tasks: ", len(arc_test_tasks))
 
@@ -128,6 +126,7 @@ processor = functools.partial(
     Nmax=args.num_max_per_task,
     seed=args.seed,
     num_virtual_tokens=args.num_virtual_tokens,
+    extra_leave_n=args.extra_leave_n,
 )
 with Pool(args.num_workers) as p:
     # this does use the tokenizer, but only for figuring out lengths
@@ -190,7 +189,7 @@ collate_fn = functools.partial(padded_collate_sft, padding_idx=tokenizer.pad_id,
 
 ##### START MODEL
 if args.flash_attn:
-    model = AutoModelForCausalLM.from_pretrained(args.base_checkpoint_dir, cache_dir=f'{args.base_checkpoint_dir}_cache', device_map="auto", attn_implementation="flash_attention_2")
+    model = AutoModelForCausalLM.from_pretrained(args.base_checkpoint_dir, cache_dir=f'{args.base_checkpoint_dir}_cache', device_map="auto", torch_dtype=torch.bfloat16, attn_implementation="flash_attention_2")
 else:
     model = AutoModelForCausalLM.from_pretrained(args.base_checkpoint_dir, cache_dir=f'{args.base_checkpoint_dir}_cache', device_map="auto", torch_dtype=torch.bfloat16)
 
@@ -199,6 +198,7 @@ prefix_config = PrefixTuningConfig(
     num_virtual_tokens=args.num_virtual_tokens,
     encoder_hidden_size=model.config.hidden_size
 )
+# model.enable_input_require_grads()
 model = get_peft_model(model, prefix_config)
 
 if args.float16:
@@ -256,6 +256,7 @@ Trainer._maybe_log_save_evaluate = _maybe_log_save_evaluate
 
 saved_model_forward = model.forward
 saved_prefix = copy.deepcopy(model.prompt_encoder.default.embedding.weight.data)
+
 for task in arc_test_tasks:
     task_id = task.name.replace("-0", "")
     if task_id in empty_tasks:
@@ -285,7 +286,7 @@ for task in arc_test_tasks:
     # training
     training_args = TrainingArguments(
         output_dir=output_dir,
-        evaluation_strategy="no",
+        eval_strategy="no",
         save_strategy="epoch",
         learning_rate=args.learning_rate,
         per_device_train_batch_size=args.batch_size,
@@ -303,7 +304,7 @@ for task in arc_test_tasks:
         model=model,
         args=training_args,
         train_dataset=train_dataset,
-        tokenizer=tokenizer,
+        processing_class=tokenizer,
         data_collator=collate_fn,
     )
     trainer.train()

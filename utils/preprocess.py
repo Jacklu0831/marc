@@ -202,24 +202,17 @@ def process_task(
     Nmax: int = 250,
     seed: int = 0,
     num_virtual_tokens: int = 0,
-    include_leave_3: bool = False,
+    extra_leave_n: int = 0,
 ):
     rng = np.random.RandomState(seed)
 
     data = get_formatted_data(
-        task, augmenters, formatter, tokenizer, rng=rng, Nmax=Nmax, leave_n=1, permute_n=permute_n, seed=seed, num_virtual_tokens=num_virtual_tokens,
+        task, augmenters, formatter, tokenizer, rng=rng, Nmax=Nmax, leave_n=1+extra_leave_n, permute_n=permute_n, seed=seed, num_virtual_tokens=num_virtual_tokens,
     )
     if len(data) == Nmax:
         return data
 
     data += get_formatted_data(
-        task, augmenters, formatter, tokenizer, rng=rng, Nmax=Nmax - len(data), leave_n=2, permute_n=permute_n, seed=seed, num_virtual_tokens=num_virtual_tokens,
+        task, augmenters, formatter, tokenizer, rng=rng, Nmax=Nmax - len(data), leave_n=2+extra_leave_n, permute_n=permute_n, seed=seed, num_virtual_tokens=num_virtual_tokens,
     )
-    if len(data) == Nmax:
-        return data
-
-    if include_leave_3:
-        data += get_formatted_data(
-            task, augmenters, formatter, tokenizer, rng=rng, Nmax=Nmax - len(data), leave_n=3, permute_n=permute_n, seed=seed, num_virtual_tokens=num_virtual_tokens,
-        )
     return data

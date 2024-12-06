@@ -12,8 +12,7 @@ python test_time_train_prefix_tuning.py \
     --num_virtual_tokens 1 \
     --learning_rate 5e-3 \
     --new_format \
-    --flash_attn \
-    --float16
+    --flash_attn
 
 # ttt prefix tuning with llama8b ntoken3
 python test_time_train_prefix_tuning.py \
@@ -27,8 +26,7 @@ python test_time_train_prefix_tuning.py \
     --num_virtual_tokens 3 \
     --learning_rate 5e-3 \
     --new_format \
-    --flash_attn \
-    --float16
+    --flash_attn
 
 # ttt prefix tuning with llama8b ntoken5
 python test_time_train_prefix_tuning.py \
@@ -42,8 +40,7 @@ python test_time_train_prefix_tuning.py \
     --num_virtual_tokens 5 \
     --learning_rate 5e-3 \
     --new_format \
-    --flash_attn \
-    --float16
+    --flash_attn
 
 # ttt prefix tuning with llama8b ntoken10
 python test_time_train_prefix_tuning.py \
@@ -57,8 +54,7 @@ python test_time_train_prefix_tuning.py \
     --num_virtual_tokens 10 \
     --learning_rate 5e-3 \
     --new_format \
-    --flash_attn \
-    --float16
+    --flash_attn
 
 # ttt prefix tuning with llama8b ntoken25
 python test_time_train_prefix_tuning.py \
@@ -72,8 +68,7 @@ python test_time_train_prefix_tuning.py \
     --num_virtual_tokens 25 \
     --learning_rate 5e-3 \
     --new_format \
-    --flash_attn \
-    --float16
+    --flash_attn
 
 # ttt prefix tuning with llama8b ntoken50
 python test_time_train_prefix_tuning.py \
@@ -87,8 +82,7 @@ python test_time_train_prefix_tuning.py \
     --num_virtual_tokens 50 \
     --learning_rate 5e-3 \
     --new_format \
-    --flash_attn \
-    --float16
+    --flash_attn
 
 # OOM
 # Submitted batch job 54178737
@@ -113,3 +107,19 @@ python test_time_train_prefix_tuning.py \
 # Submitted batch job 54227267
 # Submitted batch job 54227268
 # Submitted batch job 54227269
+
+# nevermind, do not use flashattn and float16
+# Submitted batch job 54353865
+# Submitted batch job 54353866
+# Submitted batch job 54353867
+# Submitted batch job 54353868
+# Submitted batch job 54353869
+# Submitted batch job 54353870
+
+# nevermind, use flashattn but keep float32
+# Submitted batch job 54354761
+# Submitted batch job 54354762
+# Submitted batch job 54354763
+# Submitted batch job 54354764
+# Submitted batch job 54354765
+# Submitted batch job 54354766
