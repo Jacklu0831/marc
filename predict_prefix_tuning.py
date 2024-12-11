@@ -57,6 +57,7 @@ parser.add_argument("--n_sample", type=int, default=1, help="Number of samples t
 # misc
 parser.add_argument("--experiment_folder", type=str, default="experiments/tti/new/", help="submission folder")
 parser.add_argument("--seed", type=int, default=0, help="Random seed")
+parser.add_argument("--limit_tokens", action="store_true", help="Whether to use the new format or not")
 args = parser.parse_args()
 
 # print args
@@ -228,6 +229,18 @@ terminators = [
     tokenizer.convert_tokens_to_ids("<|eot_id|>")
 ]
 
+max_length, avg_length, max_tokens, avg_tokens = 0, 0, 0, 0
+for text, sampling_params, _, _ in inputs_to_the_engine:
+    find_start = text.find("<|begin_of_text|>") + len("<|begin_of_text|>")
+    text = text[find_start:]
+    inputs = tokenizer(text, return_tensors="pt").to("cuda")
+    avg_length += inputs['input_ids'].shape[1]
+    max_length = max(max_length, inputs['input_ids'].shape[1])
+    max_tokens = max(max_tokens, sampling_params.max_tokens)
+    avg_tokens += sampling_params.max_tokens
+print(f'max input length {max_length} avg input length {avg_length / len(inputs_to_the_engine)}')
+print(f'max gen tokens {max_tokens} avg gen tokens {avg_tokens / len(inputs_to_the_engine)}')
+
 # inference
 print(f"Number of input queries to the engine: {len(inputs_to_the_engine)}")
 outputs_by_key = {}
@@ -243,15 +256,17 @@ for text, sampling_params, pt_request, new_idx in tqdm(inputs_to_the_engine):
     text = text[find_start:]
     # inference
     inputs = tokenizer(text, return_tensors="pt").to("cuda")
+    max_new_tokens = sampling_params.max_tokens
+    if args.limit_tokens:
+        max_new_tokens = min(max_new_tokens, inputs['input_ids'].shape[1])
     outputs = model.generate(
         input_ids=inputs["input_ids"],
         attention_mask=inputs['attention_mask'],
-        max_new_tokens=sampling_params.max_tokens,
+        max_new_tokens=max_new_tokens,
         num_return_sequences=sampling_params.n,
         do_sample=False,
         eos_token_id=terminators,
         # repetition_penalty=sampling_params.repetition_penalty,
-        # eos_token_id=tokenizer.eos_token_id,
         # pad_token_id=tokenizer.eos_token_id,
     )
     input_len = inputs["input_ids"].shape[-1] # BS1

@@ -40,7 +40,7 @@ def get_leave_n_test_task(
             )
             test_tasks.append(permuted_task)
 
-    test_tasks = list(set(test_tasks))
+    test_tasks = list(dict.fromkeys(test_tasks))
 
     augmented_tasks = []
     for augmenter in (Transpose(), Flip(0), Flip(1), Rotate(90), Rotate(180)):
@@ -62,7 +62,7 @@ def get_leave_n_test_task(
 
     # get unique
     test_tasks = augmented_tasks + test_tasks
-    test_tasks = list(set(test_tasks))
+    test_tasks = list(dict.fromkeys(test_tasks))
 
     return test_tasks
 

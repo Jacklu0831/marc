@@ -42,6 +42,7 @@ python test_time_train_prefix_tuning.py \
     --extra_leave_n 1 \
     --flash_attn
 
+# done, takes 4 hrs
 # Submitted batch job 54391627
 # Submitted batch job 54391628
 # Submitted batch job 54391629

@@ -69,3 +69,9 @@ python predict_prefix_tuning.py \
     --solution_file kaggle_dataset/arc-agi_evaluation_solutions_selected.json \
     --include_n=1 \
     --new_format
+
+# Submitted batch job 54401046
+# Submitted batch job 54401047
+# Submitted batch job 54401048
+# Submitted batch job 54401049
+# Submitted batch job 54401050

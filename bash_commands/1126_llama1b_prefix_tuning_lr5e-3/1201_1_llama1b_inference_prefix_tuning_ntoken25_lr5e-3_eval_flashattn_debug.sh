@@ -75,9 +75,12 @@ python predict_prefix_tuning.py \
     --new_format \
     --flash_attn
 
-# numbers look good ~10/80
+# done
 # Submitted batch job 54155323
 # Submitted batch job 54155324
 # Submitted batch job 54155325
 # Submitted batch job 54155326
 # Submitted batch job 54155327
+
+# epoch: 2, 4, 6, 8, 10
+# accuracy: 8, 10, 10, 8, 9

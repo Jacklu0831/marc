@@ -39,6 +39,7 @@ python test_time_train_prefix_tuning.py \
     --new_format \
     --flash_attn
 
+# done
 # Submitted batch job 54381314
 # Submitted batch job 54381315
 # Submitted batch job 54381316

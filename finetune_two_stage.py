@@ -65,6 +65,7 @@ parser.add_argument("--weight_decay", type=float, default=0.01, help="Weight dec
 parser.add_argument("--num_virtual_tokens", type=int, default=25, help="number of virtual tokens")
 parser.add_argument("--reuse_prefix", action="store_true", help="Whether to use the new format or not")
 parser.add_argument("--pt_checkpoints_folder", type=str, default=None, help="Prefix tuning checkpoints folder, if none then base model is used")
+parser.add_argument("--pt_epoch", type=int, default=0, help="Prompt tuning checkpoints folder, if none then base model is used")
 # lora
 parser.add_argument("--lora_rank", type=int, default=128)
 parser.add_argument("--lora_alpha", type=float, default=16.0)
@@ -73,6 +74,7 @@ parser.add_argument('--lora_target_modules', type=str, nargs="+", default=['q_pr
 parser.add_argument("--use_lora", action="store_true", help="Whether to use the new format or not")
 # misc
 parser.add_argument("--experiment_folder", type=str, default="experiments/ttt/new/", help="submission folder")
+parser.add_argument("--save_every", type=int, default=1, help="Random seed")
 parser.add_argument("--seed", type=int, default=0, help="Random seed")
 parser.add_argument("--float16", action="store_true", help="Whether to use the new format or not")
 
@@ -227,6 +229,7 @@ prefix_config = PrefixTuningConfig(
     num_virtual_tokens=args.num_virtual_tokens,
     encoder_hidden_size=model.config.hidden_size
 )
+# model.enable_input_require_grads()
 model = get_peft_model(model, prefix_config)
 # cast float16
 if args.float16:
@@ -252,12 +255,19 @@ print(f'found {count_params(prompt_encoder_params)} prompt encoder params')
 # get pt paths and filter tasks if necessary
 id_to_pt_path = {}
 if args.pt_checkpoints_folder is not None:
+    # load pt paths
     for pt_path in glob.glob(f"{args.pt_checkpoints_folder}/*/checkpoint-epoch*.pt"):
         epoch = int(pt_path[pt_path.rfind('checkpoint-epoch'):][16:-3])
         if epoch == args.pt_epoch:
             pt_id = pt_path.split('/')[-2]
             id_to_pt_path[pt_id] = pt_path
-    assert all(t.name.replace("-0", "") in id_to_pt_path for t in arc_test_tasks)
+    print(f'loaded {len(id_to_pt_path)} pt paths')
+
+    # filter tasks
+    for t in arc_test_tasks:
+        task_id = t.name.replace("-0", "")
+        if task_id not in id_to_pt_path:
+            assert task_id in empty_tasks
 
 ##### END MODEL
 
@@ -270,7 +280,7 @@ saved_model_forward = model.forward
 init_prefix = copy.deepcopy(model.prompt_encoder.default.embedding.weight.data)
 task_id_to_last_prefix = {}
 
-for outer_epoch in range(args.outer_epochs):
+for outer_epoch in range(1, args.outer_epochs + 1):
     print(f'\nBEGINNING EPOCH {outer_epoch}')
 
     for task in arc_test_tasks:
@@ -298,7 +308,7 @@ for outer_epoch in range(args.outer_epochs):
         ##### BEGIN STAGE ONE
         print("\nbegin stage one...")
 
-        if outer_epoch == 0 or not args.reuse_prefix:
+        if outer_epoch == 1 or not args.reuse_prefix:
             if args.pt_checkpoints_folder is not None:
                 loaded_prefix = torch.load(id_to_pt_path[task_id], weights_only=True).to(model.device)
                 assert model.prompt_encoder.default.embedding.weight.data.shape == loaded_prefix.shape
@@ -393,14 +403,15 @@ for outer_epoch in range(args.outer_epochs):
         model.forward = saved_model_forward
         ##### END STAGE TWO
 
-    output_path = os.path.join(args.experiment_folder, f'checkpoint-outer-epoch{outer_epoch}.pt')
-    if args.use_lora:
-        lora_state_dict = {n: p for n, p in model.state_dict().items() if "lora" in n}
-        torch.save(lora_state_dict, output_path)
-        print('lora saved to', output_path)
-    else:
-        unet_state_dict = {n: p for n, p in model.state_dict().items() if "prompt_encoder" not in n}
-        torch.save(unet_state_dict, output_path)
-        print('unet saved to', output_path)
+    if outer_epoch % args.save_every == 0:
+        output_path = os.path.join(args.experiment_folder, f'checkpoint-outer-epoch{outer_epoch}.pt')
+        if args.use_lora:
+            lora_state_dict = {n: p for n, p in model.state_dict().items() if "lora" in n}
+            torch.save(lora_state_dict, output_path)
+            print('lora saved to', output_path)
+        else:
+            unet_state_dict = {n: p for n, p in model.state_dict().items() if "prompt_encoder" not in n}
+            torch.save(unet_state_dict, output_path)
+            print('unet saved to', output_path)
 
 ##### END TRAIN

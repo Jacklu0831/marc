@@ -26,8 +26,9 @@ import torch.nn.functional as F
 from torch.nn.utils.rnn import pad_sequence
 from transformers import AutoModelForCausalLM, TrainingArguments, Trainer
 from datasets import Dataset
-from peft import PrefixTuningConfig, get_peft_model
+from peft import PrefixTuningConfig, LoraConfig, get_peft_model
 from accelerate.utils import set_seed
+import wandb
 
 
 parser = argparse.ArgumentParser(description="Process some integers.")
@@ -56,15 +57,28 @@ parser.add_argument("--weight_decay", type=float, default=0.01, help="Weight dec
 parser.add_argument("--learning_rate", type=float, default=1e-4, help="Learning rate")
 parser.add_argument("--float16", action="store_true", help="Whether to use the new format or not")
 parser.add_argument("--logging_steps", type=int, default=10, help="Batch size")
-# prompt tuning
+parser.add_argument("--lr_scheduler_type", type=str, default='constant', help="Batch size")
+parser.add_argument("--warmup_steps", type=int, default=0, help="Batch size")
+# prefix tuning
 parser.add_argument("--num_virtual_tokens", type=int, default=4, help="number of virtual tokens")
+# lora
+parser.add_argument("--lora_rank", type=int, default=128)
+parser.add_argument("--lora_alpha", type=float, default=16.0)
+parser.add_argument("--lora_dropout", type=float, default=0.0)
+parser.add_argument('--lora_target_modules', type=str, nargs="+", default=['q_proj', 'v_proj', 'gate_proj', 'up_proj', 'down_proj'])
+parser.add_argument("--lora_ckpt", type=str, default=None, help="submission folder")
 # misc
 parser.add_argument("--experiment_folder", type=str, default="experiments/ttt/new/", help="submission folder")
 parser.add_argument("--seed", type=int, default=0, help="Random seed")
+parser.add_argument("--reuse_prefix", action="store_true", help="Whether to use the new format or not")
+parser.add_argument("--wandb", action='store_true', help="whether to log wandb")
+parser.add_argument("--tracker_project_name", type=str, default="arc", help="The `project_name` argument passed to tor.init_trackers")
+
 
 args = parser.parse_args()
 os.makedirs(args.experiment_folder, exist_ok=True)
 set_seed(args.seed)
+
 
 print("#### BEGIN ALL ARGUMENTS ####")
 for arg in vars(args):
@@ -72,8 +86,12 @@ for arg in vars(args):
 print("#### END ALL ARGUMENTS ####\n")
 
 
-
-
+if args.wandb:
+    wandb.init(project=args.tracker_project_name,
+               name=args.experiment_folder.split()[-1],
+               config=dict(vars(args)))
+    wandb.define_metric('Steps')
+    wandb.define_metric("*", step_metric="Steps")
 
 
 ##### BEGIN DATA
@@ -193,6 +211,16 @@ if args.flash_attn:
 else:
     model = AutoModelForCausalLM.from_pretrained(args.base_checkpoint_dir, cache_dir=f'{args.base_checkpoint_dir}_cache', device_map="auto", torch_dtype=torch.bfloat16)
 
+if args.lora_ckpt != None:
+    lora_config = LoraConfig(
+        task_type="CAUSAL_LM",
+        r=args.lora_rank,  # Rank of the LoRA layer
+        lora_alpha=args.lora_alpha,
+        lora_dropout=args.lora_dropout,
+        target_modules=args.lora_target_modules,
+    )
+    model = get_peft_model(model, lora_config)
+# add prefix tuning
 prefix_config = PrefixTuningConfig(
     task_type="CAUSAL_LM",
     num_virtual_tokens=args.num_virtual_tokens,
@@ -200,7 +228,7 @@ prefix_config = PrefixTuningConfig(
 )
 # model.enable_input_require_grads()
 model = get_peft_model(model, prefix_config)
-
+# cast float16
 if args.float16:
     model = model.to(torch.bfloat16)
 
@@ -256,17 +284,21 @@ Trainer._maybe_log_save_evaluate = _maybe_log_save_evaluate
 
 saved_model_forward = model.forward
 saved_prefix = copy.deepcopy(model.prompt_encoder.default.embedding.weight.data)
+num_train_tasks, average_train_loss = 0, 0.0
 
 for task in arc_test_tasks:
     task_id = task.name.replace("-0", "")
     if task_id in empty_tasks:
-            continue
+        continue
 
     output_dir = f"{args.experiment_folder}/{task_id}"
     print(f"Training task {task_id}")
 
     # reset model
-    model.prompt_encoder.default.embedding.weight.data = saved_prefix
+    if args.reuse_prefix:
+        model.prompt_encoder.default.embedding.weight.data = saved_prefix
+    else:
+        model.prompt_encoder.default.embedding.weight.data.copy_(saved_prefix)
     model.prompt_encoder.default.embedding.weight.grad = None
 
     # get dataset
@@ -296,7 +328,8 @@ for task in arc_test_tasks:
         logging_dir=output_dir,
         logging_steps=args.logging_steps,
         report_to="none",
-        lr_scheduler_type='constant',
+        lr_scheduler_type=args.lr_scheduler_type,
+        warmup_steps=args.warmup_steps,
         dataloader_num_workers=args.num_workers,
         bf16=args.flash_attn,
     )
@@ -307,9 +340,25 @@ for task in arc_test_tasks:
         processing_class=tokenizer,
         data_collator=collate_fn,
     )
-    trainer.train()
+    train_out = trainer.train()
+
+    if args.wandb:
+        for step, history in enumerate(trainer.state.log_history[:-1]):
+            step *= args.logging_steps
+            wandb.log({f"train/loss_{task_id}": history['loss'], 'Steps': step})
+
     del trainer
     gc.collect()
     model.forward = saved_model_forward
+
+    # accumulate train loss
+    num_train_tasks += 1
+    average_train_loss += train_out.training_loss
+
+average_train_loss /= num_train_tasks
+print('average train loss across tasks', average_train_loss)
+
+if args.wandb:
+    wandb.log({"train/avg_loss": average_train_loss, 'Steps': 0})
 
 ##### END TRAIN

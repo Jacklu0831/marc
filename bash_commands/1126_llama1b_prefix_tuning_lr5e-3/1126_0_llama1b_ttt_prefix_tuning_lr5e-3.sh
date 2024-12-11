@@ -75,7 +75,7 @@ python test_time_train_prefix_tuning.py \
 
 # Submitted batch job 54049799
 # Submitted batch job 54049800
-# Submitted batch job 54049801
+# Submitted batch job 54049801 <- 25token
 # Submitted batch job 54049802
 # Submitted batch job 54049803
 # Submitted batch job 54049804
