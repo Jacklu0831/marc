@@ -63,3 +63,9 @@ python test_time_train_prefix_tuning.py \
     --lr_scheduler_type cosine \
     --warmup_steps 5 \
     --wandb
+
+# done
+# Submitted batch job 54649688
+# Submitted batch job 54649689
+# Submitted batch job 54649690
+# Submitted batch job 54649691

@@ -64,7 +64,8 @@ python test_time_train_prefix_tuning.py \
     --warmup_steps 5 \
     --wandb
 
-# Submitted batch job 54648658
-# Submitted batch job 54648659
-# Submitted batch job 54648660
-# Submitted batch job 54648661
+# done
+# Submitted batch job 54649218
+# Submitted batch job 54649219
+# Submitted batch job 54649220
+# Submitted batch job 54649221

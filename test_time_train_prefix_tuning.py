@@ -49,6 +49,8 @@ parser.add_argument("--max_tokens", type=int, default=8192, help="Max tokens")
 parser.add_argument("--num_tasks", type=int, default=10000, help="Number of tasks to process for limited evaluation.")
 parser.add_argument("--num_max_per_task", type=int, default=250, help="Number of tasks to process for limited evaluation.")
 parser.add_argument("--extra_leave_n", type=int, default=0, help="Train on input setting")
+parser.add_argument("--div", type=int, default=1, help="Train on input setting")
+parser.add_argument("--mod", type=int, default=0, help="Train on input setting")
 # train args
 parser.add_argument("--epochs", type=int, default=2, help="Number of epochs")
 parser.add_argument("--batch_size", type=int, default=2, help="Batch size")
@@ -99,6 +101,7 @@ if args.wandb:
 arc_test_tasks = read_tasks_from_single_file(args.data_file, test=True)
 arc_test_tasks = [task for task in arc_test_tasks if "-0" in task.name]
 arc_test_tasks = arc_test_tasks[: args.num_tasks]
+arc_test_tasks = [task for i, task in enumerate(arc_test_tasks) if i % args.div == args.mod]
 arc_test_ids = [task.name.replace("-0", "") for task in arc_test_tasks]
 print("Number of train tasks: ", len(arc_test_tasks))
 
