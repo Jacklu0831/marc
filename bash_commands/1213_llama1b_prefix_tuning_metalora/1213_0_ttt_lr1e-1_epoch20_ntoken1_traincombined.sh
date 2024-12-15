@@ -6,6 +6,7 @@ python test_time_train_prefix_tuning.py \
     --base_checkpoint_dir downloaded_models/meta-llama/Llama-3.2-1B-Instruct \
     --experiment_folder train_outputs/1213_0_ttt_lr1e-1_epoch20_ntoken1_traincombined \
     --data_file kaggle_dataset/arc-agi_training_combined.json \
+    --extra_leave_n 1 \
     --batch_size 2 \
     --epochs 20 \
     --num_virtual_tokens 1 \
@@ -24,6 +25,7 @@ python test_time_train_prefix_tuning.py \
     --base_checkpoint_dir downloaded_models/meta-llama/Llama-3.2-1B-Instruct \
     --experiment_folder train_outputs/1213_0_ttt_lr1e-1_epoch20_ntoken1_traincombined \
     --data_file kaggle_dataset/arc-agi_training_combined.json \
+    --extra_leave_n 1 \
     --batch_size 2 \
     --epochs 20 \
     --num_virtual_tokens 1 \
@@ -42,6 +44,7 @@ python test_time_train_prefix_tuning.py \
     --base_checkpoint_dir downloaded_models/meta-llama/Llama-3.2-1B-Instruct \
     --experiment_folder train_outputs/1213_0_ttt_lr1e-1_epoch20_ntoken1_traincombined \
     --data_file kaggle_dataset/arc-agi_training_combined.json \
+    --extra_leave_n 1 \
     --batch_size 2 \
     --epochs 20 \
     --num_virtual_tokens 1 \
@@ -60,6 +63,7 @@ python test_time_train_prefix_tuning.py \
     --base_checkpoint_dir downloaded_models/meta-llama/Llama-3.2-1B-Instruct \
     --experiment_folder train_outputs/1213_0_ttt_lr1e-1_epoch20_ntoken1_traincombined \
     --data_file kaggle_dataset/arc-agi_training_combined.json \
+    --extra_leave_n 1 \
     --batch_size 2 \
     --epochs 20 \
     --num_virtual_tokens 1 \
@@ -78,6 +82,7 @@ python test_time_train_prefix_tuning.py \
     --base_checkpoint_dir downloaded_models/meta-llama/Llama-3.2-1B-Instruct \
     --experiment_folder train_outputs/1213_0_ttt_lr1e-1_epoch20_ntoken1_traincombined \
     --data_file kaggle_dataset/arc-agi_training_combined.json \
+    --extra_leave_n 1 \
     --batch_size 2 \
     --epochs 20 \
     --num_virtual_tokens 1 \
@@ -96,6 +101,7 @@ python test_time_train_prefix_tuning.py \
     --base_checkpoint_dir downloaded_models/meta-llama/Llama-3.2-1B-Instruct \
     --experiment_folder train_outputs/1213_0_ttt_lr1e-1_epoch20_ntoken1_traincombined \
     --data_file kaggle_dataset/arc-agi_training_combined.json \
+    --extra_leave_n 1 \
     --batch_size 2 \
     --epochs 20 \
     --num_virtual_tokens 1 \
@@ -114,6 +120,7 @@ python test_time_train_prefix_tuning.py \
     --base_checkpoint_dir downloaded_models/meta-llama/Llama-3.2-1B-Instruct \
     --experiment_folder train_outputs/1213_0_ttt_lr1e-1_epoch20_ntoken1_traincombined \
     --data_file kaggle_dataset/arc-agi_training_combined.json \
+    --extra_leave_n 1 \
     --batch_size 2 \
     --epochs 20 \
     --num_virtual_tokens 1 \
@@ -132,6 +139,7 @@ python test_time_train_prefix_tuning.py \
     --base_checkpoint_dir downloaded_models/meta-llama/Llama-3.2-1B-Instruct \
     --experiment_folder train_outputs/1213_0_ttt_lr1e-1_epoch20_ntoken1_traincombined \
     --data_file kaggle_dataset/arc-agi_training_combined.json \
+    --extra_leave_n 1 \
     --batch_size 2 \
     --epochs 20 \
     --num_virtual_tokens 1 \
@@ -150,6 +158,7 @@ python test_time_train_prefix_tuning.py \
     --base_checkpoint_dir downloaded_models/meta-llama/Llama-3.2-1B-Instruct \
     --experiment_folder train_outputs/1213_0_ttt_lr1e-1_epoch20_ntoken1_traincombined \
     --data_file kaggle_dataset/arc-agi_training_combined.json \
+    --extra_leave_n 1 \
     --batch_size 2 \
     --epochs 20 \
     --num_virtual_tokens 1 \
@@ -168,6 +177,7 @@ python test_time_train_prefix_tuning.py \
     --base_checkpoint_dir downloaded_models/meta-llama/Llama-3.2-1B-Instruct \
     --experiment_folder train_outputs/1213_0_ttt_lr1e-1_epoch20_ntoken1_traincombined \
     --data_file kaggle_dataset/arc-agi_training_combined.json \
+    --extra_leave_n 1 \
     --batch_size 2 \
     --epochs 20 \
     --num_virtual_tokens 1 \
@@ -180,13 +190,13 @@ python test_time_train_prefix_tuning.py \
     --div 10 \
     --mod 9
 
-# Submitted batch job 54814020
-# Submitted batch job 54814021
-# Submitted batch job 54814022
-# Submitted batch job 54814023
-# Submitted batch job 54814024
-# Submitted batch job 54814025
-# Submitted batch job 54814026
-# Submitted batch job 54814027
-# Submitted batch job 54814028
-# Submitted batch job 54814029
+# Submitted batch job 54841282
+# Submitted batch job 54841283
+# Submitted batch job 54841284
+# Submitted batch job 54841285
+# Submitted batch job 54841286
+# Submitted batch job 54841287
+# Submitted batch job 54841288
+# Submitted batch job 54841289
+# Submitted batch job 54841290
+# Submitted batch job 54841291

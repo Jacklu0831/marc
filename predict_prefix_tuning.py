@@ -2,6 +2,7 @@ import argparse
 import glob
 import json
 import os
+os.system('nvidia-smi')
 from tqdm import tqdm
 
 import numpy as np

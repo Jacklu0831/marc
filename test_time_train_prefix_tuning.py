@@ -3,6 +3,7 @@ import copy
 import functools
 import json
 import os
+os.system('nvidia-smi')
 from multiprocessing import Pool
 from typing import Dict
 import gc
@@ -358,9 +359,9 @@ for task in arc_test_tasks:
     num_train_tasks += 1
     average_train_loss += train_out.training_loss
 
+# log avg loss
 average_train_loss /= num_train_tasks
 print('average train loss across tasks', average_train_loss)
-
 if args.wandb:
     wandb.log({"train/avg_loss": average_train_loss, 'Steps': 0})
 

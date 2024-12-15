@@ -1,12 +1,12 @@
+from collections import Counter
 import glob
 import argparse
 import copy
 import functools
 import json
 import os
+os.system('nvidia-smi')
 from multiprocessing import Pool
-import random
-import numpy as np
 import gc
 
 import torch
@@ -30,6 +30,8 @@ from transformers import AutoModelForCausalLM, TrainingArguments, Trainer
 from datasets import Dataset
 from peft import PrefixTuningConfig, LoraConfig, get_peft_model
 
+from accelerate.utils import set_seed
+import wandb
 
 
 parser = argparse.ArgumentParser(description="Process some integers.")
@@ -77,13 +79,13 @@ parser.add_argument("--experiment_folder", type=str, default="experiments/ttt/ne
 parser.add_argument("--save_every", type=int, default=1, help="Random seed")
 parser.add_argument("--seed", type=int, default=0, help="Random seed")
 parser.add_argument("--float16", action="store_true", help="Whether to use the new format or not")
+parser.add_argument("--wandb", action='store_true', help="whether to log wandb")
+parser.add_argument("--tracker_project_name", type=str, default="arc", help="The `project_name` argument passed to tor.init_trackers")
 
 
 args = parser.parse_args()
 os.makedirs(args.experiment_folder, exist_ok=True)
-random.seed(args.seed)
-np.random.seed(args.seed)
-torch.manual_seed(args.seed)
+set_seed(args.seed)
 
 print("#### BEGIN ALL ARGUMENTS ####")
 for arg in vars(args):
@@ -91,8 +93,12 @@ for arg in vars(args):
 print("#### END ALL ARGUMENTS ####\n")
 
 
-
-
+if args.wandb:
+    wandb.init(project=args.tracker_project_name,
+               name=args.experiment_folder.split()[-1],
+               config=dict(vars(args)))
+    wandb.define_metric('Steps')
+    wandb.define_metric("*", step_metric="Steps")
 
 
 ##### BEGIN DATA
@@ -280,8 +286,11 @@ saved_model_forward = model.forward
 init_prefix = copy.deepcopy(model.prompt_encoder.default.embedding.weight.data)
 task_id_to_last_prefix = {}
 
+task_to_step = Counter()
+
 for outer_epoch in range(1, args.outer_epochs + 1):
     print(f'\nBEGINNING EPOCH {outer_epoch}')
+    num_train_tasks, average_train1_loss, average_train2_loss = 0, 0.0, 0.0
 
     for task in arc_test_tasks:
         task_id = task.name.replace("-0", "")
@@ -338,7 +347,7 @@ for outer_epoch in range(1, args.outer_epochs + 1):
             max_steps=args.prefix_steps,
             weight_decay=args.weight_decay,
             logging_dir=output_dir,
-            logging_steps=args.logging_steps,
+            logging_steps=min(args.logging_steps, args.prefix_steps),
             report_to="none",
             lr_scheduler_type='constant',
             dataloader_num_workers=args.num_workers,
@@ -351,7 +360,12 @@ for outer_epoch in range(1, args.outer_epochs + 1):
             processing_class=tokenizer,
             data_collator=collate_fn,
         )
-        trainer1.train()
+        train_out1 = trainer1.train()
+
+        if args.wandb:
+            for history in trainer1.state.log_history[:-1]:
+                wandb.log({f"train/loss_{task_id}": history['loss'], 'Steps': task_to_step[task_id]})
+                task_to_step[task_id] += args.logging_steps
 
         del trainer1
         gc.collect()
@@ -383,7 +397,7 @@ for outer_epoch in range(1, args.outer_epochs + 1):
             max_steps=args.net_steps,
             weight_decay=args.weight_decay,
             logging_dir=output_dir,
-            logging_steps=args.logging_steps,
+            logging_steps=min(args.logging_steps, args.net_steps),
             report_to="none",
             lr_scheduler_type='constant',
             dataloader_num_workers=args.num_workers,
@@ -396,13 +410,33 @@ for outer_epoch in range(1, args.outer_epochs + 1):
             processing_class=tokenizer,
             data_collator=collate_fn,
         )
-        trainer2.train()
+        train_out2 = trainer2.train()
+
+        if args.wandb:
+            for history in trainer2.state.log_history[:-1]:
+                wandb.log({f"train/loss_{task_id}": history['loss'], 'Steps': task_to_step[task_id]})
+                task_to_step[task_id] += args.logging_steps
 
         del trainer2
         gc.collect()
         model.forward = saved_model_forward
+
+        # accumulate train loss
+        num_train_tasks += 1
+        average_train1_loss += train_out1.training_loss
+        average_train2_loss += train_out2.training_loss
         ##### END STAGE TWO
 
+    # log avg losses
+    average_train1_loss /= num_train_tasks
+    average_train2_loss /= num_train_tasks
+    print('average train1 loss across tasks', average_train1_loss)
+    print('average train2 loss across tasks', average_train2_loss)
+    if args.wandb:
+        wandb.log({"train/avg_loss1": average_train1_loss, 'Steps': outer_epoch})
+        wandb.log({"train/avg_loss2": average_train2_loss, 'Steps': outer_epoch})
+
+    # save lora
     if outer_epoch % args.save_every == 0:
         output_path = os.path.join(args.experiment_folder, f'checkpoint-outer-epoch{outer_epoch}.pt')
         if args.use_lora:
