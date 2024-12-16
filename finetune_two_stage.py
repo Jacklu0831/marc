@@ -27,7 +27,6 @@ import torch
 import torch.nn.functional as F
 from torch.nn.utils.rnn import pad_sequence
 from transformers import AutoModelForCausalLM, TrainingArguments, Trainer
-from datasets import Dataset
 from peft import PrefixTuningConfig, LoraConfig, get_peft_model
 
 from accelerate.utils import set_seed
@@ -289,7 +288,7 @@ task_id_to_last_prefix = {}
 task_to_step = Counter()
 
 for outer_epoch in range(1, args.outer_epochs + 1):
-    print(f'\nBEGINNING EPOCH {outer_epoch}')
+    print(f'\n################# BEGINNING EPOCH {outer_epoch} #################')
     num_train_tasks, average_train1_loss, average_train2_loss = 0, 0.0, 0.0
 
     for task in arc_test_tasks:
@@ -298,24 +297,19 @@ for outer_epoch in range(1, args.outer_epochs + 1):
             continue
 
         output_dir = f"{args.experiment_folder}/{task_id}"
-        print(f"Training task {task_id}")
+        print(f"\nTraining task {task_id}")
 
         # get dataset
-        ds = arc_dataset(
+        train_dataset = arc_dataset(
             tokenizer=tokenizer,
             source=output_dir,
             train_on_input=args.train_on_input,
             unmask_outputs=args.unmask_outputs,
+            change_dataset_key=True,
         )
-        all_input_ids, all_label = [], []
-        for i in range(len(ds)):
-            data = ds[i]
-            all_input_ids.append(data['tokens'])
-            all_label.append(data['labels'])
-        train_dataset = Dataset.from_dict({'input_ids': all_input_ids, 'labels': all_label})
 
         ##### BEGIN STAGE ONE
-        print("\nbegin stage one...")
+        print("begin stage one...")
 
         if outer_epoch == 1 or not args.reuse_prefix:
             if args.pt_checkpoints_folder is not None:
@@ -382,7 +376,7 @@ for outer_epoch in range(1, args.outer_epochs + 1):
         ##### END STAGE ONE
 
         ##### BEGIN STAGE TWO
-        print("\nbegin stage two...")
+        print("begin stage two...")
         set_requires_grad(net_params, True)
         set_requires_grad(prompt_encoder_params, False)
         for p in model.parameters(): p.grad = None

@@ -152,6 +152,7 @@ python test_time_train_prefix_tuning.py \
     --div 2 \
     --mod 1
 
+# done
 # Submitted batch job 54820639
 # Submitted batch job 54820640
 # Submitted batch job 54820641

@@ -170,3 +170,4 @@ inference_outputs/
 depre/
 sbatch_files/
 slurm_outs/
+*.jpg

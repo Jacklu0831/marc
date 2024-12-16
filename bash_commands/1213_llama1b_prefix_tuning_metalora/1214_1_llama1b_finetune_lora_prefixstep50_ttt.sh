@@ -12,46 +12,45 @@ python test_time_train_prefix_tuning.py \
     --num_virtual_tokens 1 \
     --learning_rate 1e-1 \
     --new_format \
-    --flash_attn
+    --flash_attn \
+    --lr_scheduler_type cosine \
+    --warmup_steps 5 \
+    --wandb
 
-# ttt prefix tuning 50prefixstep loraepoch5
+# ttt prefix tuning 50prefixstep loraepoch3
 python test_time_train_prefix_tuning.py \
     --tokenizer_path downloaded_models/meta-llama/Llama-3.2-1B-Instruct/original/tokenizer.model \
     --base_checkpoint_dir downloaded_models/meta-llama/Llama-3.2-1B-Instruct \
-    --experiment_folder train_outputs/1214_1_llama1b_finetune_lora_prefixstep50_ttt_loraepoch5 \
-    --lora_ckpt train_outputs/1214_0_llama1b_finetune_lora_two_stage_50prefixstep/checkpoint-outer-epoch5.pt \
+    --experiment_folder train_outputs/1214_1_llama1b_finetune_lora_prefixstep50_ttt_loraepoch3 \
+    --lora_ckpt train_outputs/1214_0_llama1b_finetune_lora_two_stage_50prefixstep/checkpoint-outer-epoch3.pt \
     --data_file kaggle_dataset/arc-agi_evaluation_challenges_selected.json \
     --batch_size 2 \
     --epochs 20 \
     --num_virtual_tokens 1 \
     --learning_rate 1e-1 \
     --new_format \
-    --flash_attn
+    --flash_attn \
+    --lr_scheduler_type cosine \
+    --warmup_steps 5 \
+    --wandb
 
-# ttt prefix tuning 50prefixstep loraepoch10
+# ttt prefix tuning 50prefixstep loraepoch6
 python test_time_train_prefix_tuning.py \
     --tokenizer_path downloaded_models/meta-llama/Llama-3.2-1B-Instruct/original/tokenizer.model \
     --base_checkpoint_dir downloaded_models/meta-llama/Llama-3.2-1B-Instruct \
-    --experiment_folder train_outputs/1214_1_llama1b_finetune_lora_prefixstep50_ttt_loraepoch10 \
-    --lora_ckpt train_outputs/1214_0_llama1b_finetune_lora_two_stage_50prefixstep/checkpoint-outer-epoch10.pt \
+    --experiment_folder train_outputs/1214_1_llama1b_finetune_lora_prefixstep50_ttt_loraepoch6 \
+    --lora_ckpt train_outputs/1214_0_llama1b_finetune_lora_two_stage_50prefixstep/checkpoint-outer-epoch6.pt \
     --data_file kaggle_dataset/arc-agi_evaluation_challenges_selected.json \
     --batch_size 2 \
     --epochs 20 \
     --num_virtual_tokens 1 \
     --learning_rate 1e-1 \
     --new_format \
-    --flash_attn
+    --flash_attn \
+    --lr_scheduler_type cosine \
+    --warmup_steps 5 \
+    --wandb
 
-# ttt prefix tuning 50prefixstep loraepoch15
-python test_time_train_prefix_tuning.py \
-    --tokenizer_path downloaded_models/meta-llama/Llama-3.2-1B-Instruct/original/tokenizer.model \
-    --base_checkpoint_dir downloaded_models/meta-llama/Llama-3.2-1B-Instruct \
-    --experiment_folder train_outputs/1214_1_llama1b_finetune_lora_prefixstep50_ttt_loraepoch15 \
-    --lora_ckpt train_outputs/1214_0_llama1b_finetune_lora_two_stage_50prefixstep/checkpoint-outer-epoch15.pt \
-    --data_file kaggle_dataset/arc-agi_evaluation_challenges_selected.json \
-    --batch_size 2 \
-    --epochs 20 \
-    --num_virtual_tokens 1 \
-    --learning_rate 1e-1 \
-    --new_format \
-    --flash_attn
+# Submitted batch job 54947072
+# Submitted batch job 54947073
+# Submitted batch job 54947074

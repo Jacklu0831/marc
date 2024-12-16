@@ -15,4 +15,4 @@ python predict_prefix_tuning.py \
     --new_format \
     --flash_attn
 
-# Submitted batch job 54877954
+# Submitted batch job 54877954 # 389/400

@@ -94,6 +94,7 @@ for bash_file in args.bash_files:
             model_dirs_dict[cluster_name] = job_cluster
 
 
+sbatch_paths = []
 for cluster_name, job_cluster in model_dirs_dict.items():
     for job_i, cmd in enumerate(job_cluster):
         # create sbatch content
@@ -104,5 +105,9 @@ for cluster_name, job_cluster in model_dirs_dict.items():
         # save sbatch content
         sbatch_path = os.path.join(args.sbatch_dir, f'{job_name}.sbatch')
         print(sbatch_path)
+        sbatch_paths.append(sbatch_path)
         with open(sbatch_path, 'w') as f:
             f.write(sbatch_content)
+
+for sbatch_path in sbatch_paths:
+    os.system(f'sbatch {sbatch_path}')

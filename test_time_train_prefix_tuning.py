@@ -26,7 +26,6 @@ import torch
 import torch.nn.functional as F
 from torch.nn.utils.rnn import pad_sequence
 from transformers import AutoModelForCausalLM, TrainingArguments, Trainer
-from datasets import Dataset
 from peft import PrefixTuningConfig, LoraConfig, get_peft_model
 from accelerate.utils import set_seed
 import wandb
@@ -91,7 +90,7 @@ print("#### END ALL ARGUMENTS ####\n")
 
 if args.wandb:
     wandb.init(project=args.tracker_project_name,
-               name=args.experiment_folder.split()[-1],
+               name=args.experiment_folder.split('/')[-1],
                config=dict(vars(args)))
     wandb.define_metric('Steps')
     wandb.define_metric("*", step_metric="Steps")
@@ -236,6 +235,15 @@ model = get_peft_model(model, prefix_config)
 if args.float16:
     model = model.to(torch.bfloat16)
 
+# load lora
+if args.lora_ckpt != None:
+    loaded_lora_params = torch.load(args.lora_ckpt, weights_only=True)
+    name_to_model_lora_params = {n: p for n, p in model.named_parameters() if 'lora' in n}
+    assert set(loaded_lora_params) == set(name_to_model_lora_params)
+    for n, p in name_to_model_lora_params.items():
+        assert p.shape == loaded_lora_params[n].shape
+        p.copy_(loaded_lora_params[n])
+
 model.print_trainable_parameters()
 
 ##### END MODEL
@@ -306,18 +314,13 @@ for task in arc_test_tasks:
     model.prompt_encoder.default.embedding.weight.grad = None
 
     # get dataset
-    ds = arc_dataset(
+    train_dataset = arc_dataset(
         tokenizer=tokenizer,
         source=output_dir,
         train_on_input=args.train_on_input,
         unmask_outputs=args.unmask_outputs,
+        change_dataset_key=True,
     )
-    all_input_ids, all_label = [], []
-    for i in range(len(ds)):
-        data = ds[i]
-        all_input_ids.append(data['tokens'])
-        all_label.append(data['labels'])
-    train_dataset = Dataset.from_dict({'input_ids': all_input_ids, 'labels': all_label})
 
     # training
     training_args = TrainingArguments(
