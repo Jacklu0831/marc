@@ -1,10 +1,10 @@
-# python make_sbatch.py --time 48 --bash_files bash_commands/1213_llama8b_prefix_tuning/1213_1_llama8b_inference_search_lr3e-2_epoch20.sh
+# python make_sbatch.py --time 48 --bash_files bash_commands/1213_llama8b_prefix_tuning/1213_1_llama8b_inference_search_lr3e-5_epoch20.sh
 
-# inference search lr3e-2 epoch20 ntoken1
+# inference search lr3e-5 epoch20 ntoken1
 python predict_prefix_tuning.py \
-    --experiment_folder inference_outputs/experiments/1213_1_llama8b_inference_search_lr3e-2_epoch20_ntoken1 \
+    --experiment_folder inference_outputs/experiments/1213_1_llama8b_inference_search_lr3e-5_epoch20_ntoken1 \
     --pretrained_checkpoint downloaded_models/ekinakyurek/marc-8B-finetuned-llama3 \
-    --pt_checkpoints_folder train_outputs/1213_0_llama8b_ttt_search_lr3e-2_epoch20_ntoken1 \
+    --pt_checkpoints_folder train_outputs/1213_0_llama8b_ttt_search_lr3e-5_epoch20_ntoken1 \
     --num_virtual_tokens 1 \
     --pt_epoch 20 \
     --temperature 0.0 \
@@ -16,11 +16,11 @@ python predict_prefix_tuning.py \
     --flash_attn \
     --limit_tokens
 
-# inference search lr3e-2 epoch20 ntoken5
+# inference search lr3e-5 epoch20 ntoken5
 python predict_prefix_tuning.py \
-    --experiment_folder inference_outputs/experiments/1213_1_llama8b_inference_search_lr3e-2_epoch20_ntoken5 \
+    --experiment_folder inference_outputs/experiments/1213_1_llama8b_inference_search_lr3e-5_epoch20_ntoken5 \
     --pretrained_checkpoint downloaded_models/ekinakyurek/marc-8B-finetuned-llama3 \
-    --pt_checkpoints_folder train_outputs/1213_0_llama8b_ttt_search_lr3e-2_epoch20_ntoken5 \
+    --pt_checkpoints_folder train_outputs/1213_0_llama8b_ttt_search_lr3e-5_epoch20_ntoken5 \
     --num_virtual_tokens 5 \
     --pt_epoch 20 \
     --temperature 0.0 \
@@ -32,11 +32,11 @@ python predict_prefix_tuning.py \
     --flash_attn \
     --limit_tokens
 
-# inference search lr3e-2 epoch20 ntoken10
+# inference search lr3e-5 epoch20 ntoken10
 python predict_prefix_tuning.py \
-    --experiment_folder inference_outputs/experiments/1213_1_llama8b_inference_search_lr3e-2_epoch20_ntoken10 \
+    --experiment_folder inference_outputs/experiments/1213_1_llama8b_inference_search_lr3e-5_epoch20_ntoken10 \
     --pretrained_checkpoint downloaded_models/ekinakyurek/marc-8B-finetuned-llama3 \
-    --pt_checkpoints_folder train_outputs/1213_0_llama8b_ttt_search_lr3e-2_epoch20_ntoken10 \
+    --pt_checkpoints_folder train_outputs/1213_0_llama8b_ttt_search_lr3e-5_epoch20_ntoken10 \
     --num_virtual_tokens 10 \
     --pt_epoch 20 \
     --temperature 0.0 \
@@ -48,11 +48,11 @@ python predict_prefix_tuning.py \
     --flash_attn \
     --limit_tokens
 
-# inference search lr3e-2 epoch20 ntoken50
+# inference search lr3e-5 epoch20 ntoken50
 python predict_prefix_tuning.py \
-    --experiment_folder inference_outputs/experiments/1213_1_llama8b_inference_search_lr3e-2_epoch20_ntoken50 \
+    --experiment_folder inference_outputs/experiments/1213_1_llama8b_inference_search_lr3e-5_epoch20_ntoken50 \
     --pretrained_checkpoint downloaded_models/ekinakyurek/marc-8B-finetuned-llama3 \
-    --pt_checkpoints_folder train_outputs/1213_0_llama8b_ttt_search_lr3e-2_epoch20_ntoken50 \
+    --pt_checkpoints_folder train_outputs/1213_0_llama8b_ttt_search_lr3e-5_epoch20_ntoken50 \
     --num_virtual_tokens 50 \
     --pt_epoch 20 \
     --temperature 0.0 \
@@ -64,7 +64,7 @@ python predict_prefix_tuning.py \
     --flash_attn \
     --limit_tokens
 
-# Submitted batch job 54998672
-# Submitted batch job 54998673
-# Submitted batch job 54998674
-# Submitted batch job 54998675
+# Submitted batch job 54903567
+# Submitted batch job 54903568
+# Submitted batch job 54903569
+# Submitted batch job 54903570

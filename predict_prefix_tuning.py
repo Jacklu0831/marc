@@ -44,7 +44,7 @@ parser.add_argument("--include_n", type=int, nargs="+", default=[1], help="Which
 parser.add_argument("--permute_n", type=int, default=2, help="Number of permutations to generate for each leave-n task")
 # model
 parser.add_argument("--pretrained_checkpoint", type=str, default="downloaded_models/meta-llama/Llama-3.2-1B-Instruct", help="path to the pretrained checkpoint")
-parser.add_argument("--pt_checkpoints_folder", type=str, required=True, help="Prefix tuning checkpoints folder, if none then base model is used")
+parser.add_argument("--pt_checkpoints_folder", type=str, default=None, help="Prefix tuning checkpoints folder, if none then base model is used")
 parser.add_argument("--pt_epoch", type=int, default=0, help="Prompt tuning checkpoints folder, if none then base model is used")
 parser.add_argument("--train_mode", action="store_true", help="Whether to use the new format or not")
 parser.add_argument("--flash_attn", action="store_true", help="Whether to use the new format or not")
@@ -123,11 +123,12 @@ else:
 
 # get pt paths and filter tasks if necessary
 id_to_pt_path = {}
-for pt_path in glob.glob(f"{args.pt_checkpoints_folder}/*/checkpoint-epoch*.pt"):
-    epoch = int(pt_path[pt_path.rfind('checkpoint-epoch'):][16:-3])
-    if epoch == args.pt_epoch:
-        pt_id = pt_path.split('/')[-2]
-        id_to_pt_path[pt_id] = pt_path
+if args.pt_checkpoints_folder is not None:
+    for pt_path in glob.glob(f"{args.pt_checkpoints_folder}/*/checkpoint-epoch*.pt"):
+        epoch = int(pt_path[pt_path.rfind('checkpoint-epoch'):][16:-3])
+        if epoch == args.pt_epoch:
+            pt_id = pt_path.split('/')[-2]
+            id_to_pt_path[pt_id] = pt_path
 
 task_name_to_processed_data = get_preprocessed_tasks(
     tasks,
@@ -214,13 +215,14 @@ else:
     model = AutoModelForCausalLM.from_pretrained(args.pretrained_checkpoint, cache_dir=f'{args.pretrained_checkpoint}_cache', device_map="auto", torch_dtype=torch.bfloat16)
 
 # prefix tuning
-prefix_config = PrefixTuningConfig(
-    task_type="CAUSAL_LM",
-    num_virtual_tokens=args.num_virtual_tokens,
-    encoder_hidden_size=model.config.hidden_size,
-    inference_mode=True,
-)
-model = get_peft_model(model, prefix_config)
+if args.pt_checkpoints_folder is not None:
+    prefix_config = PrefixTuningConfig(
+        task_type="CAUSAL_LM",
+        num_virtual_tokens=args.num_virtual_tokens,
+        encoder_hidden_size=model.config.hidden_size,
+        inference_mode=True,
+    )
+    model = get_peft_model(model, prefix_config)
 if args.float16:
     model = model.to(torch.bfloat16)
 model.print_trainable_parameters()
@@ -249,9 +251,10 @@ if not args.train_mode:
     model.eval()
 for text, sampling_params, pt_request, new_idx in tqdm(inputs_to_the_engine):
     # load embeds
-    loaded_embeds = torch.load(pt_request.prompt_adapter_local_path, weights_only=True).to(model.device)
-    assert model.prompt_encoder.default.embedding.weight.data.shape == loaded_embeds.shape
-    model.prompt_encoder.default.embedding.weight.data = loaded_embeds
+    if args.pt_checkpoints_folder is not None:
+        loaded_embeds = torch.load(pt_request.prompt_adapter_local_path, weights_only=True).to(model.device)
+        assert model.prompt_encoder.default.embedding.weight.data.shape == loaded_embeds.shape
+        model.prompt_encoder.default.embedding.weight.data = loaded_embeds
     # text process?
     find_start = text.find("<|begin_of_text|>") + len("<|begin_of_text|>")
     text = text[find_start:]
