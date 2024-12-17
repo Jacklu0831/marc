@@ -24,3 +24,6 @@ python predict.py \
     --max_lora_rank=128 \
     --include_n=1 \
     --new_format
+
+# Submitted batch job 55016974
+# Submitted batch job 55012266 # 16

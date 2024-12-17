@@ -9,7 +9,7 @@ import numpy as np
 import torch
 from transformers import AutoTokenizer, AutoModelForCausalLM
 from vllm.prompt_adapter.request import PromptAdapterRequest
-from peft import get_peft_model, PrefixTuningConfig
+from peft import PrefixTuningConfig, LoraConfig, get_peft_model
 import arclib.messagers
 from arclib.arc import (
     make_submission,
@@ -51,10 +51,16 @@ parser.add_argument("--flash_attn", action="store_true", help="Whether to use th
 parser.add_argument("--float16", action="store_true", help="Whether to use the new format or not")
 # prefix tuning
 parser.add_argument("--num_virtual_tokens", type=int, default=4, help="number of virtual tokens")
-parser.add_argument("--max_tokens", type=int, default=8192, help="Max tokens")
-parser.add_argument("--temperature", type=float, default=0.0, help="Temperature for sampling")
+# lora
+parser.add_argument("--lora_rank", type=int, default=128)
+parser.add_argument("--lora_alpha", type=float, default=16.0)
+parser.add_argument("--lora_dropout", type=float, default=0.0)
+parser.add_argument('--lora_target_modules', type=str, nargs="+", default=['q_proj', 'v_proj', 'gate_proj', 'up_proj', 'down_proj'])
+parser.add_argument("--lora_ckpt", type=str, default=None, help="submission folder")
 # sampling
 parser.add_argument("--n_sample", type=int, default=1, help="Number of samples to generate per input")
+parser.add_argument("--temperature", type=float, default=0.0, help="Temperature for sampling")
+parser.add_argument("--max_tokens", type=int, default=8192, help="Max tokens")
 # misc
 parser.add_argument("--experiment_folder", type=str, default="experiments/tti/new/", help="submission folder")
 parser.add_argument("--seed", type=int, default=0, help="Random seed")
@@ -214,6 +220,15 @@ if args.flash_attn:
 else:
     model = AutoModelForCausalLM.from_pretrained(args.pretrained_checkpoint, cache_dir=f'{args.pretrained_checkpoint}_cache', device_map="auto", torch_dtype=torch.bfloat16)
 
+if args.lora_ckpt != None:
+    lora_config = LoraConfig(
+        task_type="CAUSAL_LM",
+        r=args.lora_rank,  # Rank of the LoRA layer
+        lora_alpha=args.lora_alpha,
+        lora_dropout=args.lora_dropout,
+        target_modules=args.lora_target_modules,
+    )
+    model = get_peft_model(model, lora_config)
 # prefix tuning
 if args.pt_checkpoints_folder is not None:
     prefix_config = PrefixTuningConfig(
@@ -225,7 +240,18 @@ if args.pt_checkpoints_folder is not None:
     model = get_peft_model(model, prefix_config)
 if args.float16:
     model = model.to(torch.bfloat16)
-model.print_trainable_parameters()
+
+# load lora
+if args.lora_ckpt != None:
+    loaded_lora_params = torch.load(args.lora_ckpt, weights_only=True)
+    name_to_model_lora_params = {n: p for n, p in model.named_parameters() if 'lora' in n}
+    assert set(loaded_lora_params) == set(name_to_model_lora_params)
+    for n, p in name_to_model_lora_params.items():
+        assert p.shape == loaded_lora_params[n].shape
+        p.copy_(loaded_lora_params[n])
+
+if args.pt_checkpoints_folder is not None:
+    model.print_trainable_parameters()
 
 terminators = [
     tokenizer.eos_token_id,
