@@ -151,3 +151,13 @@ python test_time_train_prefix_tuning.py \
     --wandb \
     --div 2 \
     --mod 1
+
+# done
+# Submitted batch job 55017873
+# Submitted batch job 55017874
+# Submitted batch job 55017875
+# Submitted batch job 55017876
+# Submitted batch job 55017877
+# Submitted batch job 55017878
+# Submitted batch job 55017879
+# Submitted batch job 55017880

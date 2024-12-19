@@ -84,7 +84,7 @@ python finetune_two_stage.py \
     --pt_epoch 20 \
     --wandb
 
-# Submitted batch job 54940337
-# Submitted batch job 54940339
-# Submitted batch job 54940340
-# Submitted batch job 54940341
+# Submitted batch job 54940337 # 1, finished 66 epochs (day and half)
+# Submitted batch job 54940339 # 5, finished 72 epochs (2 days)
+# Submitted batch job 54940340 # 10, finished 59 epochs (2 days)
+# Submitted batch job 54940341 # 50, finished 20 epochs (2 days)

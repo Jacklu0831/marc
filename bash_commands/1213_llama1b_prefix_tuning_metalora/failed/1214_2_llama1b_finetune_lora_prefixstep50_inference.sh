@@ -14,7 +14,8 @@ python predict_prefix_tuning.py \
     --solution_file kaggle_dataset/arc-agi_evaluation_solutions_selected.json \
     --include_n=1 \
     --new_format \
-    --flash_attn
+    --flash_attn \
+    --limit_tokens
 
 # inference prefix tuning 50prefixstep loraepoch3
 python predict_prefix_tuning.py \
@@ -30,7 +31,8 @@ python predict_prefix_tuning.py \
     --solution_file kaggle_dataset/arc-agi_evaluation_solutions_selected.json \
     --include_n=1 \
     --new_format \
-    --flash_attn
+    --flash_attn \
+    --limit_tokens
 
 # inference prefix tuning 50prefixstep loraepoch6
 python predict_prefix_tuning.py \
@@ -46,8 +48,9 @@ python predict_prefix_tuning.py \
     --solution_file kaggle_dataset/arc-agi_evaluation_solutions_selected.json \
     --include_n=1 \
     --new_format \
-    --flash_attn
+    --flash_attn \
+    --limit_tokens
 
-# Submitted batch job 55017058
-# Submitted batch job 55017059
-# Submitted batch job 55017060
+# Submitted batch job 55017058 # terminated
+# Submitted batch job 55017059 # terminated
+# Submitted batch job 55017060 # terminated

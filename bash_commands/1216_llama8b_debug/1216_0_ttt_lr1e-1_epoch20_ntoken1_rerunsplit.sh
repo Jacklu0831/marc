@@ -38,3 +38,7 @@ python test_time_train_prefix_tuning.py \
 
 # Submitted batch job 55012267
 # Submitted batch job 55012268
+
+# rerun
+# Submitted batch job 55062661
+# Submitted batch job 55062662
