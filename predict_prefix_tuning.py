@@ -65,6 +65,7 @@ parser.add_argument("--max_tokens", type=int, default=8192, help="Max tokens")
 parser.add_argument("--experiment_folder", type=str, default="experiments/tti/new/", help="submission folder")
 parser.add_argument("--seed", type=int, default=0, help="Random seed")
 parser.add_argument("--limit_tokens", action="store_true", help="Whether to use the new format or not")
+parser.add_argument("--debug_identity_lora", action="store_true", help="Whether to use the new format or not")
 args = parser.parse_args()
 
 # print args
@@ -220,7 +221,7 @@ if args.flash_attn:
 else:
     model = AutoModelForCausalLM.from_pretrained(args.pretrained_checkpoint, cache_dir=f'{args.pretrained_checkpoint}_cache', device_map="auto", torch_dtype=torch.bfloat16)
 
-if args.lora_ckpt != None:
+if args.lora_ckpt != None or args.debug_identity_lora:
     lora_config = LoraConfig(
         task_type="CAUSAL_LM",
         r=args.lora_rank,  # Rank of the LoRA layer
@@ -242,7 +243,7 @@ if args.float16:
     model = model.to(torch.bfloat16)
 
 # load lora
-if args.lora_ckpt != None:
+if args.lora_ckpt != None and not args.debug_identity_lora:
     loaded_lora_params = torch.load(args.lora_ckpt, weights_only=True)
     name_to_model_lora_params = {n: p for n, p in model.named_parameters() if 'lora' in n}
     assert set(loaded_lora_params) == set(name_to_model_lora_params)

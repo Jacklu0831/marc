@@ -75,7 +75,7 @@ parser.add_argument("--seed", type=int, default=0, help="Random seed")
 parser.add_argument("--reuse_prefix", action="store_true", help="Whether to use the new format or not")
 parser.add_argument("--wandb", action='store_true', help="whether to log wandb")
 parser.add_argument("--tracker_project_name", type=str, default="arc", help="The `project_name` argument passed to tor.init_trackers")
-
+parser.add_argument("--eval_prefix_on_train", action='store_true', help="whether to log wandb")
 
 args = parser.parse_args()
 os.makedirs(args.experiment_folder, exist_ok=True)
@@ -296,7 +296,7 @@ Trainer._maybe_log_save_evaluate = _maybe_log_save_evaluate
 
 saved_model_forward = model.forward
 saved_prefix = copy.deepcopy(model.prompt_encoder.default.embedding.weight.data)
-num_train_tasks, average_train_loss = 0, 0.0
+num_train_tasks, average_train_loss, average_final_train_loss = 0, 0.0, 0.0
 
 for task in arc_test_tasks:
     task_id = task.name.replace("-0", "")
@@ -325,10 +325,11 @@ for task in arc_test_tasks:
     # training
     training_args = TrainingArguments(
         output_dir=output_dir,
-        eval_strategy="no",
+        eval_strategy='no',
         save_strategy="epoch",
         learning_rate=args.learning_rate,
         per_device_train_batch_size=args.batch_size,
+        per_device_eval_batch_size=args.batch_size,
         gradient_accumulation_steps=args.grad_accum,
         num_train_epochs=args.epochs,
         weight_decay=args.weight_decay,
@@ -347,12 +348,19 @@ for task in arc_test_tasks:
         processing_class=tokenizer,
         data_collator=collate_fn,
     )
+    # train and log
     train_out = trainer.train()
-
     if args.wandb:
         for step, history in enumerate(trainer.state.log_history[:-1]):
             step *= args.logging_steps
             wandb.log({f"train/loss_{task_id}": history['loss'], 'Steps': step})
+    # eval final prefix on train and log
+    if args.eval_prefix_on_train:
+        print(f'Evaluating task {task_id}')
+        final_train_loss = trainer.evaluate(eval_dataset=train_dataset)['eval_loss']
+        average_final_train_loss += final_train_loss
+        if args.wandb:
+            wandb.log({f"eval/train_loss_{task_id}": final_train_loss, 'Steps': 0})
 
     del trainer
     gc.collect()
@@ -367,5 +375,12 @@ average_train_loss /= num_train_tasks
 print('average train loss across tasks', average_train_loss)
 if args.wandb:
     wandb.log({"train/avg_loss": average_train_loss, 'Steps': 0})
+
+if args.eval_prefix_on_train:
+    average_final_train_loss /= num_train_tasks
+    print('average final train loss across tasks', average_final_train_loss)
+    if args.wandb:
+        wandb.log({"eval/avg_train_loss_": average_final_train_loss, 'Steps': 0})
+
 
 ##### END TRAIN

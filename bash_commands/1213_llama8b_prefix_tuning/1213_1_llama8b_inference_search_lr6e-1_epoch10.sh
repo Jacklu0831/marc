@@ -63,3 +63,8 @@ python predict_prefix_tuning.py \
     --new_format \
     --flash_attn \
     --limit_tokens
+
+# Submitted batch job 55162460
+# Submitted batch job 55162461
+# Submitted batch job 55162462
+# Submitted batch job 55162463

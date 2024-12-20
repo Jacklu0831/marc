@@ -51,6 +51,7 @@ parser.add_argument("--max_tokens", type=int, default=8192, help="Max tokens")
 parser.add_argument("--num_tasks", type=int, default=10000, help="Number of tasks to process for limited evaluation.")
 parser.add_argument("--num_max_per_task", type=int, default=250, help="Number of tasks to process for limited evaluation.")
 parser.add_argument("--extra_leave_n", type=int, default=0, help="Train on input setting")
+parser.add_argument("--cache_dataset", action='store_true', help="whether to log wandb")
 # train args
 parser.add_argument("--outer_epochs", type=int, default=10, help="Number of epochs")
 parser.add_argument("--prefix_steps", type=int, default=-1, help="Number of epochs")
@@ -286,6 +287,7 @@ init_prefix = copy.deepcopy(model.prompt_encoder.default.embedding.weight.data)
 task_id_to_last_prefix = {}
 
 task_to_step = Counter()
+task_id_to_dataset = {}
 
 for outer_epoch in range(1, args.outer_epochs + 1):
     print(f'\n################# BEGINNING EPOCH {outer_epoch} #################')
@@ -300,13 +302,15 @@ for outer_epoch in range(1, args.outer_epochs + 1):
         print(f"\nTraining task {task_id}")
 
         # get dataset
-        train_dataset = arc_dataset(
-            tokenizer=tokenizer,
-            source=output_dir,
-            train_on_input=args.train_on_input,
-            unmask_outputs=args.unmask_outputs,
-            change_dataset_key=True,
-        )
+        if task_id not in task_id_to_dataset:
+            task_id_to_dataset[task_id] = arc_dataset(
+                tokenizer=tokenizer,
+                source=output_dir,
+                train_on_input=args.train_on_input,
+                unmask_outputs=args.unmask_outputs,
+                change_dataset_key=True,
+            )
+        train_dataset = task_id_to_dataset[task_id]
 
         ##### BEGIN STAGE ONE
         print("begin stage one...")
@@ -341,7 +345,7 @@ for outer_epoch in range(1, args.outer_epochs + 1):
             max_steps=args.prefix_steps,
             weight_decay=args.weight_decay,
             logging_dir=output_dir,
-            logging_steps=min(args.logging_steps, args.prefix_steps),
+            logging_steps=max(min(args.logging_steps, args.prefix_steps), 1),
             report_to="none",
             lr_scheduler_type='constant',
             dataloader_num_workers=args.num_workers,
@@ -391,7 +395,7 @@ for outer_epoch in range(1, args.outer_epochs + 1):
             max_steps=args.net_steps,
             weight_decay=args.weight_decay,
             logging_dir=output_dir,
-            logging_steps=min(args.logging_steps, args.net_steps),
+            logging_steps=max(min(args.logging_steps, args.net_steps), 1),
             report_to="none",
             lr_scheduler_type='constant',
             dataloader_num_workers=args.num_workers,
@@ -420,6 +424,9 @@ for outer_epoch in range(1, args.outer_epochs + 1):
         average_train1_loss += train_out1.training_loss
         average_train2_loss += train_out2.training_loss
         ##### END STAGE TWO
+
+        if not args.cache_dataset:
+            del task_id_to_dataset[task_id]
 
     # log avg losses
     average_train1_loss /= num_train_tasks
