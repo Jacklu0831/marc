@@ -171,3 +171,6 @@ depre/
 sbatch_files/
 slurm_outs/
 *.jpg
+
+# encoder decoder
+encoder_decoder/outputs

@@ -6,6 +6,7 @@ python test_time_train_prefix_tuning.py \
     --base_checkpoint_dir downloaded_models/ekinakyurek/marc-8B-finetuned-llama3 \
     --experiment_folder train_outputs/1217_0_llama8b_ttt_epoch0 \
     --data_file kaggle_dataset/arc-agi_evaluation_challenges_selected.json \
+    --num_virtual_tokens 1 \
     --batch_size 1 \
     --grad_accum 2 \
     --learning_rate 0.0 \
@@ -14,4 +15,4 @@ python test_time_train_prefix_tuning.py \
     --flash_attn \
     --num_max_per_task 1
 
-# ran locally
+# Submitted batch job 55207105

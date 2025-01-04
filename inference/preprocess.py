@@ -173,3 +173,28 @@ def get_preprocessed_tasks(
             )
 
     return task_name_to_processed_data
+
+
+def get_formatted_tasks(
+    tasks: List[Task],
+    tokenizer: Any,
+    formatters: List,
+    max_tokens: int = 8192,
+    id_to_lora_path: Dict[str, str] = {},
+    id_to_pt_path: Dict[str, str] = {},
+) -> Dict[str, Dict[str, Any]]:
+    task_name_to_processed_data = {}
+    for task in tasks:
+        task_name = task.name
+        task_id = task_name.split("-")[0]
+        if len(id_to_lora_path) > 0 and task_id not in id_to_lora_path:
+            task_name_to_processed_data[task_name] = {"valid": False, "task": task, "queries": []}
+        if len(id_to_pt_path) > 0 and task_id not in id_to_pt_path:
+            task_name_to_processed_data[task_name] = {"valid": False, "task": task, "queries": []}
+        else:
+            assert len(formatters) == 1
+            formatter = formatters[0]
+            task_query = format_and_filter(formatter, tokenizer, task)
+            task_name_to_processed_data[task_name] = {"valid": task_query["total_tokens"] < max_tokens, "task": task, "queries": [task_query]}
+
+    return task_name_to_processed_data

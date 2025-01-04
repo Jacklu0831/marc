@@ -16,4 +16,4 @@ python predict_prefix_tuning.py \
     --flash_attn \
     --limit_tokens
 
-# Submitted batch job 55144779
+# Submitted batch job 55207217 # 0/80, complete jibberish

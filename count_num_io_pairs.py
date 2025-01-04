@@ -2,8 +2,8 @@ import os
 import json
 import matplotlib.pyplot as plt
 
-json_path = 'kaggle_dataset/arc-agi_evaluation_challenges.json'
-json_path = 'kaggle_dataset/arc-agi_training_challenges.json'
+# json_path = 'kaggle_dataset/arc-agi_evaluation_challenges.json' # 2, 7
+json_path = 'kaggle_dataset/arc-agi_training_challenges.json' # 2, 10
 
 tasks = json.load(open(json_path, 'r'))
 min_count, max_count = 1000, 0

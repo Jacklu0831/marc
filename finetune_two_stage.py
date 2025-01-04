@@ -1,3 +1,5 @@
+import numpy as np
+from tqdm import tqdm
 from collections import Counter
 import glob
 import argparse
@@ -14,7 +16,13 @@ from torchtune.models.llama3 import llama3_tokenizer
 from torchtune.datasets import arc_dataset
 
 import arclib.messagers
-from arclib.arc import read_tasks_from_single_file
+from arclib.arc import (
+    make_submission,
+    read_tasks_from_single_file,
+    to_list,
+    to_tuple,
+)
+from arclib.eval import evaluate
 from arclib.messagers import GPTTextMessageRepresenterV2
 from arclib.representers import (
     PythonListGridRepresenter,
@@ -26,11 +34,17 @@ from utils.preprocess import get_augmenters, process_task
 import torch
 import torch.nn.functional as F
 from torch.nn.utils.rnn import pad_sequence
-from transformers import AutoModelForCausalLM, TrainingArguments, Trainer
+from transformers import AutoModelForCausalLM, AutoTokenizer, TrainingArguments, Trainer
+from vllm.prompt_adapter.request import PromptAdapterRequest
 from peft import PrefixTuningConfig, LoraConfig, get_peft_model
 
 from accelerate.utils import set_seed
 import wandb
+
+from arclib.voting import vote
+from inference.engine import get_sampling_params
+from inference.preprocess import get_formatted_tasks
+from accelerate.utils import set_seed
 
 
 parser = argparse.ArgumentParser(description="Process some integers.")
@@ -39,7 +53,8 @@ parser.add_argument("--base_checkpoint_dir", type=str, default="downloaded_model
 parser.add_argument("--tokenizer_path", type=str, default="downloaded_models/meta-llama/Llama-3.2-1B-Instruct/original/tokenizer.model")
 parser.add_argument("--flash_attn", action="store_true", help="Whether to use the new format or not")
 # data
-parser.add_argument("--data_file", type=str, default="kaggle_dataset/arc-agi_training_combined.json")
+parser.add_argument("--data_file", type=str, default="kaggle_dataset/arc-agi_training_challenges.json")
+parser.add_argument("--solution_file", type=str, default="kaggle_dataset/arc-agi_training_solutions.json")
 parser.add_argument("--num_workers", type=int, default=8, help="Number of workers")
 parser.add_argument("--new_format", action="store_true", help="Whether to use the new format or not")
 parser.add_argument("--barc_format", action="store_true", help="Whether to use the barc format or not")
@@ -81,6 +96,8 @@ parser.add_argument("--seed", type=int, default=0, help="Random seed")
 parser.add_argument("--float16", action="store_true", help="Whether to use the new format or not")
 parser.add_argument("--wandb", action='store_true', help="whether to log wandb")
 parser.add_argument("--tracker_project_name", type=str, default="arc", help="The `project_name` argument passed to tor.init_trackers")
+# eval
+parser.add_argument("--eval_every", type=int, default=5, help="Random seed")
 
 
 args = parser.parse_args()
@@ -369,14 +386,13 @@ for outer_epoch in range(1, args.outer_epochs + 1):
         gc.collect()
         model.forward = saved_model_forward
 
-        if args.reuse_prefix:
-            output_path = os.path.join(output_dir, f'prefix-outer-epoch{outer_epoch}.pt')
-            torch.save(model.prompt_encoder.default.embedding.weight.data, output_path)
-            if task_id in task_id_to_last_prefix:
-                os.remove(task_id_to_last_prefix[task_id])
-                print('removed prefix at', task_id_to_last_prefix[task_id])
-            task_id_to_last_prefix[task_id] = output_path
-            print('saved prefix to', output_path)
+        output_path = os.path.join(output_dir, f'prefix-outer-epoch{outer_epoch}.pt')
+        torch.save(model.prompt_encoder.default.embedding.weight.data, output_path)
+        if task_id in task_id_to_last_prefix:
+            os.remove(task_id_to_last_prefix[task_id])
+            print('removed prefix at', task_id_to_last_prefix[task_id])
+        task_id_to_last_prefix[task_id] = output_path
+        print('saved prefix to', output_path)
         ##### END STAGE ONE
 
         ##### BEGIN STAGE TWO
@@ -448,5 +464,212 @@ for outer_epoch in range(1, args.outer_epochs + 1):
             unet_state_dict = {n: p for n, p in model.state_dict().items() if "prompt_encoder" not in n}
             torch.save(unet_state_dict, output_path)
             print('unet saved to', output_path)
+
+    if outer_epoch % args.eval_every == 0:
+        tasks = read_tasks_from_single_file(args.data_file, solution_file=args.solution_file, test=True)
+
+        formatters = []
+        if args.new_format:
+            messager = GPTTextMessageRepresenterV2(
+                task_representer=TextTaskRepresenter(
+                    example_representer=TextExampleRepresenter(
+                        io_sep=" -> ",
+                        input_header="",
+                        output_header="",
+                        output_footer="#",
+                        grid_representer=PythonListGridRepresenter(),
+                    )
+                )
+            )
+            formatters.append(messager)
+        elif args.barc_format:
+            messages = arclib.messagers.GPTTextMessageRepresenterForBarc(
+                task_representer=arclib.representers.TextTaskRepresenter(
+                    example_representer=arclib.representers.TextExampleRepresenter(
+                    grid_representer=arclib.representers.WordGridRepresenter(),
+                    input_header="Input:\n",
+                    output_header="\nOutput:\n",
+                    io_sep="\n"
+                )))
+            formatters.append(messages)
+        else:
+            messager = arclib.messagers.GPTTextMessageRepresenterV2()
+            formatters.append(messager)
+
+        if args.flash_attn:
+            hf_tokenizer = AutoTokenizer.from_pretrained(args.base_checkpoint_dir, cache_dir=f'{args.base_checkpoint_dir}_cache', torch_dtype=torch.bfloat16, attn_implementation="flash_attention_2")
+        else:
+            hf_tokenizer = AutoTokenizer.from_pretrained(args.base_checkpoint_dir, cache_dir=f'{args.base_checkpoint_dir}_cache', torch_dtype=torch.bfloat16)
+
+        id_to_pt_path = task_id_to_last_prefix
+        task_name_to_processed_data = get_formatted_tasks(
+            tasks,
+            hf_tokenizer,
+            formatters,
+            max_tokens=args.max_tokens,
+            id_to_pt_path=id_to_pt_path,
+        )
+        valid_tasks = [info for key, info in task_name_to_processed_data.items() if info["valid"]]
+        invalid_tasks = [info for key, info in task_name_to_processed_data.items() if not info["valid"]]
+
+        # prediction has an extra part
+        for i in range(len(valid_tasks)):
+            for query in valid_tasks[i]['queries']:
+                split_text = query['text'].split('\n')
+                split_text.pop(1)
+                split_text.pop(1)
+                split_text.pop(1)
+                query['text'] = '\n'.join(split_text)
+
+        print("Len of valid tasks:", len(valid_tasks))
+        print("Len of invalid tasks:", len(invalid_tasks))
+        # for each valid task print the length of queries
+        for info in valid_tasks:
+            print(f"{info['task'].name}: Number of Queries: {len(info['queries'])}")
+
+        pt_path_idxs = list(id_to_pt_path.keys())
+
+        # abstract away
+        inputs_to_the_engine = []
+        inputs_to_remember = {}
+        for i, info in enumerate(valid_tasks):
+            name = info["task"].name
+            idx, no = name.split("-")
+            # prompt tuning or no
+            if args.pt_checkpoints_folder is not None:
+                pt_path = id_to_pt_path[idx]
+                # pt_path = os.path.dirname(pt_path)
+                pt_index = pt_path_idxs.index(idx)
+                pt_request = PromptAdapterRequest(
+                    prompt_adapter_name=idx + no,
+                    prompt_adapter_id=pt_index,
+                    prompt_adapter_local_path=pt_path,
+                    prompt_adapter_num_virtual_tokens=args.num_virtual_tokens
+                )
+            else:
+                pt_request = None
+            test_inputs = info["queries"]
+            for j, test_input in enumerate(test_inputs):
+                input_token_length = len(hf_tokenizer.encode(test_input["text"])) - 1
+                sampling_param = get_sampling_params(
+                    hf_tokenizer,
+                    input_token_length,
+                    args.max_tokens,
+                    temperature=0.0,
+                    n=1,
+                )
+                new_idx = name + "-" + str(j)
+                inputs_to_the_engine.append(
+                    (test_input["text"], sampling_param, pt_request, new_idx)
+                )
+                assert new_idx not in inputs_to_remember
+                inputs_to_remember[new_idx] = test_input
+
+        terminators = [
+            hf_tokenizer.eos_token_id,
+            hf_tokenizer.convert_tokens_to_ids("<|eot_id|>")
+        ]
+
+        # inference
+        print(f"Number of input queries to the engine: {len(inputs_to_the_engine)}")
+        outputs_by_key = {}
+        model.eval()
+        for text, sampling_params, pt_request, new_idx in tqdm(inputs_to_the_engine):
+            # load embeds
+            if args.pt_checkpoints_folder is not None:
+                loaded_embeds = torch.load(pt_request.prompt_adapter_local_path, weights_only=True).to(model.device)
+                assert model.prompt_encoder.default.embedding.weight.data.shape == loaded_embeds.shape
+                model.prompt_encoder.default.embedding.weight.data = loaded_embeds
+            # text process?
+            find_start = text.find("<|begin_of_text|>") + len("<|begin_of_text|>")
+            text = text[find_start:]
+            # inference
+            inputs = hf_tokenizer(text, return_tensors="pt").to("cuda")
+            max_new_tokens = sampling_params.max_tokens
+            max_new_tokens = min(max_new_tokens, inputs['input_ids'].shape[1])
+            outputs = model.generate(
+                input_ids=inputs["input_ids"],
+                attention_mask=inputs['attention_mask'],
+                max_new_tokens=max_new_tokens,
+                num_return_sequences=sampling_params.n,
+                do_sample=False,
+                eos_token_id=terminators,
+            )
+            input_len = inputs["input_ids"].shape[-1] # BS1
+            assert all(torch.equal(output[:input_len], inputs['input_ids'][0]) for output in outputs)
+            decoded_outputs = [hf_tokenizer.decode(output[input_len:], skip_special_tokens=True) for output in outputs]
+            outputs_by_key[new_idx] = decoded_outputs
+
+        for key in list(outputs_by_key.keys()):
+            inverter = inputs_to_remember[key]["inverter"]
+            if inverter is not None:
+                inverter_fn = eval("arclib.augmenters." + inverter)
+            else:
+                inverter_fn = np.array
+
+            outputs = outputs_by_key[key]
+            outputs_by_key[key] = []
+            current_formatter_repr = inputs_to_remember[key]["formatter"]
+            input = inputs_to_remember[key]["input"]["content"]
+            current_formatter = eval(current_formatter_repr)
+
+            for output in outputs:
+                output = output.replace("#", "")
+                output = output.replace("  ", " ")
+                if "```" in output:
+                    # get things between ``` and ```
+                    output = output.split("```")[1]
+                    output = output.strip()
+                    input = input.split("Here is the input grid for the test example:\nInput:\n")[-1]
+                    input = input.split("\n\n\nDirectly provide")[0]
+                    input = input.strip()
+
+                try:
+                    decoded = current_formatter.task_representer.example_representer.decode(
+                        (input, output)
+                    )
+                except Exception as e:
+                    continue
+
+                try:
+                    pred = to_tuple(inverter_fn(decoded.output))
+                except Exception as e:
+                    continue
+
+                if decoded is not None:
+                    outputs_by_key[key].append(
+                        {
+                            "output": to_tuple(inverter_fn(decoded.output)),
+                            "inverter": inverter,
+                            "formatter": current_formatter_repr,
+                        }
+                    )
+
+        outputs_by_key = {key: outputs for key, outputs in outputs_by_key.items() if len(outputs) > 0}
+
+        # save
+        all_predictions_file = os.path.join(args.experiment_folder, "all_predictions.json")
+        with open(all_predictions_file, "w") as f:
+            json.dump(outputs_by_key, f)
+
+        outputs = {}
+        for task in tasks:
+            name = task.name
+            to_vote = [out for key, out in outputs_by_key.items() if name in key]
+            to_vote = [out for sublist in to_vote for out in sublist]
+            if len(to_vote) == 0:
+                outputs[name] = [[[0]], [[0]]]
+                continue
+            else:
+                attempt_1, attempt_2 = vote(to_vote)
+                outputs[name] = [to_list(attempt_1), to_list(attempt_2)]
+
+        predictions = [outputs[task.name] for task in tasks]
+        submission_file = os.path.join(args.experiment_folder, "submission.json")
+        make_submission(tasks, predictions, submission_file, number_of_attempts=2)
+        print(f"Submission file is saved to {submission_file}")
+        evaluate(args.data_file, args.solution_file, submission_file)
+
+
 
 ##### END TRAIN
