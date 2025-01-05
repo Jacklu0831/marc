@@ -35,3 +35,8 @@ accelerate launch --mixed_precision bf16 encoder_decoder/train.py \
     --samples_per_epoch 10000 \
     --invar_loss_lambda 0.3 \
     --wandb
+
+# OOM killed
+# Submitted batch job 55573972
+# Submitted batch job 55573973
+# Submitted batch job 55573974

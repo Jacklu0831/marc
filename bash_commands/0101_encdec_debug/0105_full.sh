@@ -1,6 +1,6 @@
 # python make_sbatch.py --time 48 --bash_files bash_commands/0101_encdec_debug/0105_full.sh
 
-# debug invar0.0
+# full invar0.0
 accelerate launch --mixed_precision bf16 encoder_decoder/train.py \
     --tag full_invar0.0 \
     --train_data_dir /scratch/yl11330/re-arc/train_data/tasks \
@@ -12,7 +12,7 @@ accelerate launch --mixed_precision bf16 encoder_decoder/train.py \
     --invar_loss_lambda 0.0 \
     --wandb
 
-# debug invar0.1
+# full invar0.1
 accelerate launch --mixed_precision bf16 encoder_decoder/train.py \
     --tag full_invar0.1 \
     --train_data_dir /scratch/yl11330/re-arc/train_data/tasks \
@@ -24,7 +24,7 @@ accelerate launch --mixed_precision bf16 encoder_decoder/train.py \
     --invar_loss_lambda 0.1 \
     --wandb
 
-# debug invar0.3
+# full invar0.3
 accelerate launch --mixed_precision bf16 encoder_decoder/train.py \
     --tag full_invar0.3 \
     --train_data_dir /scratch/yl11330/re-arc/train_data/tasks \
@@ -35,3 +35,7 @@ accelerate launch --mixed_precision bf16 encoder_decoder/train.py \
     --samples_per_epoch 20000 \
     --invar_loss_lambda 0.3 \
     --wandb
+
+# Submitted batch job 55573969
+# Submitted batch job 55573970
+# Submitted batch job 55573971

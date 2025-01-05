@@ -590,19 +590,19 @@ def main():
                 lr_scheduler.step()
                 optimizer.zero_grad()
 
-                if accelerator.sync_gradients:
-                    progress_bar.update(1)
-                    global_step += 1
-                    accelerator.log({
-                        "train/ce_loss": ce_loss_accum,
-                        "train/invar_loss": invar_loss_accum,
-                        "train/total_loss": total_loss_accum,
-                        "train/lr_embedding": lr_scheduler.get_last_lr()[0],
-                        "train/lr_other": lr_scheduler.get_last_lr()[1]
-                    }, step=global_step)
-                    ce_loss_accum = 0.0
-                    invar_loss_accum = 0.0
-                    total_loss_accum = 0.0
+            if accelerator.sync_gradients:
+                progress_bar.update(1)
+                global_step += 1
+                accelerator.log({
+                    "train/ce_loss": ce_loss_accum,
+                    "train/invar_loss": invar_loss_accum,
+                    "train/total_loss": total_loss_accum,
+                    "train/lr_embedding": lr_scheduler.get_last_lr()[0],
+                    "train/lr_other": lr_scheduler.get_last_lr()[1]
+                }, step=global_step)
+                ce_loss_accum = 0.0
+                invar_loss_accum = 0.0
+                total_loss_accum = 0.0
 
         # Evaluate every N epochs
         if (epoch + 1) % args.eval_epochs == 0:
