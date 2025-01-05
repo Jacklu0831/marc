@@ -1,5 +1,6 @@
 # data_utils.py
 
+import copy
 import os
 import json
 import random
@@ -227,7 +228,7 @@ def collate_fn_train(batch, dataset: "TrainDataset", debug_fixed_train_order: bo
 
     while len(out_list) < batch_size:
         # Pick a random task
-        task_id = random.choice(dataset.all_task_ids)
+        task_id = dataset.rng.choice(dataset.all_task_ids)
         pairs_for_task = dataset.tasks_dict[task_id]
 
         # We'll attempt to produce exactly 2 examples from this single task
@@ -239,15 +240,15 @@ def collate_fn_train(batch, dataset: "TrainDataset", debug_fixed_train_order: bo
                 break
 
             # sample task
-            if debug_fixed_train_order:
-                chosen_pairs = pairs_for_task[:required_count]
-            else:
-                chosen_pairs = random.sample(pairs_for_task, required_count)
+            chosen_pairs = pairs_for_task[:required_count]
+            if not debug_fixed_train_order:
+                chosen_pairs = dataset.rng.choice(pairs_for_task, size=required_count, replace=False)
+            chosen_pairs = copy.deepcopy(chosen_pairs)
 
             # apply augmentation
-            if random.random() < dataset.augment_ratio:
-                augmenter = random.choice(dataset.augmenters)
-                io_augmentation_choice = random.choice(['input_only', 'output_only', 'both'])
+            if dataset.rng.rand() < dataset.augment_ratio:
+                augmenter = dataset.rng.choice(dataset.augmenters)
+                io_augmentation_choice = dataset.rng.choice(['input_only', 'output_only', 'both'])
                 for pair in chosen_pairs:
                     if io_augmentation_choice in ['input_only', 'both']:
                         pair['input'] = augmenter.apply_to_grid(np.array(pair['input']), dataset.rng)
@@ -259,37 +260,32 @@ def collate_fn_train(batch, dataset: "TrainDataset", debug_fixed_train_order: bo
             if any(len(pair['input'][0]) > 30 or len(pair['output'][0]) > 30 for pair in chosen_pairs):
                 break
 
-            prefix_pairs = chosen_pairs[:prefix_count]
-            extra_pair = chosen_pairs[prefix_count]
+            train_pairs = chosen_pairs[:prefix_count]
+            test_pair = chosen_pairs[prefix_count]
 
             prefix_texts = []
-            for pair in prefix_pairs:
+            for pair in train_pairs:
                 prefix_texts.append(grid_to_text(pair["input"], True))
                 prefix_texts.append(grid_to_text(pair["output"], False))
             encoder_text = "\n".join(prefix_texts) + "[CLS]"
 
-            extra_input_text  = grid_to_text(extra_pair["input"], True)
-            extra_output_text = grid_to_text(extra_pair["output"], False)
+            dec_in_text  = grid_to_text(test_pair["input"], True)
+            dec_out_text = grid_to_text(test_pair["output"], False)
 
             # tiny optimization to include output:\n in input
-            extra_input_text = extra_input_text + "\n" + extra_output_text[:len("output:\n")]
-            extra_output_text = extra_output_text[len("output:\n"):]
-            extra_output_text += "<|eot_id|>"
+            assert dec_out_text.startswith("output:\n")
+            dec_in_text = dec_in_text + "\n" + dec_out_text[:len("output:\n")]
+            dec_out_text = dec_out_text[len("output:\n"):]
+            dec_out_text += "<|eot_id|>"
 
             enc_tokens = dataset.encoder_tokenizer(encoder_text, return_tensors="pt", truncation=False)
             assert all(t[-1].item() == dataset.encoder_tokenizer.cls_token_id for t in enc_tokens["input_ids"])
-            dec_in_tokens  = dataset.decoder_tokenizer(extra_input_text, return_tensors="pt", truncation=False)
-            dec_out_tokens = dataset.decoder_tokenizer(extra_output_text, return_tensors="pt", truncation=False)
+            dec_in_tokens  = dataset.decoder_tokenizer(dec_in_text, return_tensors="pt", truncation=False)
+            dec_out_tokens = dataset.decoder_tokenizer(dec_out_text, return_tensors="pt", truncation=False)
             assert all(t[-1].item() == dataset.decoder_tokenizer.eos_token_id for t in dec_out_tokens["input_ids"])
             # remove begin of sentence of dec_out_tokens
             dec_out_tokens['input_ids'] = dec_out_tokens['input_ids'][:, 1:]
             dec_out_tokens['attention_mask'] = dec_out_tokens['attention_mask'][:, 1:]
-
-            # Check length
-            enc_len = enc_tokens["input_ids"].shape[1]
-            dec_len = dec_in_tokens["input_ids"].shape[1] + dec_out_tokens["input_ids"].shape[1]
-            if enc_len > dataset.max_seq_len or dec_len > dataset.max_seq_len // 2: # dec_len should be short
-                break
 
             # Build final decoder input + labels
             decoder_input_ids = torch.cat([
@@ -304,6 +300,10 @@ def collate_fn_train(batch, dataset: "TrainDataset", debug_fixed_train_order: bo
                 dec_in_tokens["attention_mask"].squeeze(0),
                 dec_out_tokens["attention_mask"].squeeze(0),
             ], dim=0)
+
+            # Check length
+            if enc_tokens["input_ids"].shape[1] > dataset.max_seq_len or decoder_input_ids.shape[0] > dataset.max_seq_len // 2: # dec_len should be short
+                break
 
             example_dict = {
                 "encoder_input_ids": enc_tokens["input_ids"].squeeze(0),
@@ -442,6 +442,7 @@ class EvalDataset(Dataset):
         dec_out_text = grid_to_text(test_pair["output"], False)
 
         # tiny optimization to include output:\n in input
+        assert dec_out_text.startswith("output:\n")
         dec_in_text = dec_in_text + "\n" + dec_out_text[:len("output:\n")]
         dec_out_text = dec_out_text[len("output:\n"):]
         dec_out_text += "<|eot_id|>"
@@ -454,12 +455,6 @@ class EvalDataset(Dataset):
         # remove begin of sentence of dec_out_tokens
         dec_out_tokens['input_ids'] = dec_out_tokens['input_ids'][:, 1:]
         dec_out_tokens['attention_mask'] = dec_out_tokens['attention_mask'][:, 1:]
-
-        # Check length
-        enc_len = enc_tokens["input_ids"].shape[1]
-        dec_len = dec_in_tokens["input_ids"].shape[1] + dec_out_tokens["input_ids"].shape[1]
-        if (enc_len > self.max_seq_len or dec_len > self.max_seq_len // 2): # dec_len should be short
-            return None
 
         # Build final decoder input + labels
         decoder_input_ids = torch.cat([
@@ -474,6 +469,10 @@ class EvalDataset(Dataset):
             dec_in_tokens["attention_mask"].squeeze(0),
             dec_out_tokens["attention_mask"].squeeze(0),
         ], dim=0)
+
+        # Check length
+        if enc_tokens["input_ids"].shape[1] > self.max_seq_len or decoder_input_ids.shape[0] > self.max_seq_len // 2: # dec_len should be short
+            return None
 
         return {
             "task_id": task_id,
