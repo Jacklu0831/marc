@@ -205,8 +205,8 @@ def evaluate(
         # compute accuracy
         with accelerator.autocast():
             # padding at front because HF ignores it
-            dec_gen_ids = torch.cat([torch.ones((1, num_virtual_tokens), device='cuda').to(torch.int64), dec_gen_ids], dim=1)
-            dec_gen_mask = torch.cat([torch.ones((1, num_virtual_tokens), device='cuda').to(torch.int64), dec_gen_mask], dim=1)
+            dec_gen_ids = torch.cat([torch.ones((bs, num_virtual_tokens), device='cuda').to(torch.int64), dec_gen_ids], dim=1)
+            dec_gen_mask = torch.cat([torch.ones((bs, num_virtual_tokens), device='cuda').to(torch.int64), dec_gen_mask], dim=1)
             gen_tokens = decoder_model.generate(
                 input_ids=dec_gen_ids,
                 attention_mask=dec_gen_mask,
