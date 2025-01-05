@@ -1,5 +1,6 @@
 # train_script.py
 
+import pprint
 import json
 from tqdm import tqdm
 from functools import partial
@@ -87,7 +88,8 @@ def encoder_decoder_loss(
     enc_hidden = enc_out.hidden_states[-1] # last layer [B, seq_len, hidden_dim]
     hidden_cls = enc_hidden[:, -1, :]  # last token [B, hidden_dim]
     past_key_values = project_kv(hidden_cls)
-    past_key_values = past_key_values.view(num_layers, 2, past_key_values.size(0), num_kv_heads, num_virtual_tokens, embed_size_per_head)
+    past_key_values = past_key_values.view(past_key_values.size(0), num_layers, 2, num_kv_heads, num_virtual_tokens, embed_size_per_head)
+    past_key_values = past_key_values.permute(1, 2, 0, 3, 4, 5)
     past_key_values = [(x[0], x[1]) for x in past_key_values]
 
     prefix_attention_mask = torch.full(
@@ -144,7 +146,7 @@ def evaluate(
     decoder_model.eval()
     project_kv.eval()
 
-    task_id_to_gen_text = {}
+    task_id_to_texts = {}
     total_loss = 0.0
     total_exact = 0
     total_valid_samples = 0
@@ -171,14 +173,14 @@ def evaluate(
         dec_gen_mask = batch["decoder_gen_attention_mask"].to(accelerator.device)
         labels = batch["decoder_labels"].to(accelerator.device)
         label_texts = batch["decoder_label_texts"]
+        out_token_length = batch["decoder_out_token_length"]
 
         # print(encoder_tokenizer.batch_decode(enc_ids)[0])
         # print(decoder_tokenizer.batch_decode(dec_ids)[0])
         # print(decoder_tokenizer.batch_decode(dec_gen_ids)[0])
-        # (enc_mask == 0).sum()
-        # (dec_mask == 0).sum()
-        # (dec_gen_mask == 0).sum()
-        # breakpoint()
+        # assert (enc_mask == 0).sum() == 0
+        # assert (dec_mask == 0).sum() == 0
+        # assert (dec_gen_mask == 0).sum() == 0
 
         # compute ce loss
         with accelerator.autocast():
@@ -196,33 +198,41 @@ def evaluate(
                 num_virtual_tokens=num_virtual_tokens,
                 embed_size_per_head=embed_size_per_head,
             )
+            # print('eval loss', ce_loss.item())
 
         total_loss += ce_loss.item() * bs
 
         # compute accuracy
         with accelerator.autocast():
+            # padding at front because HF ignores it
+            dec_gen_ids = torch.cat([torch.ones((1, num_virtual_tokens), device='cuda').to(torch.int64), dec_gen_ids], dim=1)
+            dec_gen_mask = torch.cat([torch.ones((1, num_virtual_tokens), device='cuda').to(torch.int64), dec_gen_mask], dim=1)
             gen_tokens = decoder_model.generate(
                 input_ids=dec_gen_ids,
                 attention_mask=dec_gen_mask,
                 past_key_values=past_key_values,
-                max_new_tokens=labels.shape[1] + 50, # arbitrary
+                max_new_tokens=max(out_token_length) + 50, # arbitrary increase
+                num_return_sequences=1,
+                do_sample=False,
                 eos_token_id=terminators,
             )
         gen_texts = decoder_tokenizer.batch_decode(gen_tokens[:, dec_gen_ids.shape[1]:], skip_special_tokens=True)
-        # decoder_tokenizer.batch_decode(dec_gen_ids, skip_special_tokens=True)
-        # decoder_tokenizer.batch_decode(gen_tokens, skip_special_tokens=True)
+        # print(decoder_tokenizer.batch_decode(dec_gen_ids)[0])
+        # print(decoder_tokenizer.batch_decode(gen_tokens)[0])
+        # print(decoder_tokenizer.batch_decode(dec_ids)[0])
+
         # Compare each gen_text with label_texts
         for gen_text, label_text in zip(gen_texts, label_texts):
             if gen_text.strip() == label_text.strip():
                 total_exact += 1
 
         # Save generated texts
-        for task_id, gen_text in zip(task_ids, gen_texts):
-            task_id_to_gen_text[task_id] = gen_text
+        for task_id, gen_text, label_text in zip(task_ids, gen_texts, label_texts):
+            task_id_to_texts[task_id] = (gen_text, label_text)
 
     avg_ce = total_loss / max(1, total_valid_samples)
     accuracy = total_exact / max(1, total_valid_samples)
-    return avg_ce, accuracy, total_valid_samples, task_id_to_gen_text
+    return avg_ce, accuracy, total_valid_samples, task_id_to_texts
 
 
 def main():
@@ -525,8 +535,20 @@ def main():
 
             with accelerator.accumulate(encoder_model, decoder_model, project_kv):
                 with accelerator.autocast():
-                    # encoder_tokenizer.batch_decode(enc_ids)
-                    # decoder_tokenizer.batch_decode(dec_ids)
+                    # assert torch.equal(enc_ids[0], enc_ids[1])
+                    # assert torch.equal(enc_mask[0], enc_mask[1])
+                    # assert torch.equal(dec_ids[0], dec_ids[1])
+                    # assert torch.equal(dec_mask[0], dec_mask[1])
+                    # assert torch.equal(labels[0], labels[1])
+                    # assert (enc_mask == 0).sum() == 0
+                    # assert (dec_mask == 0).sum() == 0
+                    # assert labels.shape == dec_ids.shape
+
+                    # logger.info('training:')
+                    # logger.info(f'enc_ids:\n{encoder_tokenizer.batch_decode(enc_ids)[0]}')
+                    # logger.info(f'dec_ids:\n{decoder_tokenizer.batch_decode(dec_ids)[0]}')
+                    # for x, y in zip(labels[0], dec_ids[0]):
+                    #     assert x in [-100, y], (x, y)
 
                     ce_loss, invar_loss, total_loss, _ = encoder_decoder_loss(
                         encoder_model=encoder_model,
@@ -543,6 +565,7 @@ def main():
                         embed_size_per_head=embed_size_per_head,
                         invar_loss_lambda=args.invar_loss_lambda,
                     )
+                    # logger.info(f'train loss {ce_loss.item()}')
 
                 # just accumulate for logging
                 avg_ce_loss = accelerator.gather(ce_loss.repeat(args.batch_size)).mean()
@@ -551,9 +574,6 @@ def main():
                 ce_loss_accum += avg_ce_loss.item() / args.grad_accum_steps
                 invar_loss_accum += avg_invar_loss.item() / args.grad_accum_steps
                 total_loss_accum += avg_total_loss.item() / args.grad_accum_steps
-
-                logger.info(f'invar {avg_invar_loss.item()}')
-                logger.info(f'total {avg_total_loss.item()}')
 
                 accelerator.backward(total_loss)
                 optimizer.step()
@@ -576,7 +596,7 @@ def main():
 
         # Evaluate every N epochs
         if (epoch + 1) % args.eval_epochs == 0:
-            train_ce, train_acc, train_num_valid_samples, train_gen_texts = evaluate(
+            train_ce, train_acc, train_num_valid_samples, train_texts = evaluate(
                 encoder_model,
                 decoder_model,
                 project_kv,
@@ -589,7 +609,7 @@ def main():
                 encoder_tokenizer,
                 decoder_tokenizer,
             )
-            eval_ce, eval_acc, eval_num_valid_samples, eval_gen_texts = evaluate(
+            eval_ce, eval_acc, eval_num_valid_samples, eval_texts = evaluate(
                 encoder_model,
                 decoder_model,
                 project_kv,
@@ -603,22 +623,24 @@ def main():
                 decoder_tokenizer,
             )
 
-            accelerator.log({
+            eval_metric_dict = {
                 "eval/train_ce_loss": train_ce,
                 "eval/train_accuracy": train_acc,
                 "eval/train_count": train_num_valid_samples,
                 "eval/eval_ce_loss": eval_ce,
                 "eval/eval_accuracy": eval_acc,
                 "eval/eval_count": eval_num_valid_samples
-            }, step=global_step)
+            }
+            accelerator.log(eval_metric_dict, step=global_step)
+            logger.info(f'Evaluation results:\n{pprint.pformat(eval_metric_dict, indent=4)}')
 
             # Save outputs
             save_eval_train_path = os.path.join(args.output_dir, f"eval_train_{epoch+1}.json")
             save_eval_eval_path = os.path.join(args.output_dir, f"eval_eval_{epoch+1}.json")
             with open(save_eval_train_path, 'w') as f:
-                json.dump(train_gen_texts, f)
+                json.dump(train_texts, f)
             with open(save_eval_eval_path, 'w') as f:
-                json.dump(eval_gen_texts, f)
+                json.dump(eval_texts, f)
             logger.info(f"Saved eval train generated text to {save_eval_train_path}")
             logger.info(f"Saved eval eval generated text to {save_eval_eval_path}")
 

@@ -269,13 +269,18 @@ def collate_fn_train(batch, dataset: "TrainDataset", debug_fixed_train_order: bo
             encoder_text = "\n".join(prefix_texts) + "[CLS]"
 
             extra_input_text  = grid_to_text(extra_pair["input"], True)
-            # extra_input_text  = grid_to_text(extra_pair["input"], True) + "\n" # add breakline into decoder input
             extra_output_text = grid_to_text(extra_pair["output"], False)
 
+            # tiny optimization to include output:\n in input
+            extra_input_text = extra_input_text + "\n" + extra_output_text[:len("output:\n")]
+            extra_output_text = extra_output_text[len("output:\n"):]
+            extra_output_text += "<|eot_id|>"
+
             enc_tokens = dataset.encoder_tokenizer(encoder_text, return_tensors="pt", truncation=False)
-            assert enc_tokens["input_ids"][0, -1].item() == dataset.encoder_tokenizer.cls_token_id
+            assert all(t[-1].item() == dataset.encoder_tokenizer.cls_token_id for t in enc_tokens["input_ids"])
             dec_in_tokens  = dataset.decoder_tokenizer(extra_input_text, return_tensors="pt", truncation=False)
             dec_out_tokens = dataset.decoder_tokenizer(extra_output_text, return_tensors="pt", truncation=False)
+            assert all(t[-1].item() == dataset.decoder_tokenizer.eos_token_id for t in dec_out_tokens["input_ids"])
             # remove begin of sentence of dec_out_tokens
             dec_out_tokens['input_ids'] = dec_out_tokens['input_ids'][:, 1:]
             dec_out_tokens['attention_mask'] = dec_out_tokens['attention_mask'][:, 1:]
@@ -311,8 +316,9 @@ def collate_fn_train(batch, dataset: "TrainDataset", debug_fixed_train_order: bo
 
         # Check if we got 2 valid items from this task
         if len(task_out_list) == 2:
-            # Add them to out_list
-            out_list.extend(task_out_list)
+            if debug_fixed_train_order or not torch.equal(task_out_list[0]['encoder_input_ids'], task_out_list[1]['encoder_input_ids']):
+                # Add them to out_list
+                out_list.extend(task_out_list)
 
     # Now we must truncate out_list if we overshoot
     assert len(out_list) == batch_size, f"Should produce exactly {batch_size} items"
@@ -432,18 +438,24 @@ class EvalDataset(Dataset):
             prefix_texts.append(grid_to_text(p["output"], False))
         encoder_text = "\n".join(prefix_texts) + "[CLS]"
 
-        dec_in_text  = grid_to_text(test_pair["input"], True) # no breakline
-        # dec_in_text  = grid_to_text(test_pair["input"], True) + "\n" # add breakline into decoder input
+        dec_in_text  = grid_to_text(test_pair["input"], True)
         dec_out_text = grid_to_text(test_pair["output"], False)
 
+        # tiny optimization to include output:\n in input
+        dec_in_text = dec_in_text + "\n" + dec_out_text[:len("output:\n")]
+        dec_out_text = dec_out_text[len("output:\n"):]
+        dec_out_text += "<|eot_id|>"
+
         enc_tokens = self.encoder_tokenizer(encoder_text, return_tensors="pt", truncation=False)
-        assert enc_tokens["input_ids"][0, -1].item() == self.encoder_tokenizer.cls_token_id
+        assert all(t[-1].item() == self.encoder_tokenizer.cls_token_id for t in enc_tokens["input_ids"])
         dec_in_tokens  = self.decoder_tokenizer(dec_in_text,  return_tensors="pt", truncation=False)
         dec_out_tokens = self.decoder_tokenizer(dec_out_text, return_tensors="pt", truncation=False)
+        assert all(t[-1].item() == self.decoder_tokenizer.eos_token_id for t in dec_out_tokens["input_ids"])
         # remove begin of sentence of dec_out_tokens
         dec_out_tokens['input_ids'] = dec_out_tokens['input_ids'][:, 1:]
         dec_out_tokens['attention_mask'] = dec_out_tokens['attention_mask'][:, 1:]
 
+        # Check length
         enc_len = enc_tokens["input_ids"].shape[1]
         dec_len = dec_in_tokens["input_ids"].shape[1] + dec_out_tokens["input_ids"].shape[1]
         if (enc_len > self.max_seq_len or dec_len > self.max_seq_len // 2): # dec_len should be short
@@ -472,7 +484,8 @@ class EvalDataset(Dataset):
             "decoder_labels": decoder_labels,
             "decoder_gen_input_ids": dec_in_tokens["input_ids"].squeeze(0),
             "decoder_gen_attention_mask": dec_in_tokens["attention_mask"].squeeze(0),
-            "decoder_label_texts": dec_out_text,  # used for exact match
+            "decoder_out_token_length": dec_out_tokens["input_ids"].shape[1],
+            "decoder_label_texts": dec_out_text[:-len("<|eot_id|>")],  # used for exact match
         }
 
 
@@ -493,6 +506,7 @@ def collate_fn_eval(batch, dataset: "EvalDataset"):
     dec_gen_ids = [x["decoder_gen_input_ids"] for x in filtered]
     dec_gen_mask = [x["decoder_gen_attention_mask"] for x in filtered]
     dec_labs = [x["decoder_labels"] for x in filtered]
+    decoder_out_token_length = [x["decoder_out_token_length"] for x in filtered]
     decoder_label_texts = [x["decoder_label_texts"] for x in filtered]
 
     enc_ids = pad_sequence_left(enc_ids, padding_value=dataset.encoder_tokenizer.pad_token_id)
@@ -512,6 +526,7 @@ def collate_fn_eval(batch, dataset: "EvalDataset"):
         "decoder_gen_input_ids": dec_gen_ids,
         "decoder_gen_attention_mask": dec_gen_mask,
         "decoder_labels": dec_labs,
+        "decoder_out_token_length": decoder_out_token_length,
         "decoder_label_texts": decoder_label_texts,
     }
     return batch_dict
