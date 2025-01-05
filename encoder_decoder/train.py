@@ -109,9 +109,7 @@ def encoder_decoder_loss(
     ce_loss = dec_out.loss
 
     # invariance loss
-    invar_loss = torch.tensor(0.0, device=encoder_input_ids.device)
-    if invar_loss_lambda != 0.0:
-        invar_loss = nn.MSELoss()(enc_hidden[::2], enc_hidden[1::2])
+    invar_loss = nn.MSELoss()(enc_hidden[::2], enc_hidden[1::2])
 
     total_loss = ce_loss + invar_loss_lambda * invar_loss
     return ce_loss, invar_loss, total_loss, past_key_values
@@ -148,13 +146,16 @@ def evaluate(
 
     task_id_to_texts = {}
     total_loss = 0.0
-    total_exact = 0
+    total_exact_acc = 0
+    total_token_acc = 0.0
     total_valid_samples = 0
 
+    # setup terminators and suppress warning
     terminators = [
         decoder_tokenizer.eos_token_id,
         decoder_tokenizer.convert_tokens_to_ids("<|eot_id|>")
     ]
+    decoder_model.generation_config.pad_token_id = decoder_tokenizer.pad_token_id
 
     for batch in tqdm(eval_loader):
         if len(batch) == 0:
@@ -223,16 +224,25 @@ def evaluate(
 
         # Compare each gen_text with label_texts
         for gen_text, label_text in zip(gen_texts, label_texts):
-            if gen_text.strip() == label_text.strip():
-                total_exact += 1
+            gen_text = gen_text.strip()
+            label_text = label_text.strip()
+            total_exact_acc += (gen_text == label_text)
+            # token acc (no whitespace or newline, include dimension)
+            min_len = min(len(gen_text), len(label_text))
+            correct_token_count = 0
+            for c1, c2 in zip(gen_text[:min_len], label_text[:min_len]):
+                if c1 == c2 and c1 not in [' ', '\n']:
+                    correct_token_count += 1
+            total_token_acc += correct_token_count / len(label_text)
 
         # Save generated texts
         for task_id, gen_text, label_text in zip(task_ids, gen_texts, label_texts):
             task_id_to_texts[task_id] = (gen_text, label_text)
 
     avg_ce = total_loss / max(1, total_valid_samples)
-    accuracy = total_exact / max(1, total_valid_samples)
-    return avg_ce, accuracy, total_valid_samples, task_id_to_texts
+    exact_acc = total_exact_acc / max(1, total_valid_samples)
+    token_acc = total_token_acc / max(1, total_valid_samples)
+    return avg_ce, exact_acc, token_acc, total_valid_samples, task_id_to_texts
 
 
 def main():
@@ -293,7 +303,7 @@ def main():
     parser.add_argument("--decoder_no_rslora", action='store_true')
 
     # Virtual tokens approach
-    parser.add_argument("--num_virtual_tokens", type=int, default=4)
+    parser.add_argument("--num_virtual_tokens", type=int, default=8)
     parser.add_argument("--seed", type=int, default=0)
     args = parser.parse_args()
 
@@ -304,8 +314,8 @@ def main():
         args.train_data_dir = '/scratch/yl11330/re-arc/train_data_debug/tasks'
         args.eval_train_dir = '/scratch/yl11330/re-arc/arc_original_debug/training'
         args.eval_eval_dir = '/scratch/yl11330/re-arc/arc_original_debug/evaluation'
-        args.num_epochs = 1
-        args.samples_per_epoch = 500
+        args.num_epochs = 3
+        args.samples_per_epoch = 250
         args.eval_epochs = 1
         args.num_workers = 0
         # args.dummy_seq_enc_len = 8192
@@ -596,61 +606,64 @@ def main():
 
         # Evaluate every N epochs
         if (epoch + 1) % args.eval_epochs == 0:
-            train_ce, train_acc, train_num_valid_samples, train_texts = evaluate(
-                encoder_model,
-                decoder_model,
-                project_kv,
-                eval_train_loader,
-                accelerator,
-                num_layers,
-                num_kv_heads,
-                args.num_virtual_tokens,
-                embed_size_per_head,
-                encoder_tokenizer,
-                decoder_tokenizer,
-            )
-            eval_ce, eval_acc, eval_num_valid_samples, eval_texts = evaluate(
-                encoder_model,
-                decoder_model,
-                project_kv,
-                eval_eval_loader,
-                accelerator,
-                num_layers,
-                num_kv_heads,
-                args.num_virtual_tokens,
-                embed_size_per_head,
-                encoder_tokenizer,
-                decoder_tokenizer,
-            )
+            if accelerator.is_main_process:
+                train_ce, train_exact_acc, train_token_acc, train_num_valid_samples, train_texts = evaluate(
+                    encoder_model,
+                    decoder_model,
+                    project_kv,
+                    eval_train_loader,
+                    accelerator,
+                    num_layers,
+                    num_kv_heads,
+                    args.num_virtual_tokens,
+                    embed_size_per_head,
+                    encoder_tokenizer,
+                    decoder_tokenizer,
+                )
+                eval_ce, eval_exact_acc, eval_token_acc, eval_num_valid_samples, eval_texts = evaluate(
+                    encoder_model,
+                    decoder_model,
+                    project_kv,
+                    eval_eval_loader,
+                    accelerator,
+                    num_layers,
+                    num_kv_heads,
+                    args.num_virtual_tokens,
+                    embed_size_per_head,
+                    encoder_tokenizer,
+                    decoder_tokenizer,
+                )
 
-            eval_metric_dict = {
-                "eval/train_ce_loss": train_ce,
-                "eval/train_accuracy": train_acc,
-                "eval/train_count": train_num_valid_samples,
-                "eval/eval_ce_loss": eval_ce,
-                "eval/eval_accuracy": eval_acc,
-                "eval/eval_count": eval_num_valid_samples
-            }
-            accelerator.log(eval_metric_dict, step=global_step)
-            logger.info(f'Evaluation results:\n{pprint.pformat(eval_metric_dict, indent=4)}')
+                eval_metric_dict = {
+                    "eval/train_ce_loss": train_ce,
+                    "eval/train_exact_acc": train_exact_acc,
+                    "eval/train_token_acc": train_token_acc,
+                    "eval/train_count": train_num_valid_samples,
+                    "eval/eval_ce_loss": eval_ce,
+                    "eval/eval_exact_acc": eval_exact_acc,
+                    "eval/eval_token_acc": eval_token_acc,
+                    "eval/eval_count": eval_num_valid_samples
+                }
+                accelerator.log(eval_metric_dict, step=global_step)
+                logger.info(f'Evaluation results:\n{pprint.pformat(eval_metric_dict, indent=4)}')
 
-            # Save outputs
-            save_eval_train_path = os.path.join(args.output_dir, f"eval_train_{epoch+1}.json")
-            save_eval_eval_path = os.path.join(args.output_dir, f"eval_eval_{epoch+1}.json")
-            with open(save_eval_train_path, 'w') as f:
-                json.dump(train_texts, f)
-            with open(save_eval_eval_path, 'w') as f:
-                json.dump(eval_texts, f)
-            logger.info(f"Saved eval train generated text to {save_eval_train_path}")
-            logger.info(f"Saved eval eval generated text to {save_eval_eval_path}")
+                # Save outputs
+                save_eval_train_path = os.path.join(args.output_dir, f"eval_train_{epoch+1}.json")
+                save_eval_eval_path = os.path.join(args.output_dir, f"eval_eval_{epoch+1}.json")
+                with open(save_eval_train_path, 'w') as f:
+                    json.dump(train_texts, f)
+                with open(save_eval_eval_path, 'w') as f:
+                    json.dump(eval_texts, f)
+                logger.info(f"Saved eval train generated text to {save_eval_train_path}")
+                logger.info(f"Saved eval eval generated text to {save_eval_eval_path}")
 
-            # Save model
-            save_enc_path = os.path.join(args.output_dir, f"encoder_lora_epoch_{epoch+1}")
-            save_dec_path = os.path.join(args.output_dir, f"decoder_lora_epoch_{epoch+1}")
-            encoder_model.save_pretrained(save_enc_path)
-            decoder_model.save_pretrained(save_dec_path)
-            logger.info(f"Saved encoder to {save_enc_path}")
-            logger.info(f"Saved decoder to {save_dec_path}")
+                # Save model
+                save_enc_path = os.path.join(args.output_dir, f"encoder_lora_epoch_{epoch+1}")
+                save_dec_path = os.path.join(args.output_dir, f"decoder_lora_epoch_{epoch+1}")
+                encoder_model.save_pretrained(save_enc_path)
+                decoder_model.save_pretrained(save_dec_path)
+                logger.info(f"Saved encoder to {save_enc_path}")
+                logger.info(f"Saved decoder to {save_dec_path}")
 
     logger.info("All done training.")
     accelerator.end_training()
