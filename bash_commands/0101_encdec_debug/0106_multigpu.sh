@@ -26,5 +26,5 @@ accelerate launch --mixed_precision bf16 encoder_decoder/train.py \
     --invar_loss_lambda 0.0 \
     --wandb
 
-# Submitted batch job 55600447
-# Submitted batch job 55600448
+# Submitted batch job 55607768
+# Submitted batch job 55607769

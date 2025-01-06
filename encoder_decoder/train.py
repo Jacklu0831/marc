@@ -318,6 +318,7 @@ def main():
     parser.add_argument("--encoder_name", type=str, default="meta-llama/Llama-3.2-1B-Instruct")
     parser.add_argument("--decoder_name", type=str, default="meta-llama/Llama-3.2-1B-Instruct")
     parser.add_argument("--no_gradient_checkpointing", action="store_true") # note decoder cannot have this due to caching
+    parser.add_argument("--flash_attn", action="store_true")
 
     # Training
     parser.add_argument("--batch_size", type=int, default=2)
@@ -403,6 +404,11 @@ def main():
     torch.backends.cuda.matmul.allow_tf32 = True
     logger.info("Accelerator and seed set up.")
 
+    logger.info("#### BEGIN ALL ARGUMENTS ####")
+    for arg in vars(args):
+        logger.info(f"{arg}: {getattr(args, arg)}")
+    logger.info("#### END ALL ARGUMENTS ####\n")
+
     # Load tokenizers
     encoder_tokenizer = AutoTokenizer.from_pretrained(args.encoder_name, padding_side='left')
     decoder_tokenizer = AutoTokenizer.from_pretrained(args.decoder_name, padding_side='left')
@@ -413,8 +419,12 @@ def main():
     logger.info("Tokenizers loaded and pad tokens handled.")
 
     # Build base models
-    base_encoder = AutoModelForCausalLM.from_pretrained(args.encoder_name)
-    base_decoder = AutoModelForCausalLM.from_pretrained(args.decoder_name)
+    if args.flash_attn:
+        base_encoder = AutoModelForCausalLM.from_pretrained(args.encoder_name, attn_implementation="flash_attention_2")
+        base_decoder = AutoModelForCausalLM.from_pretrained(args.decoder_name, attn_implementation="flash_attention_2")
+    else:
+        base_encoder = AutoModelForCausalLM.from_pretrained(args.encoder_name)
+        base_decoder = AutoModelForCausalLM.from_pretrained(args.decoder_name)
 
     if not args.no_gradient_checkpointing:
         base_encoder.gradient_checkpointing_enable()
