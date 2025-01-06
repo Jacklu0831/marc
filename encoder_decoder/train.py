@@ -147,6 +147,8 @@ def evaluate(
     task_id_to_texts = {}
     total_loss = 0.0
     total_exact_acc = 0
+    total_valid_grid = 0
+    total_correct_grid_dim = 0
     total_token_acc = 0.0
     total_valid_samples = 0
 
@@ -176,13 +178,6 @@ def evaluate(
         label_texts = batch["decoder_label_texts"]
         out_token_length = batch["decoder_out_token_length"]
 
-        # print(encoder_tokenizer.batch_decode(enc_ids)[0])
-        # print(decoder_tokenizer.batch_decode(dec_ids)[0])
-        # print(decoder_tokenizer.batch_decode(dec_gen_ids)[0])
-        # assert (enc_mask == 0).sum() == 0
-        # assert (dec_mask == 0).sum() == 0
-        # assert (dec_gen_mask == 0).sum() == 0
-
         # compute ce loss
         with accelerator.autocast():
             ce_loss, _, _, past_key_values = encoder_decoder_loss(
@@ -199,7 +194,6 @@ def evaluate(
                 num_virtual_tokens=num_virtual_tokens,
                 embed_size_per_head=embed_size_per_head,
             )
-            # print('eval loss', ce_loss.item())
 
         total_loss += ce_loss.item() * bs
 
@@ -218,22 +212,27 @@ def evaluate(
                 eos_token_id=terminators,
             )
         gen_texts = decoder_tokenizer.batch_decode(gen_tokens[:, dec_gen_ids.shape[1]:], skip_special_tokens=True)
-        # print(decoder_tokenizer.batch_decode(dec_gen_ids)[0])
-        # print(decoder_tokenizer.batch_decode(gen_tokens)[0])
-        # print(decoder_tokenizer.batch_decode(dec_ids)[0])
 
         # Compare each gen_text with label_texts
         for gen_text, label_text in zip(gen_texts, label_texts):
-            gen_text = gen_text.strip()
-            label_text = label_text.strip()
-            total_exact_acc += (gen_text == label_text)
-            # token acc (no whitespace or newline, include dimension)
-            min_len = min(len(gen_text), len(label_text))
-            correct_token_count = 0
-            for c1, c2 in zip(gen_text[:min_len], label_text[:min_len]):
-                if c1 == c2 and c1 not in [' ', '\n']:
-                    correct_token_count += 1
-            total_token_acc += correct_token_count / len(label_text)
+            # exact acc
+            total_exact_acc += int(gen_text == label_text)
+            # is valid grid
+            gen_grid, gen_is_grid = text_to_2d_grid(gen_text)
+            label_grid, label_is_grid = text_to_2d_grid(label_text)
+            assert label_is_grid
+            if gen_is_grid:
+                total_valid_grid += 1
+                # is correct grid dim
+                if len(gen_grid) == len(label_grid) and len(gen_grid[0]) == len(label_grid[0]):
+                    total_correct_grid_dim += 1
+                    # token acc
+                    grid_size = len(label_grid) * len(label_grid[0])
+                    num_token_correct = 0
+                    for gen_row, label_row in zip(gen_grid, label_grid):
+                        for gen_x, label_x in zip(gen_row, label_row):
+                            num_token_correct += int(gen_x == label_x)
+                    total_token_acc += num_token_correct / grid_size
 
         # Save generated texts
         for task_id, gen_text, label_text in zip(task_ids, gen_texts, label_texts):
@@ -241,8 +240,29 @@ def evaluate(
 
     avg_ce = total_loss / max(1, total_valid_samples)
     exact_acc = total_exact_acc / max(1, total_valid_samples)
+    valid_grid = total_valid_grid / max(1, total_valid_samples)
+    correct_grid_dim = total_correct_grid_dim / max(1, total_valid_samples)
     token_acc = total_token_acc / max(1, total_valid_samples)
-    return avg_ce, exact_acc, token_acc, total_valid_samples, task_id_to_texts
+    return avg_ce, exact_acc, valid_grid, correct_grid_dim, token_acc, total_valid_samples, task_id_to_texts
+
+
+def text_to_2d_grid(text):
+    try:
+        grid_lines = text.split('\n')
+        height, width = int(grid_lines[0]), int(grid_lines[1])
+        assert height > 0 and width > 0
+        grid = []
+        row_lens = []
+        for l in grid_lines[2:]:
+            row = [int(x) for x in l.split(' ')]
+            grid.append(row)
+            row_lens.append(len(row))
+            assert all(0 <= x and x < 10 for x in row)
+        assert len(set(row_lens)) == 1
+        assert len(grid) == height and len(grid[0]) == width
+        return grid, True
+    except:
+        return None, False
 
 
 def main():
@@ -540,26 +560,9 @@ def main():
             dec_ids = batch_data["decoder_input_ids"].to(accelerator.device)
             dec_mask = batch_data["decoder_attention_mask"].to(accelerator.device)
             labels = batch_data["decoder_labels"].to(accelerator.device)
-            # logger.info(f'enc_ids {enc_ids.shape}')
-            # logger.info(f'dec_ids {dec_ids.shape}')
 
             with accelerator.accumulate(encoder_model, decoder_model, project_kv):
                 with accelerator.autocast():
-                    # assert torch.equal(enc_ids[0], enc_ids[1])
-                    # assert torch.equal(enc_mask[0], enc_mask[1])
-                    # assert torch.equal(dec_ids[0], dec_ids[1])
-                    # assert torch.equal(dec_mask[0], dec_mask[1])
-                    # assert torch.equal(labels[0], labels[1])
-                    # assert (enc_mask == 0).sum() == 0
-                    # assert (dec_mask == 0).sum() == 0
-                    # assert labels.shape == dec_ids.shape
-
-                    # logger.info('training:')
-                    # logger.info(f'enc_ids:\n{encoder_tokenizer.batch_decode(enc_ids)[0]}')
-                    # logger.info(f'dec_ids:\n{decoder_tokenizer.batch_decode(dec_ids)[0]}')
-                    # for x, y in zip(labels[0], dec_ids[0]):
-                    #     assert x in [-100, y], (x, y)
-
                     ce_loss, invar_loss, total_loss, _ = encoder_decoder_loss(
                         encoder_model=encoder_model,
                         decoder_model=decoder_model,
@@ -575,7 +578,6 @@ def main():
                         embed_size_per_head=embed_size_per_head,
                         invar_loss_lambda=args.invar_loss_lambda,
                     )
-                    # logger.info(f'train loss {ce_loss.item()}')
 
                 # just accumulate for logging
                 avg_ce_loss = accelerator.gather(ce_loss.repeat(args.batch_size)).mean()
@@ -607,7 +609,7 @@ def main():
         # Evaluate every N epochs
         if (epoch + 1) % args.eval_epochs == 0:
             if accelerator.is_main_process:
-                train_ce, train_exact_acc, train_token_acc, train_num_valid_samples, train_texts = evaluate(
+                train_ce, train_exact_acc, train_valid_grid, train_correct_grid_dim, train_token_acc, train_num_valid_samples, train_texts = evaluate(
                     encoder_model,
                     decoder_model,
                     project_kv,
@@ -620,7 +622,7 @@ def main():
                     encoder_tokenizer,
                     decoder_tokenizer,
                 )
-                eval_ce, eval_exact_acc, eval_token_acc, eval_num_valid_samples, eval_texts = evaluate(
+                eval_ce, eval_exact_acc, eval_valid_grid, eval_correct_grid_dim, eval_token_acc, eval_num_valid_samples, eval_texts = evaluate(
                     encoder_model,
                     decoder_model,
                     project_kv,
@@ -637,15 +639,19 @@ def main():
                 eval_metric_dict = {
                     "eval/train_ce_loss": train_ce,
                     "eval/train_exact_acc": train_exact_acc,
+                    "eval/train_valid_grid": train_valid_grid,
+                    "eval/train_correct_grid_dim": train_correct_grid_dim,
                     "eval/train_token_acc": train_token_acc,
                     "eval/train_count": train_num_valid_samples,
                     "eval/eval_ce_loss": eval_ce,
                     "eval/eval_exact_acc": eval_exact_acc,
+                    "eval/eval_valid_grid": eval_valid_grid,
+                    "eval/eval_correct_grid_dim": eval_correct_grid_dim,
                     "eval/eval_token_acc": eval_token_acc,
                     "eval/eval_count": eval_num_valid_samples
                 }
-                accelerator.log(eval_metric_dict, step=global_step)
                 logger.info(f'Evaluation results:\n{pprint.pformat(eval_metric_dict, indent=4)}')
+                accelerator.log(eval_metric_dict, step=global_step)
 
                 # Save outputs
                 save_eval_train_path = os.path.join(args.output_dir, f"eval_train_{epoch+1}.json")

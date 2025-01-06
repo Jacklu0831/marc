@@ -36,6 +36,7 @@ accelerate launch --mixed_precision bf16 encoder_decoder/train.py \
     --invar_loss_lambda 0.3 \
     --wandb
 
+# had dataloader bug
 # Submitted batch job 55573969
 # Submitted batch job 55573970
 # Submitted batch job 55573971
