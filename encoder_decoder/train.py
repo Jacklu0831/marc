@@ -410,8 +410,8 @@ def main():
     logger.info("#### END ALL ARGUMENTS ####\n")
 
     # Load tokenizers
-    encoder_tokenizer = AutoTokenizer.from_pretrained(args.encoder_name, padding_side='left')
-    decoder_tokenizer = AutoTokenizer.from_pretrained(args.decoder_name, padding_side='left')
+    encoder_tokenizer = AutoTokenizer.from_pretrained(args.encoder_name, padding_side='left', cache_dir='./encoder_decoder_cache')
+    decoder_tokenizer = AutoTokenizer.from_pretrained(args.decoder_name, padding_side='left', cache_dir='./encoder_decoder_cache')
     if not encoder_tokenizer.pad_token:
         encoder_tokenizer.pad_token = encoder_tokenizer.eos_token
     if not decoder_tokenizer.pad_token:
@@ -420,11 +420,11 @@ def main():
 
     # Build base models
     if args.flash_attn:
-        base_encoder = AutoModelForCausalLM.from_pretrained(args.encoder_name, attn_implementation="flash_attention_2")
-        base_decoder = AutoModelForCausalLM.from_pretrained(args.decoder_name, attn_implementation="flash_attention_2")
+        base_encoder = AutoModelForCausalLM.from_pretrained(args.encoder_name, attn_implementation="flash_attention_2", cache_dir='./encoder_decoder_cache')
+        base_decoder = AutoModelForCausalLM.from_pretrained(args.decoder_name, attn_implementation="flash_attention_2", cache_dir='./encoder_decoder_cache')
     else:
-        base_encoder = AutoModelForCausalLM.from_pretrained(args.encoder_name)
-        base_decoder = AutoModelForCausalLM.from_pretrained(args.decoder_name)
+        base_encoder = AutoModelForCausalLM.from_pretrained(args.encoder_name, cache_dir='./encoder_decoder_cache')
+        base_decoder = AutoModelForCausalLM.from_pretrained(args.decoder_name, cache_dir='./encoder_decoder_cache')
 
     if not args.no_gradient_checkpointing:
         base_encoder.gradient_checkpointing_enable()

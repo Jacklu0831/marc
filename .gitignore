@@ -174,3 +174,4 @@ slurm_outs/
 
 # encoder decoder
 encoder_decoder/outputs
+encoder_decoder_cache/
