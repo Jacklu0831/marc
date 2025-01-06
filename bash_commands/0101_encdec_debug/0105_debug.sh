@@ -1,4 +1,4 @@
-# python make_sbatch.py --time 48 --bash_files bash_commands/0101_encdec_debug/0105_debug.sh
+# python make_sbatch.py --time 24 --bash_files bash_commands/0101_encdec_debug/0105_debug.sh
 
 # debug invar0.0
 accelerate launch --mixed_precision bf16 encoder_decoder/train.py \
@@ -8,7 +8,7 @@ accelerate launch --mixed_precision bf16 encoder_decoder/train.py \
     --eval_eval_dir /scratch/yl11330/re-arc/arc_original_debug/evaluation \
     --eval_epochs 1 \
     --num_epochs 100 \
-    --samples_per_epoch 10000 \
+    --samples_per_epoch 5000 \
     --augment_ratio 0.0 \
     --invar_loss_lambda 0.0 \
     --wandb
@@ -21,7 +21,7 @@ accelerate launch --mixed_precision bf16 encoder_decoder/train.py \
     --eval_eval_dir /scratch/yl11330/re-arc/arc_original_debug/evaluation \
     --eval_epochs 1 \
     --num_epochs 100 \
-    --samples_per_epoch 10000 \
+    --samples_per_epoch 5000 \
     --augment_ratio 0.0 \
     --invar_loss_lambda 0.001 \
     --wandb
@@ -34,7 +34,7 @@ accelerate launch --mixed_precision bf16 encoder_decoder/train.py \
     --eval_eval_dir /scratch/yl11330/re-arc/arc_original_debug/evaluation \
     --eval_epochs 1 \
     --num_epochs 100 \
-    --samples_per_epoch 10000 \
+    --samples_per_epoch 5000 \
     --augment_ratio 0.0 \
     --invar_loss_lambda 0.01 \
     --wandb
@@ -48,3 +48,7 @@ accelerate launch --mixed_precision bf16 encoder_decoder/train.py \
 # Submitted batch job 55596264
 # Submitted batch job 55596265
 # Submitted batch job 55596266
+
+# Submitted batch job 55600440
+# Submitted batch job 55600441
+# Submitted batch job 55600442

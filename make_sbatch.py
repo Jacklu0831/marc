@@ -26,6 +26,7 @@ singularity exec --nv \\
 parser = argparse.ArgumentParser()
 parser.add_argument('--bash_files', type=str, nargs='+', help='bash file of commands', required=True)
 parser.add_argument('--gb', type=int, help='bash file of commands', default=32)
+parser.add_argument('--ngpu', type=int, help='bash file of commands', default=1)
 parser.add_argument('--ncpu', type=int, help='bash file of commands', default=8)
 parser.add_argument('--time', type=str, help='bash file of commands', required=True)
 parser.add_argument('--sbatch_dir', type=str, help='bash file of commands', default='/scratch/yl11330/marc/sbatch_files')
@@ -40,7 +41,7 @@ template = template.replace('$TIME', str(args.time))
 template = template.replace('$MEM', str(args.gb))
 
 # todo: support multi-gpu
-gpu_line = '#SBATCH --gres=gpu:1'
+gpu_line = f'#SBATCH --gres=gpu:{args.ngpu}'
 template = template.replace('$GPULINE', gpu_line)
 
 # get job clusters from bash files

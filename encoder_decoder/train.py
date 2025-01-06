@@ -146,6 +146,7 @@ def evaluate(
     decoder_tokenizer,
     batch_size: int,
     eval_collate_fn,
+    compact_grids: bool,
 ):
     """
     For each task in dataset, compute:
@@ -237,8 +238,8 @@ def evaluate(
                 # exact acc
                 exact_acc_list.append(int(gen_text == label_text))
                 # is valid grid
-                gen_grid, gen_is_grid = text_to_2d_grid(gen_text)
-                label_grid, label_is_grid = text_to_2d_grid(label_text)
+                gen_grid, gen_is_grid = text_to_2d_grid(gen_text, compact_grids)
+                label_grid, label_is_grid = text_to_2d_grid(label_text, compact_grids)
                 assert label_is_grid
                 valid_grid_list.append(int(gen_is_grid))
                 if not gen_is_grid:
@@ -278,7 +279,7 @@ def evaluate(
     return avg_ce, exact_acc, valid_grid, correct_grid_dim, token_acc, task_id_to_texts
 
 
-def text_to_2d_grid(text):
+def text_to_2d_grid(text: str, compact_grids: bool):
     try:
         grid_lines = text.split('\n')
         height, width = int(grid_lines[0]), int(grid_lines[1])
@@ -286,7 +287,10 @@ def text_to_2d_grid(text):
         grid = []
         row_lens = []
         for l in grid_lines[2:]:
-            row = [int(x) for x in l.split(' ')]
+            if compact_grids:
+                row = [int(x) for x in l]
+            else:
+                row = [int(x) for x in l.split(' ')]
             grid.append(row)
             row_lens.append(len(row))
             assert all(0 <= x and x < 10 for x in row)
@@ -303,6 +307,8 @@ def main():
     parser.add_argument("--wandb", action="store_true")
     parser.add_argument("--output_dir", type=str, default="./encoder_decoder/outputs")
     parser.add_argument("--tracker_project_name", type=str, default="arc")
+
+    # Debug
     parser.add_argument("--debug", action='store_true')
     parser.add_argument("--dummy_seq_enc_len", type=int, default=-1)
     parser.add_argument("--dummy_seq_dec_len", type=int, default=-1)
@@ -335,6 +341,7 @@ def main():
     parser.add_argument("--max_prefix", type=int, default=7)
     parser.add_argument("--num_workers", type=int, default=8)
     parser.add_argument("--augment_ratio", type=float, default=0.3)
+    parser.add_argument("--compact_grids", action="store_true")
 
     # Lora encoder
     parser.add_argument("--encoder_lora_rank", type=int, default=256)
@@ -460,6 +467,7 @@ def main():
         max_seq_len=args.max_seq_len,
         augment_ratio=args.augment_ratio,
         seed=args.seed,
+        compact_grids=args.compact_grids,
     )
     train_collate_fn = partial(collate_fn_train,
                                dataset=train_dataset, debug_fixed_train_order=args.debug_fixed_train_order)
@@ -611,8 +619,20 @@ def main():
         # Evaluate every N epochs
         if (epoch + 1) % args.eval_epochs == 0:
             # Build evaluation datasets
-            eval_train_dataset = EvalDataset(args.eval_train_dir, encoder_tokenizer, decoder_tokenizer, args.max_seq_len, args.eval_train_ratio)
-            eval_eval_dataset = EvalDataset(args.eval_eval_dir, encoder_tokenizer, decoder_tokenizer, args.max_seq_len, args.eval_eval_ratio)
+            eval_train_dataset = EvalDataset(
+                args.eval_train_dir,
+                encoder_tokenizer=encoder_tokenizer,
+                decoder_tokenizer=decoder_tokenizer,
+                max_seq_len=args.max_seq_len,
+                keep_ratio=args.eval_train_ratio,
+                compact_grids=args.compact_grids)
+            eval_eval_dataset = EvalDataset(
+                args.eval_eval_dir,
+                encoder_tokenizer=encoder_tokenizer,
+                decoder_tokenizer=decoder_tokenizer,
+                max_seq_len=args.max_seq_len,
+                keep_ratio=args.eval_eval_ratio,
+                compact_grids=args.compact_grids)
             eval_collate_fn = partial(collate_fn_eval,
                                     encoder_tokenizer=encoder_tokenizer, decoder_tokenizer=decoder_tokenizer)
             if args.dummy_seq_enc_len > 0:
@@ -634,6 +654,7 @@ def main():
                 decoder_tokenizer,
                 args.batch_size,
                 eval_collate_fn,
+                args.compact_grids,
             )
             eval_ce, eval_exact_acc, eval_valid_grid, eval_correct_grid_dim, eval_token_acc, eval_texts = evaluate(
                 encoder_model,
@@ -648,6 +669,7 @@ def main():
                 decoder_tokenizer,
                 args.batch_size,
                 eval_collate_fn,
+                args.compact_grids,
             )
 
             if accelerator.is_main_process:

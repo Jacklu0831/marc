@@ -136,7 +136,10 @@ def load_tasks_from_data_dir(data_dir: str) -> Dict[str, List[Dict[str, Any]]]:
     return tasks_dict
 
 
-def grid_to_text(grid: List[List[int]], is_input: bool = True) -> str:
+def grid_to_text(
+        grid: List[List[int]],
+        is_input: bool,
+    ) -> str:
     """
     Convert a 2D grid of ints into text lines:
 
@@ -184,12 +187,13 @@ class TrainDataset(Dataset):
         tasks_dict: Dict[str, List[Dict[str, Any]]],
         encoder_tokenizer,
         decoder_tokenizer,
-        total_steps,
-        min_prefix,
-        max_prefix,
-        max_seq_len,
-        augment_ratio,
-        seed,
+        total_steps: int,
+        min_prefix: int,
+        max_prefix: int,
+        max_seq_len: int,
+        augment_ratio: float,
+        seed: int,
+        compact_grids: bool,
     ):
         self.tasks_dict = tasks_dict
         self.encoder_tokenizer = encoder_tokenizer
@@ -202,6 +206,7 @@ class TrainDataset(Dataset):
         self.augmenters = get_augmenters(include_basic=True, include_size=True, include_chain=True, include_repeat=True)
         self.augment_ratio = augment_ratio
         self.rng = np.random.RandomState(seed)
+        self.compact_grids = compact_grids
 
     def __len__(self):
         return self._length
@@ -209,6 +214,12 @@ class TrainDataset(Dataset):
     def __getitem__(self, idx):
         # We'll do random sampling in the collate fn
         return 0
+
+
+def remove_val_from_1dtokenized(tokenized, val):
+    mask = tokenized['input_ids'][0] != val
+    tokenized['input_ids'] = tokenized['input_ids'][0][mask][None, ...]
+    tokenized['attention_mask'] = tokenized['attention_mask'][0][mask][None, ...]
 
 
 def collate_fn_train(batch, dataset: "TrainDataset", debug_fixed_train_order: bool):
@@ -226,6 +237,9 @@ def collate_fn_train(batch, dataset: "TrainDataset", debug_fixed_train_order: bo
     batch_size = len(batch)
     assert batch_size > 0 and batch_size % 2 == 0, f"Batch size must be even, got {batch_size}"
     del batch  # we don't use it directly
+
+    encoder_space_token_id = dataset.encoder_tokenizer(" ")['input_ids'][1]
+    decoder_space_token_id = dataset.decoder_tokenizer(" ")['input_ids'][1]
 
     out_list = []
 
@@ -289,6 +303,12 @@ def collate_fn_train(batch, dataset: "TrainDataset", debug_fixed_train_order: bo
             # remove begin of sentence of dec_out_tokens
             dec_out_tokens['input_ids'] = dec_out_tokens['input_ids'][:, 1:]
             dec_out_tokens['attention_mask'] = dec_out_tokens['attention_mask'][:, 1:]
+
+            # compact grids (optional)
+            if dataset.compact_grids:
+                remove_val_from_1dtokenized(enc_tokens, encoder_space_token_id)
+                remove_val_from_1dtokenized(dec_in_tokens, decoder_space_token_id)
+                remove_val_from_1dtokenized(dec_out_tokens, decoder_space_token_id)
 
             # Build final decoder input + labels
             decoder_input_ids = torch.cat([
@@ -397,11 +417,16 @@ class EvalDataset:
         decoder_tokenizer,
         max_seq_len: int,
         keep_ratio: float,
+        compact_grids: bool,
     ):
         self.encoder_tokenizer = encoder_tokenizer
         self.decoder_tokenizer = decoder_tokenizer
         self.max_seq_len = max_seq_len
         self.keep_ratio = keep_ratio
+        self.compact_grids = compact_grids
+
+        self.encoder_space_token_id = encoder_tokenizer(" ")['input_ids'][1]
+        self.decoder_space_token_id = decoder_tokenizer(" ")['input_ids'][1]
 
         # get filepaths
         if not os.path.isdir(eval_dir):
@@ -467,6 +492,12 @@ class EvalDataset:
         dec_out_tokens['input_ids'] = dec_out_tokens['input_ids'][:, 1:]
         dec_out_tokens['attention_mask'] = dec_out_tokens['attention_mask'][:, 1:]
 
+        # compact grids (optional)
+        if self.compact_grids:
+            remove_val_from_1dtokenized(enc_tokens, self.encoder_space_token_id)
+            remove_val_from_1dtokenized(dec_in_tokens, self.decoder_space_token_id)
+            remove_val_from_1dtokenized(dec_out_tokens, self.decoder_space_token_id)
+
         # Build final decoder input + labels
         decoder_input_ids = torch.cat([
             dec_in_tokens["input_ids"].squeeze(0),
@@ -480,6 +511,10 @@ class EvalDataset:
             dec_in_tokens["attention_mask"].squeeze(0),
             dec_out_tokens["attention_mask"].squeeze(0),
         ], dim=0)
+
+        dec_label_texts = dec_out_text[:-len("<|eot_id|>")]
+        if self.compact_grids:
+            dec_label_texts = dec_label_texts.replace(' ', '')
 
         # Check length
         if enc_tokens["input_ids"].shape[1] > self.max_seq_len or decoder_input_ids.shape[0] > self.max_seq_len // 2: # dec_len should be short
@@ -495,7 +530,7 @@ class EvalDataset:
             "decoder_gen_input_ids": dec_in_tokens["input_ids"].squeeze(0),
             "decoder_gen_attention_mask": dec_in_tokens["attention_mask"].squeeze(0),
             "decoder_out_token_length": dec_out_tokens["input_ids"].shape[1],
-            "decoder_label_texts": dec_out_text[:-len("<|eot_id|>")],  # used for exact match
+            "decoder_label_texts": dec_label_texts,  # used for exact match
         }
 
 

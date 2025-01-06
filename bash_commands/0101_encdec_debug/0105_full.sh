@@ -48,3 +48,7 @@ accelerate launch --mixed_precision bf16 encoder_decoder/train.py \
 # Submitted batch job 55596267
 # Submitted batch job 55596268
 # Submitted batch job 55596269
+
+# Submitted batch job 55600444
+# Submitted batch job 55600445
+# Submitted batch job 55600446
