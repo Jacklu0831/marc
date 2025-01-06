@@ -9,34 +9,42 @@ accelerate launch --mixed_precision bf16 encoder_decoder/train.py \
     --eval_epochs 1 \
     --num_epochs 100 \
     --samples_per_epoch 20000 \
+    --augment_ratio 0.0 \
     --invar_loss_lambda 0.0 \
     --wandb
 
-# full invar0.1
+# full invar0.001
 accelerate launch --mixed_precision bf16 encoder_decoder/train.py \
-    --tag full_invar0.1 \
+    --tag full_invar0.001 \
     --train_data_dir /scratch/yl11330/re-arc/train_data/tasks \
     --eval_train_dir /scratch/yl11330/re-arc/arc_original/training \
     --eval_eval_dir /scratch/yl11330/re-arc/arc_original/evaluation \
     --eval_epochs 1 \
     --num_epochs 100 \
     --samples_per_epoch 20000 \
-    --invar_loss_lambda 0.1 \
+    --augment_ratio 0.0 \
+    --invar_loss_lambda 0.001 \
     --wandb
 
-# full invar0.3
+# full invar0.01
 accelerate launch --mixed_precision bf16 encoder_decoder/train.py \
-    --tag full_invar0.3 \
+    --tag full_invar0.01 \
     --train_data_dir /scratch/yl11330/re-arc/train_data/tasks \
     --eval_train_dir /scratch/yl11330/re-arc/arc_original/training \
     --eval_eval_dir /scratch/yl11330/re-arc/arc_original/evaluation \
     --eval_epochs 1 \
     --num_epochs 100 \
     --samples_per_epoch 20000 \
-    --invar_loss_lambda 0.3 \
+    --augment_ratio 0.0 \
+    --invar_loss_lambda 0.01 \
     --wandb
 
 # had dataloader bug
 # Submitted batch job 55573969
 # Submitted batch job 55573970
 # Submitted batch job 55573971
+
+# cancelled
+# Submitted batch job 55596267
+# Submitted batch job 55596268
+# Submitted batch job 55596269

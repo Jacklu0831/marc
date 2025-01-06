@@ -28,6 +28,9 @@ from arclib.augmenters import (
     Rotate,
     Transpose,
 )
+from accelerate.logging import get_logger
+
+logger = get_logger(__name__, log_level="INFO")
 
 
 def get_augmenters(
@@ -377,7 +380,7 @@ def collate_fn_train_dummy(batch, dummy_seq_enc_len: int, dummy_seq_dec_len: int
 ########################################
 # Evaluation Dataset
 ########################################
-class EvalDataset(Dataset):
+class EvalDataset:
     """
     Each .json in the directory => 1 sample in dataset.
     The JSON format:
@@ -423,10 +426,18 @@ class EvalDataset(Dataset):
                     'test': test_pair,
                 })
 
+        # parse data
+        self.parsed_data = [self.parse_data(idx) for idx in range(len(self.data))]
+        self.parsed_data = [data for data in self.parsed_data if data is not None]
+        logger.info(f'filtered data from {len(self.data)} to {len(self.parsed_data)}')
+
     def __len__(self):
-        return len(self.data)
+        return len(self.parsed_data)
 
     def __getitem__(self, idx):
+        return self.parsed_data[idx]
+
+    def parse_data(self, idx):
         task_id = self.data[idx]['task_id']
         train_pairs = self.data[idx]['train']
         test_pair = self.data[idx]['test']
@@ -488,31 +499,27 @@ class EvalDataset(Dataset):
         }
 
 
-def collate_fn_eval(batch, dataset: "EvalDataset"):
+def collate_fn_eval(batch, encoder_tokenizer, decoder_tokenizer):
     """
     Filter out None, then pad each field. Return the final dict.
     Also store how many valid items we have, for logging purposes.
     """
-    filtered = [b for b in batch if b is not None]
-    if len(filtered) == 0:
-        return {}
+    task_ids = [x['task_id'] for x in batch]
+    enc_ids = [x["encoder_input_ids"] for x in batch]
+    enc_mask = [x["encoder_attention_mask"] for x in batch]
+    dec_ids = [x["decoder_input_ids"] for x in batch]
+    dec_mask = [x["decoder_attention_mask"] for x in batch]
+    dec_gen_ids = [x["decoder_gen_input_ids"] for x in batch]
+    dec_gen_mask = [x["decoder_gen_attention_mask"] for x in batch]
+    dec_labs = [x["decoder_labels"] for x in batch]
+    decoder_out_token_length = [x["decoder_out_token_length"] for x in batch]
+    decoder_label_texts = [x["decoder_label_texts"] for x in batch]
 
-    task_ids = [x['task_id'] for x in filtered]
-    enc_ids = [x["encoder_input_ids"] for x in filtered]
-    enc_mask = [x["encoder_attention_mask"] for x in filtered]
-    dec_ids = [x["decoder_input_ids"] for x in filtered]
-    dec_mask = [x["decoder_attention_mask"] for x in filtered]
-    dec_gen_ids = [x["decoder_gen_input_ids"] for x in filtered]
-    dec_gen_mask = [x["decoder_gen_attention_mask"] for x in filtered]
-    dec_labs = [x["decoder_labels"] for x in filtered]
-    decoder_out_token_length = [x["decoder_out_token_length"] for x in filtered]
-    decoder_label_texts = [x["decoder_label_texts"] for x in filtered]
-
-    enc_ids = pad_sequence_left(enc_ids, padding_value=dataset.encoder_tokenizer.pad_token_id)
+    enc_ids = pad_sequence_left(enc_ids, padding_value=encoder_tokenizer.pad_token_id)
     enc_mask = pad_sequence_left(enc_mask, padding_value=0)
-    dec_ids = pad_sequence_left(dec_ids, padding_value=dataset.decoder_tokenizer.pad_token_id)
+    dec_ids = pad_sequence_left(dec_ids, padding_value=decoder_tokenizer.pad_token_id)
     dec_mask = pad_sequence_left(dec_mask, padding_value=0)
-    dec_gen_ids = pad_sequence_left(dec_gen_ids, padding_value=dataset.decoder_tokenizer.pad_token_id)
+    dec_gen_ids = pad_sequence_left(dec_gen_ids, padding_value=decoder_tokenizer.pad_token_id)
     dec_gen_mask = pad_sequence_left(dec_gen_mask, padding_value=0)
     dec_labs = pad_sequence_left(dec_labs, padding_value=-100)
 

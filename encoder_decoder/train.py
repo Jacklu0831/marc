@@ -1,6 +1,7 @@
 # train_script.py
 
 import pprint
+import math
 import json
 from tqdm import tqdm
 from functools import partial
@@ -8,6 +9,9 @@ import argparse
 import os
 import torch
 from torch import nn
+from torch.nn.parallel import DistributedDataParallel
+from accelerate import PartialState
+from accelerate.utils import gather_object
 from torch.utils.data import DataLoader
 from transformers import (
     AutoTokenizer,
@@ -32,6 +36,9 @@ from data_utils import (
     collate_fn_train_dummy,
     collate_fn_eval_dummy,
 )
+
+import os
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 logger = get_logger(__name__, log_level="INFO")
 
@@ -83,7 +90,7 @@ def encoder_decoder_loss(
     enc_out = encoder_model(
         input_ids=encoder_input_ids,
         attention_mask=encoder_attention_mask,
-        output_hidden_states=True
+        output_hidden_states=True,
     )
     enc_hidden = enc_out.hidden_states[-1] # last layer [B, seq_len, hidden_dim]
     hidden_cls = enc_hidden[:, -1, :]  # last token [B, hidden_dim]
@@ -108,11 +115,18 @@ def encoder_decoder_loss(
     )
     ce_loss = dec_out.loss
 
-    # invariance loss
-    invar_loss = nn.MSELoss()(enc_hidden[::2], enc_hidden[1::2])
+    # invariance loss (batch only not 2x in evaluation)
+    invar_loss = torch.tensor(0.0).to(encoder_input_ids.device)
+    if enc_hidden.shape[0] % 2 == 0:
+        invar_loss = nn.MSELoss()(enc_hidden[::2], enc_hidden[1::2])
 
     total_loss = ce_loss + invar_loss_lambda * invar_loss
     return ce_loss, invar_loss, total_loss, past_key_values
+
+
+def chunks(lst, n):
+    for i in range(0, len(lst), n):
+        yield lst[i:i + n]
 
 
 ################################################
@@ -123,17 +137,18 @@ def evaluate(
     encoder_model,
     decoder_model,
     project_kv,
-    eval_loader,
+    dataset,
     accelerator: Accelerator,
     num_layers: int,
     num_kv_heads: int,
     num_virtual_tokens: int,
     embed_size_per_head: int,
-    encoder_tokenizer,
     decoder_tokenizer,
+    batch_size: int,
+    eval_collate_fn,
 ):
     """
-    For each batch in eval_loader, compute:
+    For each task in dataset, compute:
       - cross-entropy using `encoder_decoder_loss`
       - generate => exact match vs decoder_label_texts
 
@@ -144,106 +159,123 @@ def evaluate(
     decoder_model.eval()
     project_kv.eval()
 
-    task_id_to_texts = {}
-    total_loss = 0.0
-    total_exact_acc = 0
-    total_valid_grid = 0
-    total_correct_grid_dim = 0
-    total_token_acc = 0.0
-    total_valid_samples = 0
+    decoder_module = decoder_model.module if isinstance(decoder_model, DistributedDataParallel) else decoder_model
 
     # setup terminators and suppress warning
     terminators = [
         decoder_tokenizer.eos_token_id,
         decoder_tokenizer.convert_tokens_to_ids("<|eot_id|>")
     ]
-    decoder_model.generation_config.pad_token_id = decoder_tokenizer.pad_token_id
+    decoder_module.generation_config.pad_token_id = decoder_tokenizer.pad_token_id
 
-    for batch in tqdm(eval_loader):
-        if len(batch) == 0:
-            # means we had no valid samples in this batch
-            continue
+    distributed_state = PartialState()
+    task_id_and_text_list = []
+    loss_list = []
+    exact_acc_list = []
+    valid_grid_list = []
+    correct_grid_dim_list = []
+    token_acc_list = []
 
-        bs = batch["encoder_input_ids"].size(0)
-        total_valid_samples += bs
+    with distributed_state.split_between_processes(dataset.parsed_data) as data:
+        n_batches = math.ceil(len(data) / batch_size)
+        for batch in tqdm(chunks(data, batch_size), total=n_batches):
+            batch = eval_collate_fn(batch)
+            bs = batch["encoder_input_ids"].size(0)
 
-        task_ids = batch["task_ids"]
-        enc_ids = batch["encoder_input_ids"].to(accelerator.device)
-        enc_mask = batch["encoder_attention_mask"].to(accelerator.device)
-        dec_ids = batch["decoder_input_ids"].to(accelerator.device)
-        dec_mask = batch["decoder_attention_mask"].to(accelerator.device)
-        dec_gen_ids = batch["decoder_gen_input_ids"].to(accelerator.device)
-        dec_gen_mask = batch["decoder_gen_attention_mask"].to(accelerator.device)
-        labels = batch["decoder_labels"].to(accelerator.device)
-        label_texts = batch["decoder_label_texts"]
-        out_token_length = batch["decoder_out_token_length"]
+            task_ids = batch["task_ids"]
+            enc_ids = batch["encoder_input_ids"].to(accelerator.device)
+            enc_mask = batch["encoder_attention_mask"].to(accelerator.device)
+            dec_ids = batch["decoder_input_ids"].to(accelerator.device)
+            dec_mask = batch["decoder_attention_mask"].to(accelerator.device)
+            dec_gen_ids = batch["decoder_gen_input_ids"].to(accelerator.device)
+            dec_gen_mask = batch["decoder_gen_attention_mask"].to(accelerator.device)
+            labels = batch["decoder_labels"].to(accelerator.device)
+            label_texts = batch["decoder_label_texts"]
+            out_token_length = batch["decoder_out_token_length"]
 
-        # compute ce loss
-        with accelerator.autocast():
-            ce_loss, _, _, past_key_values = encoder_decoder_loss(
-                encoder_model=encoder_model,
-                decoder_model=decoder_model,
-                project_kv=project_kv,
-                encoder_input_ids=enc_ids,
-                encoder_attention_mask=enc_mask,
-                decoder_input_ids=dec_ids,
-                decoder_attention_mask=dec_mask,
-                decoder_labels=labels,
-                num_layers=num_layers,
-                num_kv_heads=num_kv_heads,
-                num_virtual_tokens=num_virtual_tokens,
-                embed_size_per_head=embed_size_per_head,
-            )
+            # compute ce loss
+            with accelerator.autocast():
+                ce_loss, _, _, past_key_values = encoder_decoder_loss(
+                    encoder_model=encoder_model,
+                    decoder_model=decoder_model,
+                    project_kv=project_kv,
+                    encoder_input_ids=enc_ids,
+                    encoder_attention_mask=enc_mask,
+                    decoder_input_ids=dec_ids,
+                    decoder_attention_mask=dec_mask,
+                    decoder_labels=labels,
+                    num_layers=num_layers,
+                    num_kv_heads=num_kv_heads,
+                    num_virtual_tokens=num_virtual_tokens,
+                    embed_size_per_head=embed_size_per_head,
+                )
 
-        total_loss += ce_loss.item() * bs
+            loss_list += [ce_loss.item()] * bs
 
-        # compute accuracy
-        with accelerator.autocast():
-            # padding at front because HF ignores it
-            dec_gen_ids = torch.cat([torch.ones((bs, num_virtual_tokens), device='cuda').to(torch.int64), dec_gen_ids], dim=1)
-            dec_gen_mask = torch.cat([torch.ones((bs, num_virtual_tokens), device='cuda').to(torch.int64), dec_gen_mask], dim=1)
-            gen_tokens = decoder_model.generate(
-                input_ids=dec_gen_ids,
-                attention_mask=dec_gen_mask,
-                past_key_values=past_key_values,
-                max_new_tokens=max(out_token_length) + 50, # arbitrary increase
-                num_return_sequences=1,
-                do_sample=False,
-                eos_token_id=terminators,
-            )
-        gen_texts = decoder_tokenizer.batch_decode(gen_tokens[:, dec_gen_ids.shape[1]:], skip_special_tokens=True)
+            # compute accuracy
+            with accelerator.autocast():
+                # padding at front because HF ignores it
+                dec_gen_ids = torch.cat([torch.ones((bs, num_virtual_tokens), device='cuda').to(torch.int64), dec_gen_ids], dim=1)
+                dec_gen_mask = torch.cat([torch.ones((bs, num_virtual_tokens), device='cuda').to(torch.int64), dec_gen_mask], dim=1)
+                gen_tokens = decoder_module.generate(
+                    input_ids=dec_gen_ids,
+                    attention_mask=dec_gen_mask,
+                    past_key_values=past_key_values,
+                    max_new_tokens=max(out_token_length) + 50, # arbitrary increase
+                    num_return_sequences=1,
+                    temperature=1.0,
+                    top_p=1.0,
+                    do_sample=False,
+                    eos_token_id=terminators,
+                )
+            gen_texts = decoder_tokenizer.batch_decode(gen_tokens[:, dec_gen_ids.shape[1]:], skip_special_tokens=True)
 
-        # Compare each gen_text with label_texts
-        for gen_text, label_text in zip(gen_texts, label_texts):
-            # exact acc
-            total_exact_acc += int(gen_text == label_text)
-            # is valid grid
-            gen_grid, gen_is_grid = text_to_2d_grid(gen_text)
-            label_grid, label_is_grid = text_to_2d_grid(label_text)
-            assert label_is_grid
-            if gen_is_grid:
-                total_valid_grid += 1
-                # is correct grid dim
-                if len(gen_grid) == len(label_grid) and len(gen_grid[0]) == len(label_grid[0]):
-                    total_correct_grid_dim += 1
-                    # token acc
-                    grid_size = len(label_grid) * len(label_grid[0])
-                    num_token_correct = 0
-                    for gen_row, label_row in zip(gen_grid, label_grid):
-                        for gen_x, label_x in zip(gen_row, label_row):
-                            num_token_correct += int(gen_x == label_x)
-                    total_token_acc += num_token_correct / grid_size
+            # Compare each gen_text with label_texts
+            for task_id, gen_text, label_text in zip(task_ids, gen_texts, label_texts):
+                # save gen and gt
+                task_id_and_text_list.append((task_id, gen_text, label_text))
+                # exact acc
+                exact_acc_list.append(int(gen_text == label_text))
+                # is valid grid
+                gen_grid, gen_is_grid = text_to_2d_grid(gen_text)
+                label_grid, label_is_grid = text_to_2d_grid(label_text)
+                assert label_is_grid
+                valid_grid_list.append(int(gen_is_grid))
+                if not gen_is_grid:
+                    correct_grid_dim_list.append(0)
+                    token_acc_list.append(0)
+                    continue
+                # correct grid dim
+                is_correct_grid_dim = (len(gen_grid) == len(label_grid) and len(gen_grid[0]) == len(label_grid[0]))
+                correct_grid_dim_list.append(int(is_correct_grid_dim))
+                if not is_correct_grid_dim:
+                    token_acc_list.append(0)
+                    continue
+                # token acc
+                grid_size = len(label_grid) * len(label_grid[0])
+                num_token_correct = 0
+                for gen_row, label_row in zip(gen_grid, label_grid):
+                    for gen_x, label_x in zip(gen_row, label_row):
+                        num_token_correct += int(gen_x == label_x)
+                token_acc_list.append(num_token_correct / grid_size)
 
-        # Save generated texts
-        for task_id, gen_text, label_text in zip(task_ids, gen_texts, label_texts):
-            task_id_to_texts[task_id] = (gen_text, label_text)
+    distributed_state.wait_for_everyone()
+    task_id_and_text_list = gather_object(task_id_and_text_list)
+    loss_list = gather_object(loss_list)
+    exact_acc_list = gather_object(exact_acc_list)
+    valid_grid_list = gather_object(valid_grid_list)
+    correct_grid_dim_list = gather_object(correct_grid_dim_list)
+    token_acc_list = gather_object(token_acc_list)
+    assert len(task_id_and_text_list) == len(loss_list) == len(exact_acc_list) == len(dataset.parsed_data)
+    assert len(valid_grid_list) == len(correct_grid_dim_list) == len(token_acc_list) == len(dataset.parsed_data)
 
-    avg_ce = total_loss / max(1, total_valid_samples)
-    exact_acc = total_exact_acc / max(1, total_valid_samples)
-    valid_grid = total_valid_grid / max(1, total_valid_samples)
-    correct_grid_dim = total_correct_grid_dim / max(1, total_valid_samples)
-    token_acc = total_token_acc / max(1, total_valid_samples)
-    return avg_ce, exact_acc, valid_grid, correct_grid_dim, token_acc, total_valid_samples, task_id_to_texts
+    task_id_to_texts = {x[0]: (x[1], x[2]) for x in task_id_and_text_list}
+    avg_ce = sum(loss_list) / len(dataset.parsed_data)
+    exact_acc = sum(exact_acc_list) / len(dataset.parsed_data)
+    valid_grid = sum(valid_grid_list) / len(dataset.parsed_data)
+    correct_grid_dim = sum(correct_grid_dim_list) / len(dataset.parsed_data)
+    token_acc = sum(token_acc_list) / len(dataset.parsed_data)
+    return avg_ce, exact_acc, valid_grid, correct_grid_dim, token_acc, task_id_to_texts
 
 
 def text_to_2d_grid(text):
@@ -367,7 +399,6 @@ def main():
     # Load tokenizers
     encoder_tokenizer = AutoTokenizer.from_pretrained(args.encoder_name, padding_side='left')
     decoder_tokenizer = AutoTokenizer.from_pretrained(args.decoder_name, padding_side='left')
-
     if not encoder_tokenizer.pad_token:
         encoder_tokenizer.pad_token = encoder_tokenizer.eos_token
     if not decoder_tokenizer.pad_token:
@@ -430,46 +461,21 @@ def main():
         augment_ratio=args.augment_ratio,
         seed=args.seed,
     )
-    collate_fn = partial(collate_fn_train_dummy, dummy_seq_enc_len=args.dummy_seq_enc_len, dummy_seq_dec_len=args.dummy_seq_dec_len) \
-                 if args.dummy_seq_enc_len > 0 else partial(collate_fn_train, dataset=train_dataset, debug_fixed_train_order=args.debug_fixed_train_order)
+    train_collate_fn = partial(collate_fn_train,
+                               dataset=train_dataset, debug_fixed_train_order=args.debug_fixed_train_order)
+    if args.dummy_seq_enc_len > 0:
+        train_collate_fn = partial(collate_fn_train_dummy,
+                                   dummy_seq_enc_len=args.dummy_seq_enc_len, dummy_seq_dec_len=args.dummy_seq_dec_len)
     train_loader = DataLoader(
         train_dataset,
         batch_size=args.batch_size,
         shuffle=False,
-        collate_fn=collate_fn,
+        collate_fn=train_collate_fn,
         drop_last=True,
         num_workers=args.num_workers,
     )
     logger.info(f"len(train_dataset) = {len(train_dataset)}")
     logger.info(f"len(train_loader) = {len(train_loader)}")
-
-    # Build evaluation datasets
-    eval_train_dataset = EvalDataset(args.eval_train_dir, encoder_tokenizer, decoder_tokenizer, args.max_seq_len, args.eval_train_ratio)
-    eval_eval_dataset = EvalDataset(args.eval_eval_dir, encoder_tokenizer, decoder_tokenizer, args.max_seq_len, args.eval_eval_ratio)
-    collate_fn = partial(collate_fn_eval_dummy, dummy_seq_enc_len=args.dummy_seq_enc_len, dummy_seq_dec_len=args.dummy_seq_dec_len) \
-                 if args.dummy_seq_enc_len > 0 else partial(collate_fn_eval, dataset=eval_train_dataset)
-    eval_train_loader = DataLoader(
-        eval_train_dataset,
-        batch_size=args.batch_size,
-        shuffle=False,
-        collate_fn=collate_fn,
-        drop_last=False,
-        num_workers=args.num_workers,
-    )
-    collate_fn = partial(collate_fn_eval_dummy, dummy_seq_enc_len=args.dummy_seq_enc_len, dummy_seq_dec_len=args.dummy_seq_dec_len) \
-                 if args.dummy_seq_enc_len > 0 else partial(collate_fn_eval, dataset=eval_eval_dataset)
-    eval_eval_loader = DataLoader(
-        eval_eval_dataset,
-        batch_size=args.batch_size,
-        shuffle=False,
-        collate_fn=collate_fn,
-        drop_last=False,
-        num_workers=args.num_workers,
-    )
-    logger.info(f"len(eval_train_dataset) = {len(eval_train_dataset)}")
-    logger.info(f"len(eval_train_loader) = {len(eval_train_loader)}")
-    logger.info(f"len(eval_eval_dataset) = {len(eval_eval_dataset)}")
-    logger.info(f"len(eval_eval_loader) = {len(eval_eval_loader)}")
 
     # Param groups for LoRA
     embedding_params = []
@@ -514,17 +520,13 @@ def main():
         decoder_model,
         project_kv,
         optimizer,
-        train_loader,
-        eval_train_loader,
-        eval_eval_loader
+        train_loader
     ) = accelerator.prepare(
         encoder_model,
         decoder_model,
         project_kv,
         optimizer,
-        train_loader,
-        eval_train_loader,
-        eval_eval_loader
+        train_loader
     )
 
     logger.info(f'\n======= TRAINING INFO START ======')
@@ -608,47 +610,58 @@ def main():
 
         # Evaluate every N epochs
         if (epoch + 1) % args.eval_epochs == 0:
-            if accelerator.is_main_process:
-                train_ce, train_exact_acc, train_valid_grid, train_correct_grid_dim, train_token_acc, train_num_valid_samples, train_texts = evaluate(
-                    encoder_model,
-                    decoder_model,
-                    project_kv,
-                    eval_train_loader,
-                    accelerator,
-                    num_layers,
-                    num_kv_heads,
-                    args.num_virtual_tokens,
-                    embed_size_per_head,
-                    encoder_tokenizer,
-                    decoder_tokenizer,
-                )
-                eval_ce, eval_exact_acc, eval_valid_grid, eval_correct_grid_dim, eval_token_acc, eval_num_valid_samples, eval_texts = evaluate(
-                    encoder_model,
-                    decoder_model,
-                    project_kv,
-                    eval_eval_loader,
-                    accelerator,
-                    num_layers,
-                    num_kv_heads,
-                    args.num_virtual_tokens,
-                    embed_size_per_head,
-                    encoder_tokenizer,
-                    decoder_tokenizer,
-                )
+            # Build evaluation datasets
+            eval_train_dataset = EvalDataset(args.eval_train_dir, encoder_tokenizer, decoder_tokenizer, args.max_seq_len, args.eval_train_ratio)
+            eval_eval_dataset = EvalDataset(args.eval_eval_dir, encoder_tokenizer, decoder_tokenizer, args.max_seq_len, args.eval_eval_ratio)
+            eval_collate_fn = partial(collate_fn_eval,
+                                    encoder_tokenizer=encoder_tokenizer, decoder_tokenizer=decoder_tokenizer)
+            if args.dummy_seq_enc_len > 0:
+                eval_collate_fn = partial(collate_fn_eval_dummy,
+                                        dummy_seq_enc_len=args.dummy_seq_enc_len, dummy_seq_dec_len=args.dummy_seq_dec_len)
+            logger.info(f"len(eval_train_dataset) = {len(eval_train_dataset)}")
+            logger.info(f"len(eval_eval_dataset) = {len(eval_eval_dataset)}")
 
+            train_ce, train_exact_acc, train_valid_grid, train_correct_grid_dim, train_token_acc, train_texts = evaluate(
+                encoder_model,
+                decoder_model,
+                project_kv,
+                eval_train_dataset,
+                accelerator,
+                num_layers,
+                num_kv_heads,
+                args.num_virtual_tokens,
+                embed_size_per_head,
+                decoder_tokenizer,
+                args.batch_size,
+                eval_collate_fn,
+            )
+            eval_ce, eval_exact_acc, eval_valid_grid, eval_correct_grid_dim, eval_token_acc, eval_texts = evaluate(
+                encoder_model,
+                decoder_model,
+                project_kv,
+                eval_eval_dataset,
+                accelerator,
+                num_layers,
+                num_kv_heads,
+                args.num_virtual_tokens,
+                embed_size_per_head,
+                decoder_tokenizer,
+                args.batch_size,
+                eval_collate_fn,
+            )
+
+            if accelerator.is_main_process:
                 eval_metric_dict = {
                     "eval/train_ce_loss": train_ce,
                     "eval/train_exact_acc": train_exact_acc,
                     "eval/train_valid_grid": train_valid_grid,
                     "eval/train_correct_grid_dim": train_correct_grid_dim,
                     "eval/train_token_acc": train_token_acc,
-                    "eval/train_count": train_num_valid_samples,
                     "eval/eval_ce_loss": eval_ce,
                     "eval/eval_exact_acc": eval_exact_acc,
                     "eval/eval_valid_grid": eval_valid_grid,
                     "eval/eval_correct_grid_dim": eval_correct_grid_dim,
                     "eval/eval_token_acc": eval_token_acc,
-                    "eval/eval_count": eval_num_valid_samples
                 }
                 logger.info(f'Evaluation results:\n{pprint.pformat(eval_metric_dict, indent=4)}')
                 accelerator.log(eval_metric_dict, step=global_step)
@@ -666,8 +679,10 @@ def main():
                 # Save model
                 save_enc_path = os.path.join(args.output_dir, f"encoder_lora_epoch_{epoch+1}")
                 save_dec_path = os.path.join(args.output_dir, f"decoder_lora_epoch_{epoch+1}")
-                encoder_model.save_pretrained(save_enc_path)
-                decoder_model.save_pretrained(save_dec_path)
+                encoder_module = encoder_model.module if isinstance(encoder_model, DistributedDataParallel) else encoder_model
+                decoder_module = decoder_model.module if isinstance(decoder_model, DistributedDataParallel) else decoder_model
+                encoder_module.save_pretrained(save_enc_path, save_embedding_layers=True)
+                decoder_module.save_pretrained(save_dec_path, save_embedding_layers=True)
                 logger.info(f"Saved encoder to {save_enc_path}")
                 logger.info(f"Saved decoder to {save_dec_path}")
 
