@@ -307,6 +307,7 @@ def main():
     parser.add_argument("--wandb", action="store_true")
     parser.add_argument("--output_dir", type=str, default="./encoder_decoder/outputs")
     parser.add_argument("--tracker_project_name", type=str, default="arc")
+    parser.add_argument("--save_model", action="store_true")
 
     # Debug
     parser.add_argument("--debug", action='store_true')
@@ -716,14 +717,15 @@ def main():
                 logger.info(f"Saved eval eval generated text to {save_eval_eval_path}")
 
                 # Save model
-                save_enc_path = os.path.join(args.output_dir, f"encoder_lora_epoch_{epoch+1}")
-                save_dec_path = os.path.join(args.output_dir, f"decoder_lora_epoch_{epoch+1}")
-                encoder_module = encoder_model.module if isinstance(encoder_model, DistributedDataParallel) else encoder_model
-                decoder_module = decoder_model.module if isinstance(decoder_model, DistributedDataParallel) else decoder_model
-                encoder_module.save_pretrained(save_enc_path, save_embedding_layers=True)
-                decoder_module.save_pretrained(save_dec_path, save_embedding_layers=True)
-                logger.info(f"Saved encoder to {save_enc_path}")
-                logger.info(f"Saved decoder to {save_dec_path}")
+                if args.save_model:
+                    save_enc_path = os.path.join(args.output_dir, f"encoder_lora_epoch_{epoch+1}")
+                    save_dec_path = os.path.join(args.output_dir, f"decoder_lora_epoch_{epoch+1}")
+                    encoder_module = encoder_model.module if isinstance(encoder_model, DistributedDataParallel) else encoder_model
+                    decoder_module = decoder_model.module if isinstance(decoder_model, DistributedDataParallel) else decoder_model
+                    encoder_module.save_pretrained(save_enc_path, save_embedding_layers=True)
+                    decoder_module.save_pretrained(save_dec_path, save_embedding_layers=True)
+                    logger.info(f"Saved encoder to {save_enc_path}")
+                    logger.info(f"Saved decoder to {save_dec_path}")
 
     logger.info("All done training.")
     accelerator.end_training()

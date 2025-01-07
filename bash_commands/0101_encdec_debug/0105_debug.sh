@@ -7,7 +7,7 @@ accelerate launch --mixed_precision bf16 encoder_decoder/train.py \
     --eval_train_dir /scratch/yl11330/re-arc/arc_original_debug/training \
     --eval_eval_dir /scratch/yl11330/re-arc/arc_original_debug/evaluation \
     --eval_epochs 1 \
-    --num_epochs 100 \
+    --num_epochs 10 \
     --samples_per_epoch 5000 \
     --augment_ratio 0.0 \
     --invar_loss_lambda 0.0 \
@@ -20,7 +20,7 @@ accelerate launch --mixed_precision bf16 encoder_decoder/train.py \
     --eval_train_dir /scratch/yl11330/re-arc/arc_original_debug/training \
     --eval_eval_dir /scratch/yl11330/re-arc/arc_original_debug/evaluation \
     --eval_epochs 1 \
-    --num_epochs 100 \
+    --num_epochs 10 \
     --samples_per_epoch 5000 \
     --augment_ratio 0.0 \
     --invar_loss_lambda 0.001 \
@@ -33,7 +33,7 @@ accelerate launch --mixed_precision bf16 encoder_decoder/train.py \
     --eval_train_dir /scratch/yl11330/re-arc/arc_original_debug/training \
     --eval_eval_dir /scratch/yl11330/re-arc/arc_original_debug/evaluation \
     --eval_epochs 1 \
-    --num_epochs 100 \
+    --num_epochs 10 \
     --samples_per_epoch 5000 \
     --augment_ratio 0.0 \
     --invar_loss_lambda 0.01 \
