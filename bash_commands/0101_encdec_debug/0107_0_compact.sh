@@ -1,7 +1,7 @@
 # python make_sbatch.py --ngpu 2 --time 48 --bash_files bash_commands/0101_encdec_debug/0107_0_compact.sh
 
 # debug invar0.0 compact
-accelerate launch --mixed_precision bf16 encoder_decoder/train.py \
+accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder/train.py \
     --tag debug_invar0.0_compact \
     --train_data_dir /scratch/yl11330/re-arc/train_data_debug/tasks \
     --eval_train_dir /scratch/yl11330/re-arc/arc_original_debug/training \
@@ -15,7 +15,7 @@ accelerate launch --mixed_precision bf16 encoder_decoder/train.py \
     --wandb
 
 # full invar0.0 compact
-accelerate launch --mixed_precision bf16 encoder_decoder/train.py \
+accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder/train.py \
     --tag full_invar0.0_compact \
     --train_data_dir /scratch/yl11330/re-arc/train_data/tasks \
     --eval_train_dir /scratch/yl11330/re-arc/arc_original/training \

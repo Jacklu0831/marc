@@ -6,7 +6,6 @@ import json
 from tqdm import tqdm
 from functools import partial
 import argparse
-import os
 import torch
 from torch import nn
 from torch.nn.parallel import DistributedDataParallel
@@ -39,6 +38,9 @@ from data_utils import (
 
 import os
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
+
+import wandb
+wandb.login(key='faf21d9ff65ee150697c7e96f070616f6b662134', relogin=True)
 
 logger = get_logger(__name__, log_level="INFO")
 

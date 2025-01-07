@@ -1,7 +1,7 @@
 # python make_sbatch.py --time 48 --bash_files bash_commands/0101_encdec_debug/0105_full.sh
 
 # full invar0.0
-accelerate launch --mixed_precision bf16 encoder_decoder/train.py \
+accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder/train.py \
     --tag full_invar0.0 \
     --train_data_dir /scratch/yl11330/re-arc/train_data/tasks \
     --eval_train_dir /scratch/yl11330/re-arc/arc_original/training \
@@ -14,7 +14,7 @@ accelerate launch --mixed_precision bf16 encoder_decoder/train.py \
     --wandb
 
 # full invar0.001
-accelerate launch --mixed_precision bf16 encoder_decoder/train.py \
+accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder/train.py \
     --tag full_invar0.001 \
     --train_data_dir /scratch/yl11330/re-arc/train_data/tasks \
     --eval_train_dir /scratch/yl11330/re-arc/arc_original/training \
@@ -27,7 +27,7 @@ accelerate launch --mixed_precision bf16 encoder_decoder/train.py \
     --wandb
 
 # full invar0.01
-accelerate launch --mixed_precision bf16 encoder_decoder/train.py \
+accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder/train.py \
     --tag full_invar0.01 \
     --train_data_dir /scratch/yl11330/re-arc/train_data/tasks \
     --eval_train_dir /scratch/yl11330/re-arc/arc_original/training \

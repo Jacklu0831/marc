@@ -6,7 +6,7 @@ template = """#!/bin/bash
 
 #SBATCH --constraint='a100|h100'
 #SBATCH --nodes=1
-#SBATCH --ntasks-per-node=1
+#SBATCH --ntasks-per-node=$NGPU
 #SBATCH --cpus-per-task=$NCPU
 #SBATCH --time=$TIME:00:00
 #SBATCH --mem=$MEMGB
@@ -38,6 +38,7 @@ args = parser.parse_args()
 for sbatch_file in glob.glob(os.path.join(args.sbatch_dir, '*')):
     os.remove(sbatch_file)
 
+template = template.replace('$NGPU', str(args.ngpu))
 template = template.replace('$NCPU', str(args.ncpu))
 template = template.replace('$TIME', str(args.time))
 template = template.replace('$MEM', str(args.gb))

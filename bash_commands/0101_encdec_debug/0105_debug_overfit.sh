@@ -1,5 +1,5 @@
 # debug overfit 1 token
-accelerate launch --mixed_precision bf16 encoder_decoder/train.py \
+accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder/train.py \
     --tag test \
     --train_data_dir /scratch/yl11330/re-arc/train_data_debug_overfit/tasks \
     --eval_train_dir /scratch/yl11330/re-arc/arc_original_debug_overfit/training \
@@ -19,7 +19,7 @@ accelerate launch --mixed_precision bf16 encoder_decoder/train.py \
     --num_virtual_tokens 1
 
 # debug overfit 2 token (did not work)
-accelerate launch --mixed_precision bf16 encoder_decoder/train.py \
+accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder/train.py \
     --tag test2 \
     --train_data_dir /scratch/yl11330/re-arc/train_data_debug_overfit/tasks \
     --eval_train_dir /scratch/yl11330/re-arc/arc_original_debug_overfit/training \
@@ -39,7 +39,7 @@ accelerate launch --mixed_precision bf16 encoder_decoder/train.py \
     --num_virtual_tokens 2
 
 # debug overfit 4 token
-accelerate launch --mixed_precision bf16 encoder_decoder/train.py \
+accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder/train.py \
     --tag test4 \
     --train_data_dir /scratch/yl11330/re-arc/train_data_debug_overfit/tasks \
     --eval_train_dir /scratch/yl11330/re-arc/arc_original_debug_overfit/training \
@@ -60,7 +60,7 @@ accelerate launch --mixed_precision bf16 encoder_decoder/train.py \
 
 
 # debug multiepoch and stuff
-accelerate launch --mixed_precision bf16 encoder_decoder/train.py \
+accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder/train.py \
     --tag test1 \
     --train_data_dir /scratch/yl11330/re-arc/train_data_debug_overfit/tasks \
     --eval_train_dir /scratch/yl11330/re-arc/arc_original_debug_overfit/training \
@@ -81,7 +81,7 @@ accelerate launch --mixed_precision bf16 encoder_decoder/train.py \
     --wandb
 
 # idk
-accelerate launch --mixed_precision bf16 encoder_decoder/train.py \
+accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder/train.py \
     --tag test \
     --train_data_dir /scratch/yl11330/re-arc/train_data_debug/tasks \
     --eval_train_dir /scratch/yl11330/re-arc/arc_original_debug/training \
@@ -92,7 +92,7 @@ accelerate launch --mixed_precision bf16 encoder_decoder/train.py \
     --wandb
 
 # 5 and 3 eval samples
-accelerate launch --mixed_precision bf16 encoder_decoder/train.py \
+accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder/train.py \
     --tag test \
     --train_data_dir /scratch/yl11330/re-arc/train_data/tasks \
     --eval_train_dir /scratch/yl11330/re-arc/arc_original_sub/training \
@@ -104,7 +104,7 @@ accelerate launch --mixed_precision bf16 encoder_decoder/train.py \
     --lr_other 0.0
 
 # debug overfit 1 token compact grids
-accelerate launch --mixed_precision bf16 encoder_decoder/train.py \
+accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder/train.py \
     --tag test1 \
     --train_data_dir /scratch/yl11330/re-arc/train_data_debug_overfit/tasks \
     --eval_train_dir /scratch/yl11330/re-arc/arc_original_debug_overfit/training \
@@ -125,7 +125,7 @@ accelerate launch --mixed_precision bf16 encoder_decoder/train.py \
     --compact_grids
 
 # memory stress test
-accelerate launch --mixed_precision bf16 encoder_decoder_new/train.py \
+accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder_new/train.py \
     --tag test1 \
     --train_data_dir /scratch/yl11330/re-arc/train_data_debug_overfit/tasks \
     --eval_train_dir /scratch/yl11330/re-arc/arc_original_debug_overfit/training \
@@ -147,7 +147,7 @@ accelerate launch --mixed_precision bf16 encoder_decoder_new/train.py \
     --flash_attn
 
 # debug overfit 1 token llama3b
-accelerate launch --mixed_precision bf16 encoder_decoder/train.py \
+accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder/train.py \
     --encoder_name meta-llama/Llama-3.2-3B-Instruct \
     --decoder_name meta-llama/Llama-3.2-3B-Instruct \
     --tag test \
@@ -169,7 +169,7 @@ accelerate launch --mixed_precision bf16 encoder_decoder/train.py \
     --num_virtual_tokens 1
 
 # debug overfit 1 token
-accelerate launch --mixed_precision bf16 encoder_decoder/train.py \
+accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder/train.py \
     --tag test \
     --train_data_dir /scratch/yl11330/re-arc/train_data_debug_overfit/tasks \
     --eval_train_dir /scratch/yl11330/re-arc/arc_original_debug_overfit/training \
@@ -189,7 +189,7 @@ accelerate launch --mixed_precision bf16 encoder_decoder/train.py \
     --num_virtual_tokens 1
 
 # debug overfit 1 token lmheads flashattn
-accelerate launch --mixed_precision bf16 encoder_decoder/train.py \
+accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder/train.py \
     --tag test \
     --train_data_dir /scratch/yl11330/re-arc/train_data_debug_overfit/tasks \
     --eval_train_dir /scratch/yl11330/re-arc/arc_original_debug_overfit/training \
