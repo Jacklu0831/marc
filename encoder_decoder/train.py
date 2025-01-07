@@ -351,6 +351,7 @@ def main():
     parser.add_argument('--encoder_lora_target_modules', type=str, nargs="+", default=[
         'q_proj','k_proj','v_proj','o_proj','gate_proj','up_proj','down_proj','embed_tokens'
     ])
+    parser.add_argument("--encoder_lm_head", action='store_true')
     parser.add_argument("--encoder_no_rslora", action='store_true')
 
     # Lora decoder
@@ -360,6 +361,7 @@ def main():
     parser.add_argument('--decoder_lora_target_modules', type=str, nargs="+", default=[
         'q_proj','k_proj','v_proj','o_proj','gate_proj','up_proj','down_proj','embed_tokens'
     ])
+    parser.add_argument("--decoder_lm_head", action='store_true')
     parser.add_argument("--decoder_no_rslora", action='store_true')
 
     # Virtual tokens approach
@@ -380,6 +382,11 @@ def main():
         args.num_workers = 0
         # args.dummy_seq_enc_len = 8192
         # args.dummy_seq_dec_len = 4096
+
+    if args.encoder_lm_head and 'lm_head' not in args.encoder_lora_target_modules:
+        args.encoder_lora_target_modules.append('lm_head')
+    if args.decoder_lm_head and 'lm_head' not in args.decoder_lora_target_modules:
+        args.decoder_lora_target_modules.append('lm_head')
 
     args.output_dir = os.path.join(args.output_dir, args.tag)
 

@@ -1,8 +1,8 @@
-# python make_sbatch.py --ngpu 2 --time 48 --bash_files bash_commands/0101_encdec_debug/0106_compact.sh
+# python make_sbatch.py --ngpu 2 --time 48 --bash_files bash_commands/0101_encdec_debug/0107_1_compact_limited.sh
 
-# debug invar0.0 compact
+# debug invar0.0 compact limited
 accelerate launch --mixed_precision bf16 encoder_decoder/train.py \
-    --tag debug_invar0.0_compact \
+    --tag debug_invar0.0_compact_limited \
     --train_data_dir /scratch/yl11330/re-arc/train_data_debug/tasks \
     --eval_train_dir /scratch/yl11330/re-arc/arc_original_debug/training \
     --eval_eval_dir /scratch/yl11330/re-arc/arc_original_debug/evaluation \
@@ -12,11 +12,13 @@ accelerate launch --mixed_precision bf16 encoder_decoder/train.py \
     --augment_ratio 0.0 \
     --invar_loss_lambda 0.0 \
     --compact_grids \
+    --max_seq_len 5120 \
+    --no_gradient_checkpointing \
     --wandb
 
-# full invar0.0 compact
+# full invar0.0 compact limited
 accelerate launch --mixed_precision bf16 encoder_decoder/train.py \
-    --tag full_invar0.0_compact \
+    --tag full_invar0.0_compact_limited \
     --train_data_dir /scratch/yl11330/re-arc/train_data/tasks \
     --eval_train_dir /scratch/yl11330/re-arc/arc_original/training \
     --eval_eval_dir /scratch/yl11330/re-arc/arc_original/evaluation \
@@ -26,7 +28,6 @@ accelerate launch --mixed_precision bf16 encoder_decoder/train.py \
     --augment_ratio 0.0 \
     --invar_loss_lambda 0.0 \
     --compact_grids \
+    --max_seq_len 5120 \
+    --no_gradient_checkpointing \
     --wandb
-
-# Submitted batch job 55600436
-# Submitted batch job 55600437

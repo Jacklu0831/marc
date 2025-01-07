@@ -28,5 +28,6 @@ accelerate launch --mixed_precision bf16 encoder_decoder/train.py \
     --flash_attn \
     --wandb
 
-# Submitted batch job 55609309
-# Submitted batch job 55609310
+# flash attn unpack error
+# Submitted batch job 55609375
+# Submitted batch job 55609376
