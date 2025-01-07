@@ -1,5 +1,6 @@
 # data_utils.py
 
+import math
 import copy
 import os
 import json
@@ -456,6 +457,20 @@ class EvalDataset:
         self.parsed_data = [data for data in self.parsed_data if data is not None]
         logger.info(f'filtered data from {len(self.data)} to {len(self.parsed_data)}')
 
+        # print statistics
+        # encoder_input_ids_lens = [x['encoder_input_ids'].shape[0] for x in self.parsed_data]
+        # decoder_input_ids_lens = [x['decoder_input_ids'].shape[0] for x in self.parsed_data]
+        # for x in encoder_input_ids_lens:
+        #     if x > 8192:
+        #         print(x)
+        # import matplotlib.pyplot as plt
+        # plt.hist(encoder_input_ids_lens)
+        # plt.savefig('encoder.jpg')
+        # plt.close()
+        # plt.hist(decoder_input_ids_lens)
+        # plt.savefig('decoder.jpg')
+        # plt.close()
+
     def __len__(self):
         return len(self.parsed_data)
 
@@ -584,6 +599,8 @@ def collate_fn_eval_dummy(batch, dummy_seq_enc_len: int, dummy_seq_dec_len: int)
     enc_mask = torch.full((batch_size, dummy_seq_enc_len), 1, dtype=torch.int64, device='cpu')
     dec_ids = torch.randint(1, 101, (batch_size, dummy_seq_dec_len), dtype=torch.int64, device='cpu')
     dec_mask = torch.full((batch_size, dummy_seq_dec_len), 1, dtype=torch.int64, device='cpu')
+    dec_gen_ids = torch.randint(1, 101, (batch_size, int(dummy_seq_dec_len * 0.4)), dtype=torch.int64, device='cpu')
+    dec_gen_mask = torch.full((batch_size, int(dummy_seq_dec_len * 0.4)), 1, dtype=torch.int64, device='cpu')
 
     batch_dict = {
         "task_ids": task_ids,
@@ -591,7 +608,10 @@ def collate_fn_eval_dummy(batch, dummy_seq_enc_len: int, dummy_seq_dec_len: int)
         "encoder_attention_mask": enc_mask,
         "decoder_input_ids": dec_ids,
         "decoder_attention_mask": dec_mask,
+        "decoder_gen_input_ids": dec_gen_ids,
+        "decoder_gen_attention_mask": dec_gen_mask,
         "decoder_labels": dec_ids,
         "decoder_label_texts": ['helloworld'] * batch_size,
+        "decoder_out_token_length": [math.ceil(dummy_seq_dec_len * 0.6)] * batch_size,
     }
     return batch_dict

@@ -16,10 +16,12 @@ $GPULINE
 
 module purge
 
+MASTER_PORT=$(comm -23 <(seq 10000 65000 | sort) <(ss -tan | awk '{print $4}' | cut -d':' -f2 | sort -u) | shuf | head -n 1)
+
 singularity exec --nv \\
     --overlay /scratch/yl11330/my_env/overlay-50G-10M-pytorch.ext3:ro \\
     /scratch/work/public/singularity/cuda11.6.124-cudnn8.4.0.27-devel-ubuntu20.04.4.sif \\
-    /bin/bash -c "source /ext3/env.sh; cd /scratch/yl11330/marc; conda activate ./penv; \\
+    /bin/bash -c "source /ext3/env.sh; cd /scratch/yl11330/marc; conda activate ./penv; export MASTER_PORT; \\
         $CMD"
 """
 
@@ -102,7 +104,6 @@ for cluster_name, job_cluster in model_dirs_dict.items():
         job_name = f"{cluster_name.replace(' ', '_')}_{job_i}"
         sbatch_content = template.replace('$JOBNAME', job_name)
         sbatch_content = sbatch_content.replace('$CMD', cmd)
-        assert '$' not in sbatch_content
         # save sbatch content
         sbatch_path = os.path.join(args.sbatch_dir, f'{job_name}.sbatch')
         print(sbatch_path)
