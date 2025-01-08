@@ -354,7 +354,6 @@ def main():
     parser.add_argument('--encoder_lora_target_modules', type=str, nargs="+", default=[
         'q_proj','k_proj','v_proj','o_proj','gate_proj','up_proj','down_proj','embed_tokens'
     ])
-    parser.add_argument("--encoder_lm_head", action='store_true')
     parser.add_argument("--encoder_no_rslora", action='store_true')
 
     # Lora decoder
@@ -386,8 +385,6 @@ def main():
         # args.dummy_seq_enc_len = 8192
         # args.dummy_seq_dec_len = 4096
 
-    if args.encoder_lm_head and 'lm_head' not in args.encoder_lora_target_modules:
-        args.encoder_lora_target_modules.append('lm_head')
     if args.decoder_lm_head and 'lm_head' not in args.decoder_lora_target_modules:
         args.decoder_lora_target_modules.append('lm_head')
 
@@ -465,6 +462,10 @@ def main():
     encoder_model = get_peft_model(base_encoder, encoder_peft_config)
     decoder_model = get_peft_model(base_decoder, decoder_peft_config)
     logger.info("LoRA-wrapped models initialized.")
+    encoder_model.print_trainable_parameters()
+    decoder_model.print_trainable_parameters()
+    logger.info(f'encoder size {round(encoder_model.get_memory_footprint() / 1024 ** 3, 2)}GB')
+    logger.info(f'decoder size {round(decoder_model.get_memory_footprint() / 1024 ** 3, 2)}GB')
 
     # prefixes are formatted as 16 of (2=2, BS=1, nhead=8, nvirtualtoken=1, tokendim / nhead=64)
     num_layers = decoder_model.config.num_hidden_layers

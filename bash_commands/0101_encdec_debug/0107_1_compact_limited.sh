@@ -30,6 +30,7 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
     --compact_grids \
     --max_seq_len 5120 \
     --no_gradient_checkpointing \
+    --decoder_lm_head \
     --wandb
 
 # logged to alex

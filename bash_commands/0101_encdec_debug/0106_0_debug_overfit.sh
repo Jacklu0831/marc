@@ -1,3 +1,6 @@
+# torch.Size([2, 569])
+# torch.Size([2, 143])
+
 # debug overfit 1 token
 accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder/train.py \
     --tag test \
@@ -124,8 +127,8 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
     --num_virtual_tokens 1 \
     --compact_grids
 
-# memory stress test
-accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder_new/train.py \
+# memory stress test (62.3GB)
+accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder/train.py \
     --tag test1 \
     --train_data_dir /scratch/yl11330/re-arc/train_data_debug_overfit/tasks \
     --eval_train_dir /scratch/yl11330/re-arc/arc_original_debug_overfit/training \
@@ -145,6 +148,41 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
     --dummy_seq_enc_len 8192 \
     --dummy_seq_dec_len 3613 \
     --flash_attn
+
+
+accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder/train.py \
+    --tag test \
+    --encoder_name meta-llama/Llama-3.2-3B-Instruct \
+    --decoder_name meta-llama/Llama-3.2-3B-Instruct \
+    --train_data_dir /scratch/yl11330/re-arc/train_data_debug_overfit/tasks \
+    --eval_train_dir /scratch/yl11330/re-arc/arc_original_debug_overfit/training \
+    --eval_eval_dir /scratch/yl11330/re-arc/arc_original_debug_overfit/training \
+    --eval_epochs 1 \
+    --num_epochs 1 \
+    --samples_per_epoch 5000 \
+    --augment_ratio 0.0 \
+    --invar_loss_lambda 0.0 \
+    --num_virtual_tokens 6 \
+    --dummy_seq_enc_len 569 \
+    --dummy_seq_dec_len 143
+
+
+# memory stress test llama3 (62.3GB)
+accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder/train.py \
+    --tag test \
+    --encoder_name meta-llama/Llama-3.2-3B-Instruct \
+    --decoder_name meta-llama/Llama-3.2-3B-Instruct \
+    --train_data_dir /scratch/yl11330/re-arc/train_data_debug_overfit/tasks \
+    --eval_train_dir /scratch/yl11330/re-arc/arc_original_debug_overfit/training \
+    --eval_eval_dir /scratch/yl11330/re-arc/arc_original_debug_overfit/evaluation \
+    --eval_epochs 1 \
+    --num_epochs 10 \
+    --samples_per_epoch 5000 \
+    --augment_ratio 0.0 \
+    --invar_loss_lambda 0.0 \
+    --compact_grids \
+    --dummy_seq_enc_len 569 \
+    --dummy_seq_dec_len 143
 
 # debug overfit 1 token llama3b
 accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder/train.py \

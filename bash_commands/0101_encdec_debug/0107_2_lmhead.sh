@@ -11,7 +11,6 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
     --samples_per_epoch 5000 \
     --augment_ratio 0.0 \
     --invar_loss_lambda 0.0 \
-    --encoder_lm_head \
     --decoder_lm_head \
     --wandb
 
@@ -26,7 +25,6 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
     --samples_per_epoch 20000 \
     --augment_ratio 0.0 \
     --invar_loss_lambda 0.0 \
-    --encoder_lm_head \
     --decoder_lm_head \
     --wandb
 
