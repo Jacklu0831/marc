@@ -20,11 +20,12 @@ from transformers import (
 from accelerate import Accelerator
 from accelerate.logging import get_logger
 from accelerate.utils import ProjectConfiguration, set_seed
-from peft import LoraConfig, TaskType, get_peft_model
+from peft import LoraConfig, TaskType, get_peft_model, prepare_model_for_kbit_training
 
 import logging
 import datasets
 import transformers
+from transformers import BitsAndBytesConfig
 
 from data_utils import (
     load_tasks_from_data_dir,
@@ -43,6 +44,17 @@ import wandb
 wandb.login(key='faf21d9ff65ee150697c7e96f070616f6b662134', relogin=True)
 
 logger = get_logger(__name__, log_level="INFO")
+
+
+MODEL_NAME_TO_PATH = {
+    "llama1b": "meta-llama/Llama-3.2-1B-Instruct",
+    "llama3b": "meta-llama/Llama-3.2-3B-Instruct",
+    "llama8b": "meta-llama/Meta-Llama-3-8B-Instruct",
+}
+NBIT_TO_DTYPE = {
+    16: torch.bfloat16,
+    32: torch.float32,
+}
 
 
 def set_up_main_process_logger(accelerator, logger):
@@ -224,7 +236,7 @@ def evaluate(
                     input_ids=dec_gen_ids,
                     attention_mask=dec_gen_mask,
                     past_key_values=past_key_values,
-                    max_new_tokens=max(out_token_length) + 50, # arbitrary increase
+                    max_new_tokens=max(out_token_length) + 5, # arbitrary increase
                     num_return_sequences=1,
                     temperature=1.0,
                     top_p=1.0,
@@ -308,6 +320,7 @@ def main():
     parser.add_argument("--tag", type=str, required=True)
     parser.add_argument("--wandb", action="store_true")
     parser.add_argument("--output_dir", type=str, default="./encoder_decoder/outputs")
+    parser.add_argument("--log_every", type=int, default=10)
     parser.add_argument("--tracker_project_name", type=str, default="arc")
     parser.add_argument("--save_model", action="store_true")
 
@@ -318,10 +331,12 @@ def main():
     parser.add_argument("--debug_fixed_train_order", action="store_true")
 
     # Model
-    parser.add_argument("--encoder_name", type=str, default="meta-llama/Llama-3.2-1B-Instruct")
-    parser.add_argument("--decoder_name", type=str, default="meta-llama/Llama-3.2-1B-Instruct")
+    parser.add_argument("--encoder_name", type=str, default="llama1b")
+    parser.add_argument("--decoder_name", type=str, default="llama1b")
     parser.add_argument("--no_gradient_checkpointing", action="store_true") # note decoder cannot have this due to caching
     parser.add_argument("--flash_attn", action="store_true")
+    parser.add_argument("--untrainable_nbit", type=float, choices=[3.6, 4, 8, 16, 32], default=32)
+    parser.add_argument("--trainable_nbit", type=float, choices=[16, 32], default=32)
 
     # Training
     parser.add_argument("--batch_size", type=int, default=2)
@@ -334,6 +349,7 @@ def main():
     parser.add_argument("--eval_epochs", type=int, default=5)
     parser.add_argument("--max_seq_len", type=int, default=8192)
     parser.add_argument("--invar_loss_lambda", type=float, default=0.1)
+    parser.add_argument("--max_grad_norm", default=1.0, type=float, help="Max gradient norm.")
 
     # Data
     parser.add_argument("--train_data_dir", type=str, default="/scratch/yl11330/re-arc/train_data/tasks")
@@ -417,8 +433,8 @@ def main():
     logger.info("#### END ALL ARGUMENTS ####\n")
 
     # Load tokenizers
-    encoder_tokenizer = AutoTokenizer.from_pretrained(args.encoder_name, padding_side='left', cache_dir='./encoder_decoder_cache')
-    decoder_tokenizer = AutoTokenizer.from_pretrained(args.decoder_name, padding_side='left', cache_dir='./encoder_decoder_cache')
+    encoder_tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME_TO_PATH[args.encoder_name], padding_side='left', cache_dir='./encoder_decoder_cache', device_map="auto")
+    decoder_tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME_TO_PATH[args.decoder_name], padding_side='left', cache_dir='./encoder_decoder_cache', device_map="auto")
     if not encoder_tokenizer.pad_token:
         encoder_tokenizer.pad_token = encoder_tokenizer.eos_token
     if not decoder_tokenizer.pad_token:
@@ -426,14 +442,39 @@ def main():
     logger.info("Tokenizers loaded and pad tokens handled.")
 
     # Build base models
+    from_pretrained_kwargs = {
+        "cache_dir": "./encoder_decoder_cache",
+        "device_map": "auto",
+        "low_cpu_mem_usage": True
+    }
     if args.flash_attn:
-        base_encoder = AutoModelForCausalLM.from_pretrained(args.encoder_name, attn_implementation="flash_attention_2", cache_dir='./encoder_decoder_cache')
-        base_decoder = AutoModelForCausalLM.from_pretrained(args.decoder_name, attn_implementation="flash_attention_2", cache_dir='./encoder_decoder_cache')
+        from_pretrained_kwargs["attn_implementation"] = "flash_attention_2"
+    if args.untrainable_nbit in NBIT_TO_DTYPE:
+        from_pretrained_kwargs["torch_dtype"] = NBIT_TO_DTYPE[args.untrainable_nbit]
+    elif args.untrainable_nbit == 4:
+        from_pretrained_kwargs["quantization_config"] = BitsAndBytesConfig(
+            load_in_4bit=True,
+            bnb_4bit_quant_type="nf4",
+            bnb_4bit_compute_dtype=NBIT_TO_DTYPE[args.trainable_nbit],
+        )
+    elif args.untrainable_nbit == 3.6:
+        from_pretrained_kwargs["quantization_config"] = BitsAndBytesConfig(
+            load_in_4bit=True,
+            bnb_4bit_quant_type="nf4",
+            bnb_4bit_use_double_quant=True,
+            bnb_4bit_compute_dtype=NBIT_TO_DTYPE[args.trainable_nbit],
+        )
+    elif args.untrainable_nbit == 8:
+        from_pretrained_kwargs["quantization_config"] = BitsAndBytesConfig(load_in_8bit=True)
     else:
-        base_encoder = AutoModelForCausalLM.from_pretrained(args.encoder_name, cache_dir='./encoder_decoder_cache')
-        base_decoder = AutoModelForCausalLM.from_pretrained(args.decoder_name, cache_dir='./encoder_decoder_cache')
+        raise ValueError(f"unrecognized untrainable_nbit {args.untrainable_nbit}")
+    base_encoder = AutoModelForCausalLM.from_pretrained(pretrained_model_name_or_path=MODEL_NAME_TO_PATH[args.encoder_name], **from_pretrained_kwargs)
+    base_decoder = AutoModelForCausalLM.from_pretrained(pretrained_model_name_or_path=MODEL_NAME_TO_PATH[args.decoder_name], **from_pretrained_kwargs)
 
-    if not args.no_gradient_checkpointing:
+    if args.untrainable_nbit in ['4bit', '8bit']:
+        base_encoder = prepare_model_for_kbit_training(base_encoder, use_gradient_checkpointing=not args.no_gradient_checkpointing)
+        base_decoder = prepare_model_for_kbit_training(base_decoder, use_gradient_checkpointing=False)
+    elif not args.no_gradient_checkpointing:
         base_encoder.gradient_checkpointing_enable()
 
     # add [CLS] is not in model tokenizer
@@ -462,10 +503,6 @@ def main():
     encoder_model = get_peft_model(base_encoder, encoder_peft_config)
     decoder_model = get_peft_model(base_decoder, decoder_peft_config)
     logger.info("LoRA-wrapped models initialized.")
-    encoder_model.print_trainable_parameters()
-    decoder_model.print_trainable_parameters()
-    logger.info(f'encoder size {round(encoder_model.get_memory_footprint() / 1024 ** 3, 2)}GB')
-    logger.info(f'decoder size {round(decoder_model.get_memory_footprint() / 1024 ** 3, 2)}GB')
 
     # prefixes are formatted as 16 of (2=2, BS=1, nhead=8, nvirtualtoken=1, tokendim / nhead=64)
     num_layers = decoder_model.config.num_hidden_layers
@@ -475,6 +512,23 @@ def main():
         encoder_model.config.hidden_size,
         num_layers * 2 * num_kv_heads * args.num_virtual_tokens * embed_size_per_head
     )
+
+    # convert model weights
+    for name, param in encoder_model.named_parameters():
+        if param.requires_grad:
+            param.data = param.data.to(NBIT_TO_DTYPE[args.trainable_nbit])
+    for name, param in decoder_model.named_parameters():
+        if param.requires_grad:
+            param.data = param.data.to(NBIT_TO_DTYPE[args.trainable_nbit])
+    for name, param in project_kv.named_parameters():
+        if param.requires_grad:
+            param.data = param.data.to(NBIT_TO_DTYPE[args.trainable_nbit])
+
+    encoder_model.print_trainable_parameters()
+    decoder_model.print_trainable_parameters()
+    logger.info(f'project_kv params {sum(p.numel() for p in project_kv.parameters())}')
+    logger.info(f'encoder size {round(encoder_model.get_memory_footprint() / 1024 ** 3, 2)}GB')
+    logger.info(f'decoder size {round(decoder_model.get_memory_footprint() / 1024 ** 3, 2)}GB')
 
     # Build training dataset
     train_tasks_dict = load_tasks_from_data_dir(args.train_data_dir)
@@ -508,30 +562,31 @@ def main():
 
     # Param groups for LoRA
     embedding_params = []
-    other_lora_params = []
+    other_params = []
     for name, param in encoder_model.named_parameters():
         assert ('lora' in name) == param.requires_grad, name
         if param.requires_grad:
             if "lora_embedding" in name:
                 embedding_params.append(param)
             else:
-                other_lora_params.append(param)
+                other_params.append(param)
     for name, param in decoder_model.named_parameters():
         assert ('lora' in name) == param.requires_grad, name
         if param.requires_grad:
             if "lora_embedding" in name:
                 embedding_params.append(param)
             else:
-                other_lora_params.append(param)
+                other_params.append(param)
     for param in project_kv.parameters():
-        other_lora_params.append(param)
+        other_params.append(param)
 
     optimizer_grouped_params = [
         {"params": embedding_params, "lr": args.lr_embedding},
-        {"params": other_lora_params, "lr": args.lr_other},
+        {"params": other_params, "lr": args.lr_other},
     ]
+    all_params = embedding_params + other_params
     optimizer = torch.optim.AdamW(optimizer_grouped_params, weight_decay=args.weight_decay)
-    logger.info(f"Optimizer with {len(embedding_params)} embed-params lr={args.lr_embedding}, {len(other_lora_params)} other-params lr={args.lr_other}")
+    logger.info(f"Optimizer with {len(embedding_params)} embed-params lr={args.lr_embedding}, {len(other_params)} other-params lr={args.lr_other}")
 
     # LR schedule
     steps_per_epoch = args.samples_per_epoch // (args.batch_size * args.grad_accum_steps * accelerator.num_processes)
@@ -558,13 +613,21 @@ def main():
         train_loader
     )
 
+    # breakpoint()
+    # for name, param in encoder_model.named_parameters(): print(name, param.dtype)
+    # breakpoint()
+    # for name, param in project_kv.named_parameters(): print(name, param.dtype)
+    # breakpoint()
+    # for name, param in decoder_model.named_parameters(): print(name, param.dtype)
+    # breakpoint()
+
     logger.info(f'\n======= TRAINING INFO START ======')
     logger.info(f'num_epochs={args.num_epochs}')
     logger.info(f'batch_size={args.batch_size}')
     logger.info(f'grad_accum_steps={args.grad_accum_steps}')
     logger.info(f'accelerator.num_processes={accelerator.num_processes}')
     logger.info(f'steps_per_epoch={steps_per_epoch}')
-    logger.info(f'{sum(p.numel() for p in embedding_params + other_lora_params)} trainable params')
+    logger.info(f'{sum(p.numel() for p in all_params)} trainable params')
     logger.info(f'======= TRAINING INFO END ======\n')
 
     global_step = 0
@@ -584,6 +647,7 @@ def main():
         ce_loss_accum = 0.0
         invar_loss_accum = 0.0
         total_loss_accum = 0.0
+        grad_norm_accum = 0.0
 
         for batch_data in train_loader:
             enc_ids = batch_data["encoder_input_ids"].to(accelerator.device)
@@ -619,23 +683,29 @@ def main():
                 total_loss_accum += avg_total_loss.item() / args.grad_accum_steps
 
                 accelerator.backward(total_loss)
+                if accelerator.sync_gradients:
+                    grad_norm_accum += accelerator.clip_grad_norm_(all_params, args.max_grad_norm).item()
                 optimizer.step()
                 lr_scheduler.step()
                 optimizer.zero_grad()
 
             if accelerator.sync_gradients:
-                progress_bar.update(1)
                 global_step += 1
-                accelerator.log({
-                    "train/ce_loss": ce_loss_accum,
-                    "train/invar_loss": invar_loss_accum,
-                    "train/total_loss": total_loss_accum,
-                    "train/lr_embedding": lr_scheduler.get_last_lr()[0],
-                    "train/lr_other": lr_scheduler.get_last_lr()[1]
-                }, step=global_step)
+                if global_step % args.log_every == 0:
+                    progress_bar.update(args.log_every)
+                    accelerator.log({
+                        "train/ce_loss": ce_loss_accum,
+                        "train/invar_loss": invar_loss_accum,
+                        "train/total_loss": total_loss_accum,
+                        "train/grad_norm_accum": grad_norm_accum,
+                        "train/lr_embedding": lr_scheduler.get_last_lr()[0],
+                        "train/lr_other": lr_scheduler.get_last_lr()[1]
+                    }, step=global_step)
+
                 ce_loss_accum = 0.0
                 invar_loss_accum = 0.0
                 total_loss_accum = 0.0
+                grad_norm_accum = 0.0
 
         # Evaluate every N epochs
         if (epoch + 1) % args.eval_epochs == 0:
@@ -654,11 +724,17 @@ def main():
                 max_seq_len=args.max_seq_len,
                 keep_ratio=args.eval_eval_ratio,
                 compact_grids=args.compact_grids)
-            eval_collate_fn = partial(collate_fn_eval,
-                                    encoder_tokenizer=encoder_tokenizer, decoder_tokenizer=decoder_tokenizer)
+            eval_collate_fn = partial(
+                collate_fn_eval,
+                encoder_tokenizer=encoder_tokenizer,
+                decoder_tokenizer=decoder_tokenizer,
+            )
             if args.dummy_seq_enc_len > 0:
-                eval_collate_fn = partial(collate_fn_eval_dummy,
-                                        dummy_seq_enc_len=args.dummy_seq_enc_len, dummy_seq_dec_len=args.dummy_seq_dec_len)
+                eval_collate_fn = partial(
+                    collate_fn_eval_dummy,
+                    dummy_seq_enc_len=args.dummy_seq_enc_len,
+                    dummy_seq_dec_len=args.dummy_seq_dec_len
+                )
             logger.info(f"len(eval_train_dataset) = {len(eval_train_dataset)}")
             logger.info(f"len(eval_eval_dataset) = {len(eval_eval_dataset)}")
 

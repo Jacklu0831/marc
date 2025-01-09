@@ -41,7 +41,7 @@ for sbatch_file in glob.glob(os.path.join(args.sbatch_dir, '*')):
 template = template.replace('$NGPU', str(args.ngpu))
 template = template.replace('$NCPU', str(args.ncpu))
 template = template.replace('$TIME', str(args.time))
-template = template.replace('$MEM', str(args.gb))
+template = template.replace('$MEM', str(args.gb * args.ngpu))
 
 # todo: support multi-gpu
 gpu_line = f'#SBATCH --gres=gpu:{args.ngpu}'

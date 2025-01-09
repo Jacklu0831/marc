@@ -97,10 +97,10 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
     --flash_attn \
     --wandb
 
-# Submitted batch job 55650238
-# Submitted batch job 55650239
-# Submitted batch job 55650240
-# Submitted batch job 55650241
-# Submitted batch job 55650242
-# Submitted batch job 55650243
-# Submitted batch job 55650244
+# Submitted batch job 55650238 # multigpu
+# Submitted batch job 55650239 # invar0.001
+# Submitted batch job 55650240 # invar0.01
+# Submitted batch job 55650241 # compact
+# Submitted batch job 55650242 # compactshort
+# Submitted batch job 55650243 # lmhead
+# Submitted batch job 55650244 # flashattn
