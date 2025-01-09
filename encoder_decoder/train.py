@@ -72,6 +72,35 @@ def set_up_main_process_logger(accelerator, logger):
         transformers.utils.logging.set_verbosity_error()
 
 
+class ProjectKV(nn.Module):
+    def __init__(self, num_virtual_tokens, encoder_model, decoder_model):
+        super(ProjectKV, self).__init__()
+        # prefixes are formatted as 16 of (2=2, BS=1, nhead=8, nvirtualtoken=1, tokendim / nhead=64)
+        self.num_virtual_tokens = num_virtual_tokens
+        self.num_layers = decoder_model.config.num_hidden_layers
+        self.num_kv_heads = decoder_model.config.num_key_value_heads
+        self.embed_size_per_head = decoder_model.config.hidden_size // decoder_model.config.num_attention_heads
+        # weights
+        projections = nn.ModuleList([
+            nn.Linear(
+                encoder_model.config.hidden_size,
+                self.num_layers * 2 * self.num_kv_heads * self.embed_size_per_head
+            ) for _ in range(self.num_virtual_tokens)
+        ])
+        self.weights = nn.Parameter(torch.stack([layer.weight for layer in projections], dim=0))
+        self.biases = nn.Parameter(torch.stack([layer.bias for layer in projections], dim=0))
+        del projections
+
+    def forward(self, enc_hidden_states):
+        # enc_hidden_states has shape (batch_size, num_virtual_tokens, hidden_dim)
+        assert enc_hidden_states.shape[1] == self.num_virtual_tokens
+        outs = torch.einsum("bnh,nhd->bnd", enc_hidden_states, self.weights.transpose(1, 2)) + self.biases # (batch_size, num_virtual_tokens, out_dim)
+        outs = outs.view(outs.size(0), outs.size(1), self.num_layers, 2, self.num_kv_heads, self.embed_size_per_head)
+        outs = outs.permute(2, 3, 0, 4, 1, 5)
+        past_key_values = [(x[0], x[1]) for x in outs] # each (batch_size, num_kv_heads, num_virtual_tokens, embed_size_per_head)
+        return past_key_values
+
+
 ################################################
 # A shared forward pass for training & evaluation
 ################################################
@@ -84,11 +113,7 @@ def encoder_decoder_loss(
     decoder_input_ids: torch.Tensor,
     decoder_attention_mask: torch.Tensor,
     decoder_labels: torch.Tensor,
-    # extra shape info
-    num_layers: int,
-    num_kv_heads: int,
     num_virtual_tokens: int,
-    embed_size_per_head: int,
     # whether to compute invariance loss
     invar_loss_lambda: float = 0.0,
 ):
@@ -106,13 +131,18 @@ def encoder_decoder_loss(
         attention_mask=encoder_attention_mask,
         output_hidden_states=True,
     )
-    enc_hidden = enc_out.hidden_states[-1] # last layer [B, seq_len, hidden_dim]
-    hidden_cls = enc_hidden[:, -1, :]  # last token [B, hidden_dim]
-    past_key_values = project_kv(hidden_cls)
-    past_key_values = past_key_values.view(past_key_values.size(0), num_layers, 2, num_kv_heads, num_virtual_tokens, embed_size_per_head)
-    past_key_values = past_key_values.permute(1, 2, 0, 3, 4, 5)
-    past_key_values = [(x[0], x[1]) for x in past_key_values]
 
+    # get enc_hidden_states (for invar loss) and past_key_values
+    if project_kv != None:
+        enc_hidden_states = enc_out.hidden_states[-1] # [B, seq_len, hidden_dim]
+        enc_hidden_states = enc_hidden_states[:, -num_virtual_tokens:, :]
+        past_key_values = project_kv(enc_hidden_states=enc_hidden_states)
+    else:
+        past_key_values = [(x[0][:, :, -num_virtual_tokens:, :], x[1][:, :, -num_virtual_tokens:, :]) for x in enc_out.past_key_values]
+        enc_hidden_states = torch.stack([torch.stack(x) for x in past_key_values]) # each (batch_size, num_kv_heads, num_virtual_tokens, embed_size_per_head)
+        enc_hidden_states = enc_hidden_states.permute(2, 0, 1, 3, 4, 5)
+
+    # decoder attention mask must be extended
     prefix_attention_mask = torch.full(
         (decoder_attention_mask.shape[0], num_virtual_tokens),
         1,
@@ -131,8 +161,8 @@ def encoder_decoder_loss(
 
     # invariance loss (batch only not 2x in evaluation)
     invar_loss = torch.tensor(0.0).to(encoder_input_ids.device)
-    if enc_hidden.shape[0] % 2 == 0:
-        invar_loss = nn.MSELoss()(enc_hidden[::2], enc_hidden[1::2])
+    if enc_hidden_states.shape[0] % 2 == 0:
+        invar_loss = nn.functional.mse_loss(enc_hidden_states[::2], enc_hidden_states[1::2])
 
     total_loss = ce_loss + invar_loss_lambda * invar_loss
     return ce_loss, invar_loss, total_loss, past_key_values
@@ -153,10 +183,7 @@ def evaluate(
     project_kv,
     dataset,
     accelerator: Accelerator,
-    num_layers: int,
-    num_kv_heads: int,
     num_virtual_tokens: int,
-    embed_size_per_head: int,
     decoder_tokenizer,
     batch_size: int,
     eval_collate_fn,
@@ -164,7 +191,7 @@ def evaluate(
 ):
     """
     For each task in dataset, compute:
-      - cross-entropy using `encoder_decoder_loss`
+      - cross-entropy
       - generate => exact match vs decoder_label_texts
 
     Returns (avg_ce, accuracy, total_samples).
@@ -172,7 +199,8 @@ def evaluate(
     """
     encoder_model.eval()
     decoder_model.eval()
-    project_kv.eval()
+    if project_kv != None:
+        project_kv.eval()
 
     decoder_module = decoder_model.module if isinstance(decoder_model, DistributedDataParallel) else decoder_model
 
@@ -219,10 +247,7 @@ def evaluate(
                     decoder_input_ids=dec_ids,
                     decoder_attention_mask=dec_mask,
                     decoder_labels=labels,
-                    num_layers=num_layers,
-                    num_kv_heads=num_kv_heads,
                     num_virtual_tokens=num_virtual_tokens,
-                    embed_size_per_head=embed_size_per_head,
                 )
 
             loss_list += [ce_loss.item()] * bs
@@ -335,6 +360,7 @@ def main():
     parser.add_argument("--decoder_name", type=str, default="llama1b")
     parser.add_argument("--no_gradient_checkpointing", action="store_true") # note decoder cannot have this due to caching
     parser.add_argument("--flash_attn", action="store_true")
+    parser.add_argument("--no_project_kv", action="store_true")
     parser.add_argument("--untrainable_nbit", type=float, choices=[3.6, 4, 8, 16, 32], default=32)
     parser.add_argument("--trainable_nbit", type=float, choices=[16, 32], default=32)
 
@@ -503,14 +529,7 @@ def main():
     decoder_model = get_peft_model(base_decoder, decoder_peft_config)
     logger.info("LoRA-wrapped models initialized.")
 
-    # prefixes are formatted as 16 of (2=2, BS=1, nhead=8, nvirtualtoken=1, tokendim / nhead=64)
-    num_layers = decoder_model.config.num_hidden_layers
-    num_kv_heads = decoder_model.config.num_key_value_heads
-    embed_size_per_head = decoder_model.config.hidden_size // decoder_model.config.num_attention_heads
-    project_kv = nn.Linear(
-        encoder_model.config.hidden_size,
-        num_layers * 2 * num_kv_heads * args.num_virtual_tokens * embed_size_per_head
-    )
+    project_kv = None if args.no_project_kv else ProjectKV(args.num_virtual_tokens, encoder_model, decoder_model)
 
     # convert model weights
     for name, param in encoder_model.named_parameters():
@@ -519,13 +538,15 @@ def main():
     for name, param in decoder_model.named_parameters():
         if param.requires_grad:
             param.data = param.data.to(NBIT_TO_DTYPE[args.trainable_nbit])
-    for name, param in project_kv.named_parameters():
-        if param.requires_grad:
-            param.data = param.data.to(NBIT_TO_DTYPE[args.trainable_nbit])
+    if project_kv != None:
+        for name, param in project_kv.named_parameters():
+            if param.requires_grad:
+                param.data = param.data.to(NBIT_TO_DTYPE[args.trainable_nbit])
 
     encoder_model.print_trainable_parameters()
     decoder_model.print_trainable_parameters()
-    logger.info(f'project_kv params {sum(p.numel() for p in project_kv.parameters())}')
+    if project_kv != None:
+        logger.info(f'project_kv params {sum(p.numel() for p in project_kv.parameters())}')
     logger.info(f'encoder size {round(encoder_model.get_memory_footprint() / 1024 ** 3, 2)}GB')
     logger.info(f'decoder size {round(decoder_model.get_memory_footprint() / 1024 ** 3, 2)}GB')
 
@@ -542,6 +563,7 @@ def main():
         augment_ratio=args.augment_ratio,
         seed=args.seed,
         compact_grids=args.compact_grids,
+        num_virtual_tokens=args.num_virtual_tokens,
     )
     train_collate_fn = partial(collate_fn_train,
                                dataset=train_dataset, debug_fixed_train_order=args.debug_fixed_train_order)
@@ -576,8 +598,9 @@ def main():
                 embedding_params.append(param)
             else:
                 other_params.append(param)
-    for param in project_kv.parameters():
-        other_params.append(param)
+    if project_kv != None:
+        for param in project_kv.parameters():
+            other_params.append(param)
 
     optimizer_grouped_params = [
         {"params": embedding_params, "lr": args.lr_embedding},
@@ -641,7 +664,8 @@ def main():
     for epoch in range(args.num_epochs):
         encoder_model.train()
         decoder_model.train()
-        project_kv.train()
+        if project_kv != None:
+            project_kv.train()
 
         ce_loss_accum = 0.0
         invar_loss_accum = 0.0
@@ -666,10 +690,7 @@ def main():
                         decoder_input_ids=dec_ids,
                         decoder_attention_mask=dec_mask,
                         decoder_labels=labels,
-                        num_layers=num_layers,
-                        num_kv_heads=num_kv_heads,
                         num_virtual_tokens=args.num_virtual_tokens,
-                        embed_size_per_head=embed_size_per_head,
                         invar_loss_lambda=args.invar_loss_lambda,
                     )
 
@@ -715,14 +736,18 @@ def main():
                 decoder_tokenizer=decoder_tokenizer,
                 max_seq_len=args.max_seq_len,
                 keep_ratio=args.eval_train_ratio,
-                compact_grids=args.compact_grids)
+                compact_grids=args.compact_grids,
+                num_virtual_tokens=args.num_virtual_tokens,
+            )
             eval_eval_dataset = EvalDataset(
                 args.eval_eval_dir,
                 encoder_tokenizer=encoder_tokenizer,
                 decoder_tokenizer=decoder_tokenizer,
                 max_seq_len=args.max_seq_len,
                 keep_ratio=args.eval_eval_ratio,
-                compact_grids=args.compact_grids)
+                compact_grids=args.compact_grids,
+                num_virtual_tokens=args.num_virtual_tokens,
+            )
             eval_collate_fn = partial(
                 collate_fn_eval,
                 encoder_tokenizer=encoder_tokenizer,
@@ -743,10 +768,7 @@ def main():
                 project_kv,
                 eval_train_dataset,
                 accelerator,
-                num_layers,
-                num_kv_heads,
                 args.num_virtual_tokens,
-                embed_size_per_head,
                 decoder_tokenizer,
                 args.batch_size,
                 eval_collate_fn,
@@ -758,10 +780,7 @@ def main():
                 project_kv,
                 eval_eval_dataset,
                 accelerator,
-                num_layers,
-                num_kv_heads,
                 args.num_virtual_tokens,
-                embed_size_per_head,
                 decoder_tokenizer,
                 args.batch_size,
                 eval_collate_fn,

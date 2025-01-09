@@ -195,6 +195,7 @@ class TrainDataset(Dataset):
         augment_ratio: float,
         seed: int,
         compact_grids: bool,
+        num_virtual_tokens: int,
     ):
         self.tasks_dict = tasks_dict
         self.encoder_tokenizer = encoder_tokenizer
@@ -208,6 +209,7 @@ class TrainDataset(Dataset):
         self.augment_ratio = augment_ratio
         self.rng = np.random.RandomState(seed)
         self.compact_grids = compact_grids
+        self.num_virtual_tokens = num_virtual_tokens
 
     def __len__(self):
         return self._length
@@ -285,7 +287,7 @@ def collate_fn_train(batch, dataset: "TrainDataset", debug_fixed_train_order: bo
             for pair in train_pairs:
                 prefix_texts.append(grid_to_text(pair["input"], True))
                 prefix_texts.append(grid_to_text(pair["output"], False))
-            encoder_text = "\n".join(prefix_texts) + "[CLS]"
+            encoder_text = "\n".join(prefix_texts) + "[CLS]" * dataset.num_virtual_tokens
 
             dec_in_text  = grid_to_text(test_pair["input"], True)
             dec_out_text = grid_to_text(test_pair["output"], False)
@@ -297,10 +299,10 @@ def collate_fn_train(batch, dataset: "TrainDataset", debug_fixed_train_order: bo
             dec_out_text += "<|eot_id|>"
 
             enc_tokens = dataset.encoder_tokenizer(encoder_text, return_tensors="pt", truncation=False)
-            assert all(t[-1].item() == dataset.encoder_tokenizer.cls_token_id for t in enc_tokens["input_ids"])
+            assert enc_tokens["input_ids"][0][-dataset.num_virtual_tokens:].tolist() == [dataset.encoder_tokenizer.cls_token_id] * dataset.num_virtual_tokens
             dec_in_tokens  = dataset.decoder_tokenizer(dec_in_text, return_tensors="pt", truncation=False)
             dec_out_tokens = dataset.decoder_tokenizer(dec_out_text, return_tensors="pt", truncation=False)
-            assert all(t[-1].item() == dataset.decoder_tokenizer.eos_token_id for t in dec_out_tokens["input_ids"])
+            assert dec_out_tokens["input_ids"][0][-1].item() == dataset.decoder_tokenizer.eos_token_id
             # remove begin of sentence of dec_out_tokens
             dec_out_tokens['input_ids'] = dec_out_tokens['input_ids'][:, 1:]
             dec_out_tokens['attention_mask'] = dec_out_tokens['attention_mask'][:, 1:]
@@ -419,12 +421,14 @@ class EvalDataset:
         max_seq_len: int,
         keep_ratio: float,
         compact_grids: bool,
+        num_virtual_tokens: int,
     ):
         self.encoder_tokenizer = encoder_tokenizer
         self.decoder_tokenizer = decoder_tokenizer
         self.max_seq_len = max_seq_len
         self.keep_ratio = keep_ratio
         self.compact_grids = compact_grids
+        self.num_virtual_tokens = num_virtual_tokens
 
         self.encoder_space_token_id = encoder_tokenizer(" ")['input_ids'][1]
         self.decoder_space_token_id = decoder_tokenizer(" ")['input_ids'][1]
@@ -487,7 +491,7 @@ class EvalDataset:
         for p in train_pairs:
             prefix_texts.append(grid_to_text(p["input"], True))
             prefix_texts.append(grid_to_text(p["output"], False))
-        encoder_text = "\n".join(prefix_texts) + "[CLS]"
+        encoder_text = "\n".join(prefix_texts) + "[CLS]" * self.num_virtual_tokens
 
         dec_in_text  = grid_to_text(test_pair["input"], True)
         dec_out_text = grid_to_text(test_pair["output"], False)
@@ -499,10 +503,12 @@ class EvalDataset:
         dec_out_text += "<|eot_id|>"
 
         enc_tokens = self.encoder_tokenizer(encoder_text, return_tensors="pt", truncation=False)
-        assert all(t[-1].item() == self.encoder_tokenizer.cls_token_id for t in enc_tokens["input_ids"])
+        assert enc_tokens["input_ids"][0][-self.num_virtual_tokens:].tolist() == [self.encoder_tokenizer.cls_token_id] * self.num_virtual_tokens
         dec_in_tokens  = self.decoder_tokenizer(dec_in_text,  return_tensors="pt", truncation=False)
         dec_out_tokens = self.decoder_tokenizer(dec_out_text, return_tensors="pt", truncation=False)
         assert all(t[-1].item() == self.decoder_tokenizer.eos_token_id for t in dec_out_tokens["input_ids"])
+        assert dec_out_tokens["input_ids"][0][-1].item() == self.decoder_tokenizer.eos_token_id
+
         # remove begin of sentence of dec_out_tokens
         dec_out_tokens['input_ids'] = dec_out_tokens['input_ids'][:, 1:]
         dec_out_tokens['attention_mask'] = dec_out_tokens['attention_mask'][:, 1:]
