@@ -236,7 +236,7 @@ def evaluate(
                     input_ids=dec_gen_ids,
                     attention_mask=dec_gen_mask,
                     past_key_values=past_key_values,
-                    max_new_tokens=max(out_token_length) + 5, # arbitrary increase
+                    max_new_tokens=max(out_token_length), # arbitrary increase
                     num_return_sequences=1,
                     temperature=1.0,
                     top_p=1.0,

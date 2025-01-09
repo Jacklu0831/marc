@@ -544,7 +544,7 @@ class EvalDataset:
             "decoder_labels": decoder_labels,
             "decoder_gen_input_ids": dec_in_tokens["input_ids"].squeeze(0),
             "decoder_gen_attention_mask": dec_in_tokens["attention_mask"].squeeze(0),
-            "decoder_out_token_length": dec_out_tokens["input_ids"].shape[1],
+            "decoder_out_token_length": dec_out_tokens["input_ids"].shape[1] - 1, # remove eos token
             "decoder_label_texts": dec_label_texts,  # used for exact match
         }
 
