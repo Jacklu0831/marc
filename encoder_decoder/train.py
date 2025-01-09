@@ -433,8 +433,8 @@ def main():
     logger.info("#### END ALL ARGUMENTS ####\n")
 
     # Load tokenizers
-    encoder_tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME_TO_PATH[args.encoder_name], padding_side='left', cache_dir='./encoder_decoder_cache', device_map="auto")
-    decoder_tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME_TO_PATH[args.decoder_name], padding_side='left', cache_dir='./encoder_decoder_cache', device_map="auto")
+    encoder_tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME_TO_PATH[args.encoder_name], padding_side='left', cache_dir='./encoder_decoder_cache')
+    decoder_tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME_TO_PATH[args.decoder_name], padding_side='left', cache_dir='./encoder_decoder_cache')
     if not encoder_tokenizer.pad_token:
         encoder_tokenizer.pad_token = encoder_tokenizer.eos_token
     if not decoder_tokenizer.pad_token:
@@ -444,7 +444,6 @@ def main():
     # Build base models
     from_pretrained_kwargs = {
         "cache_dir": "./encoder_decoder_cache",
-        "device_map": "auto",
         "low_cpu_mem_usage": True
     }
     if args.flash_attn:
