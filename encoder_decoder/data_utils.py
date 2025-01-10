@@ -454,6 +454,34 @@ def collate_fn_train_dummy(batch, dummy_seq_enc_len: int, dummy_seq_dec_len: int
     }
 
 
+def plot_histogram_with_frequencies(data, save_path, bins=20):
+    """
+    Plots a histogram with frequencies displayed on top of each bar.
+
+    Args:
+        data (array-like): The input data for the histogram.
+        bins (int or sequence, optional): Number of bins or bin edges. Defaults to auto binning.
+        title (str, optional): Title of the plot. Defaults to "Histogram with Frequency Labels".
+        xlabel (str, optional): Label for the x-axis. Defaults to "Value".
+        ylabel (str, optional): Label for the y-axis. Defaults to "Frequency".
+    """
+    import matplotlib.pyplot as plt
+    _, ax = plt.subplots()
+    # Create histogram
+    counts, bins, bars = ax.hist(data, bins=bins, edgecolor='black', alpha=0.7)
+    # Add frequency labels to each bar
+    for bar, count in zip(bars, counts):
+        height = bar.get_height()
+        ax.text(bar.get_x() + bar.get_width() / 2, height, f'{int(count)}',
+                ha='center', va='bottom', fontsize=10)
+    # Set x-ticks if bins are evenly spaced integers
+    if np.allclose(np.diff(bins), bins[1] - bins[0]):  # Check if bins are evenly spaced
+        ax.set_xticks(bins[:-1] + np.diff(bins) / 2)
+    ax.tick_params(axis='x', labelsize=5)
+    plt.savefig(save_path, dpi=200)
+    plt.close()
+
+
 ########################################
 # Evaluation Dataset
 ########################################
@@ -528,16 +556,12 @@ class EvalDataset:
         # print statistics
         # encoder_input_ids_lens = [x['encoder_input_ids'].shape[0] for x in self.parsed_data]
         # decoder_input_ids_lens = [x['decoder_input_ids'].shape[0] for x in self.parsed_data]
-        # for x in encoder_input_ids_lens:
-        #     if x > 8192:
-        #         print(x)
-        # import matplotlib.pyplot as plt
-        # plt.hist(encoder_input_ids_lens)
-        # plt.savefig('encoder.jpg')
-        # plt.close()
-        # plt.hist(decoder_input_ids_lens)
-        # plt.savefig('decoder.jpg')
-        # plt.close()
+        # print([x for x in encoder_input_ids_lens if x > 8192])
+        # print('encoderlen min-max seqlen:', min(encoder_input_ids_lens), max(encoder_input_ids_lens))
+        # print('decoderlen min-max seqlen:', min(decoder_input_ids_lens), max(decoder_input_ids_lens))
+        # plot_histogram_with_frequencies(encoder_input_ids_lens, "encoder.jpg")
+        # plot_histogram_with_frequencies(decoder_input_ids_lens, "decoder.jpg")
+        # breakpoint()
 
     def __len__(self):
         return len(self.parsed_data)

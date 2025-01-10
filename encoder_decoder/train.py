@@ -369,9 +369,8 @@ def main():
     # Model
     parser.add_argument("--encoder_name", type=str, default="llama1b")
     parser.add_argument("--decoder_name", type=str, default="llama1b")
-    parser.add_argument("--no_gradient_checkpointing", action="store_true") # note decoder cannot have this due to caching
     parser.add_argument("--flash_attn", action="store_true")
-    parser.add_argument("--no_project_kv", action="store_true")
+    parser.add_argument("--project_kv", action="store_true")
     parser.add_argument("--untrainable_nbit", type=float, choices=[3.6, 4, 8, 16, 32], default=32)
     parser.add_argument("--trainable_nbit", type=float, choices=[16, 32], default=32)
 
@@ -388,6 +387,7 @@ def main():
     parser.add_argument("--max_seq_len", type=int, default=8192)
     parser.add_argument("--invar_loss_lambda", type=float, default=0.1)
     parser.add_argument("--max_grad_norm", default=1.0, type=float, help="Max gradient norm.")
+    parser.add_argument("--optimizer", type=str, choices=["adamw", "sgd"], default="adamw")
 
     # Data
     parser.add_argument("--train_data_dir", type=str, default="/scratch/yl11330/re-arc/train_data/tasks")
@@ -512,10 +512,8 @@ def main():
     base_decoder = AutoModelForCausalLM.from_pretrained(pretrained_model_name_or_path=MODEL_NAME_TO_PATH[args.decoder_name], **from_pretrained_kwargs)
 
     if args.untrainable_nbit in ['4bit', '8bit']:
-        base_encoder = prepare_model_for_kbit_training(base_encoder, use_gradient_checkpointing=not args.no_gradient_checkpointing)
+        base_encoder = prepare_model_for_kbit_training(base_encoder, use_gradient_checkpointing=False)
         base_decoder = prepare_model_for_kbit_training(base_decoder, use_gradient_checkpointing=False)
-    elif not args.no_gradient_checkpointing:
-        base_encoder.gradient_checkpointing_enable()
 
     # add [CLS] is not in model tokenizer
     if not encoder_tokenizer.cls_token:
@@ -544,7 +542,13 @@ def main():
     decoder_model = get_peft_model(base_decoder, decoder_peft_config)
     logger.info("LoRA-wrapped models initialized.")
 
-    project_kv = None if args.no_project_kv else ProjectKV(args.num_virtual_tokens, encoder_model, decoder_model)
+    project_kv = ProjectKV(args.num_virtual_tokens, encoder_model, decoder_model) if args.project_kv else None
+    # if not project_kv, the non-kv-projection weights of encoder model last layer are not used
+    if not args.project_kv:
+        for name, param in encoder_model.named_parameters():
+            if 'layers.15' in name and param.requires_grad:
+                if 'mlp' in name or 'o_proj' in name or 'q_proj' in name:
+                    param.requires_grad = False
 
     # convert model weights
     for name, param in encoder_model.named_parameters():
@@ -608,14 +612,12 @@ def main():
     embedding_params = []
     other_params = []
     for name, param in encoder_model.named_parameters():
-        assert ('lora' in name) == param.requires_grad, name
         if param.requires_grad:
             if "lora_embedding" in name:
                 embedding_params.append(param)
             else:
                 other_params.append(param)
     for name, param in decoder_model.named_parameters():
-        assert ('lora' in name) == param.requires_grad, name
         if param.requires_grad:
             if "lora_embedding" in name:
                 embedding_params.append(param)
@@ -630,7 +632,10 @@ def main():
         {"params": other_params, "lr": args.lr_other},
     ]
     all_params = embedding_params + other_params
-    optimizer = torch.optim.AdamW(optimizer_grouped_params, weight_decay=args.weight_decay)
+    if args.optimizer == 'adamw':
+        optimizer = torch.optim.AdamW(optimizer_grouped_params, weight_decay=args.weight_decay)
+    else:
+        optimizer = torch.optim.SGD(optimizer_grouped_params)
     logger.info(f"Optimizer with {len(embedding_params)} embed-params lr={args.lr_embedding}, {len(other_params)} other-params lr={args.lr_other}")
 
     # LR schedule

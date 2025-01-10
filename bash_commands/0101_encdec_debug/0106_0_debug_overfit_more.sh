@@ -18,17 +18,16 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
     --debug_fixed_train_order \
     --invar_loss_lambda 0.0 \
     --grad_accum_steps 1 \
-    --no_gradient_checkpointing \
     --num_virtual_tokens 2 \
     --max_grad_norm 1e8 \
     --train_batch_size 2 \
     --eval_batch_size 2 \
     --num_workers 0 \
-    --encoder_pad_side left \
+    --optimizer sgd \
+    --encoder_pad_side right \
     --decoder_pad_side right \
     --decoder_gen_pad_side left \
-    --debug_random_pad \
-    --no_project_kv
+    --debug_random_pad
 
 accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder/train.py \
     --tag test \
@@ -46,8 +45,7 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
     --debug_fixed_train_order \
     --invar_loss_lambda 0.0 \
     --grad_accum_steps 1 \
-    --no_gradient_checkpointing \
     --num_virtual_tokens 2 \
     --max_grad_norm 1e8 \
-    --no_project_kv \
+    --optimizer sgd \
     --compact_grids
