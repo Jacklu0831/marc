@@ -26,6 +26,7 @@ import logging
 import datasets
 import transformers
 from transformers import BitsAndBytesConfig
+import bitsandbytes as bnb
 
 from data_utils import (
     load_tasks_from_data_dir,
@@ -373,6 +374,7 @@ def main():
     parser.add_argument("--project_kv", action="store_true")
     parser.add_argument("--untrainable_nbit", type=float, choices=[3.6, 4, 8, 16, 32], default=32)
     parser.add_argument("--trainable_nbit", type=float, choices=[16, 32], default=32)
+    parser.add_argument("--encoder_gradient_checkpointing", action="store_true")
 
     # Training
     parser.add_argument("--train_batch_size", type=int, default=2)
@@ -387,7 +389,7 @@ def main():
     parser.add_argument("--max_seq_len", type=int, default=8192)
     parser.add_argument("--invar_loss_lambda", type=float, default=0.1)
     parser.add_argument("--max_grad_norm", default=1.0, type=float, help="Max gradient norm.")
-    parser.add_argument("--optimizer", type=str, choices=["adamw", "sgd"], default="adamw")
+    parser.add_argument("--optimizer", type=str, choices=["adamw8bit", "adamw", "sgd"], default="adamw")
 
     # Data
     parser.add_argument("--train_data_dir", type=str, default="/scratch/yl11330/re-arc/train_data/tasks")
@@ -439,8 +441,13 @@ def main():
         args.samples_per_epoch = 250
         args.eval_epochs = 1
         args.num_workers = 0
-        # args.dummy_seq_enc_len = 8192
-        # args.dummy_seq_dec_len = 4096
+        args.dummy_seq_enc_len = 8192
+        args.dummy_seq_dec_len = 4096
+
+    # check args
+    assert (args.dummy_seq_enc_len > -1) == (args.dummy_seq_dec_len > -1)
+    if not args.project_kv:
+        assert not args.encoder_gradient_checkpointing
 
     if args.decoder_lm_head and 'lm_head' not in args.decoder_lora_target_modules:
         args.decoder_lora_target_modules.append('lm_head')
@@ -512,8 +519,10 @@ def main():
     base_decoder = AutoModelForCausalLM.from_pretrained(pretrained_model_name_or_path=MODEL_NAME_TO_PATH[args.decoder_name], **from_pretrained_kwargs)
 
     if args.untrainable_nbit in ['4bit', '8bit']:
-        base_encoder = prepare_model_for_kbit_training(base_encoder, use_gradient_checkpointing=False)
+        base_encoder = prepare_model_for_kbit_training(base_encoder, use_gradient_checkpointing=args.encoder_gradient_checkpointing)
         base_decoder = prepare_model_for_kbit_training(base_decoder, use_gradient_checkpointing=False)
+    elif args.encoder_gradient_checkpointing:
+        base_encoder.gradient_checkpointing_enable()
 
     # add [CLS] is not in model tokenizer
     if not encoder_tokenizer.cls_token:
@@ -634,6 +643,9 @@ def main():
     all_params = embedding_params + other_params
     if args.optimizer == 'adamw':
         optimizer = torch.optim.AdamW(optimizer_grouped_params, weight_decay=args.weight_decay)
+    elif args.optimizer == 'adamw8bit':
+        optimizer = bnb.optim.Adam8bit(optimizer_grouped_params, weight_decay=args.weight_decay)
+        # optimizer = bnb.optim.PagedAdamW(optimizer_grouped_params, weight_decay=args.weight_decay)
     else:
         optimizer = torch.optim.SGD(optimizer_grouped_params)
     logger.info(f"Optimizer with {len(embedding_params)} embed-params lr={args.lr_embedding}, {len(other_params)} other-params lr={args.lr_other}")
