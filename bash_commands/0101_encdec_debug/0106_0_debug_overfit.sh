@@ -19,8 +19,13 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
     --invar_loss_lambda 0.0 \
     --grad_accum_steps 1 \
     --no_gradient_checkpointing \
-    --num_virtual_tokens 1 \
-    --max_grad_norm 1e8
+    --num_virtual_tokens 2 \
+    --max_grad_norm 1e8 \
+    --batch_size 2 \
+    --encoder_pad_side right \
+    --decoder_pad_side right \
+    --debug_random_pad \
+    --debug_pad_len 2
 
 # debug overfit 2 token (did not work)
 accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder/train.py \

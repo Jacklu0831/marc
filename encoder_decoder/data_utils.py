@@ -111,10 +111,29 @@ def get_augmenters(
     return augmenters_to_apply
 
 
-def pad_sequence_left(sequences, padding_value):
-    reversed_sequences = [seq.flip(0) for seq in sequences]
-    padded_reversed = pad_sequence(reversed_sequences, batch_first=True, padding_value=padding_value)
-    return padded_reversed.flip(1)
+def pad_sequence_with_side(sequences, padding_value, side):
+    if side == 'right':
+        return pad_sequence(sequences, batch_first=True, padding_value=padding_value)
+    else:
+        reversed_sequences = [seq.flip(0) for seq in sequences]
+        padded_reversed = pad_sequence(reversed_sequences, batch_first=True, padding_value=padding_value)
+        return padded_reversed.flip(1)
+
+
+def extra_pad_tensors(tensors, padding_values, pad_len, side):
+    assert len(tensors) == len(padding_values)
+    assert all(t.dim() == 2 for t in tensors)
+    if pad_len == -1:
+        pad_len = random.randint(0, 15) # arbitrary
+    padded_tensors = []
+    for arg, padding_value in zip(tensors, padding_values):
+        pad = torch.full((arg.shape[0], pad_len), padding_value, device=arg.device, dtype=arg.dtype)
+        if side == 'right':
+            padded_tensor = torch.cat([arg, pad], dim=-1)
+        else:
+            padded_tensor = torch.cat([pad, arg], dim=-1)
+        padded_tensors.append(padded_tensor)
+    return padded_tensors
 
 
 def load_tasks_from_data_dir(data_dir: str) -> Dict[str, List[Dict[str, Any]]]:
@@ -196,6 +215,12 @@ class TrainDataset(Dataset):
         seed: int,
         compact_grids: bool,
         num_virtual_tokens: int,
+        debug_fixed_train_order: bool,
+        debug_random_pad: bool,
+        debug_pad_len: int,
+        debug_batch_size_1: bool,
+        encoder_pad_side: int,
+        decoder_pad_side: int,
     ):
         self.tasks_dict = tasks_dict
         self.encoder_tokenizer = encoder_tokenizer
@@ -210,6 +235,12 @@ class TrainDataset(Dataset):
         self.rng = np.random.RandomState(seed)
         self.compact_grids = compact_grids
         self.num_virtual_tokens = num_virtual_tokens
+        self.debug_fixed_train_order = debug_fixed_train_order
+        self.debug_random_pad = debug_random_pad
+        self.debug_pad_len = debug_pad_len
+        self.debug_batch_size_1 = debug_batch_size_1
+        self.encoder_pad_side = encoder_pad_side
+        self.decoder_pad_side = decoder_pad_side
 
     def __len__(self):
         return self._length
@@ -225,7 +256,7 @@ def remove_val_from_1dtokenized(tokenized, val):
     tokenized['attention_mask'] = tokenized['attention_mask'][0][mask][None, ...]
 
 
-def collate_fn_train(batch, dataset: "TrainDataset", debug_fixed_train_order: bool):
+def collate_fn_train(batch, dataset: "TrainDataset"):
     """
     We'll produce len(batch) examples. For each 2 items, we pick 1 random task
     and produce 2 examples from that task, or if it's too large => skip.
@@ -238,7 +269,8 @@ def collate_fn_train(batch, dataset: "TrainDataset", debug_fixed_train_order: bo
       - Once we've collected `batch_size` items, we do the final PADDING inside this function.
     """
     batch_size = len(batch)
-    assert batch_size > 0 and batch_size % 2 == 0, f"Batch size must be even, got {batch_size}"
+    if not dataset.debug_batch_size_1:
+        assert batch_size > 0 and batch_size % 2 == 0, f"Batch size must be even, got {batch_size}"
     del batch  # we don't use it directly
 
     encoder_space_token_id = dataset.encoder_tokenizer(" ")['input_ids'][1]
@@ -253,7 +285,7 @@ def collate_fn_train(batch, dataset: "TrainDataset", debug_fixed_train_order: bo
 
         # We'll attempt to produce exactly 2 examples from this single task
         task_out_list = []
-        for _ in range(2):
+        for _ in range(1 if dataset.debug_batch_size_1 else 2):
             prefix_count = random.randint(dataset.min_prefix, dataset.max_prefix)
             required_count = prefix_count + 1
             if len(pairs_for_task) < required_count:
@@ -261,7 +293,7 @@ def collate_fn_train(batch, dataset: "TrainDataset", debug_fixed_train_order: bo
 
             # sample task
             chosen_pairs = pairs_for_task[:required_count]
-            if not debug_fixed_train_order:
+            if not dataset.debug_fixed_train_order:
                 chosen_pairs = dataset.rng.choice(pairs_for_task, size=required_count, replace=False)
             chosen_pairs = copy.deepcopy(chosen_pairs)
 
@@ -341,8 +373,8 @@ def collate_fn_train(batch, dataset: "TrainDataset", debug_fixed_train_order: bo
             task_out_list.append(example_dict)
 
         # Check if we got 2 valid items from this task
-        if len(task_out_list) == 2:
-            if debug_fixed_train_order or not torch.equal(task_out_list[0]['encoder_input_ids'], task_out_list[1]['encoder_input_ids']):
+        if len(task_out_list) == 2 or (len(task_out_list) == 1 and dataset.debug_batch_size_1):
+            if dataset.debug_fixed_train_order or not torch.equal(task_out_list[0]['encoder_input_ids'], task_out_list[1]['encoder_input_ids']):
                 # Add them to out_list
                 out_list.extend(task_out_list)
 
@@ -355,11 +387,27 @@ def collate_fn_train(batch, dataset: "TrainDataset", debug_fixed_train_order: bo
     dec_mask = [x["decoder_attention_mask"] for x in out_list]
     dec_labs = [x["decoder_labels"] for x in out_list]
 
-    enc_ids  = pad_sequence_left(enc_ids, padding_value=dataset.encoder_tokenizer.pad_token_id)
-    enc_mask = pad_sequence_left(enc_mask, padding_value=0)
-    dec_ids  = pad_sequence_left(dec_ids, padding_value=dataset.decoder_tokenizer.pad_token_id)
-    dec_mask = pad_sequence_left(dec_mask, padding_value=0)
-    dec_labs = pad_sequence_left(dec_labs, padding_value=-100)
+    enc_ids_lens = [len(x) for x in enc_ids]
+    dec_ids_lens = [len(x) for x in dec_ids]
+    enc_ids  = pad_sequence_with_side(enc_ids, padding_value=dataset.encoder_tokenizer.pad_token_id, side=dataset.encoder_pad_side)
+    enc_mask = pad_sequence_with_side(enc_mask, padding_value=0, side=dataset.encoder_pad_side)
+    dec_ids  = pad_sequence_with_side(dec_ids, padding_value=dataset.decoder_tokenizer.pad_token_id, side=dataset.decoder_pad_side)
+    dec_mask = pad_sequence_with_side(dec_mask, padding_value=0, side=dataset.decoder_pad_side)
+    dec_labs = pad_sequence_with_side(dec_labs, padding_value=-100, side=dataset.decoder_pad_side)
+
+    if dataset.debug_random_pad or dataset.debug_pad_len > -1:
+        enc_ids, enc_mask = extra_pad_tensors(
+            [enc_ids, enc_mask],
+            padding_values=[dataset.encoder_tokenizer.pad_token_id, 0],
+            pad_len=dataset.debug_pad_len,
+            side=dataset.encoder_pad_side,
+        )
+        dec_ids, dec_mask, dec_labs = extra_pad_tensors(
+            [dec_ids, dec_mask, dec_labs],
+            padding_values=[dataset.decoder_tokenizer.pad_token_id, 0, -100],
+            pad_len=dataset.debug_pad_len,
+            side=dataset.decoder_pad_side,
+        )
 
     return {
         "encoder_input_ids": enc_ids,
@@ -367,6 +415,8 @@ def collate_fn_train(batch, dataset: "TrainDataset", debug_fixed_train_order: bo
         "decoder_input_ids": dec_ids,
         "decoder_attention_mask": dec_mask,
         "decoder_labels": dec_labs,
+        "encoder_input_ids_lens": enc_ids_lens,
+        "decoder_input_ids_lens": dec_ids_lens,
     }
 
 
@@ -390,6 +440,8 @@ def collate_fn_train_dummy(batch, dummy_seq_enc_len: int, dummy_seq_dec_len: int
     enc_mask = torch.full((batch_size, dummy_seq_enc_len), 1, dtype=torch.int64, device='cpu')
     dec_ids = torch.randint(1, 101, (batch_size, dummy_seq_dec_len), dtype=torch.int64, device='cpu')
     dec_mask = torch.full((batch_size, dummy_seq_dec_len), 1, dtype=torch.int64, device='cpu')
+    enc_ids_lens = [len(x) for x in enc_ids]
+    dec_ids_lens = [len(x) for x in dec_ids]
 
     return {
         "encoder_input_ids": enc_ids,
@@ -397,6 +449,8 @@ def collate_fn_train_dummy(batch, dummy_seq_enc_len: int, dummy_seq_dec_len: int
         "decoder_input_ids": dec_ids,
         "decoder_attention_mask": dec_mask,
         "decoder_labels": dec_ids,
+        "encoder_input_ids_lens": enc_ids_lens,
+        "decoder_input_ids_lens": dec_ids_lens,
     }
 
 
@@ -422,6 +476,11 @@ class EvalDataset:
         keep_ratio: float,
         compact_grids: bool,
         num_virtual_tokens: int,
+        debug_random_pad: bool,
+        debug_pad_len: int,
+        encoder_pad_side: int,
+        decoder_pad_side: int,
+        decoder_gen_pad_side: int,
     ):
         self.encoder_tokenizer = encoder_tokenizer
         self.decoder_tokenizer = decoder_tokenizer
@@ -429,6 +488,11 @@ class EvalDataset:
         self.keep_ratio = keep_ratio
         self.compact_grids = compact_grids
         self.num_virtual_tokens = num_virtual_tokens
+        self.debug_random_pad = debug_random_pad
+        self.debug_pad_len = debug_pad_len
+        self.encoder_pad_side = encoder_pad_side
+        self.decoder_pad_side = decoder_pad_side
+        self.decoder_gen_pad_side = decoder_gen_pad_side
 
         self.encoder_space_token_id = encoder_tokenizer(" ")['input_ids'][1]
         self.decoder_space_token_id = decoder_tokenizer(" ")['input_ids'][1]
@@ -555,7 +619,7 @@ class EvalDataset:
         }
 
 
-def collate_fn_eval(batch, encoder_tokenizer, decoder_tokenizer):
+def collate_fn_eval(batch, dataset: "EvalDataset"):
     """
     Filter out None, then pad each field. Return the final dict.
     Also store how many valid items we have, for logging purposes.
@@ -571,13 +635,36 @@ def collate_fn_eval(batch, encoder_tokenizer, decoder_tokenizer):
     decoder_out_token_length = [x["decoder_out_token_length"] for x in batch]
     decoder_label_texts = [x["decoder_label_texts"] for x in batch]
 
-    enc_ids = pad_sequence_left(enc_ids, padding_value=encoder_tokenizer.pad_token_id)
-    enc_mask = pad_sequence_left(enc_mask, padding_value=0)
-    dec_ids = pad_sequence_left(dec_ids, padding_value=decoder_tokenizer.pad_token_id)
-    dec_mask = pad_sequence_left(dec_mask, padding_value=0)
-    dec_gen_ids = pad_sequence_left(dec_gen_ids, padding_value=decoder_tokenizer.pad_token_id)
-    dec_gen_mask = pad_sequence_left(dec_gen_mask, padding_value=0)
-    dec_labs = pad_sequence_left(dec_labs, padding_value=-100)
+    enc_ids_lens = [len(x) for x in enc_ids]
+    dec_ids_lens = [len(x) for x in dec_ids]
+    dec_gen_ids_lens = [len(x) for x in dec_gen_ids]
+    enc_ids = pad_sequence_with_side(enc_ids, padding_value=dataset.encoder_tokenizer.pad_token_id, side=dataset.encoder_pad_side)
+    enc_mask = pad_sequence_with_side(enc_mask, padding_value=0, side=dataset.encoder_pad_side)
+    dec_ids = pad_sequence_with_side(dec_ids, padding_value=dataset.decoder_tokenizer.pad_token_id, side=dataset.decoder_pad_side)
+    dec_mask = pad_sequence_with_side(dec_mask, padding_value=0, side=dataset.decoder_pad_side)
+    dec_labs = pad_sequence_with_side(dec_labs, padding_value=-100, side=dataset.decoder_pad_side)
+    dec_gen_ids = pad_sequence_with_side(dec_gen_ids, padding_value=dataset.decoder_tokenizer.pad_token_id, side=dataset.decoder_gen_pad_side)
+    dec_gen_mask = pad_sequence_with_side(dec_gen_mask, padding_value=0, side=dataset.decoder_gen_pad_side)
+
+    if dataset.debug_random_pad and dataset.debug_pad_len > -1:
+        enc_ids, enc_mask = extra_pad_tensors(
+            [enc_ids, enc_mask],
+            padding_values=[dataset.encoder_tokenizer.pad_token_id, 0],
+            pad_len=dataset.debug_pad_len,
+            side=dataset.encoder_pad_side,
+        )
+        dec_ids, dec_mask, dec_labs = extra_pad_tensors(
+            [dec_ids, dec_mask, dec_labs],
+            padding_values=[dataset.decoder_tokenizer.pad_token_id, 0, -100],
+            pad_len=dataset.debug_pad_len,
+            side=dataset.decoder_pad_side,
+        )
+        dec_gen_ids, dec_gen_mask = extra_pad_tensors(
+            [dec_gen_ids, dec_gen_mask],
+            padding_values=[dataset.decoder_tokenizer.pad_token_id, 0],
+            pad_len=dataset.debug_pad_len,
+            side=dataset.decoder_gen_pad_side,
+        )
 
     batch_dict = {
         "task_ids": task_ids,
@@ -585,11 +672,14 @@ def collate_fn_eval(batch, encoder_tokenizer, decoder_tokenizer):
         "encoder_attention_mask": enc_mask,
         "decoder_input_ids": dec_ids,
         "decoder_attention_mask": dec_mask,
+        "decoder_labels": dec_labs,
         "decoder_gen_input_ids": dec_gen_ids,
         "decoder_gen_attention_mask": dec_gen_mask,
-        "decoder_labels": dec_labs,
         "decoder_out_token_length": decoder_out_token_length,
         "decoder_label_texts": decoder_label_texts,
+        "encoder_input_ids_lens": enc_ids_lens,
+        "decoder_input_ids_lens": dec_ids_lens,
+        "decoder_gen_input_ids_lens": dec_gen_ids_lens,
     }
     return batch_dict
 
@@ -607,6 +697,9 @@ def collate_fn_eval_dummy(batch, dummy_seq_enc_len: int, dummy_seq_dec_len: int)
     dec_mask = torch.full((batch_size, dummy_seq_dec_len), 1, dtype=torch.int64, device='cpu')
     dec_gen_ids = torch.randint(1, 101, (batch_size, int(dummy_seq_dec_len * 0.4)), dtype=torch.int64, device='cpu')
     dec_gen_mask = torch.full((batch_size, int(dummy_seq_dec_len * 0.4)), 1, dtype=torch.int64, device='cpu')
+    enc_ids_lens = [len(x) for x in enc_ids]
+    dec_ids_lens = [len(x) for x in dec_ids]
+    dec_gen_ids_lens = [len(x) for x in dec_gen_ids]
 
     batch_dict = {
         "task_ids": task_ids,
@@ -614,10 +707,13 @@ def collate_fn_eval_dummy(batch, dummy_seq_enc_len: int, dummy_seq_dec_len: int)
         "encoder_attention_mask": enc_mask,
         "decoder_input_ids": dec_ids,
         "decoder_attention_mask": dec_mask,
+        "decoder_labels": dec_ids,
         "decoder_gen_input_ids": dec_gen_ids,
         "decoder_gen_attention_mask": dec_gen_mask,
-        "decoder_labels": dec_ids,
-        "decoder_label_texts": ['helloworld'] * batch_size,
         "decoder_out_token_length": [math.ceil(dummy_seq_dec_len * 0.6)] * batch_size,
+        "decoder_label_texts": ['helloworld'] * batch_size,
+        "encoder_input_ids_lens": enc_ids_lens,
+        "decoder_input_ids_lens": dec_ids_lens,
+        "decoder_gen_input_ids_lens": dec_gen_ids_lens,
     }
     return batch_dict

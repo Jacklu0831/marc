@@ -113,9 +113,9 @@ def encoder_decoder_loss(
     decoder_input_ids: torch.Tensor,
     decoder_attention_mask: torch.Tensor,
     decoder_labels: torch.Tensor,
+    enc_ids_lens: list,
     num_virtual_tokens: int,
-    # whether to compute invariance loss
-    invar_loss_lambda: float = 0.0,
+    invar_loss_lambda: float,
 ):
     """
     This function shows how we:
@@ -135,10 +135,15 @@ def encoder_decoder_loss(
     # get enc_hidden_states (for invar loss) and past_key_values
     if project_kv != None:
         enc_hidden_states = enc_out.hidden_states[-1] # [B, seq_len, hidden_dim]
-        enc_hidden_states = enc_hidden_states[:, -num_virtual_tokens:, :]
+        enc_hidden_states = torch.stack([x[l-num_virtual_tokens:l] for x, l in zip(enc_hidden_states, enc_ids_lens)])
         past_key_values = project_kv(enc_hidden_states=enc_hidden_states)
     else:
-        past_key_values = [(x[0][:, :, -num_virtual_tokens:, :], x[1][:, :, -num_virtual_tokens:, :]) for x in enc_out.past_key_values]
+        past_key_values = []
+        for x1, x2 in enc_out.past_key_values:
+            past_key_values.append((
+                torch.stack([x[:, l-num_virtual_tokens:l, :] for x, l in zip(x1, enc_ids_lens)]),
+                torch.stack([x[:, l-num_virtual_tokens:l, :] for x, l in zip(x2, enc_ids_lens)]),
+            ))
         enc_hidden_states = torch.stack([torch.stack(x) for x in past_key_values]) # each (batch_size, num_kv_heads, num_virtual_tokens, embed_size_per_head)
         enc_hidden_states = enc_hidden_states.permute(2, 0, 1, 3, 4, 5)
 
@@ -235,6 +240,7 @@ def evaluate(
             labels = batch["decoder_labels"].to(accelerator.device)
             label_texts = batch["decoder_label_texts"]
             out_token_length = batch["decoder_out_token_length"]
+            enc_ids_lens = batch["encoder_input_ids_lens"]
 
             # compute ce loss
             with accelerator.autocast():
@@ -247,7 +253,9 @@ def evaluate(
                     decoder_input_ids=dec_ids,
                     decoder_attention_mask=dec_mask,
                     decoder_labels=labels,
+                    enc_ids_lens=enc_ids_lens,
                     num_virtual_tokens=num_virtual_tokens,
+                    invar_loss_lambda=0.0,
                 )
 
             loss_list += [ce_loss.item()] * bs
@@ -354,6 +362,9 @@ def main():
     parser.add_argument("--dummy_seq_enc_len", type=int, default=-1)
     parser.add_argument("--dummy_seq_dec_len", type=int, default=-1)
     parser.add_argument("--debug_fixed_train_order", action="store_true")
+    parser.add_argument("--debug_random_pad", action="store_true")
+    parser.add_argument("--debug_pad_len", type=int, default=-1)
+    parser.add_argument("--debug_batch_size_1", action="store_true")
 
     # Model
     parser.add_argument("--encoder_name", type=str, default="llama1b")
@@ -365,7 +376,8 @@ def main():
     parser.add_argument("--trainable_nbit", type=float, choices=[16, 32], default=32)
 
     # Training
-    parser.add_argument("--batch_size", type=int, default=2)
+    parser.add_argument("--train_batch_size", type=int, default=2)
+    parser.add_argument("--eval_batch_size", type=int, default=2)
     parser.add_argument("--grad_accum_steps", type=int, default=4)
     parser.add_argument("--lr_embedding", type=float, default=1e-5)
     parser.add_argument("--lr_other", type=float, default=1e-4)
@@ -388,6 +400,9 @@ def main():
     parser.add_argument("--num_workers", type=int, default=8)
     parser.add_argument("--augment_ratio", type=float, default=0.3)
     parser.add_argument("--compact_grids", action="store_true")
+    parser.add_argument("--encoder_pad_side", type=str, choices=["left", "right"], default="right")
+    parser.add_argument("--decoder_pad_side", type=str, choices=["left", "right"], default="right")
+    parser.add_argument("--decoder_gen_pad_side", type=str, choices=["left", "right"], default="left")
 
     # Lora encoder
     parser.add_argument("--encoder_lora_rank", type=int, default=256)
@@ -459,8 +474,8 @@ def main():
     logger.info("#### END ALL ARGUMENTS ####\n")
 
     # Load tokenizers
-    encoder_tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME_TO_PATH[args.encoder_name], padding_side='left', cache_dir='./encoder_decoder_cache')
-    decoder_tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME_TO_PATH[args.decoder_name], padding_side='left', cache_dir='./encoder_decoder_cache')
+    encoder_tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME_TO_PATH[args.encoder_name], cache_dir='./encoder_decoder_cache')
+    decoder_tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME_TO_PATH[args.decoder_name], cache_dir='./encoder_decoder_cache')
     if not encoder_tokenizer.pad_token:
         encoder_tokenizer.pad_token = encoder_tokenizer.eos_token
     if not decoder_tokenizer.pad_token:
@@ -564,15 +579,23 @@ def main():
         seed=args.seed,
         compact_grids=args.compact_grids,
         num_virtual_tokens=args.num_virtual_tokens,
+        debug_fixed_train_order=args.debug_fixed_train_order,
+        debug_random_pad=args.debug_random_pad,
+        debug_pad_len=args.debug_pad_len,
+        debug_batch_size_1=args.debug_batch_size_1,
+        encoder_pad_side=args.encoder_pad_side,
+        decoder_pad_side=args.decoder_pad_side,
     )
-    train_collate_fn = partial(collate_fn_train,
-                               dataset=train_dataset, debug_fixed_train_order=args.debug_fixed_train_order)
+    train_collate_fn = partial(collate_fn_train, dataset=train_dataset)
     if args.dummy_seq_enc_len > 0:
-        train_collate_fn = partial(collate_fn_train_dummy,
-                                   dummy_seq_enc_len=args.dummy_seq_enc_len, dummy_seq_dec_len=args.dummy_seq_dec_len)
+        train_collate_fn = partial(
+            collate_fn_train_dummy,
+            dummy_seq_enc_len=args.dummy_seq_enc_len,
+            dummy_seq_dec_len=args.dummy_seq_dec_len
+        )
     train_loader = DataLoader(
         train_dataset,
-        batch_size=args.batch_size,
+        batch_size=args.train_batch_size,
         shuffle=False,
         collate_fn=train_collate_fn,
         drop_last=True,
@@ -611,7 +634,7 @@ def main():
     logger.info(f"Optimizer with {len(embedding_params)} embed-params lr={args.lr_embedding}, {len(other_params)} other-params lr={args.lr_other}")
 
     # LR schedule
-    steps_per_epoch = args.samples_per_epoch // (args.batch_size * args.grad_accum_steps * accelerator.num_processes)
+    steps_per_epoch = args.samples_per_epoch // (args.train_batch_size * args.grad_accum_steps * accelerator.num_processes)
     num_training_steps = steps_per_epoch * args.num_epochs
     lr_scheduler = get_cosine_schedule_with_warmup(
         optimizer,
@@ -635,17 +658,14 @@ def main():
         train_loader
     )
 
-    # breakpoint()
     # for name, param in encoder_model.named_parameters(): print(name, param.dtype)
-    # breakpoint()
     # for name, param in project_kv.named_parameters(): print(name, param.dtype)
-    # breakpoint()
     # for name, param in decoder_model.named_parameters(): print(name, param.dtype)
     # breakpoint()
 
     logger.info(f'\n======= TRAINING INFO START ======')
     logger.info(f'num_epochs={args.num_epochs}')
-    logger.info(f'batch_size={args.batch_size}')
+    logger.info(f'train_batch_size={args.train_batch_size}')
     logger.info(f'grad_accum_steps={args.grad_accum_steps}')
     logger.info(f'accelerator.num_processes={accelerator.num_processes}')
     logger.info(f'steps_per_epoch={steps_per_epoch}')
@@ -678,6 +698,7 @@ def main():
             dec_ids = batch_data["decoder_input_ids"].to(accelerator.device)
             dec_mask = batch_data["decoder_attention_mask"].to(accelerator.device)
             labels = batch_data["decoder_labels"].to(accelerator.device)
+            enc_ids_lens = batch_data["encoder_input_ids_lens"]
 
             with accelerator.accumulate(encoder_model, decoder_model, project_kv):
                 with accelerator.autocast():
@@ -690,14 +711,15 @@ def main():
                         decoder_input_ids=dec_ids,
                         decoder_attention_mask=dec_mask,
                         decoder_labels=labels,
+                        enc_ids_lens=enc_ids_lens,
                         num_virtual_tokens=args.num_virtual_tokens,
                         invar_loss_lambda=args.invar_loss_lambda,
                     )
 
                 # just accumulate for logging
-                avg_ce_loss = accelerator.gather(ce_loss.repeat(args.batch_size)).mean()
-                avg_invar_loss = accelerator.gather(invar_loss.repeat(args.batch_size)).mean()
-                avg_total_loss = accelerator.gather(total_loss.repeat(args.batch_size)).mean()
+                avg_ce_loss = accelerator.gather(ce_loss.repeat(args.train_batch_size)).mean()
+                avg_invar_loss = accelerator.gather(invar_loss.repeat(args.train_batch_size)).mean()
+                avg_total_loss = accelerator.gather(total_loss.repeat(args.train_batch_size)).mean()
                 ce_loss_accum += avg_ce_loss.item() / args.grad_accum_steps
                 invar_loss_accum += avg_invar_loss.item() / args.grad_accum_steps
                 total_loss_accum += avg_total_loss.item() / args.grad_accum_steps
@@ -738,6 +760,11 @@ def main():
                 keep_ratio=args.eval_train_ratio,
                 compact_grids=args.compact_grids,
                 num_virtual_tokens=args.num_virtual_tokens,
+                debug_random_pad=args.debug_random_pad,
+                debug_pad_len=args.debug_pad_len,
+                encoder_pad_side=args.encoder_pad_side,
+                decoder_pad_side=args.decoder_pad_side,
+                decoder_gen_pad_side=args.decoder_gen_pad_side,
             )
             eval_eval_dataset = EvalDataset(
                 args.eval_eval_dir,
@@ -747,12 +774,13 @@ def main():
                 keep_ratio=args.eval_eval_ratio,
                 compact_grids=args.compact_grids,
                 num_virtual_tokens=args.num_virtual_tokens,
+                debug_random_pad=args.debug_random_pad,
+                debug_pad_len=args.debug_pad_len,
+                encoder_pad_side=args.encoder_pad_side,
+                decoder_pad_side=args.decoder_pad_side,
+                decoder_gen_pad_side=args.decoder_gen_pad_side,
             )
-            eval_collate_fn = partial(
-                collate_fn_eval,
-                encoder_tokenizer=encoder_tokenizer,
-                decoder_tokenizer=decoder_tokenizer,
-            )
+            eval_collate_fn = partial(collate_fn_eval, dataset=eval_train_dataset) # only use tokenizer, debug_random_pad
             if args.dummy_seq_enc_len > 0:
                 eval_collate_fn = partial(
                     collate_fn_eval_dummy,
@@ -770,7 +798,7 @@ def main():
                 accelerator,
                 args.num_virtual_tokens,
                 decoder_tokenizer,
-                args.batch_size,
+                args.eval_batch_size,
                 eval_collate_fn,
                 args.compact_grids,
             )
@@ -782,7 +810,7 @@ def main():
                 accelerator,
                 args.num_virtual_tokens,
                 decoder_tokenizer,
-                args.batch_size,
+                args.eval_batch_size,
                 eval_collate_fn,
                 args.compact_grids,
             )
