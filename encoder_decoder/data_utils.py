@@ -221,6 +221,7 @@ class TrainDataset(Dataset):
         debug_batch_size_1: bool,
         encoder_pad_side: int,
         decoder_pad_side: int,
+        encoder_demonstration_loss: bool,
     ):
         self.tasks_dict = tasks_dict
         self.encoder_tokenizer = encoder_tokenizer
@@ -241,6 +242,12 @@ class TrainDataset(Dataset):
         self.debug_batch_size_1 = debug_batch_size_1
         self.encoder_pad_side = encoder_pad_side
         self.decoder_pad_side = decoder_pad_side
+        self.encoder_demonstration_loss = encoder_demonstration_loss
+
+        self.encoder_space_token_id = encoder_tokenizer(" ")['input_ids'][1]
+        self.decoder_space_token_id = decoder_tokenizer(" ")['input_ids'][1]
+        self.encoder_input_token_id = encoder_tokenizer("input")['input_ids'][1]
+        self.encoder_output_token_id = encoder_tokenizer("output")['input_ids'][1]
 
     def __len__(self):
         return self._length
@@ -272,9 +279,6 @@ def collate_fn_train(batch, dataset: "TrainDataset"):
     if not dataset.debug_batch_size_1:
         assert batch_size > 0 and batch_size % 2 == 0, f"Batch size must be even, got {batch_size}"
     del batch  # we don't use it directly
-
-    encoder_space_token_id = dataset.encoder_tokenizer(" ")['input_ids'][1]
-    decoder_space_token_id = dataset.decoder_tokenizer(" ")['input_ids'][1]
 
     out_list = []
 
@@ -341,9 +345,9 @@ def collate_fn_train(batch, dataset: "TrainDataset"):
 
             # compact grids (optional)
             if dataset.compact_grids:
-                remove_val_from_1dtokenized(enc_tokens, encoder_space_token_id)
-                remove_val_from_1dtokenized(dec_in_tokens, decoder_space_token_id)
-                remove_val_from_1dtokenized(dec_out_tokens, decoder_space_token_id)
+                remove_val_from_1dtokenized(enc_tokens, dataset.encoder_space_token_id)
+                remove_val_from_1dtokenized(dec_in_tokens, dataset.decoder_space_token_id)
+                remove_val_from_1dtokenized(dec_out_tokens, dataset.decoder_space_token_id)
 
             # Build final decoder input + labels
             decoder_input_ids = torch.cat([
@@ -363,9 +367,27 @@ def collate_fn_train(batch, dataset: "TrainDataset"):
             if enc_tokens["input_ids"].shape[1] > dataset.max_seq_len or decoder_input_ids.shape[0] > dataset.max_seq_len // 2: # dec_len should be short
                 break
 
+            # construct encoder label
+            encoder_input_ids = enc_tokens["input_ids"].squeeze(0)
+            input_token_positions = [enc_i for enc_i, enc_token_id in enumerate(encoder_input_ids) if enc_token_id == dataset.encoder_input_token_id]
+            output_token_positions = [enc_i for enc_i, enc_token_id in enumerate(encoder_input_ids) if enc_token_id == dataset.encoder_output_token_id]
+            assert len(input_token_positions) == len(output_token_positions) == prefix_count
+            assert all(p1 < p2 for p1, p2 in zip(input_token_positions, output_token_positions))
+
+            encoder_labels = torch.full_like(encoder_input_ids, -100, dtype=encoder_input_ids.dtype)
+            end_position = len(encoder_input_ids) - dataset.num_virtual_tokens
+            for pos, (p1, p2) in enumerate(zip(output_token_positions, input_token_positions[1:] + [end_position])):
+                if pos > 0: # skip first
+                    is_last = (pos == prefix_count - 1)
+                    if dataset.encoder_demonstration_loss or is_last:
+                        p1 += 2 # remove output and :\n
+                        p2 -= not is_last # remove \n
+                        encoder_labels[p1:p2] = copy.deepcopy(encoder_input_ids[p1:p2])
+
             example_dict = {
-                "encoder_input_ids": enc_tokens["input_ids"].squeeze(0),
+                "encoder_input_ids": encoder_input_ids,
                 "encoder_attention_mask": enc_tokens["attention_mask"].squeeze(0),
+                "encoder_labels": encoder_labels,
                 "decoder_input_ids": decoder_input_ids,
                 "decoder_attention_mask": decoder_attention_mask,
                 "decoder_labels": decoder_labels,
@@ -383,6 +405,7 @@ def collate_fn_train(batch, dataset: "TrainDataset"):
 
     enc_ids  = [x["encoder_input_ids"] for x in out_list]
     enc_mask = [x["encoder_attention_mask"] for x in out_list]
+    enc_labs = [x["encoder_labels"] for x in out_list]
     dec_ids  = [x["decoder_input_ids"] for x in out_list]
     dec_mask = [x["decoder_attention_mask"] for x in out_list]
     dec_labs = [x["decoder_labels"] for x in out_list]
@@ -391,14 +414,15 @@ def collate_fn_train(batch, dataset: "TrainDataset"):
     dec_ids_lens = [len(x) for x in dec_ids]
     enc_ids  = pad_sequence_with_side(enc_ids, padding_value=dataset.encoder_tokenizer.pad_token_id, side=dataset.encoder_pad_side)
     enc_mask = pad_sequence_with_side(enc_mask, padding_value=0, side=dataset.encoder_pad_side)
+    enc_labs = pad_sequence_with_side(enc_labs, padding_value=-100, side=dataset.encoder_pad_side)
     dec_ids  = pad_sequence_with_side(dec_ids, padding_value=dataset.decoder_tokenizer.pad_token_id, side=dataset.decoder_pad_side)
     dec_mask = pad_sequence_with_side(dec_mask, padding_value=0, side=dataset.decoder_pad_side)
     dec_labs = pad_sequence_with_side(dec_labs, padding_value=-100, side=dataset.decoder_pad_side)
 
     if dataset.debug_random_pad or dataset.debug_pad_len > -1:
-        enc_ids, enc_mask = extra_pad_tensors(
-            [enc_ids, enc_mask],
-            padding_values=[dataset.encoder_tokenizer.pad_token_id, 0],
+        enc_ids, enc_mask, enc_labs = extra_pad_tensors(
+            [enc_ids, enc_mask, enc_labs],
+            padding_values=[dataset.encoder_tokenizer.pad_token_id, 0, -100],
             pad_len=dataset.debug_pad_len,
             side=dataset.encoder_pad_side,
         )
@@ -412,6 +436,7 @@ def collate_fn_train(batch, dataset: "TrainDataset"):
     return {
         "encoder_input_ids": enc_ids,
         "encoder_attention_mask": enc_mask,
+        "encoder_labels": enc_labs,
         "decoder_input_ids": dec_ids,
         "decoder_attention_mask": dec_mask,
         "decoder_labels": dec_labs,
@@ -446,6 +471,7 @@ def collate_fn_train_dummy(batch, dummy_seq_enc_len: int, dummy_seq_dec_len: int
     return {
         "encoder_input_ids": enc_ids,
         "encoder_attention_mask": enc_mask,
+        "encoder_labels": enc_ids,
         "decoder_input_ids": dec_ids,
         "decoder_attention_mask": dec_mask,
         "decoder_labels": dec_ids,
@@ -504,6 +530,7 @@ class EvalDataset:
         keep_ratio: float,
         compact_grids: bool,
         num_virtual_tokens: int,
+        encoder_demonstration_loss: bool,
         debug_random_pad: bool,
         debug_pad_len: int,
         encoder_pad_side: int,
@@ -516,6 +543,7 @@ class EvalDataset:
         self.keep_ratio = keep_ratio
         self.compact_grids = compact_grids
         self.num_virtual_tokens = num_virtual_tokens
+        self.encoder_demonstration_loss = encoder_demonstration_loss
         self.debug_random_pad = debug_random_pad
         self.debug_pad_len = debug_pad_len
         self.encoder_pad_side = encoder_pad_side
@@ -524,6 +552,8 @@ class EvalDataset:
 
         self.encoder_space_token_id = encoder_tokenizer(" ")['input_ids'][1]
         self.decoder_space_token_id = decoder_tokenizer(" ")['input_ids'][1]
+        self.encoder_input_token_id = encoder_tokenizer("input")['input_ids'][1]
+        self.encoder_output_token_id = encoder_tokenizer("output")['input_ids'][1]
 
         # get filepaths
         if not os.path.isdir(eval_dir):
@@ -629,10 +659,29 @@ class EvalDataset:
         if enc_tokens["input_ids"].shape[1] > self.max_seq_len or decoder_input_ids.shape[0] > self.max_seq_len // 2: # dec_len should be short
             return None
 
+        # construct encoder label
+        prefix_count = len(train_pairs)
+        encoder_input_ids = enc_tokens["input_ids"].squeeze(0)
+        input_token_positions = [enc_i for enc_i, enc_token_id in enumerate(encoder_input_ids) if enc_token_id == self.encoder_input_token_id]
+        output_token_positions = [enc_i for enc_i, enc_token_id in enumerate(encoder_input_ids) if enc_token_id == self.encoder_output_token_id]
+        assert len(input_token_positions) == len(output_token_positions) == prefix_count
+        assert all(p1 < p2 for p1, p2 in zip(input_token_positions, output_token_positions))
+
+        encoder_labels = torch.full_like(encoder_input_ids, -100, dtype=encoder_input_ids.dtype)
+        end_position = len(encoder_input_ids) - self.num_virtual_tokens
+        for pos, (p1, p2) in enumerate(zip(output_token_positions, input_token_positions[1:] + [end_position])):
+            if pos > 0: # skip first
+                is_last = (pos == prefix_count - 1)
+                if self.encoder_demonstration_loss or is_last:
+                    p1 += 2 # remove output and :\n
+                    p2 -= not is_last # remove \n
+                    encoder_labels[p1:p2] = copy.deepcopy(encoder_input_ids[p1:p2])
+
         return {
             "task_id": task_id,
-            "encoder_input_ids": enc_tokens["input_ids"].squeeze(0),
+            "encoder_input_ids": encoder_input_ids,
             "encoder_attention_mask": enc_tokens["attention_mask"].squeeze(0),
+            "encoder_labels": encoder_labels,
             "decoder_input_ids": decoder_input_ids,
             "decoder_attention_mask": decoder_attention_mask,
             "decoder_labels": decoder_labels,
@@ -651,6 +700,7 @@ def collate_fn_eval(batch, dataset: "EvalDataset"):
     task_ids = [x['task_id'] for x in batch]
     enc_ids = [x["encoder_input_ids"] for x in batch]
     enc_mask = [x["encoder_attention_mask"] for x in batch]
+    enc_labs = [x["encoder_labels"] for x in batch]
     dec_ids = [x["decoder_input_ids"] for x in batch]
     dec_mask = [x["decoder_attention_mask"] for x in batch]
     dec_gen_ids = [x["decoder_gen_input_ids"] for x in batch]
@@ -664,6 +714,7 @@ def collate_fn_eval(batch, dataset: "EvalDataset"):
     dec_gen_ids_lens = [len(x) for x in dec_gen_ids]
     enc_ids = pad_sequence_with_side(enc_ids, padding_value=dataset.encoder_tokenizer.pad_token_id, side=dataset.encoder_pad_side)
     enc_mask = pad_sequence_with_side(enc_mask, padding_value=0, side=dataset.encoder_pad_side)
+    enc_labs = pad_sequence_with_side(enc_labs, padding_value=-100, side=dataset.encoder_pad_side)
     dec_ids = pad_sequence_with_side(dec_ids, padding_value=dataset.decoder_tokenizer.pad_token_id, side=dataset.decoder_pad_side)
     dec_mask = pad_sequence_with_side(dec_mask, padding_value=0, side=dataset.decoder_pad_side)
     dec_labs = pad_sequence_with_side(dec_labs, padding_value=-100, side=dataset.decoder_pad_side)
@@ -671,9 +722,9 @@ def collate_fn_eval(batch, dataset: "EvalDataset"):
     dec_gen_mask = pad_sequence_with_side(dec_gen_mask, padding_value=0, side=dataset.decoder_gen_pad_side)
 
     if dataset.debug_random_pad and dataset.debug_pad_len > -1:
-        enc_ids, enc_mask = extra_pad_tensors(
-            [enc_ids, enc_mask],
-            padding_values=[dataset.encoder_tokenizer.pad_token_id, 0],
+        enc_ids, enc_mask, enc_labs = extra_pad_tensors(
+            [enc_ids, enc_mask, enc_labs],
+            padding_values=[dataset.encoder_tokenizer.pad_token_id, 0, -100],
             pad_len=dataset.debug_pad_len,
             side=dataset.encoder_pad_side,
         )
@@ -694,6 +745,7 @@ def collate_fn_eval(batch, dataset: "EvalDataset"):
         "task_ids": task_ids,
         "encoder_input_ids": enc_ids,
         "encoder_attention_mask": enc_mask,
+        "encoder_labels": enc_labs,
         "decoder_input_ids": dec_ids,
         "decoder_attention_mask": dec_mask,
         "decoder_labels": dec_labs,
@@ -729,6 +781,7 @@ def collate_fn_eval_dummy(batch, dummy_seq_enc_len: int, dummy_seq_dec_len: int)
         "task_ids": task_ids,
         "encoder_input_ids": enc_ids,
         "encoder_attention_mask": enc_mask,
+        "encoder_labels": enc_ids,
         "decoder_input_ids": dec_ids,
         "decoder_attention_mask": dec_mask,
         "decoder_labels": dec_ids,

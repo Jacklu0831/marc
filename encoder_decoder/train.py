@@ -74,28 +74,41 @@ def set_up_main_process_logger(accelerator, logger):
 
 
 class ProjectKV(nn.Module):
-    def __init__(self, num_virtual_tokens, encoder_model, decoder_model):
+    def __init__(self, num_virtual_tokens, encoder_model, decoder_model, conditioning_method):
         super(ProjectKV, self).__init__()
+        assert conditioning_method in ["hidden2prefix_shared", "hidden2prefix_full"]
         # prefixes are formatted as 16 of (2=2, BS=1, nhead=8, nvirtualtoken=1, tokendim / nhead=64)
         self.num_virtual_tokens = num_virtual_tokens
         self.num_layers = decoder_model.config.num_hidden_layers
         self.num_kv_heads = decoder_model.config.num_key_value_heads
         self.embed_size_per_head = decoder_model.config.hidden_size // decoder_model.config.num_attention_heads
+        self.conditioning_method = conditioning_method
         # weights
-        projections = nn.ModuleList([
-            nn.Linear(
+        if self.conditioning_method == "hidden2prefix_shared":
+            projections = nn.Linear(
                 encoder_model.config.hidden_size,
                 self.num_layers * 2 * self.num_kv_heads * self.embed_size_per_head
-            ) for _ in range(self.num_virtual_tokens)
-        ])
-        self.weights = nn.Parameter(torch.stack([layer.weight for layer in projections], dim=0))
-        self.biases = nn.Parameter(torch.stack([layer.bias for layer in projections], dim=0))
+            )
+            self.weights = nn.Parameter(projections.weight)
+            self.biases = nn.Parameter(projections.bias)
+        else:
+            projections = nn.ModuleList([
+                nn.Linear(
+                    encoder_model.config.hidden_size,
+                    self.num_layers * 2 * self.num_kv_heads * self.embed_size_per_head
+                ) for _ in range(self.num_virtual_tokens)
+            ])
+            self.weights = nn.Parameter(torch.stack([projection.weight for projection in projections], dim=0))
+            self.biases = nn.Parameter(torch.stack([projection.bias for projection in projections], dim=0))
         del projections
 
     def forward(self, enc_hidden_states):
         # enc_hidden_states has shape (batch_size, num_virtual_tokens, hidden_dim)
         assert enc_hidden_states.shape[1] == self.num_virtual_tokens
-        outs = torch.einsum("bnh,nhd->bnd", enc_hidden_states, self.weights.transpose(1, 2)) + self.biases # (batch_size, num_virtual_tokens, out_dim)
+        if self.conditioning_method == "hidden2prefix_shared":
+            outs = torch.einsum("bnh,hd->bnd", enc_hidden_states, self.weights.transpose(0, 1)) + self.biases
+        else:
+            outs = torch.einsum("bnh,nhd->bnd", enc_hidden_states, self.weights.transpose(1, 2)) + self.biases # (batch_size, num_virtual_tokens, out_dim)
         outs = outs.view(outs.size(0), outs.size(1), self.num_layers, 2, self.num_kv_heads, self.embed_size_per_head)
         outs = outs.permute(2, 3, 0, 4, 1, 5)
         past_key_values = [(x[0], x[1]) for x in outs] # each (batch_size, num_kv_heads, num_virtual_tokens, embed_size_per_head)
@@ -106,17 +119,23 @@ class ProjectKV(nn.Module):
 # A shared forward pass for training & evaluation
 ################################################
 def encoder_decoder_loss(
-    encoder_model,
-    decoder_model,
+    encoder_model: nn.Module,
+    decoder_model: nn.Module,
+    conditioning_method: str,
     project_kv: nn.Module,
     encoder_input_ids: torch.Tensor,
     encoder_attention_mask: torch.Tensor,
+    encoder_labels: torch.Tensor,
     decoder_input_ids: torch.Tensor,
     decoder_attention_mask: torch.Tensor,
     decoder_labels: torch.Tensor,
     enc_ids_lens: list,
+    dec_ids_lens: list,
     num_virtual_tokens: int,
     invar_loss_lambda: float,
+    encoder_loss_lambda: float,
+    encoder_pad_side: str,
+    decoder_pad_side: str,
 ):
     """
     This function shows how we:
@@ -126,52 +145,120 @@ def encoder_decoder_loss(
       4) Pass prefix + decoder_input_ids => decoder with labels => cross-entropy
     Returns (ce_loss, hidden_cls).
     """
-    # 1) Encoder forward
+    # Encoder forward and get loss
     enc_out = encoder_model(
         input_ids=encoder_input_ids,
         attention_mask=encoder_attention_mask,
+        labels=encoder_labels,
         output_hidden_states=True,
     )
+    encoder_loss = enc_out.loss
 
-    # get enc_hidden_states (for invar loss) and past_key_values
-    if project_kv != None:
+    # get predicted program for decoder and enc_hidden_states for invar loss
+    enc_hidden_states = None
+    predicted_program = None
+    if conditioning_method in ["hidden2prefix_shared", "hidden2prefix_full"]:
         enc_hidden_states = enc_out.hidden_states[-1] # [B, seq_len, hidden_dim]
-        enc_hidden_states = torch.stack([x[l-num_virtual_tokens:l] for x, l in zip(enc_hidden_states, enc_ids_lens)])
-        past_key_values = project_kv(enc_hidden_states=enc_hidden_states)
-    else:
-        past_key_values = []
-        for x1, x2 in enc_out.past_key_values:
-            past_key_values.append((
-                torch.stack([x[:, l-num_virtual_tokens:l, :] for x, l in zip(x1, enc_ids_lens)]),
-                torch.stack([x[:, l-num_virtual_tokens:l, :] for x, l in zip(x2, enc_ids_lens)]),
-            ))
-        enc_hidden_states = torch.stack([torch.stack(x) for x in past_key_values]) # each (batch_size, num_kv_heads, num_virtual_tokens, embed_size_per_head)
+        if encoder_pad_side == "right":
+            enc_hidden_states = torch.stack([x[l-num_virtual_tokens:l] for x, l in zip(enc_hidden_states, enc_ids_lens)])
+        else:
+            enc_hidden_states = torch.stack([x[-num_virtual_tokens:] for x in enc_hidden_states])
+        predicted_program = project_kv(enc_hidden_states=enc_hidden_states)
+    elif conditioning_method == "prefix2prefix":
+        predicted_program = []
+        if encoder_pad_side == "right":
+            for x1, x2 in enc_out.past_key_values:
+                predicted_program.append((
+                    torch.stack([x[:, l-num_virtual_tokens:l, :] for x, l in zip(x1, enc_ids_lens)]),
+                    torch.stack([x[:, l-num_virtual_tokens:l, :] for x, l in zip(x2, enc_ids_lens)]),
+                ))
+        else:
+            for x1, x2 in enc_out.past_key_values:
+                predicted_program.append((
+                    torch.stack([x[:, -num_virtual_tokens:, :] for x in x1]),
+                    torch.stack([x[:, -num_virtual_tokens:, :] for x in x2]),
+                ))
+        enc_hidden_states = torch.stack([torch.stack(x) for x in predicted_program]) # each (batch_size, num_kv_heads, num_virtual_tokens, embed_size_per_head)
         enc_hidden_states = enc_hidden_states.permute(2, 0, 1, 3, 4, 5)
+    else:
+        enc_hidden_states = enc_out.hidden_states[-1] # [B, seq_len, hidden_dim]
+        if encoder_pad_side == "right":
+            enc_hidden_states = torch.stack([x[l-num_virtual_tokens:l] for x, l in zip(enc_hidden_states, enc_ids_lens)])
+        else:
+            enc_hidden_states = torch.stack([x[-num_virtual_tokens:] for x in enc_hidden_states])
+        predicted_program = enc_hidden_states
 
     # decoder attention mask must be extended
     prefix_attention_mask = torch.full(
         (decoder_attention_mask.shape[0], num_virtual_tokens),
         1,
-        device=decoder_attention_mask.device
+        device=decoder_attention_mask.device,
+        dtype=decoder_attention_mask.dtype,
     )
-    decoder_attention_mask = torch.cat([prefix_attention_mask, decoder_attention_mask], dim=1)
 
-    # 5) decoder forward => cross-entropy
-    dec_out = decoder_model(
-        input_ids=decoder_input_ids,
-        attention_mask=decoder_attention_mask,
-        past_key_values=past_key_values,
-        labels=decoder_labels,
-    )
+    if conditioning_method in ["prefix2prefix", "hidden2prefix_shared", "hidden2prefix_full"]:
+        # pad decoder attention mask
+        decoder_attention_mask = torch.cat([prefix_attention_mask, decoder_attention_mask], dim=1)
+        # decoder forward
+        dec_out = decoder_model(
+            input_ids=decoder_input_ids,
+            attention_mask=decoder_attention_mask,
+            past_key_values=predicted_program,
+            labels=decoder_labels,
+        )
+    else:
+        # pad decoder attention mask
+        if decoder_pad_side == "right":
+            decoder_attention_mask = torch.cat([prefix_attention_mask, decoder_attention_mask], dim=1)
+        else:
+            decoder_attention_mask_new = []
+            for x, m, l in zip(decoder_attention_mask, prefix_attention_mask, dec_ids_lens):
+                x = torch.cat([x[:-l], m, x[-l:]])
+                decoder_attention_mask_new.append(x)
+            decoder_attention_mask = torch.stack(decoder_attention_mask_new)
+        # pad decoder inputs embeds
+        decoder_module = decoder_model.module if isinstance(decoder_model, DistributedDataParallel) else decoder_model
+        decoder_inputs_embeds = decoder_module.model.model.embed_tokens(decoder_input_ids)
+        if decoder_pad_side == "right":
+            decoder_inputs_embeds = torch.cat([predicted_program, decoder_inputs_embeds], dim=1)
+        else:
+            decoder_inputs_embeds_new = []
+            for x, p, l in zip(decoder_inputs_embeds, predicted_program, dec_ids_lens):
+                x = torch.cat([x[:-l], p, x[-l:]])
+                decoder_inputs_embeds_new.append(x)
+            decoder_inputs_embeds = torch.stack(decoder_inputs_embeds_new)
+        # pad label
+        prefix_label_mask = torch.full(
+            (decoder_labels.shape[0], num_virtual_tokens),
+            -100,
+            device=decoder_labels.device,
+            dtype=decoder_labels.dtype,
+        )
+        if decoder_pad_side == "right":
+            decoder_labels = torch.cat([prefix_label_mask, decoder_labels], dim=1)
+        else:
+            decoder_labels_new = []
+            for x, m, l in zip(decoder_labels, prefix_label_mask, dec_ids_lens):
+                x = torch.cat([x[:-l], m, x[-l:]])
+                decoder_labels_new.append(x)
+            decoder_labels = torch.stack(decoder_labels_new)
+        # decoder forward
+        dec_out = decoder_model(
+            inputs_embeds=decoder_inputs_embeds,
+            attention_mask=decoder_attention_mask,
+            labels=decoder_labels,
+        )
+
+    # cross-entropy loss
     ce_loss = dec_out.loss
 
     # invariance loss (batch only not 2x in evaluation)
-    invar_loss = torch.tensor(0.0).to(encoder_input_ids.device)
+    invar_loss = torch.tensor(0.0, device=encoder_input_ids.device)
     if enc_hidden_states.shape[0] % 2 == 0:
         invar_loss = nn.functional.mse_loss(enc_hidden_states[::2], enc_hidden_states[1::2])
 
-    total_loss = ce_loss + invar_loss_lambda * invar_loss
-    return ce_loss, invar_loss, total_loss, past_key_values
+    total_loss = ce_loss + invar_loss_lambda * invar_loss + encoder_loss_lambda * encoder_loss
+    return ce_loss, invar_loss, encoder_loss, total_loss, predicted_program
 
 
 def chunks(lst, n):
@@ -186,14 +273,18 @@ def chunks(lst, n):
 def evaluate(
     encoder_model,
     decoder_model,
+    conditioning_method,
     project_kv,
     dataset,
     accelerator: Accelerator,
     num_virtual_tokens: int,
     decoder_tokenizer,
     batch_size: int,
-    eval_collate_fn,
+    collate_fn,
     compact_grids: bool,
+    encoder_pad_side: str,
+    decoder_pad_side: str,
+    decoder_gen_pad_side: str,
 ):
     """
     For each task in dataset, compute:
@@ -228,35 +319,44 @@ def evaluate(
     with distributed_state.split_between_processes(dataset.parsed_data) as data:
         n_batches = math.ceil(len(data) / batch_size)
         for batch in tqdm(chunks(data, batch_size), total=n_batches):
-            batch = eval_collate_fn(batch)
+            batch = collate_fn(batch)
             bs = batch["encoder_input_ids"].size(0)
 
             task_ids = batch["task_ids"]
             enc_ids = batch["encoder_input_ids"].to(accelerator.device)
             enc_mask = batch["encoder_attention_mask"].to(accelerator.device)
+            enc_labels = batch["encoder_labels"].to(accelerator.device)
             dec_ids = batch["decoder_input_ids"].to(accelerator.device)
             dec_mask = batch["decoder_attention_mask"].to(accelerator.device)
             dec_gen_ids = batch["decoder_gen_input_ids"].to(accelerator.device)
             dec_gen_mask = batch["decoder_gen_attention_mask"].to(accelerator.device)
-            labels = batch["decoder_labels"].to(accelerator.device)
+            dec_labels = batch["decoder_labels"].to(accelerator.device)
             label_texts = batch["decoder_label_texts"]
             out_token_length = batch["decoder_out_token_length"]
             enc_ids_lens = batch["encoder_input_ids_lens"]
+            dec_ids_lens = batch["decoder_input_ids_lens"]
+            dec_gen_ids_lens = batch["decoder_gen_input_ids_lens"]
 
             # compute ce loss
             with accelerator.autocast():
-                ce_loss, _, _, past_key_values = encoder_decoder_loss(
+                ce_loss, _, _, _, predicted_program = encoder_decoder_loss(
                     encoder_model=encoder_model,
                     decoder_model=decoder_model,
+                    conditioning_method=conditioning_method,
                     project_kv=project_kv,
                     encoder_input_ids=enc_ids,
                     encoder_attention_mask=enc_mask,
+                    encoder_labels=enc_labels,
                     decoder_input_ids=dec_ids,
                     decoder_attention_mask=dec_mask,
-                    decoder_labels=labels,
+                    decoder_labels=dec_labels,
                     enc_ids_lens=enc_ids_lens,
+                    dec_ids_lens=dec_ids_lens,
                     num_virtual_tokens=num_virtual_tokens,
                     invar_loss_lambda=0.0,
+                    encoder_loss_lambda=0.0,
+                    encoder_pad_side=encoder_pad_side,
+                    decoder_pad_side=decoder_pad_side,
                 )
 
             loss_list += [ce_loss.item()] * bs
@@ -264,20 +364,66 @@ def evaluate(
             # compute accuracy
             with accelerator.autocast():
                 # padding at front because HF ignores it
-                dec_gen_ids = torch.cat([torch.ones((bs, num_virtual_tokens), device='cuda').to(torch.int64), dec_gen_ids], dim=1)
-                dec_gen_mask = torch.cat([torch.ones((bs, num_virtual_tokens), device='cuda').to(torch.int64), dec_gen_mask], dim=1)
-                gen_tokens = decoder_module.generate(
-                    input_ids=dec_gen_ids,
-                    attention_mask=dec_gen_mask,
-                    past_key_values=past_key_values,
-                    max_new_tokens=max(out_token_length), # arbitrary increase
-                    num_return_sequences=1,
-                    temperature=1.0,
-                    top_p=1.0,
-                    do_sample=False,
-                    eos_token_id=terminators,
-                )
-            gen_texts = decoder_tokenizer.batch_decode(gen_tokens[:, dec_gen_ids.shape[1]:], skip_special_tokens=True)
+                gen_texts = None
+                if conditioning_method == "hidden2prompt":
+                    decoder_inputs_embeds = decoder_module.model.model.embed_tokens(dec_gen_ids)
+                    # pad decoder inputs embeds
+                    if decoder_gen_pad_side == "right":
+                        decoder_inputs_embeds = torch.cat([predicted_program, decoder_inputs_embeds], dim=1)
+                    else:
+                        decoder_inputs_embeds_new = []
+                        for x, p, l in zip(decoder_inputs_embeds, predicted_program, dec_gen_ids_lens):
+                            x = torch.cat([x[:-l], p, x[-l:]])
+                            decoder_inputs_embeds_new.append(x)
+                        decoder_inputs_embeds = torch.stack(decoder_inputs_embeds_new)
+                    # pad decoder attention masks
+                    prefix_attention_mask = torch.full(
+                        (dec_gen_mask.shape[0], num_virtual_tokens),
+                        1,
+                        device=dec_gen_mask.device,
+                        dtype=dec_gen_mask.dtype,
+                    )
+                    if decoder_gen_pad_side == "right":
+                        dec_gen_mask = torch.cat([prefix_attention_mask, dec_gen_mask], dim=1)
+                    else:
+                        dec_gen_mask_new = []
+                        for x, m, l in zip(dec_gen_mask, prefix_attention_mask, dec_gen_ids_lens):
+                            x = torch.cat([x[:-l], m, x[-l:]])
+                            dec_gen_mask_new.append(x)
+                        dec_gen_mask = torch.stack(dec_gen_mask_new)
+                    # generate
+                    gen_tokens = decoder_module.generate(
+                        inputs_embeds=decoder_inputs_embeds,
+                        attention_mask=dec_gen_mask,
+                        max_new_tokens=max(out_token_length), # arbitrary increase
+                        num_return_sequences=1,
+                        temperature=1.0,
+                        top_p=1.0,
+                        do_sample=False,
+                        eos_token_id=terminators,
+                    )
+                    gen_texts = decoder_tokenizer.batch_decode(gen_tokens, skip_special_tokens=True)
+                else:
+                    dec_gen_ids = torch.cat([
+                        torch.ones((bs, num_virtual_tokens), device=dec_gen_ids.device, dtype=dec_gen_ids.dtype),
+                        dec_gen_ids
+                    ], dim=1) # the addition will be ignored, double checked
+                    dec_gen_mask = torch.cat([
+                        torch.ones((bs, num_virtual_tokens), device=dec_gen_mask.device, dtype=dec_gen_mask.dtype),
+                        dec_gen_mask
+                    ], dim=1)
+                    gen_tokens = decoder_module.generate(
+                        input_ids=dec_gen_ids,
+                        attention_mask=dec_gen_mask,
+                        past_key_values=predicted_program,
+                        max_new_tokens=max(out_token_length), # arbitrary increase
+                        num_return_sequences=1,
+                        temperature=1.0,
+                        top_p=1.0,
+                        do_sample=False,
+                        eos_token_id=terminators,
+                    )
+                    gen_texts = decoder_tokenizer.batch_decode(gen_tokens[:, dec_gen_ids.shape[1]:], skip_special_tokens=True)
 
             # Compare each gen_text with label_texts
             for task_id, gen_text, label_text in zip(task_ids, gen_texts, label_texts):
@@ -349,6 +495,30 @@ def text_to_2d_grid(text: str, compact_grids: bool):
         return None, False
 
 
+class EMASpikeDetector:
+    def __init__(self, spike_multiplier, momentum=0.9):
+        self.moving_average = None
+        self.momentum = momentum
+        self.spike_multiplier = spike_multiplier
+
+    def update(self, new_val):
+        if self.moving_average == None:
+            self.moving_average = new_val
+            return False
+        is_spike = (new_val > self.moving_average * self.spike_multiplier)
+        self.moving_average = self.moving_average * self.momentum + new_val * (1.0 - self.momentum)
+        return is_spike
+
+
+def compute_grad_norm2(parameters):
+    total_norm = 0.0
+    for p in parameters:
+        if p.grad is not None:
+            param_norm = p.grad.detach().norm(2).item() ** 2
+            total_norm += param_norm
+    return total_norm ** 0.5
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--tag", type=str, required=True)
@@ -357,6 +527,8 @@ def main():
     parser.add_argument("--log_every", type=int, default=10)
     parser.add_argument("--tracker_project_name", type=str, default="arc")
     parser.add_argument("--save_model", action="store_true")
+    parser.add_argument("--no_log_spikes", action="store_true")
+    parser.add_argument("--spike_multiplier", type=float, default=3.0)
 
     # Debug
     parser.add_argument("--debug", action='store_true')
@@ -370,11 +542,15 @@ def main():
     # Model
     parser.add_argument("--encoder_name", type=str, default="llama1b")
     parser.add_argument("--decoder_name", type=str, default="llama1b")
+    parser.add_argument("--tie_models", action="store_true")
     parser.add_argument("--flash_attn", action="store_true")
-    parser.add_argument("--project_kv", action="store_true")
+    parser.add_argument("--conditioning_method",
+                        choices=["prefix2prefix", "hidden2prefix_shared", "hidden2prefix_full", "hidden2prompt"],
+                        default="prefix2prefix")
     parser.add_argument("--untrainable_nbit", type=float, choices=[3.6, 4, 8, 16, 32], default=32)
     parser.add_argument("--trainable_nbit", type=float, choices=[16, 32], default=32)
     parser.add_argument("--encoder_gradient_checkpointing", action="store_true")
+    parser.add_argument("--decoder_gradient_checkpointing", action="store_true")
 
     # Training
     parser.add_argument("--train_batch_size", type=int, default=2)
@@ -388,6 +564,8 @@ def main():
     parser.add_argument("--eval_epochs", type=int, default=5)
     parser.add_argument("--max_seq_len", type=int, default=8192)
     parser.add_argument("--invar_loss_lambda", type=float, default=0.1)
+    parser.add_argument("--encoder_loss_lambda", type=float, default=0.0)
+    parser.add_argument("--encoder_demonstration_loss", action="store_true")
     parser.add_argument("--max_grad_norm", default=1.0, type=float, help="Max gradient norm.")
     parser.add_argument("--optimizer", type=str, choices=["adamw8bit", "adamw", "sgd"], default="adamw")
 
@@ -446,8 +624,16 @@ def main():
 
     # check args
     assert (args.dummy_seq_enc_len > -1) == (args.dummy_seq_dec_len > -1)
-    if not args.project_kv:
+    if args.conditioning_method == "prefix2prefix":
         assert not args.encoder_gradient_checkpointing
+    if args.conditioning_method in ["prefix2prefix", "hidden2prefix_shared", "hidden2prefix_full"]:
+        assert not args.decoder_gradient_checkpointing
+    if args.conditioning_method in ["prefix2prefix", "hidden2prompt"]:
+        assert args.encoder_name == args.decoder_name
+    if args.conditioning_method != "hidden2prompt":
+        assert args.decoder_pad_side == "right" # right for no middle padding
+    if args.tie_models:
+        assert args.encoder_name == args.decoder_name
 
     if args.decoder_lm_head and 'lm_head' not in args.decoder_lora_target_modules:
         args.decoder_lora_target_modules.append('lm_head')
@@ -475,14 +661,31 @@ def main():
     torch.backends.cuda.matmul.allow_tf32 = True
     logger.info("Accelerator and seed set up.")
 
+    # log args
     logger.info("#### BEGIN ALL ARGUMENTS ####")
     for arg in vars(args):
         logger.info(f"{arg}: {getattr(args, arg)}")
     logger.info("#### END ALL ARGUMENTS ####\n")
 
+    # setup spike detector
+    if not args.no_log_spikes and accelerator.is_main_process:
+        spike_gradnorm_samples_path = os.path.join(args.output_dir, "spike_gradnorm_samples.jsonl")
+        spike_loss_samples_path = os.path.join(args.output_dir, "spike_loss_samples.jsonl")
+        if os.path.exists(spike_gradnorm_samples_path): os.remove(spike_gradnorm_samples_path)
+        if os.path.exists(spike_loss_samples_path): os.remove(spike_loss_samples_path)
+        with open(spike_gradnorm_samples_path, 'w') as f: pass
+        with open(spike_loss_samples_path, 'w') as f: pass
+        gradnorm_spike_detector = EMASpikeDetector(spike_multiplier=args.spike_multiplier)
+        loss_spike_detector = EMASpikeDetector(spike_multiplier=args.spike_multiplier)
+        logger.info(f'logging gradnorm spike to {spike_gradnorm_samples_path}')
+        logger.info(f'logging loss spike to {spike_loss_samples_path}')
+
     # Load tokenizers
     encoder_tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME_TO_PATH[args.encoder_name], cache_dir='./encoder_decoder_cache')
-    decoder_tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME_TO_PATH[args.decoder_name], cache_dir='./encoder_decoder_cache')
+    if args.tie_models:
+        decoder_tokenizer = encoder_tokenizer
+    else:
+        decoder_tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME_TO_PATH[args.decoder_name], cache_dir='./encoder_decoder_cache')
     if not encoder_tokenizer.pad_token:
         encoder_tokenizer.pad_token = encoder_tokenizer.eos_token
     if not decoder_tokenizer.pad_token:
@@ -515,14 +718,21 @@ def main():
         from_pretrained_kwargs["quantization_config"] = BitsAndBytesConfig(load_in_8bit=True)
     else:
         raise ValueError(f"unrecognized untrainable_nbit {args.untrainable_nbit}")
+
     base_encoder = AutoModelForCausalLM.from_pretrained(pretrained_model_name_or_path=MODEL_NAME_TO_PATH[args.encoder_name], **from_pretrained_kwargs)
-    base_decoder = AutoModelForCausalLM.from_pretrained(pretrained_model_name_or_path=MODEL_NAME_TO_PATH[args.decoder_name], **from_pretrained_kwargs)
+    if args.tie_models:
+        base_decoder = base_encoder
+    else:
+        base_decoder = AutoModelForCausalLM.from_pretrained(pretrained_model_name_or_path=MODEL_NAME_TO_PATH[args.decoder_name], **from_pretrained_kwargs)
 
     if args.untrainable_nbit in ['4bit', '8bit']:
         base_encoder = prepare_model_for_kbit_training(base_encoder, use_gradient_checkpointing=args.encoder_gradient_checkpointing)
-        base_decoder = prepare_model_for_kbit_training(base_decoder, use_gradient_checkpointing=False)
-    elif args.encoder_gradient_checkpointing:
-        base_encoder.gradient_checkpointing_enable()
+        base_decoder = prepare_model_for_kbit_training(base_decoder, use_gradient_checkpointing=args.decoder_gradient_checkpointing)
+    else:
+        if args.encoder_gradient_checkpointing:
+            base_encoder.gradient_checkpointing_enable()
+        if args.decoder_gradient_checkpointing:
+            base_decoder.gradient_checkpointing_enable()
 
     # add [CLS] is not in model tokenizer
     if not encoder_tokenizer.cls_token:
@@ -539,21 +749,27 @@ def main():
         use_rslora=not args.encoder_no_rslora,
         task_type=TaskType.CAUSAL_LM,
     )
-    decoder_peft_config = LoraConfig(
-        r=args.decoder_lora_rank,
-        lora_alpha=args.decoder_lora_alpha,
-        lora_dropout=args.decoder_lora_dropout,
-        target_modules=args.decoder_lora_target_modules,
-        use_rslora=not args.decoder_no_rslora,
-        task_type=TaskType.CAUSAL_LM,
-    )
     encoder_model = get_peft_model(base_encoder, encoder_peft_config)
-    decoder_model = get_peft_model(base_decoder, decoder_peft_config)
+    if args.tie_models:
+        decoder_model = encoder_model
+    else:
+        decoder_peft_config = LoraConfig(
+            r=args.decoder_lora_rank,
+            lora_alpha=args.decoder_lora_alpha,
+            lora_dropout=args.decoder_lora_dropout,
+            target_modules=args.decoder_lora_target_modules,
+            use_rslora=not args.decoder_no_rslora,
+            task_type=TaskType.CAUSAL_LM,
+        )
+        decoder_model = get_peft_model(base_decoder, decoder_peft_config)
     logger.info("LoRA-wrapped models initialized.")
 
-    project_kv = ProjectKV(args.num_virtual_tokens, encoder_model, decoder_model) if args.project_kv else None
+    project_kv = None
+    if args.conditioning_method in ["hidden2prefix_shared", "hidden2prefix_full"]:
+        project_kv = ProjectKV(args.num_virtual_tokens, encoder_model, decoder_model, conditioning_method=args.conditioning_method)
+
     # if not project_kv, the non-kv-projection weights of encoder model last layer are not used
-    if not args.project_kv:
+    if (args.conditioning_method == "prefix2prefix") and not args.tie_models:
         for name, param in encoder_model.named_parameters():
             if 'layers.15' in name and param.requires_grad:
                 if 'mlp' in name or 'o_proj' in name or 'q_proj' in name:
@@ -563,20 +779,23 @@ def main():
     for name, param in encoder_model.named_parameters():
         if param.requires_grad:
             param.data = param.data.to(NBIT_TO_DTYPE[args.trainable_nbit])
-    for name, param in decoder_model.named_parameters():
-        if param.requires_grad:
-            param.data = param.data.to(NBIT_TO_DTYPE[args.trainable_nbit])
+    if not args.tie_models:
+        for name, param in decoder_model.named_parameters():
+            if param.requires_grad:
+                param.data = param.data.to(NBIT_TO_DTYPE[args.trainable_nbit])
     if project_kv != None:
         for name, param in project_kv.named_parameters():
             if param.requires_grad:
                 param.data = param.data.to(NBIT_TO_DTYPE[args.trainable_nbit])
 
     encoder_model.print_trainable_parameters()
-    decoder_model.print_trainable_parameters()
+    if not args.tie_models:
+        decoder_model.print_trainable_parameters()
     if project_kv != None:
         logger.info(f'project_kv params {sum(p.numel() for p in project_kv.parameters())}')
     logger.info(f'encoder size {round(encoder_model.get_memory_footprint() / 1024 ** 3, 2)}GB')
-    logger.info(f'decoder size {round(decoder_model.get_memory_footprint() / 1024 ** 3, 2)}GB')
+    if not args.tie_models:
+        logger.info(f'decoder size {round(decoder_model.get_memory_footprint() / 1024 ** 3, 2)}GB')
 
     # Build training dataset
     train_tasks_dict = load_tasks_from_data_dir(args.train_data_dir)
@@ -598,6 +817,7 @@ def main():
         debug_batch_size_1=args.debug_batch_size_1,
         encoder_pad_side=args.encoder_pad_side,
         decoder_pad_side=args.decoder_pad_side,
+        encoder_demonstration_loss=args.encoder_demonstration_loss,
     )
     train_collate_fn = partial(collate_fn_train, dataset=train_dataset)
     if args.dummy_seq_enc_len > 0:
@@ -626,12 +846,13 @@ def main():
                 embedding_params.append(param)
             else:
                 other_params.append(param)
-    for name, param in decoder_model.named_parameters():
-        if param.requires_grad:
-            if "lora_embedding" in name:
-                embedding_params.append(param)
-            else:
-                other_params.append(param)
+    if not args.tie_models:
+        for name, param in decoder_model.named_parameters():
+            if param.requires_grad:
+                if "lora_embedding" in name:
+                    embedding_params.append(param)
+                else:
+                    other_params.append(param)
     if project_kv != None:
         for param in project_kv.parameters():
             other_params.append(param)
@@ -707,38 +928,49 @@ def main():
         ce_loss_accum = 0.0
         invar_loss_accum = 0.0
         total_loss_accum = 0.0
+        encoder_loss_accum = 0.0
         grad_norm_accum = 0.0
 
         for batch_data in train_loader:
             enc_ids = batch_data["encoder_input_ids"].to(accelerator.device)
             enc_mask = batch_data["encoder_attention_mask"].to(accelerator.device)
+            enc_labels = batch_data["encoder_labels"].to(accelerator.device)
             dec_ids = batch_data["decoder_input_ids"].to(accelerator.device)
             dec_mask = batch_data["decoder_attention_mask"].to(accelerator.device)
-            labels = batch_data["decoder_labels"].to(accelerator.device)
+            dec_labels = batch_data["decoder_labels"].to(accelerator.device)
             enc_ids_lens = batch_data["encoder_input_ids_lens"]
+            dec_ids_lens = batch_data["decoder_input_ids_lens"]
 
             with accelerator.accumulate(encoder_model, decoder_model, project_kv):
                 with accelerator.autocast():
-                    ce_loss, invar_loss, total_loss, _ = encoder_decoder_loss(
+                    ce_loss, invar_loss, encoder_loss, total_loss, _ = encoder_decoder_loss(
                         encoder_model=encoder_model,
                         decoder_model=decoder_model,
+                        conditioning_method=args.conditioning_method,
                         project_kv=project_kv,
                         encoder_input_ids=enc_ids,
                         encoder_attention_mask=enc_mask,
+                        encoder_labels=enc_labels,
                         decoder_input_ids=dec_ids,
                         decoder_attention_mask=dec_mask,
-                        decoder_labels=labels,
+                        decoder_labels=dec_labels,
                         enc_ids_lens=enc_ids_lens,
+                        dec_ids_lens=dec_ids_lens,
                         num_virtual_tokens=args.num_virtual_tokens,
+                        encoder_loss_lambda=args.encoder_loss_lambda,
                         invar_loss_lambda=args.invar_loss_lambda,
+                        encoder_pad_side=args.encoder_pad_side,
+                        decoder_pad_side=args.decoder_pad_side,
                     )
 
                 # just accumulate for logging
                 avg_ce_loss = accelerator.gather(ce_loss.repeat(args.train_batch_size)).mean()
                 avg_invar_loss = accelerator.gather(invar_loss.repeat(args.train_batch_size)).mean()
+                avg_encoder_loss = accelerator.gather(encoder_loss.repeat(args.train_batch_size)).mean()
                 avg_total_loss = accelerator.gather(total_loss.repeat(args.train_batch_size)).mean()
                 ce_loss_accum += avg_ce_loss.item() / args.grad_accum_steps
                 invar_loss_accum += avg_invar_loss.item() / args.grad_accum_steps
+                encoder_loss_accum += avg_encoder_loss.item() / args.grad_accum_steps
                 total_loss_accum += avg_total_loss.item() / args.grad_accum_steps
 
                 accelerator.backward(total_loss)
@@ -746,7 +978,24 @@ def main():
                     grad_norm_accum += accelerator.clip_grad_norm_(all_params, args.max_grad_norm).item()
                 optimizer.step()
                 lr_scheduler.step()
+
+                # detect and log spike
+                if not args.no_log_spikes and accelerator.is_main_process:
+                    is_gradnorm_spike = gradnorm_spike_detector.update(compute_grad_norm2(all_params))
+                    is_loss_spike = loss_spike_detector.update(total_loss.item())
+                    if is_gradnorm_spike or is_loss_spike:
+                        enc_texts = encoder_tokenizer.batch_decode(enc_ids, skip_special_tokens=True)
+                        dec_texts = decoder_tokenizer.batch_decode(dec_ids, skip_special_tokens=True)
+                        data_string = json.dumps({'enc': enc_texts, 'dec': dec_texts})
+                    if is_gradnorm_spike:
+                        with open(spike_gradnorm_samples_path, 'a') as f:
+                            f.write(f"{global_step} {data_string}\n")
+                    if is_loss_spike:
+                        with open(spike_loss_samples_path, 'a') as f:
+                            f.write(f"{global_step} {data_string}\n")
+
                 optimizer.zero_grad()
+
 
             if accelerator.sync_gradients:
                 global_step += 1
@@ -755,6 +1004,7 @@ def main():
                     accelerator.log({
                         "train/ce_loss": ce_loss_accum,
                         "train/invar_loss": invar_loss_accum,
+                        "train/encoder_loss": encoder_loss_accum,
                         "train/total_loss": total_loss_accum,
                         "train/grad_norm_accum": grad_norm_accum,
                         "train/lr_embedding": lr_scheduler.get_last_lr()[0],
@@ -763,6 +1013,7 @@ def main():
 
                 ce_loss_accum = 0.0
                 invar_loss_accum = 0.0
+                encoder_loss_accum = 0.0
                 total_loss_accum = 0.0
                 grad_norm_accum = 0.0
 
@@ -777,6 +1028,7 @@ def main():
                 keep_ratio=args.eval_train_ratio,
                 compact_grids=args.compact_grids,
                 num_virtual_tokens=args.num_virtual_tokens,
+                encoder_demonstration_loss=args.encoder_demonstration_loss,
                 debug_random_pad=args.debug_random_pad,
                 debug_pad_len=args.debug_pad_len,
                 encoder_pad_side=args.encoder_pad_side,
@@ -791,6 +1043,7 @@ def main():
                 keep_ratio=args.eval_eval_ratio,
                 compact_grids=args.compact_grids,
                 num_virtual_tokens=args.num_virtual_tokens,
+                encoder_demonstration_loss=args.encoder_demonstration_loss,
                 debug_random_pad=args.debug_random_pad,
                 debug_pad_len=args.debug_pad_len,
                 encoder_pad_side=args.encoder_pad_side,
@@ -808,28 +1061,36 @@ def main():
             logger.info(f"len(eval_eval_dataset) = {len(eval_eval_dataset)}")
 
             train_ce, train_exact_acc, train_valid_grid, train_correct_grid_dim, train_token_acc, train_texts = evaluate(
-                encoder_model,
-                decoder_model,
-                project_kv,
-                eval_train_dataset,
-                accelerator,
-                args.num_virtual_tokens,
-                decoder_tokenizer,
-                args.eval_batch_size,
-                eval_collate_fn,
-                args.compact_grids,
+                encoder_model=encoder_model,
+                decoder_model=decoder_model,
+                conditioning_method=args.conditioning_method,
+                project_kv=project_kv,
+                dataset=eval_train_dataset,
+                accelerator=accelerator,
+                num_virtual_tokens=args.num_virtual_tokens,
+                decoder_tokenizer=decoder_tokenizer,
+                batch_size=args.eval_batch_size,
+                collate_fn=eval_collate_fn,
+                compact_grids=args.compact_grids,
+                encoder_pad_side=args.encoder_pad_side,
+                decoder_pad_side=args.decoder_pad_side,
+                decoder_gen_pad_side=args.decoder_gen_pad_side,
             )
             eval_ce, eval_exact_acc, eval_valid_grid, eval_correct_grid_dim, eval_token_acc, eval_texts = evaluate(
-                encoder_model,
-                decoder_model,
-                project_kv,
-                eval_eval_dataset,
-                accelerator,
-                args.num_virtual_tokens,
-                decoder_tokenizer,
-                args.eval_batch_size,
-                eval_collate_fn,
-                args.compact_grids,
+                encoder_model=encoder_model,
+                decoder_model=decoder_model,
+                conditioning_method=args.conditioning_method,
+                project_kv=project_kv,
+                dataset=eval_eval_dataset,
+                accelerator=accelerator,
+                num_virtual_tokens=args.num_virtual_tokens,
+                decoder_tokenizer=decoder_tokenizer,
+                batch_size=args.eval_batch_size,
+                collate_fn=eval_collate_fn,
+                compact_grids=args.compact_grids,
+                encoder_pad_side=args.encoder_pad_side,
+                decoder_pad_side=args.decoder_pad_side,
+                decoder_gen_pad_side=args.decoder_gen_pad_side,
             )
 
             if accelerator.is_main_process:

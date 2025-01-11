@@ -2,7 +2,7 @@
 # torch.Size([2, 143])
 
 # debug overfit 1 token (require SGD)
-accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder/train.py \
+accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder_new/train.py \
     --tag test \
     --train_data_dir /scratch/yl11330/re-arc/train_data_debug_overfit4/tasks \
     --eval_train_dir /scratch/yl11330/re-arc/arc_original_debug_overfit4/training \
@@ -27,7 +27,9 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
     --encoder_pad_side right \
     --decoder_pad_side right \
     --decoder_gen_pad_side left \
-    --debug_random_pad
+    --debug_random_pad \
+    --conditioning_method shared
+
 
 accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder/train.py \
     --tag test \
