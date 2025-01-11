@@ -69,3 +69,8 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
 # Submitted batch job 55755465
 # Submitted batch job 55755466
 # Submitted batch job 55755467
+
+# Submitted batch job 55768952
+# Submitted batch job 55768953
+# Submitted batch job 55768954
+# Submitted batch job 55768955
