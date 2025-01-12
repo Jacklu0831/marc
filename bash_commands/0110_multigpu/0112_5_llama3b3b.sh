@@ -3,7 +3,7 @@
 # when training 1bto3b or 3bto1b, the projection matrix is necessary (only 0.14GB for the default ntoken8)
 
 # 3bto3b
-accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder_new/train.py \
+accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder/train.py \
     --tag 0112_3bto3b \
     --train_data_dir /scratch/yl11330/re-arc/train_data/tasks \
     --eval_train_dir /scratch/yl11330/re-arc/arc_original/training \
@@ -23,3 +23,5 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
     --trainable_nbit 16 \
     --flash_attn \
     --wandb
+
+# Submitted batch job 55777133

@@ -2,7 +2,7 @@
 # test whether full 1b models help, should also compare the 16bit+lora to 32bit+lora
 
 # train16bit lora
-accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder_new/train.py \
+accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder/train.py \
     --tag 0112_train16bit_lora \
     --train_data_dir /scratch/yl11330/re-arc/train_data/tasks \
     --eval_train_dir /scratch/yl11330/re-arc/arc_original/training \
@@ -18,7 +18,7 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
     --wandb
 
 # train16bit nolora
-accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder_new/train.py \
+accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder/train.py \
     --tag 0112_train16bit_nolora \
     --train_data_dir /scratch/yl11330/re-arc/train_data/tasks \
     --eval_train_dir /scratch/yl11330/re-arc/arc_original/training \
@@ -33,3 +33,6 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
     --trainable_nbit 16 \
     --no_lora \
     --wandb
+
+# Submitted batch job 55777098
+# Submitted batch job 55777099

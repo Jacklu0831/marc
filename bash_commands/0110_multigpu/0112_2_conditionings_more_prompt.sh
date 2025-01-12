@@ -2,7 +2,7 @@
 # 0111_0_conditionings.sh compares 4 types of conditioning, this adds full/shared projection to hidden2prompt
 
 # conditionings promptshared
-accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder_new/train.py \
+accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder/train.py \
     --tag 0112_conditionings_promptshared \
     --train_data_dir /scratch/yl11330/re-arc/train_data/tasks \
     --eval_train_dir /scratch/yl11330/re-arc/arc_original/training \
@@ -18,7 +18,7 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
     --wandb
 
 # conditionings promptfull
-accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder_new/train.py \
+accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder/train.py \
     --tag 0112_conditionings_promptfull \
     --train_data_dir /scratch/yl11330/re-arc/train_data/tasks \
     --eval_train_dir /scratch/yl11330/re-arc/arc_original/training \
@@ -32,3 +32,6 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
     --max_seq_len 5120 \
     --conditioning_method hidden2prompt_full \
     --wandb
+
+# Submitted batch job 55777125
+# Submitted batch job 55777126

@@ -2,7 +2,7 @@
 # hidden2prompt is best for scaling up, so using it and check how sensitive it is to ntoken
 
 # conditionings promptfull ntoken1
-accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder_new/train.py \
+accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder/train.py \
     --tag 0112_conditionings_promptfull_ntoken1 \
     --train_data_dir /scratch/yl11330/re-arc/train_data/tasks \
     --eval_train_dir /scratch/yl11330/re-arc/arc_original/training \
@@ -19,7 +19,7 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
     --wandb
 
 # conditionings promptfull ntoken4
-accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder_new/train.py \
+accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder/train.py \
     --tag 0112_conditionings_promptfull_ntoken4 \
     --train_data_dir /scratch/yl11330/re-arc/train_data/tasks \
     --eval_train_dir /scratch/yl11330/re-arc/arc_original/training \
@@ -36,7 +36,7 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
     --wandb
 
 # conditionings promptfull ntoken16
-accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder_new/train.py \
+accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder/train.py \
     --tag 0112_conditionings_promptfull_ntoken16 \
     --train_data_dir /scratch/yl11330/re-arc/train_data/tasks \
     --eval_train_dir /scratch/yl11330/re-arc/arc_original/training \
@@ -53,7 +53,7 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
     --wandb
 
 # conditionings promptfull ntoken32
-accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder_new/train.py \
+accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder/train.py \
     --tag 0112_conditionings_promptfull_ntoken32 \
     --train_data_dir /scratch/yl11330/re-arc/train_data/tasks \
     --eval_train_dir /scratch/yl11330/re-arc/arc_original/training \
@@ -68,3 +68,8 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
     --conditioning_method hidden2prompt_full \
     --num_virtual_tokens 32 \
     --wandb
+
+# Submitted batch job 55777127
+# Submitted batch job 55777128
+# Submitted batch job 55777129
+# Submitted batch job 55777130
