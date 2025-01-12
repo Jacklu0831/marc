@@ -76,7 +76,6 @@ def set_up_main_process_logger(accelerator, logger):
 class ProjectKV(nn.Module):
     def __init__(self, num_virtual_tokens, encoder_model, decoder_model, conditioning_method):
         super(ProjectKV, self).__init__()
-        assert conditioning_method in ["hidden2prefix_shared", "hidden2prefix_full"]
         # prefixes are formatted as 16 of (2=2, BS=1, nhead=8, nvirtualtoken=1, tokendim / nhead=64)
         self.num_virtual_tokens = num_virtual_tokens
         self.num_layers = decoder_model.config.num_hidden_layers
@@ -91,7 +90,7 @@ class ProjectKV(nn.Module):
             )
             self.weights = nn.Parameter(projections.weight)
             self.biases = nn.Parameter(projections.bias)
-        else:
+        elif self.conditioning_method == "hidden2prefix_full":
             projections = nn.ModuleList([
                 nn.Linear(
                     encoder_model.config.hidden_size,
@@ -100,6 +99,8 @@ class ProjectKV(nn.Module):
             ])
             self.weights = nn.Parameter(torch.stack([projection.weight for projection in projections], dim=0))
             self.biases = nn.Parameter(torch.stack([projection.bias for projection in projections], dim=0))
+        else:
+            raise ValueError(f'unrecognized conditioning method {self.conditioning_method}')
         del projections
 
     def forward(self, enc_hidden_states):
@@ -114,6 +115,49 @@ class ProjectKV(nn.Module):
         past_key_values = [(x[0], x[1]) for x in outs] # each (batch_size, num_kv_heads, num_virtual_tokens, embed_size_per_head)
         return past_key_values
 
+    def get_memory_footprint(self):
+        return sum(p.nelement() * p.element_size() for p in self.parameters()) + \
+            sum(p.nelement() * p.element_size() for p in self.buffers())
+
+
+class ProjectPrompt(nn.Module):
+    def __init__(self, num_virtual_tokens, encoder_model, decoder_model, conditioning_method):
+        super(ProjectPrompt, self).__init__()
+        self.num_virtual_tokens = num_virtual_tokens
+        self.conditioning_method = conditioning_method
+        self.encoder_hidden_size = encoder_model.config.hidden_size
+        self.decoder_hidden_size = decoder_model.config.hidden_size
+        # weights
+        if self.conditioning_method == "hidden2prompt_shared":
+            projections = nn.Linear(encoder_model.config.hidden_size, decoder_model.config.hidden_size)
+            self.weights = nn.Parameter(projections.weight)
+            self.biases = nn.Parameter(projections.bias)
+        elif conditioning_method == "hidden2prompt_full":
+            projections = nn.ModuleList([
+                nn.Linear(
+                    encoder_model.config.hidden_size,
+                    decoder_model.config.hidden_size,
+                ) for _ in range(self.num_virtual_tokens)
+            ])
+            self.weights = nn.Parameter(torch.stack([projection.weight for projection in projections], dim=0))
+            self.biases = nn.Parameter(torch.stack([projection.bias for projection in projections], dim=0))
+        else:
+            raise ValueError(f'unrecognized conditioning method {self.conditioning_method}')
+        del projections
+
+    def forward(self, enc_hidden_states):
+        # enc_hidden_states has shape (batch_size, num_virtual_tokens, hidden_dim)
+        assert enc_hidden_states.shape[1] == self.num_virtual_tokens
+        # outs (batch_size, num_virtual_tokens, out_dim)
+        if self.conditioning_method == "hidden2prompt_shared":
+            return torch.einsum("bnh,hd->bnd", enc_hidden_states, self.weights.transpose(0, 1)) + self.biases
+        else:
+            return torch.einsum("bnh,nhd->bnd", enc_hidden_states, self.weights.transpose(1, 2)) + self.biases
+
+    def get_memory_footprint(self):
+        return sum(p.nelement() * p.element_size() for p in self.parameters()) + \
+            sum(p.nelement() * p.element_size() for p in self.buffers())
+
 
 ################################################
 # A shared forward pass for training & evaluation
@@ -122,7 +166,7 @@ def encoder_decoder_loss(
     encoder_model: nn.Module,
     decoder_model: nn.Module,
     conditioning_method: str,
-    project_kv: nn.Module,
+    conditioning_projection: nn.Module,
     encoder_input_ids: torch.Tensor,
     encoder_attention_mask: torch.Tensor,
     encoder_labels: torch.Tensor,
@@ -163,7 +207,7 @@ def encoder_decoder_loss(
             enc_hidden_states = torch.stack([x[l-num_virtual_tokens:l] for x, l in zip(enc_hidden_states, enc_ids_lens)])
         else:
             enc_hidden_states = torch.stack([x[-num_virtual_tokens:] for x in enc_hidden_states])
-        predicted_program = project_kv(enc_hidden_states=enc_hidden_states)
+        predicted_program = conditioning_projection(enc_hidden_states=enc_hidden_states)
     elif conditioning_method == "prefix2prefix":
         predicted_program = []
         if encoder_pad_side == "right":
@@ -180,13 +224,22 @@ def encoder_decoder_loss(
                 ))
         enc_hidden_states = torch.stack([torch.stack(x) for x in predicted_program]) # each (batch_size, num_kv_heads, num_virtual_tokens, embed_size_per_head)
         enc_hidden_states = enc_hidden_states.permute(2, 0, 1, 3, 4, 5)
-    else:
+    elif conditioning_method in ["hidden2prompt_shared", "hidden2prompt_full"]:
+        enc_hidden_states = enc_out.hidden_states[-1] # [B, seq_len, hidden_dim]
+        if encoder_pad_side == "right":
+            enc_hidden_states = torch.stack([x[l-num_virtual_tokens:l] for x, l in zip(enc_hidden_states, enc_ids_lens)])
+        else:
+            enc_hidden_states = torch.stack([x[-num_virtual_tokens:] for x in enc_hidden_states])
+        predicted_program = conditioning_projection(enc_hidden_states)
+    elif conditioning_method == "hidden2prompt":
         enc_hidden_states = enc_out.hidden_states[-1] # [B, seq_len, hidden_dim]
         if encoder_pad_side == "right":
             enc_hidden_states = torch.stack([x[l-num_virtual_tokens:l] for x, l in zip(enc_hidden_states, enc_ids_lens)])
         else:
             enc_hidden_states = torch.stack([x[-num_virtual_tokens:] for x in enc_hidden_states])
         predicted_program = enc_hidden_states
+    else:
+        raise ValueError(f"invalid conditioning method {conditioning_method}")
 
     # decoder attention mask must be extended
     prefix_attention_mask = torch.full(
@@ -274,7 +327,7 @@ def evaluate(
     encoder_model,
     decoder_model,
     conditioning_method,
-    project_kv,
+    conditioning_projection,
     dataset,
     accelerator: Accelerator,
     num_virtual_tokens: int,
@@ -296,8 +349,8 @@ def evaluate(
     """
     encoder_model.eval()
     decoder_model.eval()
-    if project_kv != None:
-        project_kv.eval()
+    if conditioning_projection != None:
+        conditioning_projection.eval()
 
     decoder_module = decoder_model.module if isinstance(decoder_model, DistributedDataParallel) else decoder_model
 
@@ -343,7 +396,7 @@ def evaluate(
                     encoder_model=encoder_model,
                     decoder_model=decoder_model,
                     conditioning_method=conditioning_method,
-                    project_kv=project_kv,
+                    conditioning_projection=conditioning_projection,
                     encoder_input_ids=enc_ids,
                     encoder_attention_mask=enc_mask,
                     encoder_labels=enc_labels,
@@ -365,7 +418,7 @@ def evaluate(
             with accelerator.autocast():
                 # padding at front because HF ignores it
                 gen_texts = None
-                if conditioning_method == "hidden2prompt":
+                if conditioning_method in ["hidden2prompt", "hidden2prompt_shared", "hidden2prompt_full"]:
                     decoder_inputs_embeds = decoder_module.model.model.embed_tokens(dec_gen_ids)
                     # pad decoder inputs embeds
                     if decoder_gen_pad_side == "right":
@@ -519,6 +572,49 @@ def compute_grad_norm2(parameters):
     return total_norm ** 0.5
 
 
+def save_model(encoder_model, decoder_model, conditioning_projection, output_dir, epoch):
+    # encoder decoder
+    save_enc_path = os.path.join(output_dir, f"encoder_lora_epoch_{epoch+1}")
+    save_dec_path = os.path.join(output_dir, f"decoder_lora_epoch_{epoch+1}")
+    encoder_module = encoder_model.module if isinstance(encoder_model, DistributedDataParallel) else encoder_model
+    decoder_module = decoder_model.module if isinstance(decoder_model, DistributedDataParallel) else decoder_model
+    encoder_module.save_pretrained(save_enc_path, save_embedding_layers=True)
+    decoder_module.save_pretrained(save_dec_path, save_embedding_layers=True)
+    logger.info(f"Saved encoder to {save_enc_path}")
+    logger.info(f"Saved decoder to {save_dec_path}")
+    # projection
+    save_proj_path = None
+    if conditioning_projection is not None:
+        save_proj_path = os.path.join(output_dir, f"conditioning_projection_epoch_{epoch+1}.pt")
+        torch.save(conditioning_projection, save_proj_path)
+        logger.info(f"Saved conditioning projection to {save_proj_path}")
+    return save_enc_path, save_dec_path, save_proj_path
+
+
+def print_trainable_parameters(model):
+    if hasattr(model, "print_trainable_parameters"):
+        model.print_trainable_parameters()
+    else:
+        trainable_params = 0
+        all_param = 0
+        for _, param in model.named_parameters():
+            num_params = param.numel()
+            if param.__class__.__name__ == "Params4bit":
+                if hasattr(param, "element_size"):
+                    num_bytes = param.element_size()
+                elif not hasattr(param, "quant_storage"):
+                    num_bytes = 1
+                else:
+                    num_bytes = param.quant_storage.itemsize
+                num_params = num_params * 2 * num_bytes
+            all_param += num_params
+            if param.requires_grad:
+                trainable_params += num_params
+        logger.info(
+            f"trainable params: {trainable_params:,d} || all params: {all_param:,d} || trainable%: {100 * trainable_params / all_param:.4f}"
+        )
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--tag", type=str, required=True)
@@ -526,14 +622,14 @@ def main():
     parser.add_argument("--output_dir", type=str, default="./encoder_decoder/outputs")
     parser.add_argument("--log_every", type=int, default=10)
     parser.add_argument("--tracker_project_name", type=str, default="arc")
-    parser.add_argument("--save_model", action="store_true")
     parser.add_argument("--no_log_spikes", action="store_true")
     parser.add_argument("--spike_multiplier", type=float, default=3.0)
+    parser.add_argument("--save_all_models", action="store_true") # otherwise save only best
 
     # Debug
     parser.add_argument("--debug", action='store_true')
-    parser.add_argument("--dummy_seq_enc_len", type=int, default=-1)
-    parser.add_argument("--dummy_seq_dec_len", type=int, default=-1)
+    parser.add_argument("--debug_enc_len", type=int, default=-1)
+    parser.add_argument("--debug_dec_len", type=int, default=-1)
     parser.add_argument("--debug_fixed_train_order", action="store_true")
     parser.add_argument("--debug_random_pad", action="store_true")
     parser.add_argument("--debug_pad_len", type=int, default=-1)
@@ -544,13 +640,23 @@ def main():
     parser.add_argument("--decoder_name", type=str, default="llama1b")
     parser.add_argument("--tie_models", action="store_true")
     parser.add_argument("--flash_attn", action="store_true")
-    parser.add_argument("--conditioning_method",
-                        choices=["prefix2prefix", "hidden2prefix_shared", "hidden2prefix_full", "hidden2prompt"],
-                        default="prefix2prefix")
     parser.add_argument("--untrainable_nbit", type=float, choices=[3.6, 4, 8, 16, 32], default=32)
     parser.add_argument("--trainable_nbit", type=float, choices=[16, 32], default=32)
     parser.add_argument("--encoder_gradient_checkpointing", action="store_true")
     parser.add_argument("--decoder_gradient_checkpointing", action="store_true")
+    parser.add_argument("--no_lora", action="store_true")
+
+    # Conditioning projection
+    parser.add_argument("--conditioning_method",
+                        choices=[
+                            "prefix2prefix",
+                            "hidden2prefix_shared",
+                            "hidden2prefix_full",
+                            "hidden2prompt",
+                            "hidden2prompt_shared",
+                            "hidden2prompt_full",
+                        ],
+                        default="prefix2prefix")
 
     # Training
     parser.add_argument("--train_batch_size", type=int, default=2)
@@ -619,21 +725,21 @@ def main():
         args.samples_per_epoch = 250
         args.eval_epochs = 1
         args.num_workers = 0
-        args.dummy_seq_enc_len = 8192
-        args.dummy_seq_dec_len = 4096
 
     # check args
-    assert (args.dummy_seq_enc_len > -1) == (args.dummy_seq_dec_len > -1)
+    if args.debug_enc_len > -1 and args.debug_dec_len == -1:
+        args.debug_dec_len = args.debug_enc_len // 2
     if args.conditioning_method == "prefix2prefix":
         assert not args.encoder_gradient_checkpointing
     if args.conditioning_method in ["prefix2prefix", "hidden2prefix_shared", "hidden2prefix_full"]:
         assert not args.decoder_gradient_checkpointing
+        assert args.decoder_pad_side == "right" # right for no middle padding
     if args.conditioning_method in ["prefix2prefix", "hidden2prompt"]:
         assert args.encoder_name == args.decoder_name
-    if args.conditioning_method != "hidden2prompt":
-        assert args.decoder_pad_side == "right" # right for no middle padding
     if args.tie_models:
         assert args.encoder_name == args.decoder_name
+    if args.no_lora:
+        args.untrainable_nbit = args.trainable_nbit # untrainable become trainable
 
     if args.decoder_lm_head and 'lm_head' not in args.decoder_lora_target_modules:
         args.decoder_lora_target_modules.append('lm_head')
@@ -719,11 +825,17 @@ def main():
     else:
         raise ValueError(f"unrecognized untrainable_nbit {args.untrainable_nbit}")
 
-    base_encoder = AutoModelForCausalLM.from_pretrained(pretrained_model_name_or_path=MODEL_NAME_TO_PATH[args.encoder_name], **from_pretrained_kwargs)
+    base_encoder = AutoModelForCausalLM.from_pretrained(
+        pretrained_model_name_or_path=MODEL_NAME_TO_PATH[args.encoder_name],
+        **from_pretrained_kwargs
+    )
     if args.tie_models:
         base_decoder = base_encoder
     else:
-        base_decoder = AutoModelForCausalLM.from_pretrained(pretrained_model_name_or_path=MODEL_NAME_TO_PATH[args.decoder_name], **from_pretrained_kwargs)
+        base_decoder = AutoModelForCausalLM.from_pretrained(
+            pretrained_model_name_or_path=MODEL_NAME_TO_PATH[args.decoder_name],
+            **from_pretrained_kwargs
+        )
 
     if args.untrainable_nbit in ['4bit', '8bit']:
         base_encoder = prepare_model_for_kbit_training(base_encoder, use_gradient_checkpointing=args.encoder_gradient_checkpointing)
@@ -740,40 +852,55 @@ def main():
         base_encoder.resize_token_embeddings(len(encoder_tokenizer))
     logger.info("Base models loaded.")
 
-    # LoRA config
-    encoder_peft_config = LoraConfig(
-        r=args.encoder_lora_rank,
-        lora_alpha=args.encoder_lora_alpha,
-        lora_dropout=args.encoder_lora_dropout,
-        target_modules=args.encoder_lora_target_modules,
-        use_rslora=not args.encoder_no_rslora,
-        task_type=TaskType.CAUSAL_LM,
-    )
-    encoder_model = get_peft_model(base_encoder, encoder_peft_config)
+    # LoRA
+    encoder_model = None
+    if args.no_lora:
+        encoder_model = base_encoder
+    else:
+        encoder_peft_config = LoraConfig(
+            r=args.encoder_lora_rank,
+            lora_alpha=args.encoder_lora_alpha,
+            lora_dropout=args.encoder_lora_dropout,
+            target_modules=args.encoder_lora_target_modules,
+            use_rslora=not args.encoder_no_rslora,
+            task_type=TaskType.CAUSAL_LM,
+        )
+        encoder_model = get_peft_model(base_encoder, encoder_peft_config)
+
+    decoder_model = None
     if args.tie_models:
         decoder_model = encoder_model
     else:
-        decoder_peft_config = LoraConfig(
-            r=args.decoder_lora_rank,
-            lora_alpha=args.decoder_lora_alpha,
-            lora_dropout=args.decoder_lora_dropout,
-            target_modules=args.decoder_lora_target_modules,
-            use_rslora=not args.decoder_no_rslora,
-            task_type=TaskType.CAUSAL_LM,
-        )
-        decoder_model = get_peft_model(base_decoder, decoder_peft_config)
+        if args.no_lora:
+            decoder_model = base_decoder
+        else:
+            decoder_peft_config = LoraConfig(
+                r=args.decoder_lora_rank,
+                lora_alpha=args.decoder_lora_alpha,
+                lora_dropout=args.decoder_lora_dropout,
+                target_modules=args.decoder_lora_target_modules,
+                use_rslora=not args.decoder_no_rslora,
+                task_type=TaskType.CAUSAL_LM,
+            )
+            decoder_model = get_peft_model(base_decoder, decoder_peft_config)
+
     logger.info("LoRA-wrapped models initialized.")
 
-    project_kv = None
+    conditioning_projection = None
     if args.conditioning_method in ["hidden2prefix_shared", "hidden2prefix_full"]:
-        project_kv = ProjectKV(args.num_virtual_tokens, encoder_model, decoder_model, conditioning_method=args.conditioning_method)
+        conditioning_projection = ProjectKV(args.num_virtual_tokens, encoder_model, decoder_model, conditioning_method=args.conditioning_method)
+    elif args.conditioning_method in ["hidden2prompt_shared", "hidden2prompt_full"]:
+        conditioning_projection = ProjectPrompt(args.num_virtual_tokens, encoder_model, decoder_model, conditioning_method=args.conditioning_method)
+    logger.info("conditioning projection initialized (optional).")
 
-    # if not project_kv, the non-kv-projection weights of encoder model last layer are not used
+    # if only encoder prefix is needed, the non-kv-projection weights of encoder model last layer are not used
     if (args.conditioning_method == "prefix2prefix") and not args.tie_models:
+        encoder_num_layer = len(encoder_model.model.layers) if args.no_lora else len(encoder_model.model.model.layers)
         for name, param in encoder_model.named_parameters():
-            if 'layers.15' in name and param.requires_grad:
+            if f'layers.{encoder_num_layer-1}' in name and param.requires_grad:
                 if 'mlp' in name or 'o_proj' in name or 'q_proj' in name:
                     param.requires_grad = False
+        logger.info(f'Set last layer of encoder to not require grad')
 
     # convert model weights
     for name, param in encoder_model.named_parameters():
@@ -783,19 +910,25 @@ def main():
         for name, param in decoder_model.named_parameters():
             if param.requires_grad:
                 param.data = param.data.to(NBIT_TO_DTYPE[args.trainable_nbit])
-    if project_kv != None:
-        for name, param in project_kv.named_parameters():
+    if conditioning_projection is not None:
+        for name, param in conditioning_projection.named_parameters():
             if param.requires_grad:
                 param.data = param.data.to(NBIT_TO_DTYPE[args.trainable_nbit])
+    logger.info(f'converted model weights to {NBIT_TO_DTYPE[args.trainable_nbit]}')
 
-    encoder_model.print_trainable_parameters()
+    # number of parameters
+    print_trainable_parameters(encoder_model)
     if not args.tie_models:
-        decoder_model.print_trainable_parameters()
-    if project_kv != None:
-        logger.info(f'project_kv params {sum(p.numel() for p in project_kv.parameters())}')
+        print_trainable_parameters(decoder_model)
+    if conditioning_projection is not None:
+        logger.info(f'conditioning projection params {sum(p.numel() for p in conditioning_projection.parameters())}')
+
+    # model size
     logger.info(f'encoder size {round(encoder_model.get_memory_footprint() / 1024 ** 3, 2)}GB')
     if not args.tie_models:
         logger.info(f'decoder size {round(decoder_model.get_memory_footprint() / 1024 ** 3, 2)}GB')
+    if conditioning_projection is not None:
+        logger.info(f'conditioning projection size {round(conditioning_projection.get_memory_footprint() / 1024 ** 3, 2)}GB')
 
     # Build training dataset
     train_tasks_dict = load_tasks_from_data_dir(args.train_data_dir)
@@ -820,11 +953,11 @@ def main():
         encoder_demonstration_loss=args.encoder_demonstration_loss,
     )
     train_collate_fn = partial(collate_fn_train, dataset=train_dataset)
-    if args.dummy_seq_enc_len > 0:
+    if args.debug_enc_len > 0:
         train_collate_fn = partial(
             collate_fn_train_dummy,
-            dummy_seq_enc_len=args.dummy_seq_enc_len,
-            dummy_seq_dec_len=args.dummy_seq_dec_len
+            debug_enc_len=args.debug_enc_len,
+            debug_dec_len=args.debug_dec_len
         )
     train_loader = DataLoader(
         train_dataset,
@@ -853,8 +986,8 @@ def main():
                     embedding_params.append(param)
                 else:
                     other_params.append(param)
-    if project_kv != None:
-        for param in project_kv.parameters():
+    if conditioning_projection is not None:
+        for param in conditioning_projection.parameters():
             other_params.append(param)
 
     optimizer_grouped_params = [
@@ -885,19 +1018,19 @@ def main():
     (
         encoder_model,
         decoder_model,
-        project_kv,
+        conditioning_projection,
         optimizer,
         train_loader
     ) = accelerator.prepare(
         encoder_model,
         decoder_model,
-        project_kv,
+        conditioning_projection,
         optimizer,
         train_loader
     )
 
     # for name, param in encoder_model.named_parameters(): print(name, param.dtype)
-    # for name, param in project_kv.named_parameters(): print(name, param.dtype)
+    # for name, param in conditioning_projection.named_parameters(): print(name, param.dtype)
     # for name, param in decoder_model.named_parameters(): print(name, param.dtype)
     # breakpoint()
 
@@ -919,11 +1052,15 @@ def main():
     )
     progress_bar.set_description("Total Train Steps")
 
+    # model saving
+    last_save_model_path = None
+    epoch_to_eval_exact_acc = {}
+
     for epoch in range(args.num_epochs):
         encoder_model.train()
         decoder_model.train()
-        if project_kv != None:
-            project_kv.train()
+        if conditioning_projection is not None:
+            conditioning_projection.train()
 
         ce_loss_accum = 0.0
         invar_loss_accum = 0.0
@@ -941,13 +1078,13 @@ def main():
             enc_ids_lens = batch_data["encoder_input_ids_lens"]
             dec_ids_lens = batch_data["decoder_input_ids_lens"]
 
-            with accelerator.accumulate(encoder_model, decoder_model, project_kv):
+            with accelerator.accumulate(encoder_model, decoder_model, conditioning_projection):
                 with accelerator.autocast():
                     ce_loss, invar_loss, encoder_loss, total_loss, _ = encoder_decoder_loss(
                         encoder_model=encoder_model,
                         decoder_model=decoder_model,
                         conditioning_method=args.conditioning_method,
-                        project_kv=project_kv,
+                        conditioning_projection=conditioning_projection,
                         encoder_input_ids=enc_ids,
                         encoder_attention_mask=enc_mask,
                         encoder_labels=enc_labels,
@@ -1051,11 +1188,11 @@ def main():
                 decoder_gen_pad_side=args.decoder_gen_pad_side,
             )
             eval_collate_fn = partial(collate_fn_eval, dataset=eval_train_dataset) # only use tokenizer, debug_random_pad
-            if args.dummy_seq_enc_len > 0:
+            if args.debug_enc_len > 0:
                 eval_collate_fn = partial(
                     collate_fn_eval_dummy,
-                    dummy_seq_enc_len=args.dummy_seq_enc_len,
-                    dummy_seq_dec_len=args.dummy_seq_dec_len
+                    debug_enc_len=args.debug_enc_len,
+                    debug_dec_len=args.debug_dec_len
                 )
             logger.info(f"len(eval_train_dataset) = {len(eval_train_dataset)}")
             logger.info(f"len(eval_eval_dataset) = {len(eval_eval_dataset)}")
@@ -1064,7 +1201,7 @@ def main():
                 encoder_model=encoder_model,
                 decoder_model=decoder_model,
                 conditioning_method=args.conditioning_method,
-                project_kv=project_kv,
+                conditioning_projection=conditioning_projection,
                 dataset=eval_train_dataset,
                 accelerator=accelerator,
                 num_virtual_tokens=args.num_virtual_tokens,
@@ -1080,7 +1217,7 @@ def main():
                 encoder_model=encoder_model,
                 decoder_model=decoder_model,
                 conditioning_method=args.conditioning_method,
-                project_kv=project_kv,
+                conditioning_projection=conditioning_projection,
                 dataset=eval_eval_dataset,
                 accelerator=accelerator,
                 num_virtual_tokens=args.num_virtual_tokens,
@@ -1120,15 +1257,27 @@ def main():
                 logger.info(f"Saved eval eval generated text to {save_eval_eval_path}")
 
                 # Save model
-                if args.save_model:
-                    save_enc_path = os.path.join(args.output_dir, f"encoder_lora_epoch_{epoch+1}")
-                    save_dec_path = os.path.join(args.output_dir, f"decoder_lora_epoch_{epoch+1}")
-                    encoder_module = encoder_model.module if isinstance(encoder_model, DistributedDataParallel) else encoder_model
-                    decoder_module = decoder_model.module if isinstance(decoder_model, DistributedDataParallel) else decoder_model
-                    encoder_module.save_pretrained(save_enc_path, save_embedding_layers=True)
-                    decoder_module.save_pretrained(save_dec_path, save_embedding_layers=True)
-                    logger.info(f"Saved encoder to {save_enc_path}")
-                    logger.info(f"Saved decoder to {save_dec_path}")
+                do_save_model = args.save_all_models
+                if not args.save_all_models:
+                    if (not epoch_to_eval_exact_acc) or eval_exact_acc >= max(epoch_to_eval_exact_acc.values()):
+                        do_save_model = True
+
+                if do_save_model:
+                    if (not args.save_all_models) and (last_save_model_path is not None):
+                        save_enc_path, save_dec_path, save_proj_path = last_save_model_path
+                        if save_proj_path is not None:
+                            os.system(f"rm -rf {save_enc_path} {save_dec_path} {save_proj_path}")
+                        else:
+                            os.system(f"rm -rf {save_enc_path} {save_dec_path}")
+                    save_enc_path, save_dec_path, save_proj_path = save_model(
+                        encoder_model=encoder_model,
+                        decoder_model=decoder_model,
+                        conditioning_projection=conditioning_projection,
+                        output_dir=args.output_dir,
+                        epoch=epoch,
+                    )
+                    last_save_model_path = (save_enc_path, save_dec_path, save_proj_path)
+                epoch_to_eval_exact_acc[epoch] = eval_exact_acc
 
     logger.info("All done training.")
     accelerator.end_training()

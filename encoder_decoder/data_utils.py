@@ -445,7 +445,7 @@ def collate_fn_train(batch, dataset: "TrainDataset"):
     }
 
 
-def collate_fn_train_dummy(batch, dummy_seq_enc_len: int, dummy_seq_dec_len: int):
+def collate_fn_train_dummy(batch, debug_enc_len: int, debug_dec_len: int):
     """
     We'll produce len(batch) examples. For each 2 items, we pick 1 random task
     and produce 2 examples from that task, or if it's too large => skip.
@@ -461,10 +461,10 @@ def collate_fn_train_dummy(batch, dummy_seq_enc_len: int, dummy_seq_dec_len: int
     assert batch_size > 0 and batch_size % 2 == 0, f"Batch size must be even, got {batch_size}"
     del batch  # we don't use it directly
 
-    enc_ids = torch.randint(1, 101, (batch_size, dummy_seq_enc_len), dtype=torch.int64, device='cpu')
-    enc_mask = torch.full((batch_size, dummy_seq_enc_len), 1, dtype=torch.int64, device='cpu')
-    dec_ids = torch.randint(1, 101, (batch_size, dummy_seq_dec_len), dtype=torch.int64, device='cpu')
-    dec_mask = torch.full((batch_size, dummy_seq_dec_len), 1, dtype=torch.int64, device='cpu')
+    enc_ids = torch.randint(1, 101, (batch_size, debug_enc_len), dtype=torch.int64, device='cpu')
+    enc_mask = torch.full((batch_size, debug_enc_len), 1, dtype=torch.int64, device='cpu')
+    dec_ids = torch.randint(1, 101, (batch_size, debug_dec_len), dtype=torch.int64, device='cpu')
+    dec_mask = torch.full((batch_size, debug_dec_len), 1, dtype=torch.int64, device='cpu')
     enc_ids_lens = [len(x) for x in enc_ids]
     dec_ids_lens = [len(x) for x in dec_ids]
 
@@ -582,6 +582,17 @@ class EvalDataset:
         self.parsed_data = [self.parse_data(idx) for idx in range(len(self.data))]
         self.parsed_data = [data for data in self.parsed_data if data is not None]
         logger.info(f'filtered data from {len(self.data)} to {len(self.parsed_data)}')
+
+        # print stats
+        enc_min_len, enc_max_len = 1e6, 0
+        dec_min_len, dec_max_len = 1e6, 0
+        for d in self.parsed_data:
+            enc_min_len = min(enc_min_len, len(d['encoder_input_ids']))
+            enc_max_len = max(enc_max_len, len(d['encoder_input_ids']))
+            dec_min_len = min(dec_min_len, len(d['decoder_input_ids']))
+            dec_max_len = max(dec_max_len, len(d['decoder_input_ids']))
+        logger.info(f"encoder sequence length in from {enc_min_len} to {enc_max_len}]")
+        logger.info(f"decoder sequence length in from {dec_min_len} to {dec_max_len}]")
 
         # print statistics
         # encoder_input_ids_lens = [x['encoder_input_ids'].shape[0] for x in self.parsed_data]
@@ -760,19 +771,19 @@ def collate_fn_eval(batch, dataset: "EvalDataset"):
     return batch_dict
 
 
-def collate_fn_eval_dummy(batch, dummy_seq_enc_len: int, dummy_seq_dec_len: int):
+def collate_fn_eval_dummy(batch, debug_enc_len: int, debug_dec_len: int):
     """
     Filter out None, then pad each field. Return the final dict.
     Also store how many valid items we have, for logging purposes.
     """
     batch_size = len(batch)
     task_ids = [str(x) for x in range(100000, 100000 + batch_size)]
-    enc_ids = torch.randint(1, 101, (batch_size, dummy_seq_enc_len), dtype=torch.int64, device='cpu')
-    enc_mask = torch.full((batch_size, dummy_seq_enc_len), 1, dtype=torch.int64, device='cpu')
-    dec_ids = torch.randint(1, 101, (batch_size, dummy_seq_dec_len), dtype=torch.int64, device='cpu')
-    dec_mask = torch.full((batch_size, dummy_seq_dec_len), 1, dtype=torch.int64, device='cpu')
-    dec_gen_ids = torch.randint(1, 101, (batch_size, int(dummy_seq_dec_len * 0.4)), dtype=torch.int64, device='cpu')
-    dec_gen_mask = torch.full((batch_size, int(dummy_seq_dec_len * 0.4)), 1, dtype=torch.int64, device='cpu')
+    enc_ids = torch.randint(1, 101, (batch_size, debug_enc_len), dtype=torch.int64, device='cpu')
+    enc_mask = torch.full((batch_size, debug_enc_len), 1, dtype=torch.int64, device='cpu')
+    dec_ids = torch.randint(1, 101, (batch_size, debug_dec_len), dtype=torch.int64, device='cpu')
+    dec_mask = torch.full((batch_size, debug_dec_len), 1, dtype=torch.int64, device='cpu')
+    dec_gen_ids = torch.randint(1, 101, (batch_size, int(debug_dec_len * 0.4)), dtype=torch.int64, device='cpu')
+    dec_gen_mask = torch.full((batch_size, int(debug_dec_len * 0.4)), 1, dtype=torch.int64, device='cpu')
     enc_ids_lens = [len(x) for x in enc_ids]
     dec_ids_lens = [len(x) for x in dec_ids]
     dec_gen_ids_lens = [len(x) for x in dec_gen_ids]
@@ -787,7 +798,7 @@ def collate_fn_eval_dummy(batch, dummy_seq_enc_len: int, dummy_seq_dec_len: int)
         "decoder_labels": dec_ids,
         "decoder_gen_input_ids": dec_gen_ids,
         "decoder_gen_attention_mask": dec_gen_mask,
-        "decoder_out_token_length": [math.ceil(dummy_seq_dec_len * 0.6)] * batch_size,
+        "decoder_out_token_length": [math.ceil(debug_dec_len * 0.6)] * batch_size,
         "decoder_label_texts": ['helloworld'] * batch_size,
         "encoder_input_ids_lens": enc_ids_lens,
         "decoder_input_ids_lens": dec_ids_lens,
