@@ -2,7 +2,7 @@
 # torch.Size([2, 143])
 
 # debug overfit 1 token
-accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder_new2/train.py \
+accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder_new/train.py \
     --tag test \
     --train_data_dir /scratch/yl11330/re-arc/train_data_debug_overfit/tasks \
     --eval_train_dir /scratch/yl11330/re-arc/arc_original_debug_overfit/training \
@@ -26,7 +26,9 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
     --decoder_pad_side right \
     --decoder_gen_pad_side left \
     --debug_random_pad \
-    --conditioning_method prompt
+    --conditioning_method prefix2prefix \
+    --no_lora \
+    --trainable_nbit 16
 
 # debug overfit 2 token (did not work)
 accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder/train.py \

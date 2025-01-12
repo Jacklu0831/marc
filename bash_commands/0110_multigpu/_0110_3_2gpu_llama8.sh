@@ -19,7 +19,7 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
     --untrainable_nbit 4 \
     --trainable_nbit 16 \
     --log_every 1 \
-    --project_kv "full" \
+    --project_kv prompt \
     --encoder_gradient_checkpointing \
     --tie_models
 
