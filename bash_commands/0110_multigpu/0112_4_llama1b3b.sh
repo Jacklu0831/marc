@@ -46,5 +46,6 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
     --flash_attn \
     --wandb
 
+# kept these, but might run into gpu synchronization error
 # Submitted batch job 55777131
 # Submitted batch job 55777132

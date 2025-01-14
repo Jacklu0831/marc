@@ -2,7 +2,7 @@
 # torch.Size([2, 143])
 
 # debug overfit 1 token (require SGD)
-accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder_new/train.py \
+accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder/train.py \
     --tag test \
     --train_data_dir /scratch/yl11330/re-arc/train_data_debug_overfit4/tasks \
     --eval_train_dir /scratch/yl11330/re-arc/arc_original_debug_overfit4/training \
@@ -13,8 +13,8 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
     --augment_ratio 0.0 \
     --num_epochs 100 \
     --samples_per_epoch 500 \
-    --lr_embedding 3e-4 \
-    --lr_other 3e-3 \
+    --lr_embedding 1e-3 \
+    --lr_other 1e-2 \
     --debug_fixed_train_order \
     --invar_loss_lambda 0.0 \
     --grad_accum_steps 1 \
@@ -28,12 +28,12 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
     --decoder_pad_side right \
     --decoder_gen_pad_side left \
     --debug_random_pad \
-    --conditioning_method prefix2prefix \
+    --conditioning_method hidden2prompt_full \
     --no_lora \
     --trainable_nbit 16
 
 # llama3b
-accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder_new/train.py \
+accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder/train.py \
     --tag test \
     --encoder_name llama3b \
     --decoder_name llama3b \

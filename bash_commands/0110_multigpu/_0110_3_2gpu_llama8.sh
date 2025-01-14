@@ -1,6 +1,6 @@
 # python make_sbatch.py --ngpu 2 --time 48 --bash_files bash_commands/0110_multigpu/0110_3_2gpu_llama8.sh
 
-accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder_new/train.py \
+accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder/train.py \
     --tag test \
     --encoder_name llama3b \
     --decoder_name llama3b \

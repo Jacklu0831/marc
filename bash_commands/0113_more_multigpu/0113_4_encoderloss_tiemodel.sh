@@ -1,75 +1,75 @@
-# python make_sbatch.py --ngpu 2 --time 48 --bash_files bash_commands/0110_multigpu/0112_3_conditionings_prompt_ntoken.sh
-# hidden2prompt is best for scaling up, so using it and check how sensitive it is to ntoken
+# python make_sbatch.py --ngpu 2 --time 48 --bash_files bash_commands/0113_more_multigpu/0113_4_encoderloss_tiemodel.sh
 
-# conditionings promptfull ntoken1
+# encoderloss0.0 tiemodel
 accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder/train.py \
-    --tag 0112_conditionings_promptfull_ntoken1 \
+    --tag 0113_encoderloss0.0_tiemodel \
     --train_data_dir /scratch/yl11330/re-arc/train_data/tasks \
     --eval_train_dir /scratch/yl11330/re-arc/arc_original/training \
     --eval_eval_dir /scratch/yl11330/re-arc/arc_original/evaluation \
     --eval_epochs 1 \
-    --num_epochs 20 \
+    --num_epochs 25 \
     --samples_per_epoch 20000 \
     --augment_ratio 0.0 \
-    --invar_loss_lambda 0.0 \
+    --invar_loss_lambda 0.03 \
     --compact_grids \
     --max_seq_len 5120 \
+    --flash_attn \
     --conditioning_method hidden2prompt_full \
-    --num_virtual_tokens 1 \
+    --encoder_loss_lambda 0.0 \
+    --tie_models \
     --wandb
 
-# conditionings promptfull ntoken4
+# encoderloss1.0 tiemodel
 accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder/train.py \
-    --tag 0112_conditionings_promptfull_ntoken4 \
+    --tag 0113_encoderloss1.0_tiemodel \
     --train_data_dir /scratch/yl11330/re-arc/train_data/tasks \
     --eval_train_dir /scratch/yl11330/re-arc/arc_original/training \
     --eval_eval_dir /scratch/yl11330/re-arc/arc_original/evaluation \
     --eval_epochs 1 \
-    --num_epochs 20 \
+    --num_epochs 25 \
     --samples_per_epoch 20000 \
     --augment_ratio 0.0 \
-    --invar_loss_lambda 0.0 \
+    --invar_loss_lambda 0.03 \
     --compact_grids \
     --max_seq_len 5120 \
+    --flash_attn \
     --conditioning_method hidden2prompt_full \
-    --num_virtual_tokens 4 \
+    --encoder_loss_lambda 1.0 \
+    --tie_models \
     --wandb
 
-# conditionings promptfull ntoken16
+# encoderloss0.0 notiemodel
 accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder/train.py \
-    --tag 0112_conditionings_promptfull_ntoken16 \
+    --tag 0113_encoderloss0.0_notiemodel \
     --train_data_dir /scratch/yl11330/re-arc/train_data/tasks \
     --eval_train_dir /scratch/yl11330/re-arc/arc_original/training \
     --eval_eval_dir /scratch/yl11330/re-arc/arc_original/evaluation \
     --eval_epochs 1 \
-    --num_epochs 20 \
+    --num_epochs 25 \
     --samples_per_epoch 20000 \
     --augment_ratio 0.0 \
-    --invar_loss_lambda 0.0 \
+    --invar_loss_lambda 0.03 \
     --compact_grids \
     --max_seq_len 5120 \
+    --flash_attn \
     --conditioning_method hidden2prompt_full \
-    --num_virtual_tokens 16 \
+    --encoder_loss_lambda 0.0 \
     --wandb
 
-# conditionings promptfull ntoken32
+# encoderloss1.0 notiemodel
 accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder/train.py \
-    --tag 0112_conditionings_promptfull_ntoken32 \
+    --tag 0113_encoderloss1.0_notiemodel \
     --train_data_dir /scratch/yl11330/re-arc/train_data/tasks \
     --eval_train_dir /scratch/yl11330/re-arc/arc_original/training \
     --eval_eval_dir /scratch/yl11330/re-arc/arc_original/evaluation \
     --eval_epochs 1 \
-    --num_epochs 20 \
+    --num_epochs 25 \
     --samples_per_epoch 20000 \
     --augment_ratio 0.0 \
-    --invar_loss_lambda 0.0 \
+    --invar_loss_lambda 0.03 \
     --compact_grids \
     --max_seq_len 5120 \
+    --flash_attn \
     --conditioning_method hidden2prompt_full \
-    --num_virtual_tokens 32 \
+    --encoder_loss_lambda 1.0 \
     --wandb
-
-# Submitted batch job 55779958
-# Submitted batch job 55779959
-# Submitted batch job 55779960
-# Submitted batch job 55779961 # OOM

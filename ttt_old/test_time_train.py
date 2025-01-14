@@ -239,6 +239,7 @@ assert len(data) == len(arc_test_tasks)
 
 
 for task, task_train_data in zip(arc_test_tasks, data):
+    print(f"{task.name} has {len(task_train_data)} ttt data")
     task_id = task.name.replace("-0", "")
     os.makedirs(f"{args.experiment_folder}/{task_id}", exist_ok=True)
     # save data for torchtune

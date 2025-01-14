@@ -1,5 +1,7 @@
-# train_script.py
-
+import arclib # required
+import numpy as np
+from collections import defaultdict
+from typing import Union, Callable, List, Tuple, Dict
 import pprint
 import math
 import json
@@ -9,17 +11,15 @@ import argparse
 import torch
 from torch import nn
 from torch.nn.parallel import DistributedDataParallel
-from accelerate import PartialState
-from accelerate.utils import gather_object
 from torch.utils.data import DataLoader
 from transformers import (
     AutoTokenizer,
     AutoModelForCausalLM,
     get_cosine_schedule_with_warmup,
 )
-from accelerate import Accelerator
+from accelerate import Accelerator, PartialState
 from accelerate.logging import get_logger
-from accelerate.utils import ProjectConfiguration, set_seed
+from accelerate.utils import ProjectConfiguration, set_seed, gather_object
 from peft import LoraConfig, TaskType, get_peft_model, prepare_model_for_kbit_training
 
 import logging
@@ -39,7 +39,8 @@ from data_utils import (
 )
 
 import os
-os.environ["TOKENIZERS_PARALLELISM"] = "false"
+os.environ["TOKENIZERS_PARALLELISM"] = "false" # weird tokenizer issue
+os.environ["NCCL_TIMEOUT"] = "14400" # 4hr for evaluation time variance across gpus
 
 import wandb
 wandb.login(key='faf21d9ff65ee150697c7e96f070616f6b662134', relogin=True)
@@ -58,6 +59,13 @@ NBIT_TO_DTYPE = {
 }
 
 
+def three_commas(x):
+    x = str(x)
+    b, a = divmod(len(x), 3)
+    return ",".join(([x[:a]] if a else []) + \
+                    [x[a + 3*i: a + 3*i + 3] for i in range(b)])
+
+
 def set_up_main_process_logger(accelerator, logger):
     logging.basicConfig(
         format="%(asctime)s - %(levelname)s - %(name)s - %(message)s",
@@ -73,9 +81,15 @@ def set_up_main_process_logger(accelerator, logger):
         transformers.utils.logging.set_verbosity_error()
 
 
-class ProjectKV(nn.Module):
-    def __init__(self, num_virtual_tokens, encoder_model, decoder_model, conditioning_method):
-        super(ProjectKV, self).__init__()
+class Hidden2PrefixProjection(nn.Module):
+    def __init__(
+            self,
+            num_virtual_tokens: int,
+            encoder_model: nn.Module,
+            decoder_model: nn.Module,
+            conditioning_method: str,
+        ):
+        super(Hidden2PrefixProjection, self).__init__()
         # prefixes are formatted as 16 of (2=2, BS=1, nhead=8, nvirtualtoken=1, tokendim / nhead=64)
         self.num_virtual_tokens = num_virtual_tokens
         self.num_layers = decoder_model.config.num_hidden_layers
@@ -120,25 +134,42 @@ class ProjectKV(nn.Module):
             sum(p.nelement() * p.element_size() for p in self.buffers())
 
 
-class ProjectPrompt(nn.Module):
-    def __init__(self, num_virtual_tokens, encoder_model, decoder_model, conditioning_method):
-        super(ProjectPrompt, self).__init__()
+class Hidden2PromptProjection(nn.Module):
+    def __init__(
+            self,
+            num_virtual_tokens: int,
+            encoder_model: nn.Module,
+            decoder_model: nn.Module,
+            conditioning_method: str,
+        ):
+        super(Hidden2PromptProjection, self).__init__()
         self.num_virtual_tokens = num_virtual_tokens
         self.conditioning_method = conditioning_method
         self.encoder_hidden_size = encoder_model.config.hidden_size
         self.decoder_hidden_size = decoder_model.config.hidden_size
         # weights
-        if self.conditioning_method == "hidden2prompt_shared":
+        if "hidden2prompt_shared" in self.conditioning_method:
             projections = nn.Linear(encoder_model.config.hidden_size, decoder_model.config.hidden_size)
+            if "identity" in self.conditioning_method:
+                assert self.encoder_hidden_size == self.decoder_hidden_size
+                with torch.no_grad():
+                    projections.weight.data.copy_(torch.eye(encoder_model.config.hidden_size, dtype=projections.weight.dtype))
+                    projections.bias.data.zero_()
             self.weights = nn.Parameter(projections.weight)
             self.biases = nn.Parameter(projections.bias)
-        elif conditioning_method == "hidden2prompt_full":
+        elif "hidden2prompt_full" in conditioning_method:
             projections = nn.ModuleList([
                 nn.Linear(
                     encoder_model.config.hidden_size,
                     decoder_model.config.hidden_size,
                 ) for _ in range(self.num_virtual_tokens)
             ])
+            if "identity" in self.conditioning_method:
+                assert self.encoder_hidden_size == self.decoder_hidden_size
+                with torch.no_grad():
+                    for projection in projections:
+                        projection.weight.data.copy_(torch.eye(encoder_model.config.hidden_size, dtype=projection.weight.dtype))
+                        projection.bias.data.zero_()
             self.weights = nn.Parameter(torch.stack([projection.weight for projection in projections], dim=0))
             self.biases = nn.Parameter(torch.stack([projection.bias for projection in projections], dim=0))
         else:
@@ -149,7 +180,7 @@ class ProjectPrompt(nn.Module):
         # enc_hidden_states has shape (batch_size, num_virtual_tokens, hidden_dim)
         assert enc_hidden_states.shape[1] == self.num_virtual_tokens
         # outs (batch_size, num_virtual_tokens, out_dim)
-        if self.conditioning_method == "hidden2prompt_shared":
+        if self.conditioning_method in ["hidden2prompt_shared", "hidden2prompt_shared_identity"]:
             return torch.einsum("bnh,hd->bnd", enc_hidden_states, self.weights.transpose(0, 1)) + self.biases
         else:
             return torch.einsum("bnh,nhd->bnd", enc_hidden_states, self.weights.transpose(1, 2)) + self.biases
@@ -173,11 +204,12 @@ def encoder_decoder_loss(
     decoder_input_ids: torch.Tensor,
     decoder_attention_mask: torch.Tensor,
     decoder_labels: torch.Tensor,
-    enc_ids_lens: list,
-    dec_ids_lens: list,
+    enc_ids_lens: List[int],
+    dec_ids_lens: List[int],
     num_virtual_tokens: int,
     invar_loss_lambda: float,
     encoder_loss_lambda: float,
+    no_lora: bool,
     encoder_pad_side: str,
     decoder_pad_side: str,
 ):
@@ -201,14 +233,7 @@ def encoder_decoder_loss(
     # get predicted program for decoder and enc_hidden_states for invar loss
     enc_hidden_states = None
     predicted_program = None
-    if conditioning_method in ["hidden2prefix_shared", "hidden2prefix_full"]:
-        enc_hidden_states = enc_out.hidden_states[-1] # [B, seq_len, hidden_dim]
-        if encoder_pad_side == "right":
-            enc_hidden_states = torch.stack([x[l-num_virtual_tokens:l] for x, l in zip(enc_hidden_states, enc_ids_lens)])
-        else:
-            enc_hidden_states = torch.stack([x[-num_virtual_tokens:] for x in enc_hidden_states])
-        predicted_program = conditioning_projection(enc_hidden_states=enc_hidden_states)
-    elif conditioning_method == "prefix2prefix":
+    if conditioning_method == "prefix2prefix":
         predicted_program = []
         if encoder_pad_side == "right":
             for x1, x2 in enc_out.past_key_values:
@@ -224,13 +249,13 @@ def encoder_decoder_loss(
                 ))
         enc_hidden_states = torch.stack([torch.stack(x) for x in predicted_program]) # each (batch_size, num_kv_heads, num_virtual_tokens, embed_size_per_head)
         enc_hidden_states = enc_hidden_states.permute(2, 0, 1, 3, 4, 5)
-    elif conditioning_method in ["hidden2prompt_shared", "hidden2prompt_full"]:
+    elif conditioning_method in ["hidden2prefix_shared", "hidden2prefix_full"]:
         enc_hidden_states = enc_out.hidden_states[-1] # [B, seq_len, hidden_dim]
         if encoder_pad_side == "right":
             enc_hidden_states = torch.stack([x[l-num_virtual_tokens:l] for x, l in zip(enc_hidden_states, enc_ids_lens)])
         else:
             enc_hidden_states = torch.stack([x[-num_virtual_tokens:] for x in enc_hidden_states])
-        predicted_program = conditioning_projection(enc_hidden_states)
+        predicted_program = conditioning_projection(enc_hidden_states=enc_hidden_states)
     elif conditioning_method == "hidden2prompt":
         enc_hidden_states = enc_out.hidden_states[-1] # [B, seq_len, hidden_dim]
         if encoder_pad_side == "right":
@@ -238,6 +263,13 @@ def encoder_decoder_loss(
         else:
             enc_hidden_states = torch.stack([x[-num_virtual_tokens:] for x in enc_hidden_states])
         predicted_program = enc_hidden_states
+    elif conditioning_method in ["hidden2prompt_shared", "hidden2prompt_full", "hidden2prompt_shared_identity", "hidden2prompt_full_identity"]:
+        enc_hidden_states = enc_out.hidden_states[-1] # [B, seq_len, hidden_dim]
+        if encoder_pad_side == "right":
+            enc_hidden_states = torch.stack([x[l-num_virtual_tokens:l] for x, l in zip(enc_hidden_states, enc_ids_lens)])
+        else:
+            enc_hidden_states = torch.stack([x[-num_virtual_tokens:] for x in enc_hidden_states])
+        predicted_program = conditioning_projection(enc_hidden_states)
     else:
         raise ValueError(f"invalid conditioning method {conditioning_method}")
 
@@ -271,7 +303,10 @@ def encoder_decoder_loss(
             decoder_attention_mask = torch.stack(decoder_attention_mask_new)
         # pad decoder inputs embeds
         decoder_module = decoder_model.module if isinstance(decoder_model, DistributedDataParallel) else decoder_model
-        decoder_inputs_embeds = decoder_module.model.model.embed_tokens(decoder_input_ids)
+        if no_lora:
+            decoder_inputs_embeds = decoder_module.model.embed_tokens(decoder_input_ids)
+        else:
+            decoder_inputs_embeds = decoder_module.model.model.embed_tokens(decoder_input_ids)
         if decoder_pad_side == "right":
             decoder_inputs_embeds = torch.cat([predicted_program, decoder_inputs_embeds], dim=1)
         else:
@@ -324,17 +359,19 @@ def chunks(lst, n):
 ################################################
 @torch.no_grad()
 def evaluate(
-    encoder_model,
-    decoder_model,
-    conditioning_method,
-    conditioning_projection,
-    dataset,
+    ttt_model_paths: Dict[str, Tuple[str, str, str]],
+    encoder_model: nn.Module,
+    decoder_model: nn.Module,
+    conditioning_method: str,
+    conditioning_projection: Union[Hidden2PrefixProjection, Hidden2PromptProjection],
+    dataset: EvalDataset,
     accelerator: Accelerator,
     num_virtual_tokens: int,
     decoder_tokenizer,
     batch_size: int,
-    collate_fn,
+    collate_fn: Callable,
     compact_grids: bool,
+    no_lora: bool,
     encoder_pad_side: str,
     decoder_pad_side: str,
     decoder_gen_pad_side: str,
@@ -363,6 +400,7 @@ def evaluate(
 
     distributed_state = PartialState()
     task_id_and_text_list = []
+    task_id_and_inverter_grids = []
     loss_list = []
     exact_acc_list = []
     valid_grid_list = []
@@ -376,6 +414,7 @@ def evaluate(
             bs = batch["encoder_input_ids"].size(0)
 
             task_ids = batch["task_ids"]
+            inverters = batch["inverters"]
             enc_ids = batch["encoder_input_ids"].to(accelerator.device)
             enc_mask = batch["encoder_attention_mask"].to(accelerator.device)
             enc_labels = batch["encoder_labels"].to(accelerator.device)
@@ -408,6 +447,7 @@ def evaluate(
                     num_virtual_tokens=num_virtual_tokens,
                     invar_loss_lambda=0.0,
                     encoder_loss_lambda=0.0,
+                    no_lora=no_lora,
                     encoder_pad_side=encoder_pad_side,
                     decoder_pad_side=decoder_pad_side,
                 )
@@ -418,8 +458,11 @@ def evaluate(
             with accelerator.autocast():
                 # padding at front because HF ignores it
                 gen_texts = None
-                if conditioning_method in ["hidden2prompt", "hidden2prompt_shared", "hidden2prompt_full"]:
-                    decoder_inputs_embeds = decoder_module.model.model.embed_tokens(dec_gen_ids)
+                if "hidden2prompt" in conditioning_method:
+                    if no_lora:
+                        decoder_inputs_embeds = decoder_module.model.embed_tokens(dec_gen_ids)
+                    else:
+                        decoder_inputs_embeds = decoder_module.model.model.embed_tokens(dec_gen_ids)
                     # pad decoder inputs embeds
                     if decoder_gen_pad_side == "right":
                         decoder_inputs_embeds = torch.cat([predicted_program, decoder_inputs_embeds], dim=1)
@@ -479,8 +522,8 @@ def evaluate(
                     gen_texts = decoder_tokenizer.batch_decode(gen_tokens[:, dec_gen_ids.shape[1]:], skip_special_tokens=True)
 
             # Compare each gen_text with label_texts
-            for task_id, gen_text, label_text in zip(task_ids, gen_texts, label_texts):
-                # save gen and gt
+            for task_id, inverter, gen_text, label_text in zip(task_ids, inverters, gen_texts, label_texts):
+                # save gen and gt text
                 task_id_and_text_list.append((task_id, gen_text, label_text))
                 # exact acc
                 exact_acc_list.append(int(gen_text == label_text))
@@ -493,6 +536,8 @@ def evaluate(
                     correct_grid_dim_list.append(0)
                     token_acc_list.append(0)
                     continue
+                # save gen and gt grid
+                task_id_and_inverter_grids.append((task_id, inverter, gen_grid, label_grid))
                 # correct grid dim
                 is_correct_grid_dim = (len(gen_grid) == len(label_grid) and len(gen_grid[0]) == len(label_grid[0]))
                 correct_grid_dim_list.append(int(is_correct_grid_dim))
@@ -509,6 +554,7 @@ def evaluate(
 
     distributed_state.wait_for_everyone()
     task_id_and_text_list = gather_object(task_id_and_text_list)
+    task_id_and_inverter_grids = gather_object(task_id_and_inverter_grids)
     loss_list = gather_object(loss_list)
     exact_acc_list = gather_object(exact_acc_list)
     valid_grid_list = gather_object(valid_grid_list)
@@ -517,13 +563,134 @@ def evaluate(
     assert len(task_id_and_text_list) == len(loss_list) == len(exact_acc_list) == len(dataset.parsed_data)
     assert len(valid_grid_list) == len(correct_grid_dim_list) == len(token_acc_list) == len(dataset.parsed_data)
 
-    task_id_to_texts = {x[0]: (x[1], x[2]) for x in task_id_and_text_list}
+    # average metrics
     avg_ce = sum(loss_list) / len(dataset.parsed_data)
     exact_acc = sum(exact_acc_list) / len(dataset.parsed_data)
     valid_grid = sum(valid_grid_list) / len(dataset.parsed_data)
     correct_grid_dim = sum(correct_grid_dim_list) / len(dataset.parsed_data)
     token_acc = sum(token_acc_list) / len(dataset.parsed_data)
-    return avg_ce, exact_acc, valid_grid, correct_grid_dim, token_acc, task_id_to_texts
+
+    # grab all results
+    task_id_to_texts = defaultdict(list)
+    for task_id, gen_text, label_text in task_id_and_text_list:
+        task_id_to_texts[task_id].append((gen_text, label_text))
+
+    # voting
+    votes = {}
+    for task_id in dataset.task_id_to_gt:
+        # get 2 vote results
+        inverters_and_gen_grids = [(x[1], list2d_to_tuple(x[2])) for x in task_id_and_inverter_grids if x[0] == task_id]
+        votes[task_id] = [[[0]], [[0]]]
+        if len(inverters_and_gen_grids) > 0:
+            attempt1, attempt2, _ = invert_and_vote(inverters_and_gen_grids)
+            votes[task_id] = [attempt1, attempt2]
+        # assert all label grids are the same after invert augmentation
+        inverters_and_label_grids = [(x[1], list2d_to_tuple(x[3])) for x in task_id_and_inverter_grids if x[0] == task_id]
+        if len(inverters_and_label_grids) > 0:
+            _, _, inverted_labels = invert_and_vote(inverters_and_label_grids)
+            assert len(set(inverted_labels)) == 1
+
+    # competition evaluation
+    task_name_to_corrects = defaultdict(list)
+    for task_id, gt in dataset.task_id_to_gt.items():
+        correct = list2d_to_tuple(gt) in votes[task_id]
+        task_name = task_id.split('-')[0]
+        task_name_to_corrects[task_name].append(correct)
+
+    competition_sub_correct = sum(sum(corrects) for corrects in task_name_to_corrects.values())
+    competition_all_correct = sum(all(corrects) for corrects in task_name_to_corrects.values())
+    competition_sub_acc = competition_sub_correct / sum(len(corrects) for corrects in task_name_to_corrects.values())
+    competition_all_acc = competition_all_correct / len(task_name_to_corrects)
+
+    return avg_ce, exact_acc, valid_grid, correct_grid_dim, token_acc, task_id_to_texts, \
+        votes, competition_sub_acc, competition_all_acc
+
+
+def list2d_to_tuple(l: List[List[int]]) -> Tuple[Tuple[int]]:
+    return tuple(tuple(row) for row in l)
+
+
+def row_base_majority_voting(
+        grids: Tuple[Tuple[int]],
+        transpose: bool = False
+    ) -> Tuple[Tuple[int]]:
+    # transpose if needed
+    if transpose:
+        grids = [list2d_to_tuple((np.array(grid).T).tolist()) for grid in grids]
+    # get most common shape
+    shapes = [np.array(grid).shape for grid in grids]
+    most_common_n_row, most_common_n_col = max(set(shapes), key=shapes.count)
+    # for each row, find all grids with same number of column that also contain this row
+    grid_rows = []
+    for row_i in range(most_common_n_row):
+        all_rows = [
+            grid[row_i]
+            for grid in grids
+            if len(grid) > row_i and len(grid[row_i]) == most_common_n_col
+        ]
+        most_common_row = max(set(all_rows), key=all_rows.count)
+        grid_rows.append(most_common_row)
+    # transpose back if needed
+    grid = np.array(grid_rows).T if transpose else np.array(grid_rows)
+    return list2d_to_tuple(grid.tolist())
+
+
+def get_three_votes(grids: Tuple[Tuple[int]]) -> List[Tuple[Tuple[int]]]:
+    unique_grids = list(set(grids))
+    counts = [grids.count(grid) for grid in unique_grids]
+    common1 = unique_grids[np.argmax(counts)]
+    common2 = common1
+    common3 = common1
+    # assign common2 and common3
+    if len(unique_grids) > 2:
+        common2 = unique_grids[np.argsort(counts)[-2]]
+        common3 = unique_grids[np.argsort(counts)[-3]]
+    elif len(unique_grids) > 1:
+        common2 = unique_grids[np.argsort(counts)[-2]]
+    # break tie for common2 and common3
+    row_based_majority = row_base_majority_voting(grids, transpose=False)
+    col_based_majority = row_base_majority_voting(grids, transpose=True)
+    if common2 == common1:
+        common2 = (
+            row_based_majority
+            if row_based_majority != common1
+            else col_based_majority
+        )
+    if common3 in [common1, common2]:
+        common3 = (
+            row_based_majority
+            if row_based_majority not in (common1, common2)
+            else col_based_majority
+        )
+    return [common1, common2, common3]
+
+
+def invert_and_vote(inverters_and_grids: List[Tuple[str, Tuple[Tuple[int]]]]):
+    # collect inverted grids by augmentation
+    category_to_grids = defaultdict(list)
+    for inverter, grid in inverters_and_grids:
+        inverter_fn = lambda x: x
+        if inverter != "":
+            inverter_fn = eval("arclib.augmenters." + inverter)
+        grid = list2d_to_tuple(inverter_fn(np.array(grid)).tolist())
+        category_to_grids[inverter].append(grid)
+    # add all grids as a category
+    grids_all = []
+    for key in category_to_grids:
+        grids_all += category_to_grids[key]
+    category_to_grids["all"] = grids_all
+    # first voting round
+    candidates = []
+    for grids in category_to_grids.values():
+        candidates += get_three_votes(grids)
+    # second voting round
+    c1, c2, c3 = get_three_votes(candidates)
+    # break tie between c2 and c3
+    if candidates.count(c2) == candidates.count(c3):
+        if "identity" in category_to_grids:
+            if category_to_grids["identity"].count(c2) < category_to_grids["identity"].count(c3):
+                c2 = c3
+    return c1, c2, grids_all
 
 
 def text_to_2d_grid(text: str, compact_grids: bool):
@@ -572,16 +739,19 @@ def compute_grad_norm2(parameters):
     return total_norm ** 0.5
 
 
-def save_model(encoder_model, decoder_model, conditioning_projection, output_dir, epoch):
-    # encoder decoder
+def save_model(encoder_model, decoder_model, conditioning_projection, output_dir, epoch, tie_models):
+    # encoder
     save_enc_path = os.path.join(output_dir, f"encoder_lora_epoch_{epoch+1}")
-    save_dec_path = os.path.join(output_dir, f"decoder_lora_epoch_{epoch+1}")
     encoder_module = encoder_model.module if isinstance(encoder_model, DistributedDataParallel) else encoder_model
-    decoder_module = decoder_model.module if isinstance(decoder_model, DistributedDataParallel) else decoder_model
     encoder_module.save_pretrained(save_enc_path, save_embedding_layers=True)
-    decoder_module.save_pretrained(save_dec_path, save_embedding_layers=True)
     logger.info(f"Saved encoder to {save_enc_path}")
-    logger.info(f"Saved decoder to {save_dec_path}")
+    # decoder
+    save_dec_path = None
+    if not tie_models:
+        save_dec_path = os.path.join(output_dir, f"decoder_lora_epoch_{epoch+1}")
+        decoder_module = decoder_model.module if isinstance(decoder_model, DistributedDataParallel) else decoder_model
+        decoder_module.save_pretrained(save_dec_path, save_embedding_layers=True)
+        logger.info(f"Saved decoder to {save_dec_path}")
     # projection
     save_proj_path = None
     if conditioning_projection is not None:
@@ -623,7 +793,7 @@ def main():
     parser.add_argument("--log_every", type=int, default=10)
     parser.add_argument("--tracker_project_name", type=str, default="arc")
     parser.add_argument("--no_log_spikes", action="store_true")
-    parser.add_argument("--spike_multiplier", type=float, default=3.0)
+    parser.add_argument("--spike_multiplier", type=float, default=10.0)
     parser.add_argument("--save_all_models", action="store_true") # otherwise save only best
 
     # Debug
@@ -654,7 +824,9 @@ def main():
                             "hidden2prefix_full",
                             "hidden2prompt",
                             "hidden2prompt_shared",
+                            "hidden2prompt_shared_identity",
                             "hidden2prompt_full",
+                            "hidden2prompt_full_identity"
                         ],
                         default="prefix2prefix")
 
@@ -671,24 +843,38 @@ def main():
     parser.add_argument("--max_seq_len", type=int, default=8192)
     parser.add_argument("--invar_loss_lambda", type=float, default=0.1)
     parser.add_argument("--encoder_loss_lambda", type=float, default=0.0)
-    parser.add_argument("--encoder_demonstration_loss", action="store_true")
+    parser.add_argument("--no_encoder_demonstration_loss", action="store_true")
     parser.add_argument("--max_grad_norm", default=1.0, type=float, help="Max gradient norm.")
     parser.add_argument("--optimizer", type=str, choices=["adamw8bit", "adamw", "sgd"], default="adamw")
 
-    # Data
-    parser.add_argument("--train_data_dir", type=str, default="/scratch/yl11330/re-arc/train_data/tasks")
-    parser.add_argument("--eval_train_dir", type=str, default="/scratch/yl11330/re-arc/arc_original/training")
-    parser.add_argument("--eval_eval_dir", type=str, default="/scratch/yl11330/re-arc/arc_original/evaluation")
-    parser.add_argument("--eval_train_ratio", type=float, default=1.0)
-    parser.add_argument("--eval_eval_ratio", type=float, default=1.0)
-    parser.add_argument("--min_prefix", type=int, default=2)
-    parser.add_argument("--max_prefix", type=int, default=7)
+    # both data
     parser.add_argument("--num_workers", type=int, default=8)
-    parser.add_argument("--augment_ratio", type=float, default=0.3)
     parser.add_argument("--compact_grids", action="store_true")
     parser.add_argument("--encoder_pad_side", type=str, choices=["left", "right"], default="right")
     parser.add_argument("--decoder_pad_side", type=str, choices=["left", "right"], default="right")
     parser.add_argument("--decoder_gen_pad_side", type=str, choices=["left", "right"], default="left")
+
+    # train data
+    parser.add_argument("--train_data_dir", type=str, default="/scratch/yl11330/re-arc/train_data/tasks")
+    parser.add_argument("--min_prefix", type=int, default=2)
+    parser.add_argument("--max_prefix", type=int, default=7)
+    parser.add_argument("--augment_ratio", type=float, default=0.3)
+
+    # eval train data
+    parser.add_argument("--eval_train_dir", type=str, default="/scratch/yl11330/re-arc/arc_original/training")
+    parser.add_argument("--eval_train_select_tasks_path", type=str, default=None)
+    parser.add_argument("--eval_train_leave_ns", type=int, nargs="+", default=[0])
+    parser.add_argument("--eval_train_leave_ns_inc", action="store_true")
+    parser.add_argument("--eval_train_permute_n", type=int, default=0)
+    parser.add_argument("--eval_train_augment_n", type=int, default=0)
+
+    # eval eval data (mirror eval train data)
+    parser.add_argument("--eval_eval_dir", type=str, default="/scratch/yl11330/re-arc/arc_original/evaluation")
+    parser.add_argument("--eval_eval_select_tasks_path", type=str, default=None)
+    parser.add_argument("--eval_eval_leave_ns", type=int, nargs="+", default=[0])
+    parser.add_argument("--eval_eval_leave_ns_inc", action="store_true")
+    parser.add_argument("--eval_eval_permute_n", type=int, default=0)
+    parser.add_argument("--eval_eval_augment_n", type=int, default=0)
 
     # Lora encoder
     parser.add_argument("--encoder_lora_rank", type=int, default=256)
@@ -706,7 +892,6 @@ def main():
     parser.add_argument('--decoder_lora_target_modules', type=str, nargs="+", default=[
         'q_proj','k_proj','v_proj','o_proj','gate_proj','up_proj','down_proj','embed_tokens'
     ])
-    parser.add_argument("--decoder_lm_head", action='store_true')
     parser.add_argument("--decoder_no_rslora", action='store_true')
 
     # Virtual tokens approach
@@ -727,22 +912,19 @@ def main():
         args.num_workers = 0
 
     # check args
-    if args.debug_enc_len > -1 and args.debug_dec_len == -1:
-        args.debug_dec_len = args.debug_enc_len // 2
-    if args.conditioning_method == "prefix2prefix":
+    if "prefix2" in args.conditioning_method:
         assert not args.encoder_gradient_checkpointing
-    if args.conditioning_method in ["prefix2prefix", "hidden2prefix_shared", "hidden2prefix_full"]:
+    if "2prefix" in args.conditioning_method:
         assert not args.decoder_gradient_checkpointing
         assert args.decoder_pad_side == "right" # right for no middle padding
-    if args.conditioning_method in ["prefix2prefix", "hidden2prompt"]:
+    if args.conditioning_method in ["prefix2prefix", "hidden2prompt"] or "identity" in args.conditioning_method:
         assert args.encoder_name == args.decoder_name
     if args.tie_models:
         assert args.encoder_name == args.decoder_name
     if args.no_lora:
         args.untrainable_nbit = args.trainable_nbit # untrainable become trainable
-
-    if args.decoder_lm_head and 'lm_head' not in args.decoder_lora_target_modules:
-        args.decoder_lora_target_modules.append('lm_head')
+    if args.debug_enc_len > -1 and args.debug_dec_len == -1:
+        args.debug_dec_len = args.debug_enc_len // 2
 
     args.output_dir = os.path.join(args.output_dir, args.tag)
 
@@ -884,14 +1066,24 @@ def main():
             )
             decoder_model = get_peft_model(base_decoder, decoder_peft_config)
 
-    logger.info("LoRA-wrapped models initialized.")
+    logger.info("LoRA-wrapped models initialized (optional)")
 
     conditioning_projection = None
-    if args.conditioning_method in ["hidden2prefix_shared", "hidden2prefix_full"]:
-        conditioning_projection = ProjectKV(args.num_virtual_tokens, encoder_model, decoder_model, conditioning_method=args.conditioning_method)
-    elif args.conditioning_method in ["hidden2prompt_shared", "hidden2prompt_full"]:
-        conditioning_projection = ProjectPrompt(args.num_virtual_tokens, encoder_model, decoder_model, conditioning_method=args.conditioning_method)
-    logger.info("conditioning projection initialized (optional).")
+    if "hidden2prefix" in args.conditioning_method:
+        conditioning_projection = Hidden2PrefixProjection(
+            num_virtual_tokens=args.num_virtual_tokens,
+            encoder_model=encoder_model,
+            decoder_model=decoder_model,
+            conditioning_method=args.conditioning_method,
+        )
+    elif ("hidden2prompt" in args.conditioning_method) and (args.conditioning_method != "hidden2prompt"):
+        conditioning_projection = Hidden2PromptProjection(
+            num_virtual_tokens=args.num_virtual_tokens,
+            encoder_model=encoder_model,
+            decoder_model=decoder_model,
+            conditioning_method=args.conditioning_method,
+        )
+    logger.info("conditioning projection initialized (optional)")
 
     # if only encoder prefix is needed, the non-kv-projection weights of encoder model last layer are not used
     if (args.conditioning_method == "prefix2prefix") and not args.tie_models:
@@ -914,14 +1106,15 @@ def main():
         for name, param in conditioning_projection.named_parameters():
             if param.requires_grad:
                 param.data = param.data.to(NBIT_TO_DTYPE[args.trainable_nbit])
-    logger.info(f'converted model weights to {NBIT_TO_DTYPE[args.trainable_nbit]}')
+    logger.info(f'converted trainable model weights to {NBIT_TO_DTYPE[args.trainable_nbit]}')
 
     # number of parameters
     print_trainable_parameters(encoder_model)
     if not args.tie_models:
         print_trainable_parameters(decoder_model)
     if conditioning_projection is not None:
-        logger.info(f'conditioning projection params {sum(p.numel() for p in conditioning_projection.parameters())}')
+        proj_n_params = sum(p.numel() for p in conditioning_projection.parameters())
+        logger.info(f'conditioning projection params {three_commas(proj_n_params)}')
 
     # model size
     logger.info(f'encoder size {round(encoder_model.get_memory_footprint() / 1024 ** 3, 2)}GB')
@@ -950,7 +1143,7 @@ def main():
         debug_batch_size_1=args.debug_batch_size_1,
         encoder_pad_side=args.encoder_pad_side,
         decoder_pad_side=args.decoder_pad_side,
-        encoder_demonstration_loss=args.encoder_demonstration_loss,
+        no_encoder_demonstration_loss=args.no_encoder_demonstration_loss,
     )
     train_collate_fn = partial(collate_fn_train, dataset=train_dataset)
     if args.debug_enc_len > 0:
@@ -1020,13 +1213,13 @@ def main():
         decoder_model,
         conditioning_projection,
         optimizer,
-        train_loader
+        train_loader,
     ) = accelerator.prepare(
         encoder_model,
         decoder_model,
         conditioning_projection,
         optimizer,
-        train_loader
+        train_loader,
     )
 
     # for name, param in encoder_model.named_parameters(): print(name, param.dtype)
@@ -1040,7 +1233,7 @@ def main():
     logger.info(f'grad_accum_steps={args.grad_accum_steps}')
     logger.info(f'accelerator.num_processes={accelerator.num_processes}')
     logger.info(f'steps_per_epoch={steps_per_epoch}')
-    logger.info(f'{sum(p.numel() for p in all_params)} trainable params')
+    logger.info(f'{three_commas(sum(p.numel() for p in all_params))} trainable params')
     logger.info(f'======= TRAINING INFO END ======\n')
 
     global_step = 0
@@ -1096,6 +1289,7 @@ def main():
                         num_virtual_tokens=args.num_virtual_tokens,
                         encoder_loss_lambda=args.encoder_loss_lambda,
                         invar_loss_lambda=args.invar_loss_lambda,
+                        no_lora=args.no_lora,
                         encoder_pad_side=args.encoder_pad_side,
                         decoder_pad_side=args.decoder_pad_side,
                     )
@@ -1159,13 +1353,18 @@ def main():
             # Build evaluation datasets
             eval_train_dataset = EvalDataset(
                 args.eval_train_dir,
+                select_tasks_path=args.eval_train_select_tasks_path,
+                leave_ns=args.eval_train_leave_ns,
+                leave_ns_inc=args.eval_train_leave_ns_inc,
+                permute_n=args.eval_train_permute_n,
+                augment_n=args.eval_train_augment_n,
+                seed=args.seed,
                 encoder_tokenizer=encoder_tokenizer,
                 decoder_tokenizer=decoder_tokenizer,
                 max_seq_len=args.max_seq_len,
-                keep_ratio=args.eval_train_ratio,
                 compact_grids=args.compact_grids,
                 num_virtual_tokens=args.num_virtual_tokens,
-                encoder_demonstration_loss=args.encoder_demonstration_loss,
+                no_encoder_demonstration_loss=args.no_encoder_demonstration_loss,
                 debug_random_pad=args.debug_random_pad,
                 debug_pad_len=args.debug_pad_len,
                 encoder_pad_side=args.encoder_pad_side,
@@ -1173,31 +1372,36 @@ def main():
                 decoder_gen_pad_side=args.decoder_gen_pad_side,
             )
             eval_eval_dataset = EvalDataset(
-                args.eval_eval_dir,
+                eval_dir=args.eval_eval_dir,
+                select_tasks_path=args.eval_eval_select_tasks_path,
+                leave_ns=args.eval_eval_leave_ns,
+                leave_ns_inc=args.eval_eval_leave_ns_inc,
+                permute_n=args.eval_eval_permute_n,
+                augment_n=args.eval_eval_augment_n,
+                seed=args.seed,
                 encoder_tokenizer=encoder_tokenizer,
                 decoder_tokenizer=decoder_tokenizer,
                 max_seq_len=args.max_seq_len,
-                keep_ratio=args.eval_eval_ratio,
                 compact_grids=args.compact_grids,
                 num_virtual_tokens=args.num_virtual_tokens,
-                encoder_demonstration_loss=args.encoder_demonstration_loss,
+                no_encoder_demonstration_loss=args.no_encoder_demonstration_loss,
                 debug_random_pad=args.debug_random_pad,
                 debug_pad_len=args.debug_pad_len,
                 encoder_pad_side=args.encoder_pad_side,
                 decoder_pad_side=args.decoder_pad_side,
                 decoder_gen_pad_side=args.decoder_gen_pad_side,
             )
-            eval_collate_fn = partial(collate_fn_eval, dataset=eval_train_dataset) # only use tokenizer, debug_random_pad
+            eval_collate_fn = partial(collate_fn_eval, dataset=eval_train_dataset) # only use tokenizer, padding info
             if args.debug_enc_len > 0:
                 eval_collate_fn = partial(
                     collate_fn_eval_dummy,
                     debug_enc_len=args.debug_enc_len,
                     debug_dec_len=args.debug_dec_len
                 )
-            logger.info(f"len(eval_train_dataset) = {len(eval_train_dataset)}")
-            logger.info(f"len(eval_eval_dataset) = {len(eval_eval_dataset)}")
 
-            train_ce, train_exact_acc, train_valid_grid, train_correct_grid_dim, train_token_acc, train_texts = evaluate(
+            train_ce, train_exact_acc, train_valid_grid, train_correct_grid_dim, train_token_acc, train_texts, \
+                train_votes, train_competition_sub_acc, train_competition_all_acc = evaluate(
+                ttt_model_paths=None,
                 encoder_model=encoder_model,
                 decoder_model=decoder_model,
                 conditioning_method=args.conditioning_method,
@@ -1209,11 +1413,14 @@ def main():
                 batch_size=args.eval_batch_size,
                 collate_fn=eval_collate_fn,
                 compact_grids=args.compact_grids,
+                no_lora=args.no_lora,
                 encoder_pad_side=args.encoder_pad_side,
                 decoder_pad_side=args.decoder_pad_side,
                 decoder_gen_pad_side=args.decoder_gen_pad_side,
             )
-            eval_ce, eval_exact_acc, eval_valid_grid, eval_correct_grid_dim, eval_token_acc, eval_texts = evaluate(
+            eval_ce, eval_exact_acc, eval_valid_grid, eval_correct_grid_dim, eval_token_acc, eval_texts, \
+                eval_votes, eval_competition_sub_acc, eval_competition_all_acc = evaluate(
+                ttt_model_paths=None,
                 encoder_model=encoder_model,
                 decoder_model=decoder_model,
                 conditioning_method=args.conditioning_method,
@@ -1225,6 +1432,7 @@ def main():
                 batch_size=args.eval_batch_size,
                 collate_fn=eval_collate_fn,
                 compact_grids=args.compact_grids,
+                no_lora=args.no_lora,
                 encoder_pad_side=args.encoder_pad_side,
                 decoder_pad_side=args.decoder_pad_side,
                 decoder_gen_pad_side=args.decoder_gen_pad_side,
@@ -1237,24 +1445,38 @@ def main():
                     "eval/train_valid_grid": train_valid_grid,
                     "eval/train_correct_grid_dim": train_correct_grid_dim,
                     "eval/train_token_acc": train_token_acc,
+                    "eval/train_competition_all_acc": train_competition_all_acc,
+                    "eval/train_competition_sub_acc": train_competition_sub_acc,
                     "eval/eval_ce_loss": eval_ce,
                     "eval/eval_exact_acc": eval_exact_acc,
                     "eval/eval_valid_grid": eval_valid_grid,
                     "eval/eval_correct_grid_dim": eval_correct_grid_dim,
                     "eval/eval_token_acc": eval_token_acc,
+                    "eval/eval_competition_all_acc": eval_competition_all_acc,
+                    "eval/eval_competition_sub_acc": eval_competition_sub_acc,
                 }
                 logger.info(f'Evaluation results:\n{pprint.pformat(eval_metric_dict, indent=4)}')
                 accelerator.log(eval_metric_dict, step=global_step)
 
                 # Save outputs
-                save_eval_train_path = os.path.join(args.output_dir, f"eval_train_{epoch+1}.json")
-                save_eval_eval_path = os.path.join(args.output_dir, f"eval_eval_{epoch+1}.json")
-                with open(save_eval_train_path, 'w') as f:
+                save_eval_train_pred_gt_path = os.path.join(args.output_dir, f"eval_train_{epoch+1}_pred_gt.json")
+                save_eval_eval_pred_gt_path = os.path.join(args.output_dir, f"eval_eval_{epoch+1}_pred_gt.json")
+                with open(save_eval_train_pred_gt_path, 'w') as f:
                     json.dump(train_texts, f)
-                with open(save_eval_eval_path, 'w') as f:
+                with open(save_eval_eval_pred_gt_path, 'w') as f:
                     json.dump(eval_texts, f)
-                logger.info(f"Saved eval train generated text to {save_eval_train_path}")
-                logger.info(f"Saved eval eval generated text to {save_eval_eval_path}")
+                logger.info(f"Saved eval train pred gt to {save_eval_train_pred_gt_path}")
+                logger.info(f"Saved eval eval pred gt to {save_eval_eval_pred_gt_path}")
+
+                # save votes
+                save_eval_train_vote_path = os.path.join(args.output_dir, f"eval_train_{epoch+1}_vote.json")
+                save_eval_eval_vote_path = os.path.join(args.output_dir, f"eval_eval_{epoch+1}_vote.json")
+                with open(save_eval_train_vote_path, 'w') as f:
+                    json.dump(train_votes, f)
+                with open(save_eval_eval_vote_path, 'w') as f:
+                    json.dump(eval_votes, f)
+                logger.info(f"Saved eval train vote to {save_eval_train_vote_path}")
+                logger.info(f"Saved eval eval vote to {save_eval_eval_vote_path}")
 
                 # Save model
                 do_save_model = args.save_all_models
@@ -1265,16 +1487,19 @@ def main():
                 if do_save_model:
                     if (not args.save_all_models) and (last_save_model_path is not None):
                         save_enc_path, save_dec_path, save_proj_path = last_save_model_path
+                        rm_cmd = f"rm -rf {save_enc_path}"
+                        if save_dec_path is not None:
+                            rm_cmd += f" {save_dec_path}"
                         if save_proj_path is not None:
-                            os.system(f"rm -rf {save_enc_path} {save_dec_path} {save_proj_path}")
-                        else:
-                            os.system(f"rm -rf {save_enc_path} {save_dec_path}")
+                            rm_cmd += f" {save_proj_path}"
+                        os.system(rm_cmd)
                     save_enc_path, save_dec_path, save_proj_path = save_model(
                         encoder_model=encoder_model,
                         decoder_model=decoder_model,
                         conditioning_projection=conditioning_projection,
                         output_dir=args.output_dir,
                         epoch=epoch,
+                        tie_models=args.tie_models,
                     )
                     last_save_model_path = (save_enc_path, save_dec_path, save_proj_path)
                 epoch_to_eval_exact_acc[epoch] = eval_exact_acc

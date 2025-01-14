@@ -1,8 +1,8 @@
 # python make_sbatch.py --ngpu 2 --time 48 --bash_files bash_commands/0110_multigpu/0111_0_conditionings.sh
 
-# conditionings none
+# conditionings prefix2prefix
 accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder/train.py \
-    --tag 0111_conditionings_none \
+    --tag 0111_conditionings_prefix2prefix \
     --train_data_dir /scratch/yl11330/re-arc/train_data/tasks \
     --eval_train_dir /scratch/yl11330/re-arc/arc_original/training \
     --eval_eval_dir /scratch/yl11330/re-arc/arc_original/evaluation \
@@ -16,9 +16,9 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
     --conditioning_method prefix2prefix \
     --wandb
 
-# conditionings prompt
+# conditionings hidden2prompt
 accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder/train.py \
-    --tag 0111_conditionings_prompt \
+    --tag 0111_conditionings_hidden2prompt \
     --train_data_dir /scratch/yl11330/re-arc/train_data/tasks \
     --eval_train_dir /scratch/yl11330/re-arc/arc_original/training \
     --eval_eval_dir /scratch/yl11330/re-arc/arc_original/evaluation \
@@ -32,9 +32,9 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
     --conditioning_method hidden2prompt \
     --wandb
 
-# conditionings full
+# conditionings hidden2prefix_full
 accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder/train.py \
-    --tag 0111_conditionings_full \
+    --tag 0111_conditionings_hidden2prefix_full \
     --train_data_dir /scratch/yl11330/re-arc/train_data/tasks \
     --eval_train_dir /scratch/yl11330/re-arc/arc_original/training \
     --eval_eval_dir /scratch/yl11330/re-arc/arc_original/evaluation \
@@ -48,9 +48,9 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
     --conditioning_method hidden2prefix_full \
     --wandb
 
-# conditionings shared
+# conditionings hidden2prefix_shared
 accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder/train.py \
-    --tag 0111_conditionings_shared \
+    --tag 0111_conditionings_hidden2prefix_shared \
     --train_data_dir /scratch/yl11330/re-arc/train_data/tasks \
     --eval_train_dir /scratch/yl11330/re-arc/arc_original/training \
     --eval_eval_dir /scratch/yl11330/re-arc/arc_original/evaluation \
@@ -72,5 +72,5 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
 
 # Submitted batch job 55768952
 # Submitted batch job 55768953
-# Submitted batch job 55768954
+# Submitted batch job 55768954 # OOM??
 # Submitted batch job 55768955

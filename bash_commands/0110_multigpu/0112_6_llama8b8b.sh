@@ -1,9 +1,13 @@
-# python make_sbatch.py --ngpu 2 --time 48 --bash_files bash_commands/0110_multigpu/0112_3_conditionings_prompt_ntoken.sh
-# hidden2prompt is best for scaling up, so using it and check how sensitive it is to ntoken
+# python make_sbatch.py --ngpu 4 --time 96 --bash_files bash_commands/0110_multigpu/0112_6_llama8b8b.sh
+# using flashattn because fast
+# when training 8bto1b or 8bto3b, the projection matrix is necessary (only <0.5GB for the default ntoken8)
+# 8bto1b doesnt need decoder ckpting, 58GB and 280hr on single gpu
+# 8bto3b needs both ckpting,          51GB and 330hr on single gpu
+# 8bto8b needs both ckpting,          57GB and 394hr on single gpu
 
-# conditionings promptfull ntoken1
+# 8bto1b
 accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder/train.py \
-    --tag 0112_conditionings_promptfull_ntoken1 \
+    --tag 0112_8bto1b \
     --train_data_dir /scratch/yl11330/re-arc/train_data/tasks \
     --eval_train_dir /scratch/yl11330/re-arc/arc_original/training \
     --eval_eval_dir /scratch/yl11330/re-arc/arc_original/evaluation \
@@ -15,12 +19,17 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
     --compact_grids \
     --max_seq_len 5120 \
     --conditioning_method hidden2prompt_full \
-    --num_virtual_tokens 1 \
+    --encoder_gradient_checkpointing \
+    --encoder_name llama8b \
+    --decoder_name llama1b \
+    --untrainable_nbit 3.6 \
+    --trainable_nbit 16 \
+    --flash_attn \
     --wandb
 
-# conditionings promptfull ntoken4
+# 8bto3b
 accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder/train.py \
-    --tag 0112_conditionings_promptfull_ntoken4 \
+    --tag 0112_8bto3b \
     --train_data_dir /scratch/yl11330/re-arc/train_data/tasks \
     --eval_train_dir /scratch/yl11330/re-arc/arc_original/training \
     --eval_eval_dir /scratch/yl11330/re-arc/arc_original/evaluation \
@@ -32,12 +41,18 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
     --compact_grids \
     --max_seq_len 5120 \
     --conditioning_method hidden2prompt_full \
-    --num_virtual_tokens 4 \
+    --encoder_gradient_checkpointing \
+    --decoder_gradient_checkpointing \
+    --encoder_name llama8b \
+    --decoder_name llama3b \
+    --untrainable_nbit 3.6 \
+    --trainable_nbit 16 \
+    --flash_attn \
     --wandb
 
-# conditionings promptfull ntoken16
+# 8bto8b
 accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder/train.py \
-    --tag 0112_conditionings_promptfull_ntoken16 \
+    --tag 0112_8bto8b \
     --train_data_dir /scratch/yl11330/re-arc/train_data/tasks \
     --eval_train_dir /scratch/yl11330/re-arc/arc_original/training \
     --eval_eval_dir /scratch/yl11330/re-arc/arc_original/evaluation \
@@ -49,27 +64,20 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
     --compact_grids \
     --max_seq_len 5120 \
     --conditioning_method hidden2prompt_full \
-    --num_virtual_tokens 16 \
+    --encoder_gradient_checkpointing \
+    --decoder_gradient_checkpointing \
+    --encoder_name llama8b \
+    --decoder_name llama8b \
+    --untrainable_nbit 3.6 \
+    --trainable_nbit 16 \
+    --flash_attn \
     --wandb
 
-# conditionings promptfull ntoken32
-accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder/train.py \
-    --tag 0112_conditionings_promptfull_ntoken32 \
-    --train_data_dir /scratch/yl11330/re-arc/train_data/tasks \
-    --eval_train_dir /scratch/yl11330/re-arc/arc_original/training \
-    --eval_eval_dir /scratch/yl11330/re-arc/arc_original/evaluation \
-    --eval_epochs 1 \
-    --num_epochs 20 \
-    --samples_per_epoch 20000 \
-    --augment_ratio 0.0 \
-    --invar_loss_lambda 0.0 \
-    --compact_grids \
-    --max_seq_len 5120 \
-    --conditioning_method hidden2prompt_full \
-    --num_virtual_tokens 32 \
-    --wandb
+# had to stop these due to imminent gpu synchronization error
+# Submitted batch job 55777303
+# Submitted batch job 55777304
+# Submitted batch job 55777305
 
-# Submitted batch job 55779958
-# Submitted batch job 55779959
-# Submitted batch job 55779960
-# Submitted batch job 55779961 # OOM
+# Submitted batch job 55792731
+# Submitted batch job 55792732
+# Submitted batch job 55792726

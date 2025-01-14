@@ -1,5 +1,5 @@
-# data_utils.py
-
+import itertools
+import csv
 import math
 import copy
 import os
@@ -10,11 +10,12 @@ from torch.utils.data import Dataset
 from torch.nn.utils.rnn import pad_sequence
 from typing import Dict, Any, List
 from pathlib import Path
-from typing import List
-
+from typing import List, Optional
 import numpy as np
 
 from arclib.augmenters import (
+    inverse,
+    PermuteExamples,
     Augmenter,
     Chain,
     Concat,
@@ -28,8 +29,11 @@ from arclib.augmenters import (
     Repeat,
     Rotate,
     Transpose,
+    PermuteColors,
 )
 from accelerate.logging import get_logger
+
+from arclib.arc import Task, Example
 
 logger = get_logger(__name__, log_level="INFO")
 
@@ -191,6 +195,277 @@ def grid_to_text(
     return "\n".join(lines)
 
 
+def plot_histogram_with_frequencies(data: List[int], save_path: str, bins: int = 20):
+    """
+    Plots a histogram with frequencies displayed on top of each bar.
+
+    Args:
+        data (array-like): The input data for the histogram.
+        bins (int or sequence, optional): Number of bins or bin edges. Defaults to auto binning.
+        title (str, optional): Title of the plot. Defaults to "Histogram with Frequency Labels".
+        xlabel (str, optional): Label for the x-axis. Defaults to "Value".
+        ylabel (str, optional): Label for the y-axis. Defaults to "Frequency".
+    """
+    import matplotlib.pyplot as plt
+    _, ax = plt.subplots()
+    # Create histogram
+    counts, bins, bars = ax.hist(data, bins=bins, edgecolor='black', alpha=0.7)
+    # Add frequency labels to each bar
+    for bar, count in zip(bars, counts):
+        height = bar.get_height()
+        ax.text(bar.get_x() + bar.get_width() / 2, height, f'{int(count)}',
+                ha='center', va='bottom', fontsize=10)
+    # Set x-ticks if bins are evenly spaced integers
+    if np.allclose(np.diff(bins), bins[1] - bins[0]):  # Check if bins are evenly spaced
+        ax.set_xticks(bins[:-1] + np.diff(bins) / 2)
+    ax.tick_params(axis='x', labelsize=5)
+    plt.savefig(save_path, dpi=200)
+    plt.close()
+
+
+def remove_val_from_1dtokenized(tokenized: torch.Tensor, val: int):
+    mask = tokenized['input_ids'][0] != val
+    tokenized['input_ids'] = tokenized['input_ids'][0][mask][None, ...]
+    tokenized['attention_mask'] = tokenized['attention_mask'][0][mask][None, ...]
+
+
+########################################
+# Test-Time-Training Dataset
+########################################
+class TTTDataset:
+    def __init__(
+        self,
+        data_path: str,
+        max_samples_per_task: int,
+        permute_n: int,
+        encoder_tokenizer,
+        decoder_tokenizer,
+        max_seq_len: int,
+        seed: int,
+        compact_grids: bool,
+        num_virtual_tokens: int,
+        encoder_pad_side: int,
+        decoder_pad_side: int,
+        no_encoder_demonstration_loss: bool,
+    ):
+        self.permute_n = permute_n
+        self.augmenters = get_augmenters(include_basic=True, include_size=True, include_chain=True, include_repeat=True)
+        self.seed = seed
+        self.encoder_tokenizer = encoder_tokenizer
+        self.decoder_tokenizer = decoder_tokenizer
+        self.max_seq_len = max_seq_len
+        self.compact_grids = compact_grids
+        self.num_virtual_tokens = num_virtual_tokens
+        self.encoder_pad_side = encoder_pad_side
+        self.decoder_pad_side = decoder_pad_side
+        self.no_encoder_demonstration_loss = no_encoder_demonstration_loss
+
+        self.encoder_space_token_id = encoder_tokenizer(" ")['input_ids'][1]
+        self.decoder_space_token_id = decoder_tokenizer(" ")['input_ids'][1]
+        self.encoder_input_token_id = encoder_tokenizer("input")['input_ids'][1]
+        self.encoder_output_token_id = encoder_tokenizer("output")['input_ids'][1]
+
+        # load data
+        self.task_id = Path(data_path).stem
+        with open(data_path, "r") as f:
+            task_data = json.load(f)
+
+        # create task
+        train_examples = [Example(input=np.array(x["input"]), output=np.array(x["output"])) for x in task_data['train']]
+        self.task = Task(
+            name=f'{self.task_id}',
+            train_examples=train_examples,
+            test_example=None,
+        )
+
+        # get data
+        rng = np.random.RandomState(seed)
+        self.data = self.task_to_ttt_formatted_data(max_gen=max_samples_per_task)
+        rng.shuffle(self.data)
+
+    def task_to_ttt_formatted_data(self, max_gen: int) -> List[Task]:
+        # if leave 1 is enough, return it
+        leave_1_train_data = self.task_to_ttt_formatted_data_leave_n(leave_n=1, max_num_sample=max_gen)
+        if len(leave_1_train_data) >= max_gen:
+            return leave_1_train_data
+        # else generate leave 2 and append to leave 1
+        max_gen_leave_2 = max_gen - len(leave_1_train_data)
+        leave_1_train_data += self.task_to_ttt_formatted_data_leave_n(leave_n=2, max_gen=max_gen_leave_2)
+        return leave_1_train_data
+
+    def task_to_ttt_formatted_data_leave_n(self, leave_n: int, max_gen: int) -> List[Task]:
+        rng = np.random.RandomState(self.seed)
+
+        # get leave_n tasks
+        initial_tasks = []
+        n_train_examples = len(self.task.train_examples)
+        for test_idx in range(n_train_examples):
+            potential_train_idxs = set(range(n_train_examples)) - {test_idx}
+            # we already remove i, so we need to remove n-1 more
+            for leave_idxs in itertools.combinations(potential_train_idxs, leave_n - 1):
+                train_idxs = potential_train_idxs - set(leave_idxs)
+                examples = self.task.train_examples.copy()
+                initial_tasks.append(
+                    Task(name="", train_examples=[examples[i] for i in train_idxs], test_example=examples[test_idx])
+                )
+
+        # get augmented tasks
+        augmented_tasks = []
+        for augmenter in self.augmenters:
+            for task in initial_tasks:
+                task = augmenter.apply_to_task(task, to_input=True, to_output=True, rng=rng)
+                if task.max_height() <= 30 and task.max_width() <= 30:
+                    augmented_tasks.append(task)
+        augmented_tasks = list(dict.fromkeys(augmented_tasks + initial_tasks))
+
+        # get permute-color then i/o-permuted tasks
+        color_and_permute_augmented_tasks = []
+        for _ in range(self.permute_n):
+            for task in augmented_tasks:
+                new_task = task
+                if len(self.augmenters) > 0:
+                    new_task = PermuteColors().apply_to_task(task, to_input=True, to_output=True, rng=rng)
+                new_task = PermuteExamples().apply_to_task(new_task, rng=rng, to_input=True, to_output=True)
+                color_and_permute_augmented_tasks.append(new_task)
+        augmented_tasks = list(dict.fromkeys(color_and_permute_augmented_tasks + augmented_tasks))
+
+        # format
+        rng.shuffle(augmented_tasks)
+        formatted_tasks = []
+        for task in augmented_tasks:
+            if len(formatted_tasks) >= max_gen:
+                break
+            formatted_task = self.format_and_filter(task)
+            if formatted_task is not None:
+                formatted_tasks.append(formatted_task)
+        return formatted_tasks
+
+    def format_and_filter(self, task: Task) -> Optional[Dict]:
+        # big grids are filtered out during augmentation already
+        assert task.max_height() <= 30 and task.max_width() <= 30
+
+        # Build encoder text
+        prefix_texts = []
+        for p in task.train_examples:
+            prefix_texts.append(grid_to_text(p.input.tolist(), True))
+            prefix_texts.append(grid_to_text(p.output.tolist(), False))
+        encoder_text = "\n".join(prefix_texts) + "[CLS]" * self.num_virtual_tokens
+
+        dec_in_text  = grid_to_text(task.test_example.input.tolist(), True)
+        dec_out_text = grid_to_text(task.test_example.output.tolist(), False)
+
+        # tiny optimization to include output:\n in input
+        assert dec_out_text.startswith("output:\n")
+        dec_in_text = dec_in_text + "\n" + dec_out_text[:len("output:\n")]
+        dec_out_text = dec_out_text[len("output:\n"):]
+        dec_out_text += "<|eot_id|>"
+
+        enc_tokens = self.encoder_tokenizer(encoder_text, return_tensors="pt", truncation=False)
+        assert enc_tokens["input_ids"][0][-self.num_virtual_tokens:].tolist() == [self.encoder_tokenizer.cls_token_id] * self.num_virtual_tokens
+        dec_in_tokens  = self.decoder_tokenizer(dec_in_text,  return_tensors="pt", truncation=False)
+        dec_out_tokens = self.decoder_tokenizer(dec_out_text, return_tensors="pt", truncation=False)
+        assert all(t[-1].item() == self.decoder_tokenizer.eos_token_id for t in dec_out_tokens["input_ids"])
+        assert dec_out_tokens["input_ids"][0][-1].item() == self.decoder_tokenizer.eos_token_id
+
+        # remove begin of sentence of dec_out_tokens
+        dec_out_tokens['input_ids'] = dec_out_tokens['input_ids'][:, 1:]
+        dec_out_tokens['attention_mask'] = dec_out_tokens['attention_mask'][:, 1:]
+
+        # compact grids (optional)
+        if self.compact_grids:
+            remove_val_from_1dtokenized(enc_tokens, self.encoder_space_token_id)
+            remove_val_from_1dtokenized(dec_in_tokens, self.decoder_space_token_id)
+            remove_val_from_1dtokenized(dec_out_tokens, self.decoder_space_token_id)
+
+        # Build final decoder input + labels
+        decoder_input_ids = torch.cat([
+            dec_in_tokens["input_ids"].squeeze(0),
+            dec_out_tokens["input_ids"].squeeze(0),
+        ], dim=0)
+        decoder_labels = torch.cat([
+            torch.full(dec_in_tokens["input_ids"].shape[1:], -100),
+            dec_out_tokens["input_ids"].squeeze(0),
+        ], dim=0)
+        decoder_attention_mask = torch.cat([
+            dec_in_tokens["attention_mask"].squeeze(0),
+            dec_out_tokens["attention_mask"].squeeze(0),
+        ], dim=0)
+
+        dec_label_texts = dec_out_text[:-len("<|eot_id|>")]
+        if self.compact_grids:
+            dec_label_texts = dec_label_texts.replace(' ', '')
+
+        # Check length
+        if enc_tokens["input_ids"].shape[1] > self.max_seq_len or decoder_input_ids.shape[0] > self.max_seq_len // 2: # dec_len should be short
+            return None
+
+        # construct encoder label
+        prefix_count = len(task.train_examples)
+        encoder_input_ids = enc_tokens["input_ids"].squeeze(0)
+        input_token_positions = [enc_i for enc_i, enc_token_id in enumerate(encoder_input_ids) if enc_token_id == self.encoder_input_token_id]
+        output_token_positions = [enc_i for enc_i, enc_token_id in enumerate(encoder_input_ids) if enc_token_id == self.encoder_output_token_id]
+        assert len(input_token_positions) == len(output_token_positions) == prefix_count
+        assert all(p1 < p2 for p1, p2 in zip(input_token_positions, output_token_positions))
+
+        encoder_labels = torch.full_like(encoder_input_ids, -100, dtype=encoder_input_ids.dtype)
+        end_position = len(encoder_input_ids) - self.num_virtual_tokens
+        for pos, (p1, p2) in enumerate(zip(output_token_positions, input_token_positions[1:] + [end_position])):
+            if pos > 0: # skip first
+                is_last = (pos == prefix_count - 1)
+                if (not self.no_encoder_demonstration_loss) or is_last:
+                    p1 += 2 # remove output and :\n
+                    p2 -= not is_last # remove \n
+                    encoder_labels[p1:p2] = copy.deepcopy(encoder_input_ids[p1:p2])
+
+        return {
+            "encoder_input_ids": encoder_input_ids,
+            "encoder_attention_mask": enc_tokens["attention_mask"].squeeze(0),
+            "encoder_labels": encoder_labels,
+            "decoder_input_ids": decoder_input_ids,
+            "decoder_attention_mask": decoder_attention_mask,
+            "decoder_labels": decoder_labels,
+        }
+
+    def __len__(self):
+        return len(self.data)
+
+    def __getitem__(self, idx):
+        return self.data[idx]
+
+
+def collate_fn_ttt(batch, dataset: "TTTDataset"):
+    """
+    Filter out None, then pad each field. Return the final dict.
+    Also store how many valid items we have, for logging purposes.
+    """
+    enc_ids = [x["encoder_input_ids"] for x in batch]
+    enc_mask = [x["encoder_attention_mask"] for x in batch]
+    enc_labs = [x["encoder_labels"] for x in batch]
+    dec_ids = [x["decoder_input_ids"] for x in batch]
+    dec_mask = [x["decoder_attention_mask"] for x in batch]
+    dec_labs = [x["decoder_labels"] for x in batch]
+
+    enc_ids_lens = [len(x) for x in enc_ids]
+    dec_ids_lens = [len(x) for x in dec_ids]
+    enc_ids = pad_sequence_with_side(enc_ids, padding_value=dataset.encoder_tokenizer.pad_token_id, side=dataset.encoder_pad_side)
+    enc_mask = pad_sequence_with_side(enc_mask, padding_value=0, side=dataset.encoder_pad_side)
+    enc_labs = pad_sequence_with_side(enc_labs, padding_value=-100, side=dataset.encoder_pad_side)
+    dec_ids = pad_sequence_with_side(dec_ids, padding_value=dataset.decoder_tokenizer.pad_token_id, side=dataset.decoder_pad_side)
+    dec_mask = pad_sequence_with_side(dec_mask, padding_value=0, side=dataset.decoder_pad_side)
+    dec_labs = pad_sequence_with_side(dec_labs, padding_value=-100, side=dataset.decoder_pad_side)
+
+    return {
+        "encoder_input_ids": enc_ids,
+        "encoder_attention_mask": enc_mask,
+        "encoder_labels": enc_labs,
+        "decoder_input_ids": dec_ids,
+        "decoder_attention_mask": dec_mask,
+        "decoder_labels": dec_labs,
+        "encoder_input_ids_lens": enc_ids_lens,
+        "decoder_input_ids_lens": dec_ids_lens,
+    }
+
+
 ########################################
 # Training Dataset
 ########################################
@@ -221,7 +496,7 @@ class TrainDataset(Dataset):
         debug_batch_size_1: bool,
         encoder_pad_side: int,
         decoder_pad_side: int,
-        encoder_demonstration_loss: bool,
+        no_encoder_demonstration_loss: bool,
     ):
         self.tasks_dict = tasks_dict
         self.encoder_tokenizer = encoder_tokenizer
@@ -242,7 +517,7 @@ class TrainDataset(Dataset):
         self.debug_batch_size_1 = debug_batch_size_1
         self.encoder_pad_side = encoder_pad_side
         self.decoder_pad_side = decoder_pad_side
-        self.encoder_demonstration_loss = encoder_demonstration_loss
+        self.no_encoder_demonstration_loss = no_encoder_demonstration_loss
 
         self.encoder_space_token_id = encoder_tokenizer(" ")['input_ids'][1]
         self.decoder_space_token_id = decoder_tokenizer(" ")['input_ids'][1]
@@ -255,12 +530,6 @@ class TrainDataset(Dataset):
     def __getitem__(self, idx):
         # We'll do random sampling in the collate fn
         return 0
-
-
-def remove_val_from_1dtokenized(tokenized, val):
-    mask = tokenized['input_ids'][0] != val
-    tokenized['input_ids'] = tokenized['input_ids'][0][mask][None, ...]
-    tokenized['attention_mask'] = tokenized['attention_mask'][0][mask][None, ...]
 
 
 def collate_fn_train(batch, dataset: "TrainDataset"):
@@ -379,7 +648,7 @@ def collate_fn_train(batch, dataset: "TrainDataset"):
             for pos, (p1, p2) in enumerate(zip(output_token_positions, input_token_positions[1:] + [end_position])):
                 if pos > 0: # skip first
                     is_last = (pos == prefix_count - 1)
-                    if dataset.encoder_demonstration_loss or is_last:
+                    if (not dataset.no_encoder_demonstration_loss) or is_last:
                         p1 += 2 # remove output and :\n
                         p2 -= not is_last # remove \n
                         encoder_labels[p1:p2] = copy.deepcopy(encoder_input_ids[p1:p2])
@@ -480,34 +749,6 @@ def collate_fn_train_dummy(batch, debug_enc_len: int, debug_dec_len: int):
     }
 
 
-def plot_histogram_with_frequencies(data, save_path, bins=20):
-    """
-    Plots a histogram with frequencies displayed on top of each bar.
-
-    Args:
-        data (array-like): The input data for the histogram.
-        bins (int or sequence, optional): Number of bins or bin edges. Defaults to auto binning.
-        title (str, optional): Title of the plot. Defaults to "Histogram with Frequency Labels".
-        xlabel (str, optional): Label for the x-axis. Defaults to "Value".
-        ylabel (str, optional): Label for the y-axis. Defaults to "Frequency".
-    """
-    import matplotlib.pyplot as plt
-    _, ax = plt.subplots()
-    # Create histogram
-    counts, bins, bars = ax.hist(data, bins=bins, edgecolor='black', alpha=0.7)
-    # Add frequency labels to each bar
-    for bar, count in zip(bars, counts):
-        height = bar.get_height()
-        ax.text(bar.get_x() + bar.get_width() / 2, height, f'{int(count)}',
-                ha='center', va='bottom', fontsize=10)
-    # Set x-ticks if bins are evenly spaced integers
-    if np.allclose(np.diff(bins), bins[1] - bins[0]):  # Check if bins are evenly spaced
-        ax.set_xticks(bins[:-1] + np.diff(bins) / 2)
-    ax.tick_params(axis='x', labelsize=5)
-    plt.savefig(save_path, dpi=200)
-    plt.close()
-
-
 ########################################
 # Evaluation Dataset
 ########################################
@@ -524,26 +765,33 @@ class EvalDataset:
     def __init__(
         self,
         eval_dir: str,
+        select_tasks_path: Optional[str],
+        leave_ns: int,
+        leave_ns_inc: bool,
+        permute_n: int,
+        augment_n: int,
+        seed: int,
         encoder_tokenizer,
         decoder_tokenizer,
         max_seq_len: int,
-        keep_ratio: float,
         compact_grids: bool,
         num_virtual_tokens: int,
-        encoder_demonstration_loss: bool,
+        no_encoder_demonstration_loss: bool,
         debug_random_pad: bool,
         debug_pad_len: int,
         encoder_pad_side: int,
         decoder_pad_side: int,
         decoder_gen_pad_side: int,
     ):
+        self.permute_n = permute_n
+        self.augment_n = augment_n
+        self.seed = seed
         self.encoder_tokenizer = encoder_tokenizer
         self.decoder_tokenizer = decoder_tokenizer
         self.max_seq_len = max_seq_len
-        self.keep_ratio = keep_ratio
         self.compact_grids = compact_grids
         self.num_virtual_tokens = num_virtual_tokens
-        self.encoder_demonstration_loss = encoder_demonstration_loss
+        self.no_encoder_demonstration_loss = no_encoder_demonstration_loss
         self.debug_random_pad = debug_random_pad
         self.debug_pad_len = debug_pad_len
         self.encoder_pad_side = encoder_pad_side
@@ -555,33 +803,69 @@ class EvalDataset:
         self.encoder_input_token_id = encoder_tokenizer("input")['input_ids'][1]
         self.encoder_output_token_id = encoder_tokenizer("output")['input_ids'][1]
 
-        # get filepaths
+        # get file_paths
         if not os.path.isdir(eval_dir):
             raise FileNotFoundError(f"Eval directory '{eval_dir}' not found.")
-        filepaths = []
+        file_paths = []
         for filename in os.listdir(eval_dir):
             if filename.endswith(".json"):
-                filepaths.append(os.path.join(eval_dir, filename))
-        filepaths.sort()
-        filepaths = filepaths[:int(keep_ratio * len(filepaths))]
+                file_paths.append(os.path.join(eval_dir, filename))
+        file_paths.sort()
+        logger.info(f"found {len(file_paths)} files")
+
+        # filter based on select tasks file
+        if select_tasks_path is not None:
+            with open(select_tasks_path, mode='r') as file:
+                csv_reader = csv.reader(file)
+                data_as_tuples = [tuple(row) for row in csv_reader]
+                data_as_tuples = data_as_tuples[1:] # first row contains col names
+                select_task_ids = [d[0] for d in data_as_tuples]
+                assert len(select_task_ids) == len(set(select_task_ids))
+                select_task_ids = set(select_task_ids)
+            # filter
+            file_paths = [p for p in file_paths if Path(p).stem in select_task_ids]
+            assert len(file_paths) == len(select_task_ids), (len(file_paths), len(select_task_ids))
+            logger.info(f"filtered to {len(file_paths)} files from {select_tasks_path}")
 
         # get actual data
-        self.data = []
-        for filepath in filepaths:
-            task_id = Path(filepath).stem
-            with open(filepath, "r") as f:
-                data = json.load(f)
-            for test_i, test_pair in enumerate(data["test"]):
-                self.data.append({
-                    'task_id': f'{task_id}_{test_i}',
-                    'train': data['train'],
-                    'test': test_pair,
-                })
+        tasks = []
+        for file_path in file_paths:
+            # load data
+            task_id = Path(file_path).stem
+            with open(file_path, "r") as f:
+                task_data = json.load(f)
+            # create tasks
+            train_examples = [Example(input=np.array(x["input"]), output=np.array(x["output"])) for x in task_data['train']]
+            test_examples = [Example(input=np.array(x["input"]), output=np.array(x["output"])) for x in task_data['test']]
+            for test_i, test_example in enumerate(test_examples):
+                tasks.append(Task(
+                    name=f'{task_id}-{test_i}',
+                    train_examples=train_examples,
+                    test_example=test_example,
+                ))
+        tasks.sort(key=lambda d: d.name)
+        logger.info(f"found {len(tasks)} tasks")
 
-        # parse data
-        self.parsed_data = [self.parse_data(idx) for idx in range(len(self.data))]
-        self.parsed_data = [data for data in self.parsed_data if data is not None]
-        logger.info(f'filtered data from {len(self.data)} to {len(self.parsed_data)}')
+        # get task id to gt for competition evaluation
+        self.task_id_to_gt = {task.name: task.test_example.output.tolist() for task in tasks}
+        assert len(self.task_id_to_gt) == len(tasks)
+
+        # augment data for voting
+        # since this function has to do filtering, might as well parse data as well
+        self.parsed_data = []
+        for task in tasks:
+            new_tasks = self.get_task_augmentations_leave_ns_filtered(task, leave_ns=leave_ns)
+            if len(new_tasks) == 0 and leave_ns_inc:
+                new_tasks = self.get_task_augmentations_leave_ns_filtered(task, leave_ns=leave_ns + [leave_ns[-1] + 1])
+            self.parsed_data += new_tasks
+        logger.info(f'augmented and filtered data from {len(tasks)} to {len(self.parsed_data)}')
+
+        # print details of parsed data
+        # from collections import Counter
+        # task_id_to_counts = Counter(d["task_id"] for d in self.parsed_data)
+        # task_id_to_counts = [(task_id, count) for task_id, count in task_id_to_counts.items()]
+        # for task_id, count in sorted(task_id_to_counts):
+        #     logger.info(f"{task_id}: Number of Queries: {count}")
 
         # print stats
         enc_min_len, enc_max_len = 1e6, 0
@@ -591,8 +875,8 @@ class EvalDataset:
             enc_max_len = max(enc_max_len, len(d['encoder_input_ids']))
             dec_min_len = min(dec_min_len, len(d['decoder_input_ids']))
             dec_max_len = max(dec_max_len, len(d['decoder_input_ids']))
-        logger.info(f"encoder sequence length in from {enc_min_len} to {enc_max_len}]")
-        logger.info(f"decoder sequence length in from {dec_min_len} to {dec_max_len}]")
+        logger.info(f"encoder sequence length range from {enc_min_len} to {enc_max_len}]")
+        logger.info(f"decoder sequence length range from {dec_min_len} to {dec_max_len}]")
 
         # print statistics
         # encoder_input_ids_lens = [x['encoder_input_ids'].shape[0] for x in self.parsed_data]
@@ -610,20 +894,83 @@ class EvalDataset:
     def __getitem__(self, idx):
         return self.parsed_data[idx]
 
-    def parse_data(self, idx):
-        task_id = self.data[idx]['task_id']
-        train_pairs = self.data[idx]['train']
-        test_pair = self.data[idx]['test']
+    def get_task_augmentations_leave_n_filtered(
+            self,
+            task: Task,
+            leave_n: int,
+        ):
+        rng = np.random.RandomState(self.seed)
+        test_tasks = []
+
+        # add leave n tasks
+        indices = list(range(len(task.train_examples)))
+        leave_n_indices = [set(indices) - set(comb) for comb in itertools.combinations(indices, leave_n)]
+        train_examples = task.train_examples.copy()
+        for comb in leave_n_indices:
+            # add non-permute
+            new_task = Task(
+                name=task.name,
+                train_examples=[train_examples[j] for j in comb],
+                test_example=task.test_example,
+            )
+            test_tasks.append(new_task)
+            # add permuted
+            for _ in range(self.permute_n):
+                permuted_task = PermuteExamples().apply_to_task(new_task, to_input=True, to_output=True, rng=rng)
+                test_tasks.append(permuted_task)
+
+        # remove duplicates
+        # logger.info(f"{task.name} has {len(test_tasks)} after permute")
+        test_tasks = list(dict.fromkeys(test_tasks))
+        # logger.info(f"{task.name} has {len(test_tasks)} after permute set")
+
+        # get augmented tasks
+        augmented_tasks = []
+        augmenters = rng.choice([Transpose(), Flip(0), Flip(1), Rotate(90), Rotate(180)], size=self.augment_n, replace=False)
+        for augmenter in augmenters:
+            # pick a random permutation and apply the augmenter to a random leave_n task
+            new_task = rng.choice(test_tasks)
+            augmented_task = augmenter.apply_to_task(new_task, to_input=True, to_output=True)
+            if augmented_task in test_tasks:
+                continue
+            inverter = str(inverse(augmenter))
+            augmented_task.inverter = inverter
+            augmented_tasks.append(augmented_task)
+        test_tasks += augmented_tasks
+
+        # remove duplicates
+        # logger.info(f"{task.name} has {len(test_tasks)} after permute set augment")
+        test_tasks = list(dict.fromkeys(test_tasks))
+        # logger.info(f"{task.name} has {len(test_tasks)} after permute set augment set")
+        return test_tasks
+
+    def get_task_augmentations_leave_ns_filtered(
+            self,
+            task: Task,
+            leave_ns: list[int],
+        ):
+        # get augmented queries
+        augmented_tasks = []
+        for leave_n in leave_ns:
+            augmented_tasks += self.get_task_augmentations_leave_n_filtered(task, leave_n=leave_n)
+        # format and filter augmented queries
+        formatted_filtered_tasks = [self.format_and_filter(task) for task in augmented_tasks]
+        formatted_filtered_tasks = [task for task in formatted_filtered_tasks if task is not None]
+        return formatted_filtered_tasks
+
+    def format_and_filter(self, task: Task) -> Optional[Dict]:
+        # even the voting augmentation does not increase resolution
+        assert task.max_height() <= 30 and task.max_width() <= 30
 
         # Build encoder text
         prefix_texts = []
-        for p in train_pairs:
-            prefix_texts.append(grid_to_text(p["input"], True))
-            prefix_texts.append(grid_to_text(p["output"], False))
+        for p in task.train_examples:
+            prefix_texts.append(grid_to_text(p.input.tolist(), True))
+            prefix_texts.append(grid_to_text(p.output.tolist(), False))
         encoder_text = "\n".join(prefix_texts) + "[CLS]" * self.num_virtual_tokens
 
-        dec_in_text  = grid_to_text(test_pair["input"], True)
-        dec_out_text = grid_to_text(test_pair["output"], False)
+        dec_in_text  = grid_to_text(task.test_example.input.tolist(), True)
+        dec_out_text = grid_to_text(task.test_example.output.tolist(), False)
 
         # tiny optimization to include output:\n in input
         assert dec_out_text.startswith("output:\n")
@@ -671,7 +1018,7 @@ class EvalDataset:
             return None
 
         # construct encoder label
-        prefix_count = len(train_pairs)
+        prefix_count = len(task.train_examples)
         encoder_input_ids = enc_tokens["input_ids"].squeeze(0)
         input_token_positions = [enc_i for enc_i, enc_token_id in enumerate(encoder_input_ids) if enc_token_id == self.encoder_input_token_id]
         output_token_positions = [enc_i for enc_i, enc_token_id in enumerate(encoder_input_ids) if enc_token_id == self.encoder_output_token_id]
@@ -683,13 +1030,14 @@ class EvalDataset:
         for pos, (p1, p2) in enumerate(zip(output_token_positions, input_token_positions[1:] + [end_position])):
             if pos > 0: # skip first
                 is_last = (pos == prefix_count - 1)
-                if self.encoder_demonstration_loss or is_last:
+                if (not self.no_encoder_demonstration_loss) or is_last:
                     p1 += 2 # remove output and :\n
                     p2 -= not is_last # remove \n
                     encoder_labels[p1:p2] = copy.deepcopy(encoder_input_ids[p1:p2])
 
         return {
-            "task_id": task_id,
+            "task_id": task.name,
+            "inverter": task.inverter if hasattr(task, "inverter") else "",
             "encoder_input_ids": encoder_input_ids,
             "encoder_attention_mask": enc_tokens["attention_mask"].squeeze(0),
             "encoder_labels": encoder_labels,
@@ -709,6 +1057,7 @@ def collate_fn_eval(batch, dataset: "EvalDataset"):
     Also store how many valid items we have, for logging purposes.
     """
     task_ids = [x['task_id'] for x in batch]
+    inverters = [x['inverter'] for x in batch]
     enc_ids = [x["encoder_input_ids"] for x in batch]
     enc_mask = [x["encoder_attention_mask"] for x in batch]
     enc_labs = [x["encoder_labels"] for x in batch]
@@ -754,6 +1103,7 @@ def collate_fn_eval(batch, dataset: "EvalDataset"):
 
     batch_dict = {
         "task_ids": task_ids,
+        "inverters": inverters,
         "encoder_input_ids": enc_ids,
         "encoder_attention_mask": enc_mask,
         "encoder_labels": enc_labs,
@@ -790,6 +1140,7 @@ def collate_fn_eval_dummy(batch, debug_enc_len: int, debug_dec_len: int):
 
     batch_dict = {
         "task_ids": task_ids,
+        "inverters": [""] * len(batch_size),
         "encoder_input_ids": enc_ids,
         "encoder_attention_mask": enc_mask,
         "encoder_labels": enc_ids,

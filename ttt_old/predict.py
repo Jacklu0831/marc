@@ -210,6 +210,7 @@ if args.add_diff_format:
 
 tokenizer = AutoTokenizer.from_pretrained(args.pretrained_checkpoint, cache_dir=f'downloaded_models/{args.pretrained_checkpoint}_cache')
 
+# tasks.sort(key=lambda x: x.name) # uncomment to compare with encoder_decoder EvalDataset
 task_name_to_processed_data = get_preprocessed_tasks(
     tasks,
     tokenizer,
@@ -226,6 +227,7 @@ invalid_tasks = [info for key, info in task_name_to_processed_data.items() if no
 print("Len of valid tasks:", len(valid_tasks))
 print("Len of invalid tasks:", len(invalid_tasks))
 # for each valid task print the length of queries
+# valid_tasks.sort(key=lambda info: info['task'].name) # uncomment to compare with encoder_decoder EvalDataset
 for info in valid_tasks:
     print(f"{info['task'].name}: Number of Queries: {len(info['queries'])}")
 
