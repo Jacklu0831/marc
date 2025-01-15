@@ -26,3 +26,7 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
     --max_seq_len 5120 \
     --tie_models \
     --wandb
+
+# Submitted batch job 55905916
+# Submitted batch job 55905917
+# Submitted batch job 55905918

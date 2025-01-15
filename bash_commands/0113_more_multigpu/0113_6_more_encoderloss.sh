@@ -19,3 +19,6 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
     --tie_models \
     --encoder_loss_lambda 3.0 \
     --wandb
+
+# Submitted batch job 55905940
+# Submitted batch job 55905941

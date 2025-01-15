@@ -37,3 +37,8 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
     --flash_attn \
     --encoder_loss_lambda 1.0 \
     --wandb
+
+# Submitted batch job 55905929
+# Submitted batch job 55905930
+# Submitted batch job 55905931
+# Submitted batch job 55905932

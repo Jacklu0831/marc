@@ -1,4 +1,4 @@
-# python make_sbatch.py --ngpu 2 --time 96 --bash_files bash_commands/0113_more_multigpu/0113_4_encoderloss_tiemodel.sh
+# python make_sbatch.py --ngpu 2 --time 96 --bash_files bash_commands/0113_more_multigpu/0113_5_3bto3b.sh
 
 # 3bto3b aug0.0
 accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder/train.py \
@@ -29,3 +29,6 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
     --decoder_name llama3b \
     --untrainable_nbit 3.6 \
     --wandb
+
+# Submitted batch job 55905938
+# Submitted batch job 55905939

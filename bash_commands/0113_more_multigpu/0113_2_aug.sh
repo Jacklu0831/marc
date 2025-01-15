@@ -29,3 +29,7 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
     --flash_attn \
     --tie_models \
     --wandb
+
+# Submitted batch job 55905922
+# Submitted batch job 55905923
+# Submitted batch job 55905924

@@ -43,3 +43,8 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
     --tie_models \
     --untrainable_nbit 16 \
     --wandb
+
+# Submitted batch job 55905925
+# Submitted batch job 55905926
+# Submitted batch job 55905927
+# Submitted batch job 55905928
