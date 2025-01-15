@@ -210,6 +210,7 @@ def encoder_decoder_loss(
     invar_loss_lambda: float,
     encoder_loss_lambda: float,
     no_lora: bool,
+    decoder_ce_loss: bool,
     encoder_pad_side: str,
     decoder_pad_side: str,
 ):
@@ -264,6 +265,13 @@ def encoder_decoder_loss(
         predicted_program = conditioning_projection(enc_hidden_states)
     else:
         raise ValueError(f"invalid conditioning method {conditioning_method}")
+
+    if not decoder_ce_loss:
+        invar_loss = torch.tensor(0.0, device=encoder_input_ids.device)
+        if enc_hidden_states.shape[0] % 2 == 0:
+            invar_loss = nn.functional.mse_loss(enc_hidden_states[::2], enc_hidden_states[1::2])
+        total_loss = invar_loss_lambda * invar_loss + encoder_loss_lambda * encoder_loss
+        return None, invar_loss, encoder_loss, total_loss, predicted_program
 
     # decoder attention mask must be extended
     prefix_attention_mask = torch.full(
@@ -364,6 +372,7 @@ def evaluate(
     collate_fn: Callable,
     compact_grids: bool,
     no_lora: bool,
+    decoder_ce_loss: bool,
     encoder_pad_side: str,
     decoder_pad_side: str,
     decoder_gen_pad_side: str,
@@ -432,11 +441,15 @@ def evaluate(
                     invar_loss_lambda=0.0,
                     encoder_loss_lambda=0.0,
                     no_lora=no_lora,
+                    decoder_ce_loss=decoder_ce_loss,
                     encoder_pad_side=encoder_pad_side,
                     decoder_pad_side=decoder_pad_side,
                 )
 
-            loss_list += [ce_loss.item()] * bs
+            if decoder_ce_loss:
+                loss_list += [ce_loss.item()] * bs
+            else:
+                loss_list += [-1.0] * bs
 
             # compute accuracy
             with accelerator.autocast():
@@ -1275,6 +1288,7 @@ def main():
                         encoder_loss_lambda=args.encoder_loss_lambda,
                         invar_loss_lambda=args.invar_loss_lambda,
                         no_lora=args.no_lora,
+                        decoder_ce_loss=True, # HARDCODE
                         encoder_pad_side=args.encoder_pad_side,
                         decoder_pad_side=args.decoder_pad_side,
                     )
@@ -1399,6 +1413,7 @@ def main():
                 collate_fn=eval_collate_fn,
                 compact_grids=args.compact_grids,
                 no_lora=args.no_lora,
+                decoder_ce_loss=True, # HARDCODE
                 encoder_pad_side=args.encoder_pad_side,
                 decoder_pad_side=args.decoder_pad_side,
                 decoder_gen_pad_side=args.decoder_gen_pad_side,
@@ -1418,6 +1433,7 @@ def main():
                 collate_fn=eval_collate_fn,
                 compact_grids=args.compact_grids,
                 no_lora=args.no_lora,
+                decoder_ce_loss=True, # HARDCODE
                 encoder_pad_side=args.encoder_pad_side,
                 decoder_pad_side=args.decoder_pad_side,
                 decoder_gen_pad_side=args.decoder_gen_pad_side,

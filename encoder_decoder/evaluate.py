@@ -80,6 +80,7 @@ def main():
     # Evaluation
     parser.add_argument("--batch_size", type=int, default=2)
     parser.add_argument("--max_seq_len", type=int, default=8192)
+    parser.add_argument("--decoder_ce_loss", action="store_true")
 
     # data
     parser.add_argument("--num_workers", type=int, default=8)
@@ -281,6 +282,7 @@ def main():
         collate_fn=eval_collate_fn,
         compact_grids=args.compact_grids,
         no_lora=args.no_lora,
+        decoder_ce_loss=args.decoder_ce_loss,
         encoder_pad_side=args.encoder_pad_side,
         decoder_pad_side="right", # HARDCODE
         decoder_gen_pad_side=args.decoder_gen_pad_side,
