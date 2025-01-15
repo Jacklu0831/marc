@@ -1,3 +1,4 @@
+from typing import Union
 import pprint
 import json
 from functools import partial
@@ -17,6 +18,7 @@ from peft import PeftModel
 
 from data_utils import EvalDataset, collate_fn_eval
 from train import set_up_main_process_logger, evaluate
+from train import Hidden2PrefixProjection, Hidden2PromptProjection
 
 
 import os
@@ -62,13 +64,16 @@ def main():
 
     # Conditioning projection
     parser.add_argument("--conditioning_method",
+                        type=str,
                         choices=[
                             "prefix2prefix",
                             "hidden2prefix_shared",
                             "hidden2prefix_full",
                             "hidden2prompt",
                             "hidden2prompt_shared",
+                            "hidden2prompt_shared_identity",
                             "hidden2prompt_full",
+                            "hidden2prompt_full_identity"
                         ],
                         default="prefix2prefix")
 
@@ -187,10 +192,10 @@ def main():
         base_encoder = prepare_model_for_kbit_training(base_encoder, use_gradient_checkpointing=False)
         base_decoder = prepare_model_for_kbit_training(base_decoder, use_gradient_checkpointing=False)
 
-    # add [CLS] is not in model tokenizer
-    if not encoder_tokenizer.cls_token:
-        encoder_tokenizer.add_special_tokens({"cls_token": "[CLS]"})
-        base_encoder.resize_token_embeddings(len(encoder_tokenizer))
+    # add new CLS tokens for program encoding
+    cls_tokens = [f"<CLS{token_i}>" for token_i in range(args.num_virtual_tokens)]
+    encoder_tokenizer.add_tokens(cls_tokens)
+    base_encoder.resize_token_embeddings(len(encoder_tokenizer))
     logger.info("Base models loaded.")
 
     # load encoder decoder weights
@@ -208,7 +213,7 @@ def main():
     conditioning_projection = None
     if args.conditioning_method not in ["prefix2prefix", "hidden2prompt"]:
         proj_path = os.path.join(weight_dir, f"conditioning_projection_epoch_{args.epoch}.pt")
-        conditioning_projection = torch.load(proj_path, weights_only=False)
+        conditioning_projection: Union[Hidden2PrefixProjection, Hidden2PromptProjection] = torch.load(proj_path, weights_only=False)
         logger.info("loaded conditioning projection weights")
 
     # convert model weights
@@ -251,7 +256,7 @@ def main():
         max_seq_len=args.max_seq_len,
         compact_grids=args.compact_grids,
         num_virtual_tokens=args.num_virtual_tokens,
-        no_encoder_demonstration_loss=False, # HARDCODE
+        encoder_loss_type="rest", # HARDCODE
         debug_random_pad=False, # HARDCODE
         debug_pad_len=-1, # HARDCODE
         encoder_pad_side=args.encoder_pad_side,

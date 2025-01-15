@@ -213,14 +213,6 @@ def encoder_decoder_loss(
     encoder_pad_side: str,
     decoder_pad_side: str,
 ):
-    """
-    This function shows how we:
-      1) Pass input_ids thru the encoder -> final hidden states
-      2) Extract the CLS token (the last token in the seq)
-      3) Project it => prefix
-      4) Pass prefix + decoder_input_ids => decoder with labels => cross-entropy
-    Returns (ce_loss, hidden_cls).
-    """
     # Encoder forward and get loss
     enc_out = encoder_model(
         input_ids=encoder_input_ids,
@@ -376,14 +368,6 @@ def evaluate(
     decoder_pad_side: str,
     decoder_gen_pad_side: str,
 ):
-    """
-    For each task in dataset, compute:
-      - cross-entropy
-      - generate => exact match vs decoder_label_texts
-
-    Returns (avg_ce, accuracy, total_samples).
-    We also log how many total items are valid => sum of 'num_valid' from collate.
-    """
     encoder_model.eval()
     decoder_model.eval()
     if conditioning_projection != None:
@@ -739,7 +723,7 @@ def compute_grad_norm2(parameters):
     return total_norm ** 0.5
 
 
-def save_model(encoder_model, decoder_model, conditioning_projection, output_dir, epoch, tie_models):
+def save_train_model(encoder_model, decoder_model, conditioning_projection, output_dir, epoch, tie_models):
     # encoder
     save_enc_path = os.path.join(output_dir, f"encoder_lora_epoch_{epoch+1}")
     encoder_module = encoder_model.module if isinstance(encoder_model, DistributedDataParallel) else encoder_model
@@ -818,6 +802,7 @@ def main():
 
     # Conditioning projection
     parser.add_argument("--conditioning_method",
+                        type=str,
                         choices=[
                             "prefix2prefix",
                             "hidden2prefix_shared",
@@ -842,8 +827,8 @@ def main():
     parser.add_argument("--eval_epochs", type=int, default=5)
     parser.add_argument("--max_seq_len", type=int, default=8192)
     parser.add_argument("--invar_loss_lambda", type=float, default=0.1)
-    parser.add_argument("--encoder_loss_lambda", type=float, default=0.0)
-    parser.add_argument("--no_encoder_demonstration_loss", action="store_true")
+    parser.add_argument("--encoder_loss_lambda", type=float, default=1.0)
+    parser.add_argument("--encoder_loss_type", type=str, choices=["last", "rest", "all"], default="rest")
     parser.add_argument("--max_grad_norm", default=1.0, type=float, help="Max gradient norm.")
     parser.add_argument("--optimizer", type=str, choices=["adamw8bit", "adamw", "sgd"], default="adamw")
 
@@ -1028,10 +1013,10 @@ def main():
         if args.decoder_gradient_checkpointing:
             base_decoder.gradient_checkpointing_enable()
 
-    # add [CLS] is not in model tokenizer
-    if not encoder_tokenizer.cls_token:
-        encoder_tokenizer.add_special_tokens({"cls_token": "[CLS]"})
-        base_encoder.resize_token_embeddings(len(encoder_tokenizer))
+    # add new CLS tokens for program encoding
+    cls_tokens = [f"<CLS{token_i}>" for token_i in range(args.num_virtual_tokens)]
+    encoder_tokenizer.add_tokens(cls_tokens)
+    base_encoder.resize_token_embeddings(len(encoder_tokenizer))
     logger.info("Base models loaded.")
 
     # LoRA
@@ -1143,7 +1128,7 @@ def main():
         debug_batch_size_1=args.debug_batch_size_1,
         encoder_pad_side=args.encoder_pad_side,
         decoder_pad_side=args.decoder_pad_side,
-        no_encoder_demonstration_loss=args.no_encoder_demonstration_loss,
+        encoder_loss_type=args.encoder_loss_type,
     )
     train_collate_fn = partial(collate_fn_train, dataset=train_dataset)
     if args.debug_enc_len > 0:
@@ -1364,7 +1349,7 @@ def main():
                 max_seq_len=args.max_seq_len,
                 compact_grids=args.compact_grids,
                 num_virtual_tokens=args.num_virtual_tokens,
-                no_encoder_demonstration_loss=args.no_encoder_demonstration_loss,
+                encoder_loss_type=args.encoder_loss_type,
                 debug_random_pad=args.debug_random_pad,
                 debug_pad_len=args.debug_pad_len,
                 encoder_pad_side=args.encoder_pad_side,
@@ -1384,7 +1369,7 @@ def main():
                 max_seq_len=args.max_seq_len,
                 compact_grids=args.compact_grids,
                 num_virtual_tokens=args.num_virtual_tokens,
-                no_encoder_demonstration_loss=args.no_encoder_demonstration_loss,
+                encoder_loss_type=args.encoder_loss_type,
                 debug_random_pad=args.debug_random_pad,
                 debug_pad_len=args.debug_pad_len,
                 encoder_pad_side=args.encoder_pad_side,
@@ -1493,7 +1478,7 @@ def main():
                         if save_proj_path is not None:
                             rm_cmd += f" {save_proj_path}"
                         os.system(rm_cmd)
-                    save_enc_path, save_dec_path, save_proj_path = save_model(
+                    save_enc_path, save_dec_path, save_proj_path = save_train_model(
                         encoder_model=encoder_model,
                         decoder_model=decoder_model,
                         conditioning_projection=conditioning_projection,

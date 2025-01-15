@@ -14,7 +14,7 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
     --compact_grids \
     --max_seq_len 5120 \
     --flash_attn \
-    --conditioning_method hidden2prompt_full \
+    --conditioning_method hidden2prompt \
     --encoder_loss_lambda 0.0 \
     --tie_models \
     --wandb
@@ -33,7 +33,7 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
     --compact_grids \
     --max_seq_len 5120 \
     --flash_attn \
-    --conditioning_method hidden2prompt_full \
+    --conditioning_method hidden2prompt \
     --encoder_loss_lambda 1.0 \
     --tie_models \
     --wandb
@@ -52,7 +52,7 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
     --compact_grids \
     --max_seq_len 5120 \
     --flash_attn \
-    --conditioning_method hidden2prompt_full \
+    --conditioning_method hidden2prompt \
     --encoder_loss_lambda 0.0 \
     --wandb
 
@@ -70,6 +70,6 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
     --compact_grids \
     --max_seq_len 5120 \
     --flash_attn \
-    --conditioning_method hidden2prompt_full \
+    --conditioning_method hidden2prompt \
     --encoder_loss_lambda 1.0 \
     --wandb

@@ -1,10 +1,9 @@
-import json
 import copy
 from multiprocessing import Pool
 from pathlib import Path
 import csv
 from peft import PeftModel
-from typing import Union
+from typing import Union, Optional, Tuple
 from tqdm import tqdm
 from functools import partial
 import argparse
@@ -56,16 +55,17 @@ NBIT_TO_DTYPE = {
 }
 
 
-def save_model(
+def save_model_ttt(
         encoder_model: nn.Module,
         decoder_model: nn.Module,
-        conditioning_projection: Union[Hidden2PrefixProjection, Hidden2PromptProjection, None],
+        conditioning_projection: Optional[Union[Hidden2PrefixProjection, Hidden2PromptProjection]],
         output_dir: str,
         task_id: str,
         epoch: int,
         tie_models: bool,
         no_lora: bool,
-    ):
+    ) -> Tuple[str, Optional[str], Optional[str]]:
+    # save to output_dir/task_id and only save lora
     os.makedirs(os.path.join(output_dir, task_id), exist_ok=True)
     # encoder
     save_enc_path = None
@@ -149,6 +149,7 @@ def main():
 
     # Conditioning projection
     parser.add_argument("--conditioning_method",
+                        type=str,
                         choices=[
                             "prefix2prefix",
                             "hidden2prefix_shared",
@@ -157,7 +158,7 @@ def main():
                             "hidden2prompt_shared",
                             "hidden2prompt_shared_identity",
                             "hidden2prompt_full",
-                            "hidden2prompt_full_identity",
+                            "hidden2prompt_full_identity"
                         ],
                         default="prefix2prefix")
 
@@ -174,8 +175,8 @@ def main():
     parser.add_argument("--eval_epochs", type=int, default=1)
     parser.add_argument("--max_seq_len", type=int, default=8192)
     parser.add_argument("--invar_loss_lambda", type=float, default=0.1)
-    parser.add_argument("--encoder_loss_lambda", type=float, default=0.0)
-    parser.add_argument("--no_encoder_demonstration_loss", action="store_true")
+    parser.add_argument("--encoder_loss_lambda", type=float, default=1.0)
+    parser.add_argument("--encoder_loss_type", type=str, choices=["last", "rest", "all"], default="rest")
     parser.add_argument("--max_grad_norm", default=1.0, type=float, help="Max gradient norm.")
     parser.add_argument("--optimizer", type=str, choices=["adamw8bit", "adamw", "sgd"], default="adamw")
 
@@ -302,10 +303,10 @@ def main():
         if args.decoder_gradient_checkpointing:
             base_decoder.gradient_checkpointing_enable()
 
-    # add [CLS] is not in model tokenizer
-    if not encoder_tokenizer.cls_token:
-        encoder_tokenizer.add_special_tokens({"cls_token": "[CLS]"})
-        base_encoder.resize_token_embeddings(len(encoder_tokenizer))
+    # add new CLS tokens for program encoding
+    cls_tokens = [f"<CLS{token_i}>" for token_i in range(args.num_virtual_tokens)]
+    encoder_tokenizer.add_tokens(cls_tokens)
+    base_encoder.resize_token_embeddings(len(encoder_tokenizer))
     logger.info("Base models loaded.")
 
     # load encoder decoder weights, projection later
@@ -366,7 +367,7 @@ def main():
         num_virtual_tokens=args.num_virtual_tokens,
         encoder_pad_side=args.encoder_pad_side,
         decoder_pad_side=args.decoder_pad_side,
-        no_encoder_demonstration_loss=args.no_encoder_demonstration_loss,
+        encoder_loss_type=args.encoder_loss_type,
     )
 
     # save memory by making datasets on the fly
@@ -631,7 +632,7 @@ def main():
 
             if accelerator.is_main_process:
                 # done training for task, save model for evaluation
-                _, _, _ = save_model(
+                _, _, _ = save_model_ttt(
                     encoder_model=encoder_model,
                     decoder_model=decoder_model,
                     conditioning_projection=conditioning_projection,

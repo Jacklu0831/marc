@@ -141,12 +141,6 @@ def extra_pad_tensors(tensors, padding_values, pad_len, side):
 
 
 def load_tasks_from_data_dir(data_dir: str) -> Dict[str, List[Dict[str, Any]]]:
-    """
-    Scans 'data_dir' for *.json files, each containing a list of
-    { "input": 2D_grid, "output": 2D_grid } items.
-
-    Returns a dict: { task_id: [ {input:2D, output:2D}, ... ] }.
-    """
     if not os.path.isdir(data_dir):
         raise FileNotFoundError(f"Training data directory '{data_dir}' not found.")
     tasks_dict = {}
@@ -164,25 +158,6 @@ def grid_to_text(
         grid: List[List[int]],
         is_input: bool,
     ) -> str:
-    """
-    Convert a 2D grid of ints into text lines:
-
-      input:
-      <height>
-      <width>
-      row_of_ints
-      row_of_ints
-      ...
-
-    or:
-
-      output:
-      <height>
-      <width>
-      ...
-
-    We keep the original approach: label + (height, width) + rows.
-    """
     label = "input:" if is_input else "output:"
     height = len(grid)
     assert height > 0, f"Grid height cannot be 0, got {grid}"
@@ -196,16 +171,6 @@ def grid_to_text(
 
 
 def plot_histogram_with_frequencies(data: List[int], save_path: str, bins: int = 20):
-    """
-    Plots a histogram with frequencies displayed on top of each bar.
-
-    Args:
-        data (array-like): The input data for the histogram.
-        bins (int or sequence, optional): Number of bins or bin edges. Defaults to auto binning.
-        title (str, optional): Title of the plot. Defaults to "Histogram with Frequency Labels".
-        xlabel (str, optional): Label for the x-axis. Defaults to "Value".
-        ylabel (str, optional): Label for the y-axis. Defaults to "Frequency".
-    """
     import matplotlib.pyplot as plt
     _, ax = plt.subplots()
     # Create histogram
@@ -246,7 +211,7 @@ class TTTDataset:
         num_virtual_tokens: int,
         encoder_pad_side: int,
         decoder_pad_side: int,
-        no_encoder_demonstration_loss: bool,
+        encoder_loss_type: bool,
     ):
         self.permute_n = permute_n
         self.augmenters = get_augmenters(include_basic=True, include_size=True, include_chain=True, include_repeat=True)
@@ -256,9 +221,10 @@ class TTTDataset:
         self.max_seq_len = max_seq_len
         self.compact_grids = compact_grids
         self.num_virtual_tokens = num_virtual_tokens
+        self.cls_tokens = [f"<CLS{token_i}>" for token_i in range(num_virtual_tokens)]
         self.encoder_pad_side = encoder_pad_side
         self.decoder_pad_side = decoder_pad_side
-        self.no_encoder_demonstration_loss = no_encoder_demonstration_loss
+        self.encoder_loss_type = encoder_loss_type
 
         self.encoder_space_token_id = encoder_tokenizer(" ")['input_ids'][1]
         self.decoder_space_token_id = decoder_tokenizer(" ")['input_ids'][1]
@@ -349,7 +315,7 @@ class TTTDataset:
         for p in task.train_examples:
             prefix_texts.append(grid_to_text(p.input.tolist(), True))
             prefix_texts.append(grid_to_text(p.output.tolist(), False))
-        encoder_text = "\n".join(prefix_texts) + "[CLS]" * self.num_virtual_tokens
+        encoder_text = "\n".join(prefix_texts) + "".join(self.cls_tokens)
 
         dec_in_text  = grid_to_text(task.test_example.input.tolist(), True)
         dec_out_text = grid_to_text(task.test_example.output.tolist(), False)
@@ -361,7 +327,7 @@ class TTTDataset:
         dec_out_text += "<|eot_id|>"
 
         enc_tokens = self.encoder_tokenizer(encoder_text, return_tensors="pt", truncation=False)
-        assert enc_tokens["input_ids"][0][-self.num_virtual_tokens:].tolist() == [self.encoder_tokenizer.cls_token_id] * self.num_virtual_tokens
+        assert self.encoder_tokenizer.decode(enc_tokens["input_ids"][0][-self.num_virtual_tokens:]) == "".join(self.cls_tokens)
         dec_in_tokens  = self.decoder_tokenizer(dec_in_text,  return_tensors="pt", truncation=False)
         dec_out_tokens = self.decoder_tokenizer(dec_out_text, return_tensors="pt", truncation=False)
         assert all(t[-1].item() == self.decoder_tokenizer.eos_token_id for t in dec_out_tokens["input_ids"])
@@ -410,12 +376,22 @@ class TTTDataset:
         encoder_labels = torch.full_like(encoder_input_ids, -100, dtype=encoder_input_ids.dtype)
         end_position = len(encoder_input_ids) - self.num_virtual_tokens
         for pos, (p1, p2) in enumerate(zip(output_token_positions, input_token_positions[1:] + [end_position])):
-            if pos > 0: # skip first
-                is_last = (pos == prefix_count - 1)
-                if (not self.no_encoder_demonstration_loss) or is_last:
+            is_first = (pos == 0)
+            is_last = (pos == prefix_count - 1)
+            if self.encoder_loss_type == "last":
+                if is_last:
                     p1 += 2 # remove output and :\n
                     p2 -= not is_last # remove \n
                     encoder_labels[p1:p2] = copy.deepcopy(encoder_input_ids[p1:p2])
+            elif self.encoder_loss_type == "rest":
+                if not is_first:
+                    p1 += 2 # remove output and :\n
+                    p2 -= not is_last # remove \n
+                    encoder_labels[p1:p2] = copy.deepcopy(encoder_input_ids[p1:p2])
+            else:
+                p1 += 2 # remove output and :\n
+                p2 -= not is_last # remove \n
+                encoder_labels[p1:p2] = copy.deepcopy(encoder_input_ids[p1:p2])
 
         return {
             "encoder_input_ids": encoder_input_ids,
@@ -434,10 +410,6 @@ class TTTDataset:
 
 
 def collate_fn_ttt(batch, dataset: "TTTDataset"):
-    """
-    Filter out None, then pad each field. Return the final dict.
-    Also store how many valid items we have, for logging purposes.
-    """
     enc_ids = [x["encoder_input_ids"] for x in batch]
     enc_mask = [x["encoder_attention_mask"] for x in batch]
     enc_labs = [x["encoder_labels"] for x in batch]
@@ -470,13 +442,6 @@ def collate_fn_ttt(batch, dataset: "TTTDataset"):
 # Training Dataset
 ########################################
 class TrainDataset(Dataset):
-    """
-    A pseudo-infinite training dataset:
-      - tasks_dict: {task_id: [ {input:2D, output:2D}, ... ] }
-      - We define __len__ = total_steps,
-        but each __getitem__ is just a placeholder (0).
-      - We do random sampling in collate_fn_train.
-    """
     def __init__(
         self,
         tasks_dict: Dict[str, List[Dict[str, Any]]],
@@ -496,7 +461,7 @@ class TrainDataset(Dataset):
         debug_batch_size_1: bool,
         encoder_pad_side: int,
         decoder_pad_side: int,
-        no_encoder_demonstration_loss: bool,
+        encoder_loss_type: bool,
     ):
         self.tasks_dict = tasks_dict
         self.encoder_tokenizer = encoder_tokenizer
@@ -511,13 +476,14 @@ class TrainDataset(Dataset):
         self.rng = np.random.RandomState(seed)
         self.compact_grids = compact_grids
         self.num_virtual_tokens = num_virtual_tokens
+        self.cls_tokens = [f"<CLS{token_i}>" for token_i in range(num_virtual_tokens)]
         self.debug_fixed_train_order = debug_fixed_train_order
         self.debug_random_pad = debug_random_pad
         self.debug_pad_len = debug_pad_len
         self.debug_batch_size_1 = debug_batch_size_1
         self.encoder_pad_side = encoder_pad_side
         self.decoder_pad_side = decoder_pad_side
-        self.no_encoder_demonstration_loss = no_encoder_demonstration_loss
+        self.encoder_loss_type = encoder_loss_type
 
         self.encoder_space_token_id = encoder_tokenizer(" ")['input_ids'][1]
         self.decoder_space_token_id = decoder_tokenizer(" ")['input_ids'][1]
@@ -533,17 +499,6 @@ class TrainDataset(Dataset):
 
 
 def collate_fn_train(batch, dataset: "TrainDataset"):
-    """
-    We'll produce len(batch) examples. For each 2 items, we pick 1 random task
-    and produce 2 examples from that task, or if it's too large => skip.
-
-    Implementation details:
-      - batch_size = len(batch). Must be even (assert).
-      - We'll fill a list `out_list` with exactly batch_size items.
-      - Each iteration, we pick 1 random task, try to produce 2 examples.
-      - If EITHER example is invalid (too large, etc.), we skip BOTH and pick a new random task.
-      - Once we've collected `batch_size` items, we do the final PADDING inside this function.
-    """
     batch_size = len(batch)
     if not dataset.debug_batch_size_1:
         assert batch_size > 0 and batch_size % 2 == 0, f"Batch size must be even, got {batch_size}"
@@ -592,7 +547,7 @@ def collate_fn_train(batch, dataset: "TrainDataset"):
             for pair in train_pairs:
                 prefix_texts.append(grid_to_text(pair["input"], True))
                 prefix_texts.append(grid_to_text(pair["output"], False))
-            encoder_text = "\n".join(prefix_texts) + "[CLS]" * dataset.num_virtual_tokens
+            encoder_text = "\n".join(prefix_texts) + "".join(dataset.cls_tokens)
 
             dec_in_text  = grid_to_text(test_pair["input"], True)
             dec_out_text = grid_to_text(test_pair["output"], False)
@@ -604,7 +559,7 @@ def collate_fn_train(batch, dataset: "TrainDataset"):
             dec_out_text += "<|eot_id|>"
 
             enc_tokens = dataset.encoder_tokenizer(encoder_text, return_tensors="pt", truncation=False)
-            assert enc_tokens["input_ids"][0][-dataset.num_virtual_tokens:].tolist() == [dataset.encoder_tokenizer.cls_token_id] * dataset.num_virtual_tokens
+            assert dataset.encoder_tokenizer.decode(enc_tokens["input_ids"][0][-dataset.num_virtual_tokens:]) == "".join(dataset.cls_tokens)
             dec_in_tokens  = dataset.decoder_tokenizer(dec_in_text, return_tensors="pt", truncation=False)
             dec_out_tokens = dataset.decoder_tokenizer(dec_out_text, return_tensors="pt", truncation=False)
             assert dec_out_tokens["input_ids"][0][-1].item() == dataset.decoder_tokenizer.eos_token_id
@@ -646,12 +601,22 @@ def collate_fn_train(batch, dataset: "TrainDataset"):
             encoder_labels = torch.full_like(encoder_input_ids, -100, dtype=encoder_input_ids.dtype)
             end_position = len(encoder_input_ids) - dataset.num_virtual_tokens
             for pos, (p1, p2) in enumerate(zip(output_token_positions, input_token_positions[1:] + [end_position])):
-                if pos > 0: # skip first
-                    is_last = (pos == prefix_count - 1)
-                    if (not dataset.no_encoder_demonstration_loss) or is_last:
+                is_first = (pos == 0)
+                is_last = (pos == prefix_count - 1)
+                if dataset.encoder_loss_type == "last":
+                    if is_last:
                         p1 += 2 # remove output and :\n
                         p2 -= not is_last # remove \n
                         encoder_labels[p1:p2] = copy.deepcopy(encoder_input_ids[p1:p2])
+                elif dataset.encoder_loss_type == "rest":
+                    if not is_first:
+                        p1 += 2 # remove output and :\n
+                        p2 -= not is_last # remove \n
+                        encoder_labels[p1:p2] = copy.deepcopy(encoder_input_ids[p1:p2])
+                else:
+                    p1 += 2 # remove output and :\n
+                    p2 -= not is_last # remove \n
+                    encoder_labels[p1:p2] = copy.deepcopy(encoder_input_ids[p1:p2])
 
             example_dict = {
                 "encoder_input_ids": encoder_input_ids,
@@ -715,17 +680,6 @@ def collate_fn_train(batch, dataset: "TrainDataset"):
 
 
 def collate_fn_train_dummy(batch, debug_enc_len: int, debug_dec_len: int):
-    """
-    We'll produce len(batch) examples. For each 2 items, we pick 1 random task
-    and produce 2 examples from that task, or if it's too large => skip.
-
-    Implementation details:
-      - batch_size = len(batch). Must be even (assert).
-      - We'll fill a list `out_list` with exactly batch_size items.
-      - Each iteration, we pick 1 random task, try to produce 2 examples.
-      - If EITHER example is invalid (too large, etc.), we skip BOTH and pick a new random task.
-      - Once we've collected `batch_size` items, we do the final PADDING inside this function.
-    """
     batch_size = len(batch)
     assert batch_size > 0 and batch_size % 2 == 0, f"Batch size must be even, got {batch_size}"
     del batch  # we don't use it directly
@@ -753,15 +707,6 @@ def collate_fn_train_dummy(batch, debug_enc_len: int, debug_dec_len: int):
 # Evaluation Dataset
 ########################################
 class EvalDataset:
-    """
-    Each .json in the directory => 1 sample in dataset.
-    The JSON format:
-      {
-        "train": [ {input:2D, output:2D}, ... ],
-        "test": [ {input:2D, output:2D} ]  # single item in this list
-      }
-    We produce exactly 1 example per file.
-    """
     def __init__(
         self,
         eval_dir: str,
@@ -776,7 +721,7 @@ class EvalDataset:
         max_seq_len: int,
         compact_grids: bool,
         num_virtual_tokens: int,
-        no_encoder_demonstration_loss: bool,
+        encoder_loss_type: bool,
         debug_random_pad: bool,
         debug_pad_len: int,
         encoder_pad_side: int,
@@ -791,7 +736,8 @@ class EvalDataset:
         self.max_seq_len = max_seq_len
         self.compact_grids = compact_grids
         self.num_virtual_tokens = num_virtual_tokens
-        self.no_encoder_demonstration_loss = no_encoder_demonstration_loss
+        self.cls_tokens = [f"<CLS{token_i}>" for token_i in range(num_virtual_tokens)]
+        self.encoder_loss_type = encoder_loss_type
         self.debug_random_pad = debug_random_pad
         self.debug_pad_len = debug_pad_len
         self.encoder_pad_side = encoder_pad_side
@@ -898,7 +844,7 @@ class EvalDataset:
             self,
             task: Task,
             leave_n: int,
-        ):
+        ) -> List[Task]:
         rng = np.random.RandomState(self.seed)
         test_tasks = []
 
@@ -948,7 +894,7 @@ class EvalDataset:
             self,
             task: Task,
             leave_ns: list[int],
-        ):
+        ) -> List[Dict]:
         # get augmented queries
         augmented_tasks = []
         for leave_n in leave_ns:
@@ -967,7 +913,7 @@ class EvalDataset:
         for p in task.train_examples:
             prefix_texts.append(grid_to_text(p.input.tolist(), True))
             prefix_texts.append(grid_to_text(p.output.tolist(), False))
-        encoder_text = "\n".join(prefix_texts) + "[CLS]" * self.num_virtual_tokens
+        encoder_text = "\n".join(prefix_texts) + "".join(self.cls_tokens)
 
         dec_in_text  = grid_to_text(task.test_example.input.tolist(), True)
         dec_out_text = grid_to_text(task.test_example.output.tolist(), False)
@@ -979,7 +925,7 @@ class EvalDataset:
         dec_out_text += "<|eot_id|>"
 
         enc_tokens = self.encoder_tokenizer(encoder_text, return_tensors="pt", truncation=False)
-        assert enc_tokens["input_ids"][0][-self.num_virtual_tokens:].tolist() == [self.encoder_tokenizer.cls_token_id] * self.num_virtual_tokens
+        assert self.encoder_tokenizer.decode(enc_tokens["input_ids"][0][-self.num_virtual_tokens:]) == "".join(self.cls_tokens)
         dec_in_tokens  = self.decoder_tokenizer(dec_in_text,  return_tensors="pt", truncation=False)
         dec_out_tokens = self.decoder_tokenizer(dec_out_text, return_tensors="pt", truncation=False)
         assert all(t[-1].item() == self.decoder_tokenizer.eos_token_id for t in dec_out_tokens["input_ids"])
@@ -1028,12 +974,22 @@ class EvalDataset:
         encoder_labels = torch.full_like(encoder_input_ids, -100, dtype=encoder_input_ids.dtype)
         end_position = len(encoder_input_ids) - self.num_virtual_tokens
         for pos, (p1, p2) in enumerate(zip(output_token_positions, input_token_positions[1:] + [end_position])):
-            if pos > 0: # skip first
-                is_last = (pos == prefix_count - 1)
-                if (not self.no_encoder_demonstration_loss) or is_last:
+            is_first = (pos == 0)
+            is_last = (pos == prefix_count - 1)
+            if self.encoder_loss_type == "last":
+                if is_last:
                     p1 += 2 # remove output and :\n
                     p2 -= not is_last # remove \n
                     encoder_labels[p1:p2] = copy.deepcopy(encoder_input_ids[p1:p2])
+            elif self.encoder_loss_type == "rest":
+                if not is_first:
+                    p1 += 2 # remove output and :\n
+                    p2 -= not is_last # remove \n
+                    encoder_labels[p1:p2] = copy.deepcopy(encoder_input_ids[p1:p2])
+            else:
+                p1 += 2 # remove output and :\n
+                p2 -= not is_last # remove \n
+                encoder_labels[p1:p2] = copy.deepcopy(encoder_input_ids[p1:p2])
 
         return {
             "task_id": task.name,
@@ -1052,10 +1008,6 @@ class EvalDataset:
 
 
 def collate_fn_eval(batch, dataset: "EvalDataset"):
-    """
-    Filter out None, then pad each field. Return the final dict.
-    Also store how many valid items we have, for logging purposes.
-    """
     task_ids = [x['task_id'] for x in batch]
     inverters = [x['inverter'] for x in batch]
     enc_ids = [x["encoder_input_ids"] for x in batch]
@@ -1122,10 +1074,6 @@ def collate_fn_eval(batch, dataset: "EvalDataset"):
 
 
 def collate_fn_eval_dummy(batch, debug_enc_len: int, debug_dec_len: int):
-    """
-    Filter out None, then pad each field. Return the final dict.
-    Also store how many valid items we have, for logging purposes.
-    """
     batch_size = len(batch)
     task_ids = [str(x) for x in range(100000, 100000 + batch_size)]
     enc_ids = torch.randint(1, 101, (batch_size, debug_enc_len), dtype=torch.int64, device='cpu')

@@ -14,6 +14,7 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
     --compact_grids \
     --max_seq_len 5120 \
     --flash_attn \
-    --conditioning_method hidden2prompt_full \
+    --tie_models \
+    --conditioning_method hidden2prompt \
     --encoder_loss_lambda 3.0 \
     --wandb
