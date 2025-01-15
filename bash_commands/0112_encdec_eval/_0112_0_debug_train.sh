@@ -31,26 +31,26 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
     --optimizer sgd \
     --conditioning_method prefix2prefix
 
-# {   'eval/eval_ce_loss': 0.8129629574416738,
-#     'eval/eval_competition_all_acc': 0.25,
-#     'eval/eval_competition_sub_acc': 0.5714285714285714,
-#     'eval/eval_correct_grid_dim': 0.8571428571428571,
-#     'eval/eval_exact_acc': 0.5714285714285714,
-#     'eval/eval_token_acc': 0.7619047619047619,
-#     'eval/eval_valid_grid': 0.8571428571428571,
-#     'eval/train_ce_loss': 0.8129629574416738,
-#     'eval/train_competition_all_acc': 0.25,
-#     'eval/train_competition_sub_acc': 0.5714285714285714,
-#     'eval/train_correct_grid_dim': 0.8571428571428571,
-#     'eval/train_exact_acc': 0.5714285714285714,
-#     'eval/train_token_acc': 0.7619047619047619,
-#     'eval/train_valid_grid': 0.8571428571428571}
-# 01/14/2025 19:27:21 - INFO - __main__ - Saved eval train pred gt to ./encoder_decoder/outputs/test_prefix2prefix/eval_train_2_pred_gt.json
-# 01/14/2025 19:27:21 - INFO - __main__ - Saved eval eval pred gt to ./encoder_decoder/outputs/test_prefix2prefix/eval_eval_2_pred_gt.json
-# 01/14/2025 19:27:21 - INFO - __main__ - Saved eval train vote to ./encoder_decoder/outputs/test_prefix2prefix/eval_train_2_vote.json
-# 01/14/2025 19:27:21 - INFO - __main__ - Saved eval eval vote to ./encoder_decoder/outputs/test_prefix2prefix/eval_eval_2_vote.json
-# 01/14/2025 19:27:24 - INFO - __main__ - Saved encoder to ./encoder_decoder/outputs/test_prefix2prefix/encoder_lora_epoch_2
-# 01/14/2025 19:27:28 - INFO - __main__ - Saved decoder to ./encoder_decoder/outputs/test_prefix2prefix/decoder_lora_epoch_2
+# {   'eval/eval_ce_loss': 1.32301207951137,
+#     'eval/eval_competition_all_acc': 0.0,
+#     'eval/eval_competition_sub_acc': 0.0,
+#     'eval/eval_correct_grid_dim': 0.2857142857142857,
+#     'eval/eval_exact_acc': 0.0,
+#     'eval/eval_token_acc': 0.07936507936507937,
+#     'eval/eval_valid_grid': 0.2857142857142857,
+#     'eval/train_ce_loss': 1.32301207951137,
+#     'eval/train_competition_all_acc': 0.0,
+#     'eval/train_competition_sub_acc': 0.0,
+#     'eval/train_correct_grid_dim': 0.2857142857142857,
+#     'eval/train_exact_acc': 0.0,
+#     'eval/train_token_acc': 0.07936507936507937,
+#     'eval/train_valid_grid': 0.2857142857142857}
+# 01/14/2025 21:46:33 - INFO - __main__ - Saved eval train pred gt to ./encoder_decoder/outputs/test_prefix2prefix/eval_train_2_pred_gt.json
+# 01/14/2025 21:46:33 - INFO - __main__ - Saved eval eval pred gt to ./encoder_decoder/outputs/test_prefix2prefix/eval_eval_2_pred_gt.json
+# 01/14/2025 21:46:33 - INFO - __main__ - Saved eval train vote to ./encoder_decoder/outputs/test_prefix2prefix/eval_train_2_vote.json
+# 01/14/2025 21:46:33 - INFO - __main__ - Saved eval eval vote to ./encoder_decoder/outputs/test_prefix2prefix/eval_eval_2_vote.json
+# 01/14/2025 21:46:37 - INFO - __main__ - Saved encoder to ./encoder_decoder/outputs/test_prefix2prefix/encoder_lora_epoch_2
+# 01/14/2025 21:46:41 - INFO - __main__ - Saved decoder to ./encoder_decoder/outputs/test_prefix2prefix/decoder_lora_epoch_2
 
 # hidden2prefix_full
 accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder/train.py \
@@ -239,26 +239,26 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
     --conditioning_method hidden2prompt \
     --no_lora
 
-# {   'eval/eval_ce_loss': 0.7249597536865622,
-#     'eval/eval_competition_all_acc': 0.25,
-#     'eval/eval_competition_sub_acc': 0.5714285714285714,
-#     'eval/eval_correct_grid_dim': 0.8571428571428571,
-#     'eval/eval_exact_acc': 0.5714285714285714,
-#     'eval/eval_token_acc': 0.7619047619047619,
-#     'eval/eval_valid_grid': 0.8571428571428571,
-#     'eval/train_ce_loss': 0.7249597536865622,
-#     'eval/train_competition_all_acc': 0.25,
-#     'eval/train_competition_sub_acc': 0.5714285714285714,
-#     'eval/train_correct_grid_dim': 0.8571428571428571,
-#     'eval/train_exact_acc': 0.5714285714285714,
-#     'eval/train_token_acc': 0.7619047619047619,
-#     'eval/train_valid_grid': 0.8571428571428571}
-# 01/14/2025 19:43:24 - INFO - __main__ - Saved eval train pred gt to ./encoder_decoder/outputs/test_nolora/eval_train_9_pred_gt.json
-# 01/14/2025 19:43:24 - INFO - __main__ - Saved eval eval pred gt to ./encoder_decoder/outputs/test_nolora/eval_eval_9_pred_gt.json
-# 01/14/2025 19:43:24 - INFO - __main__ - Saved eval train vote to ./encoder_decoder/outputs/test_nolora/eval_train_9_vote.json
-# 01/14/2025 19:43:24 - INFO - __main__ - Saved eval eval vote to ./encoder_decoder/outputs/test_nolora/eval_eval_9_vote.json
-# 01/14/2025 19:43:32 - INFO - __main__ - Saved encoder to ./encoder_decoder/outputs/test_nolora/encoder_lora_epoch_9
-# 01/14/2025 19:43:41 - INFO - __main__ - Saved decoder to ./encoder_decoder/outputs/test_nolora/decoder_lora_epoch_9
+# {   'eval/eval_ce_loss': 1.9298827988760812,
+#     'eval/eval_competition_all_acc': 0.0,
+#     'eval/eval_competition_sub_acc': 0.0,
+#     'eval/eval_correct_grid_dim': 0.0,
+#     'eval/eval_exact_acc': 0.0,
+#     'eval/eval_token_acc': 0.0,
+#     'eval/eval_valid_grid': 0.0,
+#     'eval/train_ce_loss': 1.9298827988760812,
+#     'eval/train_competition_all_acc': 0.0,
+#     'eval/train_competition_sub_acc': 0.0,
+#     'eval/train_correct_grid_dim': 0.0,
+#     'eval/train_exact_acc': 0.0,
+#     'eval/train_token_acc': 0.0,
+#     'eval/train_valid_grid': 0.0}
+# 01/14/2025 21:52:26 - INFO - __main__ - Saved eval train pred gt to ./encoder_decoder/outputs/test_nolora/eval_train_1_pred_gt.json
+# 01/14/2025 21:52:26 - INFO - __main__ - Saved eval eval pred gt to ./encoder_decoder/outputs/test_nolora/eval_eval_1_pred_gt.json
+# 01/14/2025 21:52:26 - INFO - __main__ - Saved eval train vote to ./encoder_decoder/outputs/test_nolora/eval_train_1_vote.json
+# 01/14/2025 21:52:26 - INFO - __main__ - Saved eval eval vote to ./encoder_decoder/outputs/test_nolora/eval_eval_1_vote.json
+# 01/14/2025 21:52:34 - INFO - __main__ - Saved encoder to ./encoder_decoder/outputs/test_nolora/encoder_lora_epoch_1
+# 01/14/2025 21:52:43 - INFO - __main__ - Saved decoder to ./encoder_decoder/outputs/test_nolora/decoder_lora_epoch_1
 
 # tie models
 accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder/train.py \

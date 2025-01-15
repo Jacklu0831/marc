@@ -1,9 +1,11 @@
+import gc
+import time
 import copy
 from multiprocessing import Pool
 from pathlib import Path
 import csv
 from peft import PeftModel
-from typing import Union, Optional, Tuple
+from typing import Union, Optional, Tuple, Dict, List
 from tqdm import tqdm
 from functools import partial
 import argparse
@@ -24,14 +26,13 @@ from peft import prepare_model_for_kbit_training
 from transformers import BitsAndBytesConfig
 import bitsandbytes as bnb
 
-from data_utils import TTTDataset, collate_fn_ttt
+from data_utils import TTTDataset, collate_fn_ttt, collate_fn_ttt_dummy
 from train import (
     three_commas,
     encoder_decoder_loss,
     set_up_main_process_logger,
-    Hidden2PrefixProjection,
-    Hidden2PromptProjection,
 )
+from train import Hidden2PrefixProjection, Hidden2PromptProjection
 
 
 import os
@@ -63,64 +64,43 @@ def save_model_ttt(
         task_id: str,
         epoch: int,
         tie_models: bool,
-        no_lora: bool,
     ) -> Tuple[str, Optional[str], Optional[str]]:
+
     # save to output_dir/task_id and only save lora
     os.makedirs(os.path.join(output_dir, task_id), exist_ok=True)
+
     # encoder
-    save_enc_path = None
     encoder_module = encoder_model.module if isinstance(encoder_model, DistributedDataParallel) else encoder_model
-    if no_lora:
-        save_enc_path = os.path.join(output_dir, task_id, f"encoder_lora_epoch_{epoch+1}")
-        encoder_module.save_pretrained(save_enc_path, save_embedding_layers=True, adapter_name="ttt")
-    else:
-        save_enc_path = os.path.join(output_dir, task_id, f"encoder_lora_epoch_{epoch+1}.pt")
-        encoder_lora_dict = {name: param.data for name, param in encoder_model.state_dict().items() if 'lora' in name}
-        torch.save(encoder_lora_dict, save_enc_path)
+    save_enc_path = os.path.join(output_dir, task_id, f"encoder_lora_epoch_{epoch+1}.pt")
+    encoder_lora_dict = {name: param.data for name, param in encoder_model.named_parameters() if "lora" in name}
+    torch.save(encoder_lora_dict, save_enc_path)
     logger.info(f"Saved encoder to {save_enc_path}")
+
     # decoder
     save_dec_path = None
     if not tie_models:
         decoder_module = decoder_model.module if isinstance(decoder_model, DistributedDataParallel) else decoder_model
-        if no_lora:
-            save_dec_path = os.path.join(output_dir, task_id, f"decoder_lora_epoch_{epoch+1}")
-            decoder_module.save_pretrained(save_dec_path, save_embedding_layers=True, adapter_name="ttt")
-        else:
-            save_dec_path = os.path.join(output_dir, task_id, f"decoder_lora_epoch_{epoch+1}.pt")
-            decoder_lora_dict = {name: param.data for name, param in decoder_model.state_dict().items() if 'lora' in name}
-            torch.save(decoder_lora_dict, save_dec_path)
+        save_dec_path = os.path.join(output_dir, task_id, f"decoder_lora_epoch_{epoch+1}.pt")
+        decoder_lora_dict = {name: param.data for name, param in decoder_model.named_parameters() if "lora" in name}
+        torch.save(decoder_lora_dict, save_dec_path)
         logger.info(f"Saved decoder to {save_dec_path}")
+
     # projection
     save_proj_path = None
     if conditioning_projection is not None:
         save_proj_path = os.path.join(output_dir, task_id, f"conditioning_projection_epoch_{epoch+1}.pt")
         torch.save(conditioning_projection, save_proj_path)
         logger.info(f"Saved conditioning projection to {save_proj_path}")
+
     return save_enc_path, save_dec_path, save_proj_path
 
 
-def print_trainable_parameters(model: nn.Module):
-    if hasattr(model, "print_trainable_parameters"):
-        model.print_trainable_parameters()
-    else:
-        trainable_params = 0
-        all_param = 0
-        for _, param in model.named_parameters():
-            num_params = param.numel()
-            if param.__class__.__name__ == "Params4bit":
-                if hasattr(param, "element_size"):
-                    num_bytes = param.element_size()
-                elif not hasattr(param, "quant_storage"):
-                    num_bytes = 1
-                else:
-                    num_bytes = param.quant_storage.itemsize
-                num_params = num_params * 2 * num_bytes
-            all_param += num_params
-            if param.requires_grad:
-                trainable_params += num_params
-        logger.info(
-            f"trainable params: {trainable_params:,d} || all params: {all_param:,d} || trainable%: {100 * trainable_params / all_param:.4f}"
-        )
+def get_lora_data(model: nn.Module, lora_target_modules: List[str], trainable_nbit: int) -> Dict[str, torch.Tensor]:
+    name_to_weight = {}
+    for name, param in model.named_parameters():
+        if "lora" in name and any(t in name for t in lora_target_modules):
+            name_to_weight[name] = param.data.to(NBIT_TO_DTYPE[trainable_nbit])
+    return name_to_weight
 
 
 def main():
@@ -131,21 +111,24 @@ def main():
     parser.add_argument("--log_every", type=int, default=10)
     parser.add_argument("--tracker_project_name", type=str, default="arc")
 
+    # Debug
+    parser.add_argument("--debug_enc_len", type=int, default=-1)
+    parser.add_argument("--debug_dec_len", type=int, default=-1)
+
     # Model
     parser.add_argument("--encoder_name", type=str, default="llama1b")
     parser.add_argument("--decoder_name", type=str, default="llama1b")
     parser.add_argument("--tie_models", action="store_true")
     parser.add_argument("--flash_attn", action="store_true")
-    parser.add_argument("--untrainable_nbit", type=float, choices=[3.6, 4, 8, 16, 32], default=32)
-    parser.add_argument("--trainable_nbit", type=float, choices=[16, 32], default=32)
+    parser.add_argument("--untrainable_nbit", type=float, choices=[3.6, 4, 8, 16, 32], default=16)
+    parser.add_argument("--trainable_nbit", type=float, choices=[16, 32], default=16)
     parser.add_argument("--encoder_gradient_checkpointing", action="store_true")
     parser.add_argument("--decoder_gradient_checkpointing", action="store_true")
-    parser.add_argument("--no_lora", action="store_true") # original model
 
     # Weights
     parser.add_argument("--weight_root_dir", type=str, default="./encoder_decoder/outputs")
     parser.add_argument("--weight_dir", type=str, default="test_evaluation")
-    parser.add_argument("--epoch", type=int, default=1)
+    parser.add_argument("--weight_epoch", type=int, default=1)
 
     # Conditioning projection
     parser.add_argument("--conditioning_method",
@@ -158,9 +141,9 @@ def main():
                             "hidden2prompt_shared",
                             "hidden2prompt_shared_identity",
                             "hidden2prompt_full",
-                            "hidden2prompt_full_identity"
+                            "hidden2prompt_full_identity",
                         ],
-                        default="prefix2prefix")
+                        default="hidden2prompt")
 
     # Training
     parser.add_argument("--warmup_epochs", type=int, default=1)
@@ -174,7 +157,7 @@ def main():
     parser.add_argument("--max_samples_per_task", type=int, default=250)
     parser.add_argument("--eval_epochs", type=int, default=1)
     parser.add_argument("--max_seq_len", type=int, default=8192)
-    parser.add_argument("--invar_loss_lambda", type=float, default=0.1)
+    parser.add_argument("--invar_loss_lambda", type=float, default=0.03)
     parser.add_argument("--encoder_loss_lambda", type=float, default=1.0)
     parser.add_argument("--encoder_loss_type", type=str, choices=["last", "rest", "all"], default="rest")
     parser.add_argument("--max_grad_norm", default=1.0, type=float, help="Max gradient norm.")
@@ -192,6 +175,9 @@ def main():
     # train data
     parser.add_argument("--train_permute_n", type=int, default=1)
 
+    # lora
+    parser.add_argument("--full_lora", action="store_true")
+
     # Virtual tokens approach
     parser.add_argument("--num_virtual_tokens", type=int, default=8)
     parser.add_argument("--seed", type=int, default=0)
@@ -203,15 +189,21 @@ def main():
     if "2prefix" in args.conditioning_method:
         assert not args.decoder_gradient_checkpointing
         assert args.decoder_pad_side == "right" # right for no middle padding
+    if args.tie_models:
+        assert args.encoder_gradient_checkpointing == args.decoder_gradient_checkpointing
     if args.conditioning_method in ["prefix2prefix", "hidden2prompt"] or "identity" in args.conditioning_method:
         assert args.encoder_name == args.decoder_name
     if args.tie_models:
         assert args.encoder_name == args.decoder_name
-    if args.no_lora:
-        args.untrainable_nbit = args.trainable_nbit # untrainable become trainable
+    if args.debug_enc_len > -1 and args.debug_dec_len == -1:
+        args.debug_dec_len = args.debug_enc_len // 2
 
     args.tag = f"ttt_{args.tag}_{args.weight_dir}"
     args.output_dir = os.path.join(args.output_dir, args.tag)
+
+    lora_target_modules = ["q_proj", "v_proj", "gate_proj", "up_proj", "down_proj"]
+    if args.full_lora:
+        lora_target_modules += ["k_proj", "o_proj", "embed_tokens"]
 
     # Setup accelerator
     project_config = ProjectConfiguration(project_dir=args.output_dir)
@@ -296,11 +288,12 @@ def main():
 
     if args.untrainable_nbit in ['4bit', '8bit']:
         base_encoder = prepare_model_for_kbit_training(base_encoder, use_gradient_checkpointing=args.encoder_gradient_checkpointing)
-        base_decoder = prepare_model_for_kbit_training(base_decoder, use_gradient_checkpointing=args.decoder_gradient_checkpointing)
+        if not args.tie_models:
+            base_decoder = prepare_model_for_kbit_training(base_decoder, use_gradient_checkpointing=args.decoder_gradient_checkpointing)
     else:
         if args.encoder_gradient_checkpointing:
             base_encoder.gradient_checkpointing_enable()
-        if args.decoder_gradient_checkpointing:
+        if args.decoder_gradient_checkpointing and not args.tie_models:
             base_decoder.gradient_checkpointing_enable()
 
     # add new CLS tokens for program encoding
@@ -311,24 +304,52 @@ def main():
 
     # load encoder decoder weights, projection later
     weight_dir = os.path.join(args.weight_root_dir, args.weight_dir)
-    enc_weight_path = os.path.join(weight_dir, f"encoder_lora_epoch_{args.epoch}")
-    dec_weight_path = os.path.join(weight_dir, f"decoder_lora_epoch_{args.epoch}")
-    proj_weight_path = os.path.join(weight_dir, f"conditioning_projection_epoch_{args.epoch}.pt")
+    enc_weight_path = os.path.join(weight_dir, f"encoder_lora_epoch_{args.weight_epoch}")
+    dec_weight_path = os.path.join(weight_dir, f"decoder_lora_epoch_{args.weight_epoch}")
+    proj_weight_path = os.path.join(weight_dir, f"conditioning_projection_epoch_{args.weight_epoch}.pt")
 
-    encoder_model, encoder_saved_weights = None, None
-    decoder_model, decoder_saved_weights = None, None
-    if not args.no_lora:
-        encoder_model = PeftModel.from_pretrained(base_encoder, enc_weight_path)
-        decoder_model = PeftModel.from_pretrained(base_decoder, dec_weight_path) if not args.tie_models else encoder_model
-        # saved original lora weights (move to cpu if heavy)
-        encoder_saved_weights = {name: copy.deepcopy(param.data) for name, param in encoder_model.state_dict().items() if 'lora' in name}
-        logger.info(f"cached {len(encoder_saved_weights)} lora encoder weights")
-        if not args.tie_models:
-            decoder_saved_weights = {name: copy.deepcopy(param.data) for name, param in decoder_model.state_dict().items() if 'lora' in name}
-            logger.info(f"cached {len(decoder_saved_weights)} lora decoder weights")
-        else:
-            decoder_saved_weights = encoder_saved_weights
+    # load encoder decoder FT lora weights
+    enc_lora_weights_path = os.path.join(args.output_dir, "ft_lora_encoder_cache.pt")
+    dec_lora_weights_path = os.path.join(args.output_dir, "ft_lora_decoder_cache.pt")
+    encoder_model = PeftModel.from_pretrained(base_encoder, enc_weight_path)
+    decoder_model = PeftModel.from_pretrained(base_decoder, dec_weight_path) if not args.tie_models else encoder_model
     logger.info("loaded encoder and decoder model weights (not for nolora runs)")
+
+    # set encoder decoder require grad
+    for name, param in encoder_model.named_parameters():
+        param.requires_grad = ("lora" in name) and any(t in name for t in lora_target_modules)
+    for name, param in decoder_model.named_parameters():
+        param.requires_grad = ("lora" in name) and any(t in name for t in lora_target_modules)
+
+    # if only encoder prefix is needed, the non-kv-projection weights of encoder model last layer are not used
+    if (args.conditioning_method == "prefix2prefix") and not args.tie_models:
+        encoder_num_layer = len(encoder_model.model.model.layers)
+        for name, param in encoder_model.named_parameters():
+            if f'layers.{encoder_num_layer-1}' in name and param.requires_grad:
+                if 'mlp' in name or 'o_proj' in name or 'q_proj' in name:
+                    param.requires_grad = False
+        logger.info(f'Set last layer of encoder to not require grad')
+
+    # convert nbits
+    for name, param in encoder_model.named_parameters():
+        if param.requires_grad:
+            param.data = param.data.to(NBIT_TO_DTYPE[args.trainable_nbit])
+    if not args.tie_models:
+        for name, param in decoder_model.named_parameters():
+            if param.requires_grad:
+                param.data = param.data.to(NBIT_TO_DTYPE[args.trainable_nbit])
+    logger.info(f'converted trainable model weights to {NBIT_TO_DTYPE[args.trainable_nbit]}')
+
+    # save encoder decoder original lora weights
+    enc_lora_weights = get_lora_data(encoder_model, lora_target_modules, args.trainable_nbit)
+    torch.save(enc_lora_weights, enc_lora_weights_path)
+    logger.info(f"cached {len(enc_lora_weights)} lora encoder weights to {enc_lora_weights_path}")
+    del enc_lora_weights
+    if not args.tie_models:
+        dec_lora_weights = get_lora_data(decoder_model, lora_target_modules, args.trainable_nbit)
+        torch.save(dec_lora_weights, dec_lora_weights_path)
+        logger.info(f"cached {len(dec_lora_weights)} lora decoder weights to {dec_lora_weights_path}")
+        del dec_lora_weights
 
     # get file_paths
     if not os.path.isdir(args.data_dir):
@@ -374,15 +395,16 @@ def main():
     with Pool(args.num_workers) as p:
         ttt_datasets = p.map(ttt_dataset_maker, file_paths)
     for dataset in ttt_datasets:
-        logger.info(f"task {dataset.task_id} has {len(dataset.tasks)} tests, augmented to {len(dataset)} ttt data")
+        logger.info(f"task {dataset.task_id} augmented to {len(dataset)} ttt data")
     ttt_datasets = [dataset for dataset in ttt_datasets if len(dataset) > 0]
-    ttt_collate_fn = partial(collate_fn_ttt, dataset=ttt_datasets[0])
+
+    # Prepare with accelerator
+    encoder_model, decoder_model = accelerator.prepare(encoder_model, decoder_model)
 
     # train!
     while len(ttt_datasets) > 0:
         ttt_dataset = ttt_datasets[0]
         task_id = ttt_dataset.task_id
-        logger.info(f"task {task_id} has {len(ttt_dataset.tasks)} tests, turned to {len(ttt_dataset.data)} ttt data")
 
         logger.info(f'=====================')
         logger.info(f"Training {task_id}")
@@ -390,6 +412,12 @@ def main():
 
         # set up ttt dataloader
         ttt_collate_fn = partial(collate_fn_ttt, dataset=ttt_dataset)
+        if args.debug_enc_len > 0:
+            ttt_collate_fn = partial(
+                collate_fn_ttt_dummy,
+                debug_enc_len=args.debug_enc_len,
+                debug_dec_len=args.debug_dec_len,
+            )
         ttt_dataloader = DataLoader(
             ttt_dataset,
             batch_size=args.train_batch_size,
@@ -402,84 +430,37 @@ def main():
         logger.info(f"len(ttt_dataloader) = {len(ttt_dataloader)}")
 
         # reset encoder and decoder
-        if args.no_lora:
-            encoder_model = base_encoder.from_pretrained(enc_weight_path)
-            decoder_model = base_decoder.from_pretrained(dec_weight_path) if not args.tie_models else encoder_model
-        else:
-            encoder_model_state_dict = encoder_model.state_dict()
-            decoder_model_state_dict = decoder_model.state_dict()
-            for name, param in encoder_saved_weights.items():
-                assert name in encoder_model_state_dict
-                encoder_model_state_dict[name].data.copy_(copy.deepcopy(encoder_saved_weights[name]))
-            if not args.tie_models:
-                for name, param in decoder_saved_weights.items():
-                    assert name in decoder_model_state_dict
-                    decoder_model_state_dict[name].data.copy_(copy.deepcopy(decoder_saved_weights[name]))
+        encoder_model.load_state_dict(
+            torch.load(enc_lora_weights_path, weights_only=True, map_location=accelerator.device),
+            strict=False
+        )
+        if not args.tie_models:
+            decoder_model.load_state_dict(
+                torch.load(dec_lora_weights_path, weights_only=True, map_location=accelerator.device),
+                strict=False
+            )
 
-        # load original conditioning projection
+        # load and set conditioning projection grads and nbit
         conditioning_projection = None
         if args.conditioning_method not in ["prefix2prefix", "hidden2prompt"]:
-            conditioning_projection = torch.load(proj_weight_path, weights_only=False)
-        logger.info("model reinitialized")
-
-        # set require grad
-        if args.no_lora:
-            for param in encoder_model.parameters():
-                param.requires_grad = True
-            if not args.tie_models:
-                for param in decoder_model.parameters():
-                    param.requires_grad = True
-        else:
-            for name, param in encoder_model.named_parameters():
-                if 'lora' in name:
-                    param.requires_grad = True
-                else:
-                    param.requires_grad = False
-            for name, param in decoder_model.named_parameters():
-                if 'lora' in name:
-                    param.requires_grad = True
-                else:
-                    param.requires_grad = False
-        if conditioning_projection:
+            conditioning_projection: Union[Hidden2PrefixProjection, Hidden2PromptProjection] = torch.load(proj_weight_path, weights_only=False)
             for param in conditioning_projection.parameters():
                 param.requires_grad = True
-
-        # if only encoder prefix is needed, the non-kv-projection weights of encoder model last layer are not used
-        if (args.conditioning_method == "prefix2prefix") and not args.tie_models:
-            encoder_num_layer = len(encoder_model.model.layers) if args.no_lora else len(encoder_model.model.model.layers)
-            for name, param in encoder_model.named_parameters():
-                if f'layers.{encoder_num_layer-1}' in name and param.requires_grad:
-                    if 'mlp' in name or 'o_proj' in name or 'q_proj' in name:
-                        param.requires_grad = False
-            logger.info(f'Set last layer of encoder to not require grad')
-
-        # convert model weights
-        for name, param in encoder_model.named_parameters():
-            if param.requires_grad:
                 param.data = param.data.to(NBIT_TO_DTYPE[args.trainable_nbit])
-        if not args.tie_models:
-            for name, param in decoder_model.named_parameters():
-                if param.requires_grad:
-                    param.data = param.data.to(NBIT_TO_DTYPE[args.trainable_nbit])
-        if conditioning_projection is not None:
-            for name, param in conditioning_projection.named_parameters():
-                if param.requires_grad:
-                    param.data = param.data.to(NBIT_TO_DTYPE[args.trainable_nbit])
-        logger.info(f'converted trainable model weights to {NBIT_TO_DTYPE[args.trainable_nbit]}')
 
         # Param groups for LoRA
         embedding_params = []
         other_params = []
         for name, param in encoder_model.named_parameters():
             if param.requires_grad:
-                if "lora_embedding" in name:
+                if "embed" in name:
                     embedding_params.append(param)
                 else:
                     other_params.append(param)
         if not args.tie_models:
             for name, param in decoder_model.named_parameters():
                 if param.requires_grad:
-                    if "lora_embedding" in name:
+                    if "embed" in name:
                         embedding_params.append(param)
                     else:
                         other_params.append(param)
@@ -514,14 +495,10 @@ def main():
 
         # Prepare with accelerator
         (
-            encoder_model,
-            decoder_model,
             conditioning_projection,
             optimizer,
             ttt_dataloader,
         ) = accelerator.prepare(
-            encoder_model,
-            decoder_model,
             conditioning_projection,
             optimizer,
             ttt_dataloader,
@@ -545,13 +522,13 @@ def main():
         )
         progress_bar.set_description("Total Train Steps")
 
+        encoder_model.train()
+        decoder_model.train()
+        if conditioning_projection is not None:
+            conditioning_projection.train()
+
         # start training
         for epoch in range(args.num_epochs):
-            encoder_model.train()
-            decoder_model.train()
-            if conditioning_projection is not None:
-                conditioning_projection.train()
-
             ce_loss_accum = 0.0
             invar_loss_accum = 0.0
             total_loss_accum = 0.0
@@ -586,7 +563,8 @@ def main():
                             num_virtual_tokens=args.num_virtual_tokens,
                             encoder_loss_lambda=args.encoder_loss_lambda,
                             invar_loss_lambda=args.invar_loss_lambda,
-                            no_lora=args.no_lora,
+                            no_lora=False, # HARDCODE
+                            decoder_ce_loss=True, # HARDCODE
                             encoder_pad_side=args.encoder_pad_side,
                             decoder_pad_side=args.decoder_pad_side,
                         )
@@ -640,22 +618,26 @@ def main():
                     task_id=task_id,
                     epoch=epoch,
                     tie_models=args.tie_models,
-                    no_lora=args.no_lora,
                 )
 
-        del ttt_datasets[0], ttt_collate_fn, ttt_dataloader
-        del optimizer, lr_scheduler, conditioning_projection, progress_bar
-        if args.no_lora:
-            del encoder_model
-            del decoder_model
-        else:
-            encoder_model.zero_grad(set_to_none=True)
-            decoder_model.zero_grad(set_to_none=True)
+        # zero grads
+        optimizer.state.clear()
+        conditioning_projection.zero_grad(set_to_none=True)
+        encoder_model.zero_grad(set_to_none=True)
+        decoder_model.zero_grad(set_to_none=True)
 
+        # delete stuff
+        del ttt_datasets[0], ttt_collate_fn, ttt_dataloader
+        del optimizer, lr_scheduler, progress_bar
+
+        # more cleaning
+        gc.collect()
         torch.cuda.empty_cache()
 
-    logger.info("All done training.")
     accelerator.end_training()
+    os.remove(enc_lora_weights_path)
+    os.remove(dec_lora_weights_path)
+    logger.info("All done training.")
 
 
 if __name__ == "__main__":

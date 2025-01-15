@@ -373,6 +373,8 @@ def evaluate(
     compact_grids: bool,
     no_lora: bool,
     decoder_ce_loss: bool,
+    trainable_nbit: int,
+    flash_attn: bool,
     encoder_pad_side: str,
     decoder_pad_side: str,
     decoder_gen_pad_side: str,
@@ -469,6 +471,8 @@ def evaluate(
                             x = torch.cat([x[:-l], p, x[-l:]])
                             decoder_inputs_embeds_new.append(x)
                         decoder_inputs_embeds = torch.stack(decoder_inputs_embeds_new)
+                    if flash_attn:
+                        decoder_inputs_embeds = decoder_inputs_embeds.to(NBIT_TO_DTYPE[trainable_nbit])
                     # pad decoder attention masks
                     prefix_attention_mask = torch.full(
                         (dec_gen_mask.shape[0], num_virtual_tokens),
@@ -807,8 +811,8 @@ def main():
     parser.add_argument("--decoder_name", type=str, default="llama1b")
     parser.add_argument("--tie_models", action="store_true")
     parser.add_argument("--flash_attn", action="store_true")
-    parser.add_argument("--untrainable_nbit", type=float, choices=[3.6, 4, 8, 16, 32], default=32)
-    parser.add_argument("--trainable_nbit", type=float, choices=[16, 32], default=32)
+    parser.add_argument("--untrainable_nbit", type=float, choices=[3.6, 4, 8, 16, 32], default=16)
+    parser.add_argument("--trainable_nbit", type=float, choices=[16, 32], default=16)
     parser.add_argument("--encoder_gradient_checkpointing", action="store_true")
     parser.add_argument("--decoder_gradient_checkpointing", action="store_true")
     parser.add_argument("--no_lora", action="store_true")
@@ -824,9 +828,9 @@ def main():
                             "hidden2prompt_shared",
                             "hidden2prompt_shared_identity",
                             "hidden2prompt_full",
-                            "hidden2prompt_full_identity"
+                            "hidden2prompt_full_identity",
                         ],
-                        default="prefix2prefix")
+                        default="hidden2prompt")
 
     # Training
     parser.add_argument("--train_batch_size", type=int, default=2)
@@ -835,11 +839,11 @@ def main():
     parser.add_argument("--lr_embedding", type=float, default=1e-5)
     parser.add_argument("--lr_other", type=float, default=1e-4)
     parser.add_argument("--weight_decay", type=float, default=0.0)
-    parser.add_argument("--num_epochs", type=int, default=1000)
-    parser.add_argument("--samples_per_epoch", type=int, default=500)
-    parser.add_argument("--eval_epochs", type=int, default=5)
+    parser.add_argument("--num_epochs", type=int, default=25)
+    parser.add_argument("--samples_per_epoch", type=int, default=20000)
+    parser.add_argument("--eval_epochs", type=int, default=1)
     parser.add_argument("--max_seq_len", type=int, default=8192)
-    parser.add_argument("--invar_loss_lambda", type=float, default=0.1)
+    parser.add_argument("--invar_loss_lambda", type=float, default=0.03)
     parser.add_argument("--encoder_loss_lambda", type=float, default=1.0)
     parser.add_argument("--encoder_loss_type", type=str, choices=["last", "rest", "all"], default="rest")
     parser.add_argument("--max_grad_norm", default=1.0, type=float, help="Max gradient norm.")
@@ -856,7 +860,7 @@ def main():
     parser.add_argument("--train_data_dir", type=str, default="/scratch/yl11330/re-arc/train_data/tasks")
     parser.add_argument("--min_prefix", type=int, default=2)
     parser.add_argument("--max_prefix", type=int, default=7)
-    parser.add_argument("--augment_ratio", type=float, default=0.3)
+    parser.add_argument("--augment_ratio", type=float, default=0.0)
 
     # eval train data
     parser.add_argument("--eval_train_dir", type=str, default="/scratch/yl11330/re-arc/arc_original/training")
@@ -915,6 +919,8 @@ def main():
     if "2prefix" in args.conditioning_method:
         assert not args.decoder_gradient_checkpointing
         assert args.decoder_pad_side == "right" # right for no middle padding
+    if args.encoder_name == args.decoder_name:
+        assert args.encoder_gradient_checkpointing == args.decoder_gradient_checkpointing
     if args.conditioning_method in ["prefix2prefix", "hidden2prompt"] or "identity" in args.conditioning_method:
         assert args.encoder_name == args.decoder_name
     if args.tie_models:
@@ -1019,11 +1025,12 @@ def main():
 
     if args.untrainable_nbit in ['4bit', '8bit']:
         base_encoder = prepare_model_for_kbit_training(base_encoder, use_gradient_checkpointing=args.encoder_gradient_checkpointing)
-        base_decoder = prepare_model_for_kbit_training(base_decoder, use_gradient_checkpointing=args.decoder_gradient_checkpointing)
+        if not args.tie_models:
+            base_decoder = prepare_model_for_kbit_training(base_decoder, use_gradient_checkpointing=args.decoder_gradient_checkpointing)
     else:
         if args.encoder_gradient_checkpointing:
             base_encoder.gradient_checkpointing_enable()
-        if args.decoder_gradient_checkpointing:
+        if args.decoder_gradient_checkpointing and not args.tie_models:
             base_decoder.gradient_checkpointing_enable()
 
     # add new CLS tokens for program encoding
@@ -1148,7 +1155,7 @@ def main():
         train_collate_fn = partial(
             collate_fn_train_dummy,
             debug_enc_len=args.debug_enc_len,
-            debug_dec_len=args.debug_dec_len
+            debug_dec_len=args.debug_dec_len,
         )
     train_loader = DataLoader(
         train_dataset,
@@ -1166,14 +1173,14 @@ def main():
     other_params = []
     for name, param in encoder_model.named_parameters():
         if param.requires_grad:
-            if "lora_embedding" in name:
+            if "embed" in name:
                 embedding_params.append(param)
             else:
                 other_params.append(param)
     if not args.tie_models:
         for name, param in decoder_model.named_parameters():
             if param.requires_grad:
-                if "lora_embedding" in name:
+                if "embed" in name:
                     embedding_params.append(param)
                 else:
                     other_params.append(param)
@@ -1225,7 +1232,7 @@ def main():
     # for name, param in decoder_model.named_parameters(): print(name, param.dtype)
     # breakpoint()
 
-    logger.info(f'\n======= TRAINING INFO START ======')
+    logger.info(f'======= TRAINING INFO START ======')
     logger.info(f'num_epochs={args.num_epochs}')
     logger.info(f'train_batch_size={args.train_batch_size}')
     logger.info(f'grad_accum_steps={args.grad_accum_steps}')
@@ -1395,7 +1402,7 @@ def main():
                 eval_collate_fn = partial(
                     collate_fn_eval_dummy,
                     debug_enc_len=args.debug_enc_len,
-                    debug_dec_len=args.debug_dec_len
+                    debug_dec_len=args.debug_dec_len,
                 )
 
             train_ce, train_exact_acc, train_valid_grid, train_correct_grid_dim, train_token_acc, train_texts, \
@@ -1414,6 +1421,8 @@ def main():
                 compact_grids=args.compact_grids,
                 no_lora=args.no_lora,
                 decoder_ce_loss=True, # HARDCODE
+                trainable_nbit=args.trainable_nbit,
+                flash_attn=args.flash_attn,
                 encoder_pad_side=args.encoder_pad_side,
                 decoder_pad_side=args.decoder_pad_side,
                 decoder_gen_pad_side=args.decoder_gen_pad_side,
@@ -1434,6 +1443,8 @@ def main():
                 compact_grids=args.compact_grids,
                 no_lora=args.no_lora,
                 decoder_ce_loss=True, # HARDCODE
+                trainable_nbit=args.trainable_nbit,
+                flash_attn=args.flash_attn,
                 encoder_pad_side=args.encoder_pad_side,
                 decoder_pad_side=args.decoder_pad_side,
                 decoder_gen_pad_side=args.decoder_gen_pad_side,
@@ -1505,8 +1516,8 @@ def main():
                     last_save_model_path = (save_enc_path, save_dec_path, save_proj_path)
                 epoch_to_eval_exact_acc[epoch] = eval_exact_acc
 
-    logger.info("All done training.")
     accelerator.end_training()
+    logger.info("All done training.")
 
 
 if __name__ == "__main__":

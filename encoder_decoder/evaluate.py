@@ -53,14 +53,14 @@ def main():
     parser.add_argument("--decoder_name", type=str, default="llama1b")
     parser.add_argument("--tie_models", action="store_true")
     parser.add_argument("--flash_attn", action="store_true")
-    parser.add_argument("--untrainable_nbit", type=float, choices=[3.6, 4, 8, 16, 32], default=32)
-    parser.add_argument("--trainable_nbit", type=float, choices=[16, 32], default=32)
+    parser.add_argument("--untrainable_nbit", type=float, choices=[3.6, 4, 8, 16, 32], default=16)
+    parser.add_argument("--trainable_nbit", type=float, choices=[16, 32], default=16)
     parser.add_argument("--no_lora", action="store_true")
 
     # Weights
     parser.add_argument("--weight_root_dir", type=str, default="./encoder_decoder/outputs")
     parser.add_argument("--weight_dir", type=str, default="test_evaluation")
-    parser.add_argument("--epoch", type=int, default=1)
+    parser.add_argument("--weight_epoch", type=int, default=1)
 
     # Conditioning projection
     parser.add_argument("--conditioning_method",
@@ -75,7 +75,7 @@ def main():
                             "hidden2prompt_full",
                             "hidden2prompt_full_identity"
                         ],
-                        default="prefix2prefix")
+                        default="hidden2prompt")
 
     # Evaluation
     parser.add_argument("--batch_size", type=int, default=2)
@@ -102,7 +102,7 @@ def main():
     args = parser.parse_args()
 
     # check args
-    if args.conditioning_method in ["prefix2prefix", "hidden2prompt"]:
+    if args.conditioning_method in ["prefix2prefix", "hidden2prompt"] or "identity" in args.conditioning_method:
         assert args.encoder_name == args.decoder_name
     if args.tie_models:
         assert args.encoder_name == args.decoder_name
@@ -199,22 +199,23 @@ def main():
     base_encoder.resize_token_embeddings(len(encoder_tokenizer))
     logger.info("Base models loaded.")
 
-    # load encoder decoder weights
+    # load encoder decoder projection weights
     weight_dir = os.path.join(args.weight_root_dir, args.weight_dir)
-    enc_path = os.path.join(weight_dir, f"encoder_lora_epoch_{args.epoch}")
-    dec_path = os.path.join(weight_dir, f"decoder_lora_epoch_{args.epoch}")
+    enc_weight_path = os.path.join(weight_dir, f"encoder_lora_epoch_{args.weight_epoch}")
+    dec_weight_path = os.path.join(weight_dir, f"decoder_lora_epoch_{args.weight_epoch}")
+    proj_weight_path = os.path.join(weight_dir, f"conditioning_projection_epoch_{args.weight_epoch}.pt")
+
     if args.no_lora:
-        encoder_model = base_encoder.from_pretrained(enc_path)
-        decoder_model = base_decoder.from_pretrained(dec_path) if not args.tie_models else encoder_model
+        encoder_model = base_encoder.from_pretrained(enc_weight_path)
+        decoder_model = base_decoder.from_pretrained(dec_weight_path) if not args.tie_models else encoder_model
     else:
-        encoder_model = PeftModel.from_pretrained(base_encoder, enc_path)
-        decoder_model = PeftModel.from_pretrained(base_decoder, dec_path) if not args.tie_models else encoder_model
+        encoder_model = PeftModel.from_pretrained(base_encoder, enc_weight_path)
+        decoder_model = PeftModel.from_pretrained(base_decoder, dec_weight_path) if not args.tie_models else encoder_model
     logger.info("loaded encoder and decoder model weights")
-    # load conditioning projection weights
+
     conditioning_projection = None
     if args.conditioning_method not in ["prefix2prefix", "hidden2prompt"]:
-        proj_path = os.path.join(weight_dir, f"conditioning_projection_epoch_{args.epoch}.pt")
-        conditioning_projection: Union[Hidden2PrefixProjection, Hidden2PromptProjection] = torch.load(proj_path, weights_only=False)
+        conditioning_projection: Union[Hidden2PrefixProjection, Hidden2PromptProjection] = torch.load(proj_weight_path, weights_only=False)
         logger.info("loaded conditioning projection weights")
 
     # convert model weights
@@ -283,6 +284,8 @@ def main():
         compact_grids=args.compact_grids,
         no_lora=args.no_lora,
         decoder_ce_loss=args.decoder_ce_loss,
+        trainable_nbit=args.trainable_nbit,
+        flash_attn=args.flash_attn,
         encoder_pad_side=args.encoder_pad_side,
         decoder_pad_side="right", # HARDCODE
         decoder_gen_pad_side=args.decoder_gen_pad_side,

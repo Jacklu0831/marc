@@ -175,4 +175,5 @@ slurm_outs/
 # encoder decoder
 encoder_decoder/outputs
 encoder_decoder/outputs_eval
+encoder_decoder/outputs_ttt
 encoder_decoder_cache/

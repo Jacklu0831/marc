@@ -246,20 +246,23 @@ class TTTDataset:
 
         # get data
         rng = np.random.RandomState(seed)
-        self.data = self.task_to_ttt_formatted_data(max_gen=max_samples_per_task)
-        rng.shuffle(self.data)
+        self.ttt_tasks = self.task_to_ttt_filtered_data(max_gen=max_samples_per_task)
+        rng.shuffle(self.ttt_tasks)
 
-    def task_to_ttt_formatted_data(self, max_gen: int) -> List[Task]:
+    def task_to_ttt_filtered_data(self, max_gen: int) -> List[Task]:
         # if leave 1 is enough, return it
-        leave_1_train_data = self.task_to_ttt_formatted_data_leave_n(leave_n=1, max_num_sample=max_gen)
-        if len(leave_1_train_data) >= max_gen:
-            return leave_1_train_data
+        leave_1_train_tasks = self.task_to_ttt_filtered_data_leave_n(leave_n=1, max_gen=max_gen)
+        if len(leave_1_train_tasks) >= max_gen:
+            return leave_1_train_tasks
         # else generate leave 2 and append to leave 1
-        max_gen_leave_2 = max_gen - len(leave_1_train_data)
-        leave_1_train_data += self.task_to_ttt_formatted_data_leave_n(leave_n=2, max_gen=max_gen_leave_2)
-        return leave_1_train_data
+        max_gen_leave_2 = max_gen - len(leave_1_train_tasks)
+        leave_1_train_tasks += self.task_to_ttt_filtered_data_leave_n(leave_n=2, max_gen=max_gen_leave_2)
+        # else generate leave 3 and append to leave 1
+        max_gen_leave_3 = max_gen - len(leave_1_train_tasks)
+        leave_1_train_tasks += self.task_to_ttt_filtered_data_leave_n(leave_n=3, max_gen=max_gen_leave_3)
+        return leave_1_train_tasks
 
-    def task_to_ttt_formatted_data_leave_n(self, leave_n: int, max_gen: int) -> List[Task]:
+    def task_to_ttt_filtered_data_leave_n(self, leave_n: int, max_gen: int) -> List[Task]:
         rng = np.random.RandomState(self.seed)
 
         # get leave_n tasks
@@ -297,14 +300,13 @@ class TTTDataset:
 
         # format
         rng.shuffle(augmented_tasks)
-        formatted_tasks = []
+        filtered_tasks = []
         for task in augmented_tasks:
-            if len(formatted_tasks) >= max_gen:
+            if len(filtered_tasks) >= max_gen:
                 break
-            formatted_task = self.format_and_filter(task)
-            if formatted_task is not None:
-                formatted_tasks.append(formatted_task)
-        return formatted_tasks
+            if self.format_and_filter(task) is not None:
+                filtered_tasks.append(task)
+        return filtered_tasks
 
     def format_and_filter(self, task: Task) -> Optional[Dict]:
         # big grids are filtered out during augmentation already
@@ -403,10 +405,10 @@ class TTTDataset:
         }
 
     def __len__(self):
-        return len(self.data)
+        return len(self.ttt_tasks)
 
     def __getitem__(self, idx):
-        return self.data[idx]
+        return self.format_and_filter(self.ttt_tasks[idx])
 
 
 def collate_fn_ttt(batch, dataset: "TTTDataset"):
@@ -433,6 +435,30 @@ def collate_fn_ttt(batch, dataset: "TTTDataset"):
         "decoder_input_ids": dec_ids,
         "decoder_attention_mask": dec_mask,
         "decoder_labels": dec_labs,
+        "encoder_input_ids_lens": enc_ids_lens,
+        "decoder_input_ids_lens": dec_ids_lens,
+    }
+
+
+def collate_fn_ttt_dummy(batch, debug_enc_len: int, debug_dec_len: int):
+    batch_size = len(batch)
+    assert batch_size > 0 and batch_size % 2 == 0, f"Batch size must be even, got {batch_size}"
+    del batch  # we don't use it directly
+
+    enc_ids = torch.randint(1, 101, (batch_size, debug_enc_len), dtype=torch.int64, device='cpu')
+    enc_mask = torch.full((batch_size, debug_enc_len), 1, dtype=torch.int64, device='cpu')
+    dec_ids = torch.randint(1, 101, (batch_size, debug_dec_len), dtype=torch.int64, device='cpu')
+    dec_mask = torch.full((batch_size, debug_dec_len), 1, dtype=torch.int64, device='cpu')
+    enc_ids_lens = [len(x) for x in enc_ids]
+    dec_ids_lens = [len(x) for x in dec_ids]
+
+    return {
+        "encoder_input_ids": enc_ids,
+        "encoder_attention_mask": enc_mask,
+        "encoder_labels": enc_ids,
+        "decoder_input_ids": dec_ids,
+        "decoder_attention_mask": dec_mask,
+        "decoder_labels": dec_ids,
         "encoder_input_ids_lens": enc_ids_lens,
         "decoder_input_ids_lens": dec_ids_lens,
     }
@@ -1088,7 +1114,7 @@ def collate_fn_eval_dummy(batch, debug_enc_len: int, debug_dec_len: int):
 
     batch_dict = {
         "task_ids": task_ids,
-        "inverters": [""] * len(batch_size),
+        "inverters": [""] * batch_size,
         "encoder_input_ids": enc_ids,
         "encoder_attention_mask": enc_mask,
         "encoder_labels": enc_ids,
