@@ -30,6 +30,8 @@ os.environ["NCCL_TIMEOUT"] = "14400" # 4hr for evaluation time variance across g
 os.environ["NCCL_TIMEOUT_MS"] = "14400000"
 os.environ["NCCL_ASYNC_ERROR_HANDLING"] = "1"
 os.environ["NCCL_BLOCKING_WAIT"] = "1"
+os.environ["TORCH_NCCL_ASYNC_ERROR_HANDLING"] = "1"
+os.environ["TORCH_NCCL_BLOCKING_WAIT"] = "1"
 
 import wandb
 wandb.login(key='faf21d9ff65ee150697c7e96f070616f6b662134', relogin=True)
@@ -388,7 +390,11 @@ def main():
             "eval/ttt_provided": ttt_provided,
         }
         logger.info(f'Evaluation results:\n{pprint.pformat(metric_dict, indent=4)}')
-        accelerator.log(metric_dict, step=1)
+
+        try:
+            accelerator.log(metric_dict, step=1)
+        except:
+            print(f"wandb failed on process {accelerator.process_index}, skipping the error")
 
         # Save outputs
         save_pred_gt_path = os.path.join(args.output_dir, f"eval_pred_gt.json")

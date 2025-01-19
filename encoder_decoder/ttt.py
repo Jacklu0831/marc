@@ -40,6 +40,8 @@ os.environ["NCCL_TIMEOUT"] = "14400" # 4hr for evaluation time variance across g
 os.environ["NCCL_TIMEOUT_MS"] = "14400000"
 os.environ["NCCL_ASYNC_ERROR_HANDLING"] = "1"
 os.environ["NCCL_BLOCKING_WAIT"] = "1"
+os.environ["TORCH_NCCL_ASYNC_ERROR_HANDLING"] = "1"
+os.environ["TORCH_NCCL_BLOCKING_WAIT"] = "1"
 
 import wandb
 wandb.login(key='faf21d9ff65ee150697c7e96f070616f6b662134', relogin=True)
@@ -658,16 +660,19 @@ def main():
                     global_step += 1
                     if global_step % args.log_every == 0:
                         progress_bar.update(args.log_every)
-                        accelerator.log({
-                            f"train/{task_id}_ce_loss": ce_loss_accum,
-                            f"train/{task_id}_invar_loss": invar_loss_accum,
-                            f"train/{task_id}_encoder_loss": encoder_loss_accum,
-                            f"train/{task_id}_total_loss": total_loss_accum,
-                            f"train/{task_id}_grad_norm_accum": grad_norm_accum,
-                            f"train/{task_id}_lr_embedding": lr_scheduler.get_last_lr()[0],
-                            f"train/{task_id}_lr_other": lr_scheduler.get_last_lr()[1],
-                            'Steps': global_step,
-                        })
+                        try:
+                            accelerator.log({
+                                f"train/{task_id}_ce_loss": ce_loss_accum,
+                                f"train/{task_id}_invar_loss": invar_loss_accum,
+                                f"train/{task_id}_encoder_loss": encoder_loss_accum,
+                                f"train/{task_id}_total_loss": total_loss_accum,
+                                f"train/{task_id}_grad_norm_accum": grad_norm_accum,
+                                f"train/{task_id}_lr_embedding": lr_scheduler.get_last_lr()[0],
+                                f"train/{task_id}_lr_other": lr_scheduler.get_last_lr()[1],
+                                'Steps': global_step,
+                            })
+                        except:
+                            print(f"wandb failed on process {accelerator.process_index}, skipping the error")
 
                     ce_loss_accum = 0.0
                     invar_loss_accum = 0.0
