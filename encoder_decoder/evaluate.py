@@ -21,13 +21,12 @@ from peft import PeftModel # type: ignore
 
 from data_utils import EvalDataset, collate_fn_eval
 from train import set_up_main_process_logger, evaluate
-from train import Prefix2PrefixProjection, Hidden2PromptProjection
 
 
 import os
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
-os.environ["NCCL_TIMEOUT"] = "14400" # 4hr for evaluation time variance across gpus
-os.environ["NCCL_TIMEOUT_MS"] = "14400000"
+os.environ["NCCL_TIMEOUT"] = "28800" # 4hr for evaluation time variance across gpus
+os.environ["NCCL_TIMEOUT_MS"] = "28800000"
 os.environ["NCCL_ASYNC_ERROR_HANDLING"] = "1"
 os.environ["NCCL_BLOCKING_WAIT"] = "1"
 os.environ["TORCH_NCCL_ASYNC_ERROR_HANDLING"] = "1"
@@ -74,28 +73,16 @@ def main():
     parser.add_argument("--ttt_weight_dir", type=str, default=None)
     parser.add_argument("--ttt_weight_epoch", type=int, default=-1)
 
-    # vae
-    # can try different projections, but just linear for now because llama already norms it
-    parser.add_argument("--debug_vae_no_kl", action="store_true")
-    parser.add_argument("--debug_vae_eval_no_sample", action="store_true")
-
     # Conditioning projection
-    parser.add_argument("--conditioning_method",
-                        type=str,
-                        choices=[
-                            "prefix2prefix",
-                            "prefix2prefix_full",
-                            "prefix2prefix_full_identity",
-                            "hidden2prompt",
-                            "hidden2prompt_full",
-                            "hidden2prompt_full_identity",
-                        ],
-                        default="hidden2prompt")
+    parser.add_argument("--conditioning_method", type=str, choices=["prefix2prefix", "hidden2prompt"], default="hidden2prompt")
+    parser.add_argument("--projection_type", type=str, choices=["none", "shared", "full"], default="shared")
+    parser.add_argument("--identity_init", action="store_true")
 
     # Evaluation
     parser.add_argument("--batch_size", type=int, default=2)
     parser.add_argument("--max_seq_len", type=int, default=8192)
     parser.add_argument("--decoder_ce_loss", action="store_true")
+    parser.add_argument("--encoder_loss_type", type=str, choices=["last", "rest", "all"], default="rest")
 
     # data
     parser.add_argument("--num_workers", type=int, default=8)
@@ -124,7 +111,7 @@ def main():
     parser.add_argument("--gs_take_best", action="store_true")
 
     # Virtual tokens approach
-    parser.add_argument("--num_virtual_tokens", type=int, default=8)
+    parser.add_argument("--ntokens", type=int, default=8)
     parser.add_argument("--seed", type=int, default=0)
     args = parser.parse_args()
 
@@ -132,11 +119,13 @@ def main():
     assert args.trainable_nbit == 16 # TODO, test this
 
     # check args
-    if "2prefix" in args.conditioning_method:
+    if args.conditioning_method == "prefix2prefix":
+        assert not args.encoder_gradient_checkpointing
+        assert not args.decoder_gradient_checkpointing
         assert args.decoder_pad_side == "right" # right for no middle padding
-    if "identity" in args.conditioning_method:
+    if args.identity_init:
         assert args.encoder_name == args.decoder_name
-    if args.conditioning_method in ["prefix2prefix", "hidden2prompt"]:
+    if args.projection_type == "none":
         assert args.encoder_name == args.decoder_name
     if args.tie_models:
         assert args.encoder_name == args.decoder_name
@@ -151,7 +140,7 @@ def main():
     # Setup accelerator
     project_config = ProjectConfiguration(project_dir=args.output_dir)
     init_process_process_kwargs = InitProcessGroupKwargs()
-    init_process_process_kwargs.timeout = timedelta(seconds=14400)
+    init_process_process_kwargs.timeout = timedelta(seconds=28800)
     accelerator = Accelerator(
         mixed_precision="bf16",
         project_config=project_config,
@@ -192,7 +181,7 @@ def main():
     # Build base models
     from_pretrained_kwargs = {
         "cache_dir": "./encoder_decoder_cache",
-        "low_cpu_mem_usage": True
+        "low_cpu_mem_usage": True,
     }
     if args.flash_attn:
         from_pretrained_kwargs["attn_implementation"] = "flash_attention_2"
@@ -233,7 +222,7 @@ def main():
         base_decoder = prepare_model_for_kbit_training(base_decoder, use_gradient_checkpointing=False)
 
     # add new CLS tokens for program encoding
-    cls_tokens = [f"<CLS{token_i}>" for token_i in range(args.num_virtual_tokens)]
+    cls_tokens = [f"<CLS{token_i}>" for token_i in range(args.ntokens)]
     encoder_tokenizer.add_tokens(cls_tokens) # type: ignore
     base_encoder.resize_token_embeddings(len(encoder_tokenizer))
     logger.info("Base models loaded.")
@@ -338,8 +327,8 @@ def main():
         decoder_tokenizer=decoder_tokenizer,
         max_seq_len=args.max_seq_len,
         compact_grids=args.compact_grids,
-        num_virtual_tokens=args.num_virtual_tokens,
-        encoder_loss_type="rest", # HARDCODE
+        ntokens=args.ntokens,
+        encoder_loss_type=args.encoder_loss_type,
         debug_random_pad=False, # HARDCODE
         debug_pad_len=-1, # HARDCODE
         encoder_pad_side=args.encoder_pad_side,
@@ -377,8 +366,8 @@ def main():
         gs_max_grad_norm=args.gs_max_grad_norm,
         gs_lr_scheduler=args.gs_lr_scheduler,
         gs_take_best=args.gs_take_best,
-        debug_vae_no_kl=args.debug_vae_no_kl,
-        debug_vae_no_sample=args.debug_vae_eval_no_sample,
+        debug_vae_no_kl=False, # HARDCODE
+        debug_vae_no_sample=False, # HARDCODE
     )
 
     if accelerator.is_main_process:

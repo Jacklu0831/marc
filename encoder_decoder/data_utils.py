@@ -209,7 +209,7 @@ class TTTDataset(Dataset):
         max_seq_len: int,
         seed: int,
         compact_grids: bool,
-        num_virtual_tokens: int,
+        ntokens: int,
         encoder_pad_side: str,
         decoder_pad_side: str,
         encoder_loss_type: bool,
@@ -222,8 +222,8 @@ class TTTDataset(Dataset):
         self.decoder_tokenizer = decoder_tokenizer
         self.max_seq_len = max_seq_len
         self.compact_grids = compact_grids
-        self.num_virtual_tokens = num_virtual_tokens
-        self.cls_tokens = [f"<CLS{token_i}>" for token_i in range(num_virtual_tokens)]
+        self.ntokens = ntokens
+        self.cls_tokens = [f"<CLS{token_i}>" for token_i in range(ntokens)]
         self.encoder_pad_side = encoder_pad_side
         self.decoder_pad_side = decoder_pad_side
         self.encoder_loss_type = encoder_loss_type
@@ -332,7 +332,7 @@ class TTTDataset(Dataset):
         dec_out_text += "<|eot_id|>"
 
         enc_tokens = self.encoder_tokenizer(encoder_text, return_tensors="pt", truncation=False)
-        assert self.encoder_tokenizer.decode(enc_tokens["input_ids"][0][-self.num_virtual_tokens:]) == "".join(self.cls_tokens)
+        assert self.encoder_tokenizer.decode(enc_tokens["input_ids"][0][-self.ntokens:]) == "".join(self.cls_tokens)
         dec_in_tokens  = self.decoder_tokenizer(dec_in_text,  return_tensors="pt", truncation=False)
         dec_out_tokens = self.decoder_tokenizer(dec_out_text, return_tensors="pt", truncation=False)
         assert dec_out_tokens["input_ids"][0][-1].item() == self.decoder_tokenizer.eos_token_id
@@ -366,7 +366,7 @@ class TTTDataset(Dataset):
             dec_label_texts = dec_label_texts.replace(' ', '')
 
         # Check length
-        if enc_tokens["input_ids"].shape[1] > self.max_seq_len or decoder_input_ids.shape[0] > self.max_seq_len // 2: # dec_len should be short
+        if enc_tokens["input_ids"].shape[1] - self.ntokens > self.max_seq_len or decoder_input_ids.shape[0] > self.max_seq_len // 2: # dec_len should be short
             return None
 
         # construct encoder label
@@ -378,7 +378,7 @@ class TTTDataset(Dataset):
         assert all(p1 < p2 for p1, p2 in zip(input_token_positions, output_token_positions))
 
         encoder_labels = torch.full_like(encoder_input_ids, -100, dtype=encoder_input_ids.dtype)
-        end_position = len(encoder_input_ids) - self.num_virtual_tokens
+        end_position = len(encoder_input_ids) - self.ntokens
         for pos, (p1, p2) in enumerate(zip(output_token_positions, input_token_positions[1:] + [end_position])):
             is_first = (pos == 0)
             is_last = (pos == prefix_count - 1)
@@ -442,13 +442,13 @@ def collate_fn_ttt(batch: List[Dict], dataset: TTTDataset) -> Dict:
     }
 
 
-def collate_fn_ttt_dummy(batch: List[Dict], debug_enc_len: int, debug_dec_len: int) -> Dict:
+def collate_fn_ttt_dummy(batch: List[Dict], ntokens: int, debug_enc_len: int, debug_dec_len: int) -> Dict:
     batch_size = len(batch)
     assert batch_size > 0 and batch_size % 2 == 0, f"Batch size must be even, got {batch_size}"
     del batch  # we don't use it directly
 
-    enc_ids = torch.randint(1, 101, (batch_size, debug_enc_len), dtype=torch.int64, device='cpu')
-    enc_mask = torch.full((batch_size, debug_enc_len), 1, dtype=torch.int64, device='cpu')
+    enc_ids = torch.randint(1, 101, (batch_size, debug_enc_len + ntokens), dtype=torch.int64, device='cpu')
+    enc_mask = torch.full((batch_size, debug_enc_len + ntokens), 1, dtype=torch.int64, device='cpu')
     dec_ids = torch.randint(1, 101, (batch_size, debug_dec_len), dtype=torch.int64, device='cpu')
     dec_mask = torch.full((batch_size, debug_dec_len), 1, dtype=torch.int64, device='cpu')
     enc_ids_lens = [len(x) for x in enc_ids]
@@ -482,7 +482,7 @@ class TrainDataset(Dataset):
         augment_ratio: float,
         seed: int,
         compact_grids: bool,
-        num_virtual_tokens: int,
+        ntokens: int,
         debug_fixed_train_order: bool,
         debug_random_pad: bool,
         debug_pad_len: int,
@@ -503,8 +503,8 @@ class TrainDataset(Dataset):
         self.augment_ratio = augment_ratio
         self.rng = np.random.RandomState(seed)
         self.compact_grids = compact_grids
-        self.num_virtual_tokens = num_virtual_tokens
-        self.cls_tokens = [f"<CLS{token_i}>" for token_i in range(num_virtual_tokens)]
+        self.ntokens = ntokens
+        self.cls_tokens = [f"<CLS{token_i}>" for token_i in range(ntokens)]
         self.debug_fixed_train_order = debug_fixed_train_order
         self.debug_random_pad = debug_random_pad
         self.debug_pad_len = debug_pad_len
@@ -592,7 +592,7 @@ def collate_fn_train(batch: List[int], dataset: TrainDataset) -> Dict:
             dec_out_text += "<|eot_id|>"
 
             enc_tokens = dataset.encoder_tokenizer(encoder_text, return_tensors="pt", truncation=False)
-            assert dataset.encoder_tokenizer.decode(enc_tokens["input_ids"][0][-dataset.num_virtual_tokens:]) == "".join(dataset.cls_tokens)
+            assert dataset.encoder_tokenizer.decode(enc_tokens["input_ids"][0][-dataset.ntokens:]) == "".join(dataset.cls_tokens)
             dec_in_tokens  = dataset.decoder_tokenizer(dec_in_text, return_tensors="pt", truncation=False)
             dec_out_tokens = dataset.decoder_tokenizer(dec_out_text, return_tensors="pt", truncation=False)
             assert dec_out_tokens["input_ids"][0][-1].item() == dataset.decoder_tokenizer.eos_token_id
@@ -621,7 +621,7 @@ def collate_fn_train(batch: List[int], dataset: TrainDataset) -> Dict:
             ], dim=0)
 
             # Check length
-            if enc_tokens["input_ids"].shape[1] > dataset.max_seq_len or decoder_input_ids.shape[0] > dataset.max_seq_len // 2: # dec_len should be short
+            if enc_tokens["input_ids"].shape[1] - dataset.ntokens > dataset.max_seq_len or decoder_input_ids.shape[0] > dataset.max_seq_len // 2: # dec_len should be short
                 break
 
             # construct encoder label
@@ -632,7 +632,7 @@ def collate_fn_train(batch: List[int], dataset: TrainDataset) -> Dict:
             assert all(p1 < p2 for p1, p2 in zip(input_token_positions, output_token_positions))
 
             encoder_labels = torch.full_like(encoder_input_ids, -100, dtype=encoder_input_ids.dtype)
-            end_position = len(encoder_input_ids) - dataset.num_virtual_tokens
+            end_position = len(encoder_input_ids) - dataset.ntokens
             for pos, (p1, p2) in enumerate(zip(output_token_positions, input_token_positions[1:] + [end_position])):
                 is_first = (pos == 0)
                 is_last = (pos == prefix_count - 1)
@@ -711,13 +711,13 @@ def collate_fn_train(batch: List[int], dataset: TrainDataset) -> Dict:
     }
 
 
-def collate_fn_train_dummy(batch: List[int], debug_enc_len: int, debug_dec_len: int) -> Dict:
+def collate_fn_train_dummy(batch: List[int], ntokens: int, debug_enc_len: int, debug_dec_len: int) -> Dict:
     batch_size = len(batch)
     assert batch_size > 0 and batch_size % 2 == 0, f"Batch size must be even, got {batch_size}"
     del batch  # we don't use it directly
 
-    enc_ids = torch.randint(1, 101, (batch_size, debug_enc_len), dtype=torch.int64, device='cpu')
-    enc_mask = torch.full((batch_size, debug_enc_len), 1, dtype=torch.int64, device='cpu')
+    enc_ids = torch.randint(1, 101, (batch_size, debug_enc_len + ntokens), dtype=torch.int64, device='cpu')
+    enc_mask = torch.full((batch_size, debug_enc_len + ntokens), 1, dtype=torch.int64, device='cpu')
     dec_ids = torch.randint(1, 101, (batch_size, debug_dec_len), dtype=torch.int64, device='cpu')
     dec_mask = torch.full((batch_size, debug_dec_len), 1, dtype=torch.int64, device='cpu')
     enc_ids_lens = [len(x) for x in enc_ids]
@@ -753,7 +753,7 @@ class EvalDataset:
         decoder_tokenizer,
         max_seq_len: int,
         compact_grids: bool,
-        num_virtual_tokens: int,
+        ntokens: int,
         encoder_loss_type: str,
         debug_random_pad: bool,
         debug_pad_len: int,
@@ -770,8 +770,8 @@ class EvalDataset:
         self.decoder_tokenizer = decoder_tokenizer
         self.max_seq_len = max_seq_len
         self.compact_grids = compact_grids
-        self.num_virtual_tokens = num_virtual_tokens
-        self.cls_tokens = [f"<CLS{token_i}>" for token_i in range(num_virtual_tokens)]
+        self.ntokens = ntokens
+        self.cls_tokens = [f"<CLS{token_i}>" for token_i in range(ntokens)]
         self.encoder_loss_type = encoder_loss_type
         self.debug_random_pad = debug_random_pad
         self.debug_pad_len = debug_pad_len
@@ -964,7 +964,7 @@ class EvalDataset:
         dec_out_text += "<|eot_id|>"
 
         enc_tokens = self.encoder_tokenizer(encoder_text, return_tensors="pt", truncation=False)
-        assert self.encoder_tokenizer.decode(enc_tokens["input_ids"][0][-self.num_virtual_tokens:]) == "".join(self.cls_tokens)
+        assert self.encoder_tokenizer.decode(enc_tokens["input_ids"][0][-self.ntokens:]) == "".join(self.cls_tokens)
         dec_in_tokens  = self.decoder_tokenizer(dec_in_text,  return_tensors="pt", truncation=False)
         dec_out_tokens = self.decoder_tokenizer(dec_out_text, return_tensors="pt", truncation=False)
         assert dec_out_tokens["input_ids"][0][-1].item() == self.decoder_tokenizer.eos_token_id
@@ -998,7 +998,7 @@ class EvalDataset:
             dec_label_texts = dec_label_texts.replace(' ', '')
 
         # Check length
-        if enc_tokens["input_ids"].shape[1] > self.max_seq_len or decoder_input_ids.shape[0] > self.max_seq_len // 2: # dec_len should be short
+        if enc_tokens["input_ids"].shape[1] - self.ntokens > self.max_seq_len or decoder_input_ids.shape[0] > self.max_seq_len // 2: # dec_len should be short
             return None
 
         # construct encoder label
@@ -1010,7 +1010,7 @@ class EvalDataset:
         assert all(p1 < p2 for p1, p2 in zip(input_token_positions, output_token_positions))
 
         encoder_labels = torch.full_like(encoder_input_ids, -100, dtype=encoder_input_ids.dtype)
-        end_position = len(encoder_input_ids) - self.num_virtual_tokens
+        end_position = len(encoder_input_ids) - self.ntokens
         for pos, (p1, p2) in enumerate(zip(output_token_positions, input_token_positions[1:] + [end_position])):
             is_first = (pos == 0)
             is_last = (pos == prefix_count - 1)
@@ -1150,11 +1150,11 @@ def collate_fn_eval(batch: List[Dict], dataset: EvalDataset) -> Dict:
     return batch_dict
 
 
-def collate_fn_eval_dummy(batch: List[Dict], debug_enc_len: int, debug_dec_len: int) -> Dict:
+def collate_fn_eval_dummy(batch: List[Dict], ntokens: int, debug_enc_len: int, debug_dec_len: int) -> Dict:
     batch_size = len(batch)
     task_ids = [str(x) for x in range(100000, 100000 + batch_size)]
-    enc_ids = torch.randint(1, 101, (batch_size, debug_enc_len), dtype=torch.int64, device='cpu')
-    enc_mask = torch.full((batch_size, debug_enc_len), 1, dtype=torch.int64, device='cpu')
+    enc_ids = torch.randint(1, 101, (batch_size, debug_enc_len + ntokens), dtype=torch.int64, device='cpu')
+    enc_mask = torch.full((batch_size, debug_enc_len + ntokens), 1, dtype=torch.int64, device='cpu')
     dec_ids = torch.randint(1, 101, (batch_size, debug_dec_len), dtype=torch.int64, device='cpu')
     dec_mask = torch.full((batch_size, debug_dec_len), 1, dtype=torch.int64, device='cpu')
     dec_gen_ids = torch.randint(1, 101, (batch_size, int(debug_dec_len * 0.4)), dtype=torch.int64, device='cpu')
@@ -1175,7 +1175,7 @@ def collate_fn_eval_dummy(batch: List[Dict], debug_enc_len: int, debug_dec_len: 
         "decoder_gen_input_ids": dec_gen_ids,
         "decoder_gen_attention_mask": dec_gen_mask,
         "decoder_out_token_length": [math.ceil(debug_dec_len * 0.6)] * batch_size,
-        "decoder_label_texts": ['helloworld'] * batch_size,
+        "decoder_label_texts": ['1\n1\n1'] * batch_size,
         "encoder_input_ids_lens": enc_ids_lens,
         "decoder_input_ids_lens": dec_ids_lens,
         "decoder_gen_input_ids_lens": dec_gen_ids_lens,
@@ -1195,7 +1195,7 @@ class GSDataset(Dataset):
         decoder_tokenizer,
         max_seq_len: int,
         compact_grids: bool,
-        num_virtual_tokens: int,
+        ntokens: int,
         debug_random_pad: bool,
         debug_pad_len: int,
         decoder_pad_side: str,
@@ -1205,7 +1205,7 @@ class GSDataset(Dataset):
         self.decoder_tokenizer = decoder_tokenizer
         self.max_seq_len = max_seq_len
         self.compact_grids = compact_grids
-        self.num_virtual_tokens = num_virtual_tokens
+        self.ntokens = ntokens
         self.debug_random_pad = debug_random_pad
         self.debug_pad_len = debug_pad_len
         self.decoder_pad_side = decoder_pad_side
@@ -1267,6 +1267,7 @@ class GSDataset(Dataset):
         ], dim=0)
 
         # Check length
+        # should never be evoked in practice
         if decoder_input_ids.shape[0] > self.max_seq_len // 2: # dec_len should be short
             return None
 
@@ -1304,11 +1305,12 @@ def collate_fn_gs(batch: List[Dict], dataset: GSDataset) -> Dict:
     return batch_dict
 
 
-def collate_fn_gs_dummy(batch: List[Dict], debug_enc_len: int, debug_dec_len: int) -> Dict:
+# not used yet
+def collate_fn_gs_dummy(batch: List[Dict], ntokens: int, debug_enc_len: int, debug_dec_len: int) -> Dict:
     batch_size = len(batch)
     task_ids = [str(x) for x in range(100000, 100000 + batch_size)]
-    enc_ids = torch.randint(1, 101, (batch_size, debug_enc_len), dtype=torch.int64, device='cpu')
-    enc_mask = torch.full((batch_size, debug_enc_len), 1, dtype=torch.int64, device='cpu')
+    enc_ids = torch.randint(1, 101, (batch_size, debug_enc_len + ntokens), dtype=torch.int64, device='cpu')
+    enc_mask = torch.full((batch_size, debug_enc_len + ntokens), 1, dtype=torch.int64, device='cpu')
     dec_ids = torch.randint(1, 101, (batch_size, debug_dec_len), dtype=torch.int64, device='cpu')
     dec_mask = torch.full((batch_size, debug_dec_len), 1, dtype=torch.int64, device='cpu')
     dec_gen_ids = torch.randint(1, 101, (batch_size, int(debug_dec_len * 0.4)), dtype=torch.int64, device='cpu')
@@ -1329,7 +1331,7 @@ def collate_fn_gs_dummy(batch: List[Dict], debug_enc_len: int, debug_dec_len: in
         "decoder_gen_input_ids": dec_gen_ids,
         "decoder_gen_attention_mask": dec_gen_mask,
         "decoder_out_token_length": [math.ceil(debug_dec_len * 0.6)] * batch_size,
-        "decoder_label_texts": ['helloworld'] * batch_size,
+        "decoder_label_texts": ['1\n1\n1'] * batch_size,
         "encoder_input_ids_lens": enc_ids_lens,
         "decoder_input_ids_lens": dec_ids_lens,
         "decoder_gen_input_ids_lens": dec_gen_ids_lens,

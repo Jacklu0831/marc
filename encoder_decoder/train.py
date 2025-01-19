@@ -45,8 +45,8 @@ from data_utils import (
 
 import os
 os.environ["TOKENIZERS_PARALLELISM"] = "false" # weird tokenizer issue
-os.environ["NCCL_TIMEOUT"] = "14400" # 4hr for evaluation time variance across gpus
-os.environ["NCCL_TIMEOUT_MS"] = "14400000"
+os.environ["NCCL_TIMEOUT"] = "28800" # 4hr for evaluation time variance across gpus
+os.environ["NCCL_TIMEOUT_MS"] = "28800000"
 os.environ["NCCL_ASYNC_ERROR_HANDLING"] = "1"
 os.environ["NCCL_BLOCKING_WAIT"] = "1"
 os.environ["TORCH_NCCL_ASYNC_ERROR_HANDLING"] = "1"
@@ -90,21 +90,23 @@ def set_up_main_process_logger(accelerator, logger):
         datasets.utils.logging.set_verbosity_error()
         transformers.utils.logging.set_verbosity_error()
 
+
 class Prefix2PrefixProjection(nn.Module):
     def __init__(
             self,
-            num_virtual_tokens: int,
+            ntokens: int,
             encoder_model: nn.Module,
             decoder_model: nn.Module,
-            conditioning_method: str,
+            identity_init: bool,
+            projection_type: str,
             vae: bool,
-            vae_identity_init: bool,
+            device: torch.device,
         ):
         super(Prefix2PrefixProjection, self).__init__()
         # prefixes are formatted as 16 of (2=2, BS=1, nhead=8, nvirtualtoken=1, tokendim / nhead=64)
-        self.num_virtual_tokens = num_virtual_tokens
-        self.conditioning_method = conditioning_method
+        self.ntokens = ntokens
         self.vae = vae
+        self.device = device
         # model config
         self.enc_num_layers = encoder_model.config.num_hidden_layers
         self.enc_num_kv_heads = encoder_model.config.num_key_value_heads
@@ -115,55 +117,83 @@ class Prefix2PrefixProjection(nn.Module):
         self.dec_embed_size_per_head = decoder_model.config.hidden_size // decoder_model.config.num_attention_heads
         self.dec_size = self.dec_num_layers * self.dec_num_kv_heads * self.dec_embed_size_per_head
         # weights
-        if conditioning_method == "prefix2prefix" and not self.vae:
+        if projection_type == "none":
             pass
-        elif conditioning_method == "prefix2prefix" and self.vae:
-            if vae_identity_init:
-                self.mu_k_weights, self.mu_v_weights, self.mu_k_biases, self.mu_v_biases = self.get_projection_full(scheme="identity")
-                self.logvar_k_weights, self.logvar_v_weights, self.logvar_k_biases, self.logvar_v_biases = self.get_projection_full(scheme="zero")
-            else:
-                self.mu_k_weights, self.mu_v_weights, self.mu_k_biases, self.mu_v_biases = self.get_projection_full(scheme="random")
-                self.logvar_k_weights, self.logvar_v_weights, self.logvar_k_biases, self.logvar_v_biases = self.get_projection_full(scheme="random")
-        elif conditioning_method == "prefix2prefix_full":
-            self.k_weights, self.v_weights, self.k_biases, self.v_biases = self.get_projection_full(scheme="random")
-        elif conditioning_method == "prefix2prefix_full_identity":
-            self.k_weights, self.v_weights, self.k_biases, self.v_biases = self.get_projection_full(scheme="identity")
+        elif not vae:
+            self.k_weights, self.v_weights, self.k_biases, self.v_biases = self.get_projection(
+                scheme="identity" if identity_init else "random",
+                projection_type=projection_type,
+            )
         else:
-            raise ValueError(f"invalid conditioning method {conditioning_method}")
+            self.mu_k_weights, self.mu_v_weights, self.mu_k_biases, self.mu_v_biases = self.get_projection(
+                scheme="identity" if identity_init else "random",
+                projection_type=projection_type,
+            )
+            self.logvar_k_weights, self.logvar_v_weights, self.logvar_k_biases, self.logvar_v_biases = self.get_projection(
+                scheme="zero" if identity_init else "random",
+                projection_type=projection_type,
+            )
 
-    def get_projection_full(self, scheme: str) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-        k_projections = nn.ModuleList(
-            nn.Linear(
-                self.enc_size, self.dec_size
-            ) for _ in range(self.num_virtual_tokens)
-        )
-        v_projections = nn.ModuleList(
-            nn.Linear(
-                self.enc_size, self.dec_size
-            ) for _ in range(self.num_virtual_tokens)
-        )
-        if scheme == "identity":
-            assert self.enc_size == self.dec_size
-            with torch.no_grad():
-                for projection in k_projections:
-                    projection.weight.data.copy_(torch.eye(self.enc_size, dtype=projection.weight.dtype))
-                    projection.bias.data.zero_()
-                for projection in v_projections:
-                    projection.weight.data.copy_(torch.eye(self.enc_size, dtype=projection.weight.dtype))
-                    projection.bias.data.zero_()
-        elif scheme == "zero":
-            with torch.no_grad():
-                for projection in k_projections:
-                    projection.weight.data.zero_()
-                    projection.bias.data.zero_()
-                for projection in v_projections:
-                    projection.weight.data.zero_()
-                    projection.bias.data.zero_()
+    def get_projection(self, scheme: str, projection_type: str) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        if projection_type == "shared":
+            k_projections = nn.Linear(self.enc_size, self.dec_size, device=self.device)
+            v_projections = nn.Linear(self.enc_size, self.dec_size, device=self.device)
+            if scheme == "identity":
+                assert self.enc_size == self.dec_size
+                with torch.no_grad():
+                    k_projections.weight.data.copy_(torch.eye(self.encoder_hidden_size, dtype=k_projections.weight.dtype, device=self.device))
+                    k_projections.bias.data.zero_()
+                    v_projections.weight.data.copy_(torch.eye(self.encoder_hidden_size, dtype=v_projections.weight.dtype, device=self.device))
+                    v_projections.bias.data.zero_()
+            elif scheme == "zero":
+                with torch.no_grad():
+                    k_projections.weight.data.zero_()
+                    k_projections.bias.data.zero_()
+                    v_projections.weight.data.zero_()
+                    v_projections.bias.data.zero_()
 
-        k_weights = nn.Parameter(torch.stack([projection.weight for projection in k_projections], dim=0))
-        v_weights = nn.Parameter(torch.stack([projection.weight for projection in v_projections], dim=0))
-        k_biases = nn.Parameter(torch.stack([projection.bias for projection in k_projections], dim=0))
-        v_biases = nn.Parameter(torch.stack([projection.bias for projection in k_projections], dim=0))
+            k_weights = nn.Parameter(k_projections.weight)
+            v_weights = nn.Parameter(v_projections.weight)
+            k_biases = nn.Parameter(k_projections.bias)
+            v_biases = nn.Parameter(v_projections.bias)
+
+        elif projection_type == "full":
+            k_projections = nn.ModuleList(
+                nn.Linear(
+                    self.enc_size, self.dec_size, device=self.device,
+                ) for _ in range(self.ntokens)
+            )
+            v_projections = nn.ModuleList(
+                nn.Linear(
+                    self.enc_size, self.dec_size, device=self.device,
+                ) for _ in range(self.ntokens)
+            )
+            if scheme == "identity":
+                assert self.enc_size == self.dec_size
+                with torch.no_grad():
+                    for projection in k_projections:
+                        projection.weight.data.copy_(torch.eye(self.enc_size, dtype=projection.weight.dtype, device=self.device))
+                        projection.bias.data.zero_()
+                    for projection in v_projections:
+                        projection.weight.data.copy_(torch.eye(self.enc_size, dtype=projection.weight.dtype, device=self.device))
+                        projection.bias.data.zero_()
+            elif scheme == "zero":
+                with torch.no_grad():
+                    for projection in k_projections:
+                        projection.weight.data.zero_()
+                        projection.bias.data.zero_()
+                    for projection in v_projections:
+                        projection.weight.data.zero_()
+                        projection.bias.data.zero_()
+
+            k_weights = nn.Parameter(torch.stack([projection.weight for projection in k_projections], dim=0))
+            v_weights = nn.Parameter(torch.stack([projection.weight for projection in v_projections], dim=0))
+            k_biases = nn.Parameter(torch.stack([projection.bias for projection in k_projections], dim=0))
+            v_biases = nn.Parameter(torch.stack([projection.bias for projection in k_projections], dim=0))
+
+        else:
+            raise NotImplementedError(f"{projection_type} not yet implemented")
+
         del k_projections, v_projections
         return k_weights, v_weights, k_biases, v_biases
 
@@ -180,14 +210,39 @@ class Prefix2PrefixProjection(nn.Module):
         assert kv_tensor.shape[0] == 2
         k_tensor, v_tensor = kv_tensor[0], kv_tensor[1] # (batch_size, nvirtualtoken, num_layer x nhead x token_per_nhead = enc_size)
 
-        kl = torch.tensor(0.0, device=predicted_program[0][0].device)
-        if self.conditioning_method == "prefix2prefix" and not self.vae:
+        kl = torch.tensor(0.0, device=self.device)
+        if self.projection_type == "none":
             return predicted_program, kl
-        elif self.conditioning_method == "prefix2prefix" and self.vae:
-            k_mu = torch.einsum("bnh,nhd->bnd", k_tensor, self.mu_k_weights.transpose(1, 2)) + self.mu_k_biases
-            v_mu = torch.einsum("bnh,nhd->bnd", v_tensor, self.mu_v_weights.transpose(1, 2)) + self.mu_v_biases
-            k_logvar = torch.einsum("bnh,nhd->bnd", k_tensor, self.logvar_k_weights.transpose(1, 2)) + self.logvar_k_biases
-            v_logvar = torch.einsum("bnh,nhd->bnd", v_tensor, self.logvar_v_weights.transpose(1, 2)) + self.logvar_v_biases
+        elif not self.vae:
+            # self.k_weights size (nvirtualtoken, enc_size, dec_size)
+            if self.projection_type == "shared":
+                k_tensor = torch.einsum("bnh,hd->bnd", k_tensor, self.k_weights.transpose(0, 1)) + self.k_biases
+                v_tensor = torch.einsum("bnh,hd->bnd", v_tensor, self.v_weights.transpose(0, 1)) + self.v_biases
+            elif self.projection_type == "full":
+                k_tensor = torch.einsum("bnh,nhd->bnd", k_tensor, self.k_weights.transpose(1, 2)) + self.k_biases
+                v_tensor = torch.einsum("bnh,nhd->bnd", v_tensor, self.v_weights.transpose(1, 2)) + self.v_biases
+            else:
+                raise NotImplementedError(f"{self.projection_type} not yet implemented")
+            # format
+            kv_tensor = torch.stack([k_tensor, v_tensor]) # (2, batch_size, nvirtualtoken, num_layer x nhead x token_per_nhead = dec_size)
+            kv_tensor = kv_tensor.view(2, kv_tensor.shape[1], self.ntokens, self.dec_num_layers, self.dec_num_kv_heads, self.dec_embed_size_per_head)
+            kv_tensor = kv_tensor.permute(3, 0, 1, 4, 2, 5) # (num_layer, 2, batch_size, nhead, nvirtualtoken, token_per_nhead)
+            return [(kv[0], kv[1]) for kv in kv_tensor], kl
+
+        else:
+            if self.projection_type == "shared":
+                k_mu = torch.einsum("bnh,hd->bnd", k_tensor, self.mu_k_weights.transpose(0, 1)) + self.mu_k_biases
+                v_mu = torch.einsum("bnh,hd->bnd", v_tensor, self.mu_v_weights.transpose(0, 1)) + self.mu_v_biases
+                k_logvar = torch.einsum("bnh,hd->bnd", k_tensor, self.logvar_k_weights.transpose(0, 1)) + self.logvar_k_biases
+                v_logvar = torch.einsum("bnh,hd->bnd", v_tensor, self.logvar_v_weights.transpose(0, 1)) + self.logvar_v_biases
+            elif self.projection_type == "full":
+                k_mu = torch.einsum("bnh,nhd->bnd", k_tensor, self.mu_k_weights.transpose(1, 2)) + self.mu_k_biases
+                v_mu = torch.einsum("bnh,nhd->bnd", v_tensor, self.mu_v_weights.transpose(1, 2)) + self.mu_v_biases
+                k_logvar = torch.einsum("bnh,nhd->bnd", k_tensor, self.logvar_k_weights.transpose(1, 2)) + self.logvar_k_biases
+                v_logvar = torch.einsum("bnh,nhd->bnd", v_tensor, self.logvar_v_weights.transpose(1, 2)) + self.logvar_v_biases
+            else:
+                raise NotImplementedError(f"{self.projection_type} not yet implemented")
+
             mu = torch.stack([k_mu, v_mu]) # (2, batch_size, nvirtualtoken, num_layer x nhead x token_per_nhead = dec_size)
             logvar = torch.stack([k_logvar, v_logvar]) # (2, batch_size, nvirtualtoken, num_layer x nhead x token_per_nhead = dec_size)
             std = torch.exp(0.5 * logvar)
@@ -196,80 +251,94 @@ class Prefix2PrefixProjection(nn.Module):
             if not vae_no_kl:
                 kl = -0.5 * torch.sum(1.0 + logvar - mu.pow(2.0) - logvar.exp())
             # format
-            kv_tensor = kv_tensor.view(2, kv_tensor.shape[1], self.num_virtual_tokens, self.dec_num_layers, self.dec_num_kv_heads, self.dec_embed_size_per_head)
+            kv_tensor = kv_tensor.view(2, kv_tensor.shape[1], self.ntokens, self.dec_num_layers, self.dec_num_kv_heads, self.dec_embed_size_per_head)
             kv_tensor = kv_tensor.permute(3, 0, 1, 4, 2, 5) # (num_layer, 2, batch_size, nhead, nvirtualtoken, token_per_nhead)
             return [(kv[0], kv[1]) for kv in kv_tensor], kl
-        elif self.conditioning_method in ["prefix2prefix_full", "prefix2prefix_full_identity"]:
-            # self.k_weights size (nvirtualtoken, enc_size, dec_size)
-            k_tensor = torch.einsum("bnh,nhd->bnd", k_tensor, self.k_weights.transpose(1, 2)) + self.k_biases
-            v_tensor = torch.einsum("bnh,nhd->bnd", v_tensor, self.v_weights.transpose(1, 2)) + self.v_biases
-            # format
-            kv_tensor = torch.stack([k_tensor, v_tensor]) # (2, batch_size, nvirtualtoken, num_layer x nhead x token_per_nhead = dec_size)
-            kv_tensor = kv_tensor.view(2, kv_tensor.shape[1], self.num_virtual_tokens, self.dec_num_layers, self.dec_num_kv_heads, self.dec_embed_size_per_head)
-            kv_tensor = kv_tensor.permute(3, 0, 1, 4, 2, 5) # (num_layer, 2, batch_size, nhead, nvirtualtoken, token_per_nhead)
-            return [(kv[0], kv[1]) for kv in kv_tensor], kl
-        else:
-            raise ValueError(f"invalid conditioning method {self.conditioning_method}")
 
     def get_memory_footprint(self):
         return sum(p.nelement() * p.element_size() for p in self.parameters()) + \
             sum(p.nelement() * p.element_size() for p in self.buffers())
 
+
 class Hidden2PromptProjection(nn.Module):
     def __init__(
             self,
-            num_virtual_tokens: int,
+            ntokens: int,
             encoder_model: nn.Module,
             decoder_model: nn.Module,
-            conditioning_method: str,
+            identity_init: bool,
+            projection_type: str,
             vae: bool,
-            vae_identity_init: bool,
+            device: torch.device,
         ):
         super(Hidden2PromptProjection, self).__init__()
-        self.num_virtual_tokens = num_virtual_tokens
-        self.conditioning_method = conditioning_method
+        self.ntokens = ntokens
         self.vae = vae
+        self.projection_type = projection_type
+        self.device = device
         # model config
         self.encoder_hidden_size = encoder_model.config.hidden_size
         self.decoder_hidden_size = decoder_model.config.hidden_size
         # weights
-        if conditioning_method == "hidden2prompt" and not self.vae:
+        if projection_type == "none":
             pass
-        elif conditioning_method == "hidden2prompt" and self.vae:
-            if vae_identity_init:
-                self.mu_weights, self.mu_biases = self.get_projection_full(scheme="identity")
-                self.logvar_weights, self.logvar_biases = self.get_projection_full(scheme="zero")
-            else:
-                self.mu_weights, self.mu_biases = self.get_projection_full(scheme="random")
-                self.logvar_weights, self.logvar_biases = self.get_projection_full(scheme="random")
-        elif conditioning_method == "hidden2prompt_full":
-            self.weights, self.biases = self.get_projection_full(scheme="random")
-        elif conditioning_method == "hidden2prompt_full_identity":
-            self.weights, self.biases = self.get_projection_full(scheme="identity")
+        elif not vae:
+            self.weights, self.biases = self.get_projection(
+                scheme="identity" if identity_init else "random",
+                projection_type=projection_type,
+            )
         else:
-            raise ValueError(f"invalid conditioning method {conditioning_method}")
+            self.mu_weights, self.mu_biases = self.get_projection(
+                scheme="identity" if identity_init else "random",
+                projection_type=projection_type,
+            )
+            self.logvar_weights, self.logvar_biases = self.get_projection(
+                scheme="zero" if identity_init else "random",
+                projection_type=projection_type,
+            )
 
-    def get_projection_full(self, scheme: str) -> Tuple[torch.Tensor, torch.Tensor]:
-        projections = nn.ModuleList([
-            nn.Linear(
-                self.encoder_hidden_size,
-                self.decoder_hidden_size,
-            ) for _ in range(self.num_virtual_tokens)
-        ])
-        if scheme == "identity":
-            assert self.encoder_hidden_size == self.decoder_hidden_size
-            with torch.no_grad():
-                for projection in projections:
-                    projection.weight.data.copy_(torch.eye(self.encoder_hidden_size, dtype=projection.weight.dtype))
-                    projection.bias.data.zero_()
-        elif scheme == "zero":
-            with torch.no_grad():
-                for projection in projections:
-                    projection.weight.data.zero_()
-                    projection.bias.data.zero_()
+    def get_projection(self, scheme: str, projection_type: str) -> Tuple[torch.Tensor, torch.Tensor]:
+        if projection_type == "shared":
+            projections = nn.Linear(self.encoder_hidden_size, self.decoder_hidden_size, device=self.device)
+            if scheme == "identity":
+                assert self.encoder_hidden_size == self.decoder_hidden_size
+                with torch.no_grad():
+                    projections.weight.data.copy_(torch.eye(self.encoder_hidden_size, dtype=projections.weight.dtype, device=self.device))
+                    projections.bias.data.zero_()
+            elif scheme == "zero":
+                with torch.no_grad():
+                    projections.weight.data.zero_()
+                    projections.bias.data.zero_()
 
-        weights = nn.Parameter(torch.stack([projection.weight for projection in projections], dim=0))
-        biases = nn.Parameter(torch.stack([projection.bias for projection in projections], dim=0))
+            weights = nn.Parameter(projections.weight)
+            biases = nn.Parameter(projections.bias)
+
+        elif projection_type == "full":
+            projections = nn.ModuleList([
+                nn.Linear(
+                    self.encoder_hidden_size,
+                    self.decoder_hidden_size,
+                    device=self.device,
+                ) for _ in range(self.ntokens)
+            ])
+            if scheme == "identity":
+                assert self.encoder_hidden_size == self.decoder_hidden_size
+                with torch.no_grad():
+                    for projection in projections:
+                        projection.weight.data.copy_(torch.eye(self.encoder_hidden_size, dtype=projection.weight.dtype, device=self.device))
+                        projection.bias.data.zero_()
+            elif scheme == "zero":
+                with torch.no_grad():
+                    for projection in projections:
+                        projection.weight.data.zero_()
+                        projection.bias.data.zero_()
+
+            weights = nn.Parameter(torch.stack([projection.weight for projection in projections], dim=0))
+            biases = nn.Parameter(torch.stack([projection.bias for projection in projections], dim=0))
+
+        else:
+            raise NotImplementedError(f"{projection_type} not yet implemented")
+
         del projections
         return weights, biases
 
@@ -280,27 +349,37 @@ class Hidden2PromptProjection(nn.Module):
             vae_no_kl: bool
         ) -> Tuple[torch.Tensor, torch.Tensor]:
 
-        # enc_hidden_states has shape (batch_size, num_virtual_tokens, hidden_dim)
-        assert enc_hidden_states.shape[1] == self.num_virtual_tokens
+        # enc_hidden_states has shape (batch_size, ntokens, hidden_dim)
+        assert enc_hidden_states.shape[1] == self.ntokens
 
-        kl = torch.tensor(0.0, device=enc_hidden_states.device)
-        if self.conditioning_method == "hidden2prompt" and not self.vae:
+        kl = torch.tensor(0.0, device=self.device)
+        if self.projection_type == "none":
             return enc_hidden_states, kl
-        elif self.conditioning_method == "hidden2prompt" and self.vae:
-            mu = torch.einsum("bnh,nhd->bnd", enc_hidden_states, self.mu_weights.transpose(1, 2)) + self.mu_biases
-            logvar = torch.einsum("bnh,nhd->bnd", enc_hidden_states, self.logvar_weights.transpose(1, 2)) + self.logvar_biases
+        elif not self.vae:
+            if self.projection_type == "shared":
+                enc_hidden_states = torch.einsum("bnh,hd->bnd", enc_hidden_states, self.weights.transpose(0, 1)) + self.biases
+            elif self.projection_type == "full":
+                enc_hidden_states = torch.einsum("bnh,nhd->bnd", enc_hidden_states, self.weights.transpose(1, 2)) + self.biases
+            else:
+                raise NotImplementedError(f"{self.projection_type} not yet implemented")
+            return enc_hidden_states, kl
+
+        else:
+            if self.projection_type == "shared":
+                mu = torch.einsum("bnh,hd->bnd", enc_hidden_states, self.mu_weights.transpose(0, 1)) + self.mu_biases
+                logvar = torch.einsum("bnh,hd->bnd", enc_hidden_states, self.logvar_weights.transpose(0, 1)) + self.logvar_biases
+            elif self.projection_type == "full":
+                mu = torch.einsum("bnh,nhd->bnd", enc_hidden_states, self.mu_weights.transpose(1, 2)) + self.mu_biases
+                logvar = torch.einsum("bnh,nhd->bnd", enc_hidden_states, self.logvar_weights.transpose(1, 2)) + self.logvar_biases
+            else:
+                raise NotImplementedError(f"{self.projection_type} not yet implemented")
+
             std = torch.exp(0.5 * logvar)
             eps = torch.zeros_like(std) if vae_no_sample else torch.randn_like(std)
             enc_hidden_states = mu + eps * std
             if not vae_no_kl:
                 kl = -0.5 * torch.sum(1.0 + logvar - mu.pow(2.0) - logvar.exp())
             return enc_hidden_states, kl
-        elif self.conditioning_method in ["hidden2prompt_full", "hidden2prompt_full_identity"]:
-            # outs (batch_size, num_virtual_tokens, out_dim)
-            enc_hidden_states = torch.einsum("bnh,nhd->bnd", enc_hidden_states, self.weights.transpose(1, 2)) + self.biases
-            return enc_hidden_states, kl
-        else:
-            raise ValueError(f"invalid conditioning method {self.conditioning_method}")
 
     def get_memory_footprint(self):
         return sum(p.nelement() * p.element_size() for p in self.parameters()) + \
@@ -323,7 +402,7 @@ def encoder_decoder_loss(
     decoder_labels: torch.Tensor,
     enc_ids_lens: List[int],
     dec_ids_lens: List[int],
-    num_virtual_tokens: int,
+    ntokens: int,
     invar_loss_lambda: float,
     encoder_loss_lambda: float,
     no_lora: bool,
@@ -346,21 +425,20 @@ def encoder_decoder_loss(
     encoder_loss = enc_out.loss
 
     # get predicted program for decoder and enc_hidden_states for invar loss
-    if "prefix2prefix" in conditioning_method:
-        assert isinstance(conditioning_projection, Prefix2PrefixProjection)
+    if conditioning_method == "prefix2prefix":
         # get prefix
         predicted_program = []
         if encoder_pad_side == "right":
             for x1, x2 in enc_out.past_key_values:
                 predicted_program.append((
-                    torch.stack([x[:, l-num_virtual_tokens:l, :] for x, l in zip(x1, enc_ids_lens)]),
-                    torch.stack([x[:, l-num_virtual_tokens:l, :] for x, l in zip(x2, enc_ids_lens)]),
+                    torch.stack([x[:, l-ntokens:l, :] for x, l in zip(x1, enc_ids_lens)]),
+                    torch.stack([x[:, l-ntokens:l, :] for x, l in zip(x2, enc_ids_lens)]),
                 ))
         else:
             for x1, x2 in enc_out.past_key_values:
                 predicted_program.append((
-                    torch.stack([x[:, -num_virtual_tokens:, :] for x in x1]),
-                    torch.stack([x[:, -num_virtual_tokens:, :] for x in x2]),
+                    torch.stack([x[:, -ntokens:, :] for x in x1]),
+                    torch.stack([x[:, -ntokens:, :] for x in x2]),
                 ))
         # prefix to either prefix or prompt
         predicted_program, kl_loss = conditioning_projection(
@@ -369,16 +447,15 @@ def encoder_decoder_loss(
             vae_no_kl=debug_vae_no_kl,
         )
         # hidden state will be used for invar loss, so make it a batch first tensor
-        enc_hidden_states = torch.stack([torch.stack(x) for x in predicted_program]) # each (batch_size, num_kv_heads, num_virtual_tokens, embed_size_per_head)
-        enc_hidden_states = enc_hidden_states.permute(2, 0, 1, 3, 4, 5) # (batch_size, num_layer, 2, num_kv_heads, num_virtual_tokens, embed_size_per_head)
-    elif "hidden2prompt" in conditioning_method:
-        assert isinstance(conditioning_projection, Hidden2PromptProjection)
+        enc_hidden_states = torch.stack([torch.stack(x) for x in predicted_program]) # each (batch_size, num_kv_heads, ntokens, embed_size_per_head)
+        enc_hidden_states = enc_hidden_states.permute(2, 0, 1, 3, 4, 5) # (batch_size, num_layer, 2, num_kv_heads, ntokens, embed_size_per_head)
+    elif conditioning_method == "hidden2prompt":
         # get hidden states
         enc_hidden_states = enc_out.hidden_states[-1] # [B, seq_len, hidden_dim]
         if encoder_pad_side == "right":
-            enc_hidden_states = torch.stack([x[l-num_virtual_tokens:l] for x, l in zip(enc_hidden_states, enc_ids_lens)])
+            enc_hidden_states = torch.stack([x[l-ntokens:l] for x, l in zip(enc_hidden_states, enc_ids_lens)])
         else:
-            enc_hidden_states = torch.stack([x[-num_virtual_tokens:] for x in enc_hidden_states])
+            enc_hidden_states = torch.stack([x[-ntokens:] for x in enc_hidden_states])
         # predicted program is either just the hidden states, or projected
         predicted_program, kl_loss = conditioning_projection(
             enc_hidden_states=enc_hidden_states,
@@ -398,7 +475,7 @@ def encoder_decoder_loss(
             decoder_attention_mask=decoder_attention_mask,
             decoder_labels=decoder_labels,
             dec_ids_lens=dec_ids_lens,
-            num_virtual_tokens=num_virtual_tokens,
+            ntokens=ntokens,
             no_lora=no_lora,
             decoder_pad_side=decoder_pad_side,
             trainable_nbit=trainable_nbit,
@@ -423,7 +500,7 @@ def decoder_loss(
     decoder_attention_mask: torch.Tensor,
     decoder_labels: torch.Tensor,
     dec_ids_lens: List[int],
-    num_virtual_tokens: int,
+    ntokens: int,
     no_lora: bool,
     decoder_pad_side: str,
     trainable_nbit: int,
@@ -432,13 +509,13 @@ def decoder_loss(
 ) -> torch.Tensor:
     # decoder attention mask must be extended
     prefix_attention_mask = torch.full(
-        (decoder_attention_mask.shape[0], num_virtual_tokens),
+        (decoder_attention_mask.shape[0], ntokens),
         1,
         device=decoder_attention_mask.device,
         dtype=decoder_attention_mask.dtype,
     )
 
-    if "prefix2prefix" in conditioning_method:
+    if conditioning_method == "prefix2prefix":
         assert isinstance(predicted_program, list)
         # pad decoder attention mask
         decoder_attention_mask = torch.cat([prefix_attention_mask, decoder_attention_mask], dim=1)
@@ -453,7 +530,7 @@ def decoder_loss(
             past_key_values=predicted_program,
             labels=decoder_labels,
         )
-    elif "hidden2prompt" in conditioning_method:
+    elif conditioning_method == "hidden2prompt":
         assert isinstance(predicted_program, torch.Tensor)
         # pad decoder attention mask
         if decoder_pad_side == "right":
@@ -480,7 +557,7 @@ def decoder_loss(
             decoder_inputs_embeds = torch.stack(decoder_inputs_embeds_new)
         # pad label
         prefix_label_mask = torch.full(
-            (decoder_labels.shape[0], num_virtual_tokens),
+            (decoder_labels.shape[0], ntokens),
             -100,
             device=decoder_labels.device,
             dtype=decoder_labels.dtype,
@@ -555,7 +632,7 @@ def gradient_search(
         decoder_tokenizer=eval_dataset.decoder_tokenizer,
         max_seq_len=eval_dataset.max_seq_len,
         compact_grids=eval_dataset.compact_grids,
-        num_virtual_tokens=eval_dataset.num_virtual_tokens,
+        ntokens=eval_dataset.ntokens,
         debug_random_pad=eval_dataset.debug_random_pad,
         debug_pad_len=eval_dataset.debug_pad_len,
         decoder_pad_side=eval_dataset.decoder_pad_side,
@@ -631,7 +708,7 @@ def gradient_search(
                     decoder_attention_mask=dec_mask,
                     decoder_labels=dec_labels,
                     dec_ids_lens=dec_ids_lens,
-                    num_virtual_tokens=eval_dataset.num_virtual_tokens,
+                    ntokens=eval_dataset.ntokens,
                     no_lora=no_lora,
                     decoder_pad_side=eval_dataset.decoder_pad_side,
                     trainable_nbit=trainable_nbit,
@@ -896,7 +973,7 @@ def evaluate(
                         decoder_labels=dec_labels,
                         enc_ids_lens=enc_ids_lens,
                         dec_ids_lens=dec_ids_lens,
-                        num_virtual_tokens=dataset.num_virtual_tokens,
+                        ntokens=dataset.ntokens,
                         invar_loss_lambda=0.0,
                         encoder_loss_lambda=0.0,
                         no_lora=no_lora,
@@ -916,7 +993,7 @@ def evaluate(
                 # accumulate program
                 if batch_permute_i == 0:
                     predicted_program_accum = predicted_program
-                elif "2prefix" in conditioning_method:
+                elif conditioning_method == "prefix2prefix":
                     assert isinstance(predicted_program, list)
                     assert len(predicted_program) == len(predicted_program_accum) # same number of layers # type: ignore
                     for layer_i, (layer_program_0, layer_program_1) in enumerate(predicted_program):
@@ -942,7 +1019,7 @@ def evaluate(
 
             # average program
             assert all(avail > 0 for avail in avail_accum)
-            if "2prefix" in conditioning_method:
+            if conditioning_method == "prefix2prefix":
                 for layer_i, (layer_program_0, layer_program_1) in enumerate(predicted_program_accum): # type: ignore
                     assert len(layer_program_0) == len(layer_program_1) == len(avail_accum) == bs
                     for batch_i in range(bs):
@@ -999,7 +1076,7 @@ def evaluate(
                         decoder_attention_mask=dec_mask,
                         decoder_labels=dec_labels,
                         dec_ids_lens=dec_ids_lens,
-                        num_virtual_tokens=dataset.num_virtual_tokens,
+                        ntokens=dataset.ntokens,
                         no_lora=no_lora,
                         decoder_pad_side=dataset.decoder_pad_side,
                         trainable_nbit=trainable_nbit,
@@ -1022,7 +1099,33 @@ def evaluate(
             with accelerator.autocast():
                 # padding at front because HF ignores it
                 gen_texts = None
-                if "2prompt" in conditioning_method:
+                if conditioning_method == "prefix2prefix":
+                    assert isinstance(predicted_program, list)
+                    dec_gen_ids = torch.cat([
+                        torch.ones((bs, dataset.ntokens), device=dec_gen_ids.device, dtype=dec_gen_ids.dtype),
+                        dec_gen_ids
+                    ], dim=1) # the addition will be ignored, double checked
+                    dec_gen_mask = torch.cat([
+                        torch.ones((bs, dataset.ntokens), device=dec_gen_mask.device, dtype=dec_gen_mask.dtype),
+                        dec_gen_mask
+                    ], dim=1)
+                    if flash_attn:
+                        predicted_program = [
+                            ([x[0].to(NBIT_TO_DTYPE[trainable_nbit]), x[1].to(NBIT_TO_DTYPE[trainable_nbit])])
+                        for x in predicted_program] # type: ignore
+                    gen_tokens = decoder_module.generate(
+                        input_ids=dec_gen_ids,
+                        attention_mask=dec_gen_mask,
+                        past_key_values=predicted_program,
+                        max_new_tokens=max(out_token_length), # arbitrary increase
+                        num_return_sequences=1,
+                        temperature=1.0,
+                        top_p=1.0,
+                        do_sample=False,
+                        eos_token_id=terminators,
+                    )
+                    gen_texts = dataset.decoder_tokenizer.batch_decode(gen_tokens[:, dec_gen_ids.shape[1]:], skip_special_tokens=True)
+                elif conditioning_method == "hidden2prompt":
                     assert isinstance(predicted_program, torch.Tensor)
                     if no_lora:
                         decoder_inputs_embeds = decoder_module.model.embed_tokens(dec_gen_ids)
@@ -1041,7 +1144,7 @@ def evaluate(
                         decoder_inputs_embeds = decoder_inputs_embeds.to(NBIT_TO_DTYPE[trainable_nbit])
                     # pad decoder attention masks
                     prefix_attention_mask = torch.full(
-                        (dec_gen_mask.shape[0], dataset.num_virtual_tokens),
+                        (dec_gen_mask.shape[0], dataset.ntokens),
                         1,
                         device=dec_gen_mask.device,
                         dtype=dec_gen_mask.dtype,
@@ -1067,31 +1170,7 @@ def evaluate(
                     )
                     gen_texts = dataset.decoder_tokenizer.batch_decode(gen_tokens, skip_special_tokens=True)
                 else:
-                    assert isinstance(predicted_program, list)
-                    dec_gen_ids = torch.cat([
-                        torch.ones((bs, dataset.num_virtual_tokens), device=dec_gen_ids.device, dtype=dec_gen_ids.dtype),
-                        dec_gen_ids
-                    ], dim=1) # the addition will be ignored, double checked
-                    dec_gen_mask = torch.cat([
-                        torch.ones((bs, dataset.num_virtual_tokens), device=dec_gen_mask.device, dtype=dec_gen_mask.dtype),
-                        dec_gen_mask
-                    ], dim=1)
-                    if flash_attn:
-                        predicted_program = [
-                            ([x[0].to(NBIT_TO_DTYPE[trainable_nbit]), x[1].to(NBIT_TO_DTYPE[trainable_nbit])])
-                        for x in predicted_program] # type: ignore
-                    gen_tokens = decoder_module.generate(
-                        input_ids=dec_gen_ids,
-                        attention_mask=dec_gen_mask,
-                        past_key_values=predicted_program,
-                        max_new_tokens=max(out_token_length), # arbitrary increase
-                        num_return_sequences=1,
-                        temperature=1.0,
-                        top_p=1.0,
-                        do_sample=False,
-                        eos_token_id=terminators,
-                    )
-                    gen_texts = dataset.decoder_tokenizer.batch_decode(gen_tokens[:, dec_gen_ids.shape[1]:], skip_special_tokens=True)
+                    raise ValueError(f"invalid conditioning method {conditioning_method}")
 
             # Compare each gen_text with label_texts
             assert len(task_ids) == len(inverters) == bs, (len(task_ids), len(inverters), bs)
@@ -1412,26 +1491,17 @@ def main():
     parser.add_argument("--decoder_gradient_checkpointing", action="store_true")
     parser.add_argument("--no_lora", action="store_true")
 
+    # Conditioning projection
+    parser.add_argument("--conditioning_method", type=str, choices=["prefix2prefix", "hidden2prompt"], default="hidden2prompt")
+    parser.add_argument("--projection_type", type=str, choices=["none", "shared", "full"], default="shared")
+    parser.add_argument("--identity_init", action="store_true")
+
     # vae
     # can try different projections, but just linear for now because llama already norms it
     parser.add_argument("--vae", action="store_true")
-    parser.add_argument("--vae_identity_init", action="store_true")
     parser.add_argument("--debug_vae_no_kl", action="store_true")
     parser.add_argument("--debug_vae_train_no_sample", action="store_true")
     parser.add_argument("--debug_vae_eval_no_sample", action="store_true")
-
-    # Conditioning projection
-    parser.add_argument("--conditioning_method",
-                        type=str,
-                        choices=[
-                            "prefix2prefix",
-                            "prefix2prefix_full",
-                            "prefix2prefix_full_identity",
-                            "hidden2prompt",
-                            "hidden2prompt_full",
-                            "hidden2prompt_full_identity",
-                        ],
-                        default="hidden2prompt")
 
     # Training
     parser.add_argument("--train_batch_size", type=int, default=2)
@@ -1509,7 +1579,7 @@ def main():
     parser.add_argument("--decoder_no_rslora", action='store_true')
 
     # Virtual tokens approach
-    parser.add_argument("--num_virtual_tokens", type=int, default=8)
+    parser.add_argument("--ntokens", type=int, default=8)
     parser.add_argument("--seed", type=int, default=0)
     args = parser.parse_args()
 
@@ -1526,19 +1596,16 @@ def main():
         args.num_workers = 0
 
     # check args
-    if "prefix2" in args.conditioning_method:
+    if args.conditioning_method == "prefix2prefix":
         assert not args.encoder_gradient_checkpointing
-    if "2prefix" in args.conditioning_method:
         assert not args.decoder_gradient_checkpointing
         assert args.decoder_pad_side == "right" # right for no middle padding
-    if "identity" in args.conditioning_method:
+    if args.identity_init:
         assert args.encoder_name == args.decoder_name
-    if args.conditioning_method in ["prefix2prefix", "hidden2prompt"]:
+    if args.projection_type == "none":
         assert args.encoder_name == args.decoder_name
     if args.vae:
-        assert args.conditioning_method in ["prefix2prefix", "hidden2prompt"] # just support these for now
-    if args.vae_identity_init:
-        assert args.encoder_name == args.decoder_name
+        assert args.projection_type is not "none"
     if args.tie_models:
         assert args.encoder_name == args.decoder_name
         assert args.encoder_gradient_checkpointing == args.decoder_gradient_checkpointing
@@ -1554,7 +1621,7 @@ def main():
     # Setup accelerator
     project_config = ProjectConfiguration(project_dir=args.output_dir)
     init_process_process_kwargs = InitProcessGroupKwargs()
-    init_process_process_kwargs.timeout = timedelta(seconds=14400)
+    init_process_process_kwargs.timeout = timedelta(seconds=28800)
     accelerator = Accelerator(
         gradient_accumulation_steps=args.grad_accum_steps,
         mixed_precision="bf16",
@@ -1613,7 +1680,7 @@ def main():
     # Build base models
     from_pretrained_kwargs = {
         "cache_dir": "./encoder_decoder_cache",
-        "low_cpu_mem_usage": True
+        "low_cpu_mem_usage": True,
     }
     if args.flash_attn:
         from_pretrained_kwargs["attn_implementation"] = "flash_attention_2"
@@ -1660,7 +1727,7 @@ def main():
             base_decoder.gradient_checkpointing_enable()
 
     # add new CLS tokens for program encoding
-    cls_tokens = [f"<CLS{token_i}>" for token_i in range(args.num_virtual_tokens)]
+    cls_tokens = [f"<CLS{token_i}>" for token_i in range(args.ntokens)]
     encoder_tokenizer.add_tokens(cls_tokens) # type: ignore
     base_encoder.resize_token_embeddings(len(encoder_tokenizer))
     logger.info("Base models loaded.")
@@ -1699,23 +1766,25 @@ def main():
 
     logger.info("LoRA-wrapped models initialized (optional)")
 
-    if "prefix2prefix" in args.conditioning_method:
+    if args.conditioning_method == "prefix2prefix":
         conditioning_projection = Prefix2PrefixProjection(
-            num_virtual_tokens=args.num_virtual_tokens,
+            ntokens=args.ntokens,
             encoder_model=encoder_model,
             decoder_model=decoder_model,
-            conditioning_method=args.conditioning_method,
+            identity_init=args.identity_init,
+            projection_type=args.projection_type,
             vae=args.vae,
-            vae_identity_init=args.vae_identity_init,
+            device=accelerator.device,
         )
-    elif "hidden2prompt" in args.conditioning_method:
+    elif args.conditioning_method == "hidden2prompt":
         conditioning_projection = Hidden2PromptProjection(
-            num_virtual_tokens=args.num_virtual_tokens,
+            ntokens=args.ntokens,
             encoder_model=encoder_model,
             decoder_model=decoder_model,
-            conditioning_method=args.conditioning_method,
+            identity_init=args.identity_init,
+            projection_type=args.projection_type,
             vae=args.vae,
-            vae_identity_init=args.vae_identity_init,
+            device=accelerator.device,
         )
     else:
         raise ValueError(f"invalid conditioning method {args.conditioning_method}")
@@ -1769,7 +1838,7 @@ def main():
         augment_ratio=args.augment_ratio,
         seed=args.seed,
         compact_grids=args.compact_grids,
-        num_virtual_tokens=args.num_virtual_tokens,
+        ntokens=args.ntokens,
         debug_fixed_train_order=args.debug_fixed_train_order,
         debug_random_pad=args.debug_random_pad,
         debug_pad_len=args.debug_pad_len,
@@ -1782,6 +1851,7 @@ def main():
     if args.debug_enc_len > 0:
         train_collate_fn = partial(
             collate_fn_train_dummy,
+            ntokens=args.ntokens,
             debug_enc_len=args.debug_enc_len,
             debug_dec_len=args.debug_dec_len,
         )
@@ -1840,6 +1910,7 @@ def main():
     logger.info(f'lr scheduler with {steps_per_epoch} warmup steps')
 
     # Prepare with accelerator
+    encoder_model = accelerator.prepare(encoder_model)
     (
         encoder_model,
         decoder_model,
@@ -1877,7 +1948,7 @@ def main():
     epoch_to_eval_exact_acc = {}
 
     # when these conditions are met, DDP requires setting static graph due to reusing parameters
-    if args.tie_models and args.encoder_gradient_checkpointing and accelerator.num_processes > 0:
+    if args.tie_models and args.encoder_gradient_checkpointing and accelerator.num_processes > 1:
         assert args.gs_iters == 0 # gradient search changes static graph? idk havent tried
         # set to train
         encoder_model.train()
@@ -1903,7 +1974,7 @@ def main():
                 decoder_labels=batch_data["decoder_labels"].to(accelerator.device),
                 enc_ids_lens=batch_data["encoder_input_ids_lens"],
                 dec_ids_lens=batch_data["decoder_input_ids_lens"],
-                num_virtual_tokens=args.num_virtual_tokens,
+                ntokens=args.ntokens,
                 encoder_loss_lambda=args.encoder_loss_lambda,
                 invar_loss_lambda=args.invar_loss_lambda,
                 no_lora=args.no_lora,
@@ -1956,7 +2027,7 @@ def main():
                         decoder_labels=dec_labels,
                         enc_ids_lens=enc_ids_lens,
                         dec_ids_lens=dec_ids_lens,
-                        num_virtual_tokens=args.num_virtual_tokens,
+                        ntokens=args.ntokens,
                         encoder_loss_lambda=args.encoder_loss_lambda,
                         invar_loss_lambda=args.invar_loss_lambda,
                         no_lora=args.no_lora,
@@ -2045,7 +2116,7 @@ def main():
                 decoder_tokenizer=decoder_tokenizer,
                 max_seq_len=args.max_seq_len,
                 compact_grids=args.compact_grids,
-                num_virtual_tokens=args.num_virtual_tokens,
+                ntokens=args.ntokens,
                 encoder_loss_type=args.encoder_loss_type,
                 debug_random_pad=args.debug_random_pad,
                 debug_pad_len=args.debug_pad_len,
@@ -2066,7 +2137,7 @@ def main():
                 decoder_tokenizer=decoder_tokenizer,
                 max_seq_len=args.max_seq_len,
                 compact_grids=args.compact_grids,
-                num_virtual_tokens=args.num_virtual_tokens,
+                ntokens=args.ntokens,
                 encoder_loss_type=args.encoder_loss_type,
                 debug_random_pad=args.debug_random_pad,
                 debug_pad_len=args.debug_pad_len,
@@ -2078,6 +2149,7 @@ def main():
             if args.debug_enc_len > 0:
                 eval_collate_fn = partial(
                     collate_fn_eval_dummy,
+                    ntokens=args.ntokens,
                     debug_enc_len=args.debug_enc_len,
                     debug_dec_len=args.debug_dec_len,
                 )

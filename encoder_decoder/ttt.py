@@ -36,8 +36,8 @@ from train import Prefix2PrefixProjection, Hidden2PromptProjection
 
 import os
 os.environ["TOKENIZERS_PARALLELISM"] = "false" # weird tokenizer issue
-os.environ["NCCL_TIMEOUT"] = "14400" # 4hr for evaluation time variance across gpus
-os.environ["NCCL_TIMEOUT_MS"] = "14400000"
+os.environ["NCCL_TIMEOUT"] = "28800" # 4hr for evaluation time variance across gpus
+os.environ["NCCL_TIMEOUT_MS"] = "28800000"
 os.environ["NCCL_ASYNC_ERROR_HANDLING"] = "1"
 os.environ["NCCL_BLOCKING_WAIT"] = "1"
 os.environ["TORCH_NCCL_ASYNC_ERROR_HANDLING"] = "1"
@@ -190,7 +190,7 @@ def main():
     parser.add_argument("--full_lora", action="store_true")
 
     # Virtual tokens approach
-    parser.add_argument("--num_virtual_tokens", type=int, default=8)
+    parser.add_argument("--ntokens", type=int, default=8)
     parser.add_argument("--seed", type=int, default=0)
     args = parser.parse_args()
 
@@ -227,7 +227,7 @@ def main():
     # Setup accelerator
     project_config = ProjectConfiguration(project_dir=args.output_dir)
     init_process_process_kwargs = InitProcessGroupKwargs()
-    init_process_process_kwargs.timeout = timedelta(seconds=14400)
+    init_process_process_kwargs.timeout = timedelta(seconds=28800)
     accelerator = Accelerator(
         gradient_accumulation_steps=args.grad_accum_steps,
         mixed_precision="bf16",
@@ -331,7 +331,7 @@ def main():
             base_decoder.gradient_checkpointing_enable()
 
     # add new CLS tokens for program encoding
-    cls_tokens = [f"<CLS{token_i}>" for token_i in range(args.num_virtual_tokens)]
+    cls_tokens = [f"<CLS{token_i}>" for token_i in range(args.ntokens)]
     encoder_tokenizer.add_tokens(cls_tokens) # type: ignore
     base_encoder.resize_token_embeddings(len(encoder_tokenizer))
     logger.info("Base models loaded.")
@@ -420,7 +420,7 @@ def main():
         max_seq_len=args.max_seq_len,
         seed=args.seed,
         compact_grids=args.compact_grids,
-        num_virtual_tokens=args.num_virtual_tokens,
+        ntokens=args.ntokens,
         encoder_pad_side=args.encoder_pad_side,
         decoder_pad_side=args.decoder_pad_side,
         encoder_loss_type=args.encoder_loss_type,
@@ -451,6 +451,7 @@ def main():
         if args.debug_enc_len > 0:
             ttt_collate_fn = partial(
                 collate_fn_ttt_dummy,
+                ntokens=args.ntokens,
                 debug_enc_len=args.debug_enc_len,
                 debug_dec_len=args.debug_dec_len,
             )
@@ -560,7 +561,7 @@ def main():
         conditioning_projection.train()
 
         # when these conditions are met, DDP requires setting static graph due to reusing parameters
-        if args.tie_models and args.encoder_gradient_checkpointing and accelerator.num_processes > 0 and args.full_lora:
+        if args.tie_models and args.encoder_gradient_checkpointing and accelerator.num_processes > 1 and args.full_lora:
             # set static graph
             encoder_model._set_static_graph()
             decoder_model._set_static_graph()
@@ -581,7 +582,7 @@ def main():
                     decoder_labels=batch_data["decoder_labels"].to(accelerator.device),
                     enc_ids_lens=batch_data["encoder_input_ids_lens"],
                     dec_ids_lens=batch_data["decoder_input_ids_lens"],
-                    num_virtual_tokens=args.num_virtual_tokens,
+                    ntokens=args.ntokens,
                     encoder_loss_lambda=args.encoder_loss_lambda,
                     invar_loss_lambda=0.0, # HARDCODE (not same program across batch)
                     no_lora=False, # HARDCODE
@@ -630,7 +631,7 @@ def main():
                             decoder_labels=dec_labels,
                             enc_ids_lens=enc_ids_lens,
                             dec_ids_lens=dec_ids_lens,
-                            num_virtual_tokens=args.num_virtual_tokens,
+                            ntokens=args.ntokens,
                             encoder_loss_lambda=args.encoder_loss_lambda,
                             invar_loss_lambda=0.0, # HARDCODE (not same program across batch)
                             no_lora=False, # HARDCODE
