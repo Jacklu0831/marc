@@ -1,11 +1,9 @@
 from datetime import timedelta
 import gc
-import time
-import copy
 from multiprocessing import Pool
 from pathlib import Path
 import csv
-from peft import PeftModel
+from peft import PeftModel # type: ignore
 from typing import Union, Optional, Tuple, Dict, List
 from tqdm import tqdm
 from functools import partial
@@ -22,7 +20,7 @@ from transformers import (
 from accelerate import Accelerator, InitProcessGroupKwargs
 from accelerate.logging import get_logger
 from accelerate.utils import ProjectConfiguration, set_seed
-from peft import prepare_model_for_kbit_training
+from peft import prepare_model_for_kbit_training  # type: ignore
 
 from transformers import BitsAndBytesConfig
 import bitsandbytes as bnb
@@ -93,7 +91,9 @@ def save_model_ttt(
     save_proj_path = None
     if conditioning_projection is not None:
         save_proj_path = os.path.join(output_dir, task_id, f"conditioning_projection_epoch_{epoch+1}.pt")
-        conditioning_projection_module = conditioning_projection.module if isinstance(conditioning_projection, DistributedDataParallel) else conditioning_projection
+        conditioning_projection_module = conditioning_projection
+        if isinstance(conditioning_projection, DistributedDataParallel):
+            conditioning_projection_module = conditioning_projection.module
         torch.save(conditioning_projection_module, save_proj_path)
         logger.info(f"Saved conditioning projection to {save_proj_path}")
 
@@ -249,11 +249,17 @@ def main():
     logger.info("#### END ALL ARGUMENTS ####\n")
 
     # Load tokenizers
-    encoder_tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME_TO_PATH[args.encoder_name], cache_dir='./encoder_decoder_cache')
+    encoder_tokenizer = AutoTokenizer.from_pretrained(
+        MODEL_NAME_TO_PATH[args.encoder_name],
+        cache_dir='./encoder_decoder_cache'
+    )
     if args.tie_models:
         decoder_tokenizer = encoder_tokenizer
     else:
-        decoder_tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME_TO_PATH[args.decoder_name], cache_dir='./encoder_decoder_cache')
+        decoder_tokenizer = AutoTokenizer.from_pretrained(
+            MODEL_NAME_TO_PATH[args.decoder_name],
+            cache_dir='./encoder_decoder_cache'
+        )
     if not encoder_tokenizer.pad_token:
         encoder_tokenizer.pad_token = encoder_tokenizer.eos_token
     if not decoder_tokenizer.pad_token:
@@ -300,9 +306,15 @@ def main():
         )
 
     if args.untrainable_nbit in ['4bit', '8bit']:
-        base_encoder = prepare_model_for_kbit_training(base_encoder, use_gradient_checkpointing=args.encoder_gradient_checkpointing)
+        base_encoder = prepare_model_for_kbit_training(
+            base_encoder,
+            use_gradient_checkpointing=args.encoder_gradient_checkpointing
+        )
         if not args.tie_models:
-            base_decoder = prepare_model_for_kbit_training(base_decoder, use_gradient_checkpointing=args.decoder_gradient_checkpointing)
+            base_decoder = prepare_model_for_kbit_training(
+                base_decoder,
+                use_gradient_checkpointing=args.decoder_gradient_checkpointing
+            )
     else:
         if args.encoder_gradient_checkpointing:
             base_encoder.gradient_checkpointing_enable()
@@ -311,7 +323,7 @@ def main():
 
     # add new CLS tokens for program encoding
     cls_tokens = [f"<CLS{token_i}>" for token_i in range(args.num_virtual_tokens)]
-    encoder_tokenizer.add_tokens(cls_tokens)
+    encoder_tokenizer.add_tokens(cls_tokens) # type: ignore
     base_encoder.resize_token_embeddings(len(encoder_tokenizer))
     logger.info("Base models loaded.")
 
@@ -456,9 +468,10 @@ def main():
             )
 
         # load and set conditioning projection grads and nbit
-        conditioning_projection = None
+        conditioning_projection: Optional[Union[Hidden2PrefixProjection, Hidden2PromptProjection]] = None
         if args.conditioning_method not in ["prefix2prefix", "hidden2prompt"]:
-            conditioning_projection: Union[Hidden2PrefixProjection, Hidden2PromptProjection] = torch.load(proj_weight_path, weights_only=False, map_location=accelerator.device)
+            conditioning_projection = torch.load(proj_weight_path, weights_only=False, map_location=accelerator.device)
+            assert conditioning_projection is not None
             for param in conditioning_projection.parameters():
                 param.requires_grad = True
                 param.data = param.data.to(NBIT_TO_DTYPE[args.trainable_nbit])
@@ -492,11 +505,11 @@ def main():
 
         # optimizer
         if args.optimizer == 'adamw':
-            optimizer = torch.optim.AdamW(optimizer_grouped_params, weight_decay=args.weight_decay)
+            optimizer = torch.optim.AdamW(optimizer_grouped_params, weight_decay=args.weight_decay) # type: ignore
         elif args.optimizer == 'adamw8bit':
             optimizer = bnb.optim.Adam8bit(optimizer_grouped_params, weight_decay=args.weight_decay)
         else:
-            optimizer = torch.optim.SGD(optimizer_grouped_params)
+            optimizer = torch.optim.SGD(optimizer_grouped_params) # type: ignore
 
         # LR schedule
         steps_per_epoch = len(ttt_dataset) // (args.train_batch_size * args.grad_accum_steps * accelerator.num_processes)
@@ -624,10 +637,10 @@ def main():
                         )
 
                     # just accumulate for logging
-                    avg_ce_loss = accelerator.gather(ce_loss.repeat(args.train_batch_size)).mean()
-                    avg_invar_loss = accelerator.gather(invar_loss.repeat(args.train_batch_size)).mean()
-                    avg_encoder_loss = accelerator.gather(encoder_loss.repeat(args.train_batch_size)).mean()
-                    avg_total_loss = accelerator.gather(total_loss.repeat(args.train_batch_size)).mean()
+                    avg_ce_loss = accelerator.gather(ce_loss.repeat(args.train_batch_size)).mean() # type: ignore
+                    avg_invar_loss = accelerator.gather(invar_loss.repeat(args.train_batch_size)).mean() # type: ignore
+                    avg_encoder_loss = accelerator.gather(encoder_loss.repeat(args.train_batch_size)).mean() # type: ignore
+                    avg_total_loss = accelerator.gather(total_loss.repeat(args.train_batch_size)).mean() # type: ignore
                     ce_loss_accum += avg_ce_loss.item() / args.grad_accum_steps
                     invar_loss_accum += avg_invar_loss.item() / args.grad_accum_steps
                     encoder_loss_accum += avg_encoder_loss.item() / args.grad_accum_steps
@@ -635,7 +648,7 @@ def main():
 
                     accelerator.backward(total_loss)
                     if accelerator.sync_gradients:
-                        grad_norm_accum += accelerator.clip_grad_norm_(all_params, args.max_grad_norm).item()
+                        grad_norm_accum += accelerator.clip_grad_norm_(all_params, args.max_grad_norm).item() # type: ignore
                     optimizer.step()
                     lr_scheduler.step()
 

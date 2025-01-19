@@ -1,7 +1,7 @@
 from datetime import timedelta
 from pathlib import Path
 import glob
-from typing import Union
+from typing import Union, Optional
 import pprint
 import json
 from functools import partial
@@ -14,10 +14,10 @@ from transformers import (
 from accelerate import Accelerator, InitProcessGroupKwargs
 from accelerate.logging import get_logger
 from accelerate.utils import ProjectConfiguration, set_seed
-from peft import prepare_model_for_kbit_training
+from peft import prepare_model_for_kbit_training # type: ignore
 
 from transformers import BitsAndBytesConfig
-from peft import PeftModel
+from peft import PeftModel # type: ignore
 
 from data_utils import EvalDataset, collate_fn_eval
 from train import set_up_main_process_logger, evaluate
@@ -106,7 +106,17 @@ def main():
     parser.add_argument("--permute_n", type=int, default=0)
     parser.add_argument("--augment_n", type=int, default=0)
     parser.add_argument("--permute_iters", type=int, default=0)
-    parser.add_argument("--search_iters", type=int, default=0)
+
+    # gradient search
+    parser.add_argument("--gs_iters", type=int, default=0)
+    parser.add_argument("--gs_lr", type=float, default=1.0)
+    parser.add_argument("--gs_beta1", type=float, default=0.9)
+    parser.add_argument("--gs_beta2", type=float, default=0.9)
+    parser.add_argument("--gs_batch_size", type=int, default=2)
+    parser.add_argument("--gs_optimizer", type=str, choices=["adamw", "sgd"], default="adamw")
+    parser.add_argument("--gs_lr_scheduler", type=str, choices=["cosine", "constant"], default="cosine")
+    parser.add_argument("--gs_max_grad_norm", default=1e8, type=float, help="Max gradient norm.")
+    parser.add_argument("--gs_take_best", action="store_true")
 
     # Virtual tokens approach
     parser.add_argument("--num_virtual_tokens", type=int, default=8)
@@ -123,6 +133,8 @@ def main():
         assert args.encoder_name == args.decoder_name
     if args.no_lora:
         args.untrainable_nbit = args.trainable_nbit # untrainable become trainable
+    if args.gs_iters > 0:
+        assert args.batch_size == 1
 
     args.tag = f"eval_{args.tag}_{args.weight_dir}"
     args.output_dir = os.path.join(args.output_dir, args.tag)
@@ -213,7 +225,7 @@ def main():
 
     # add new CLS tokens for program encoding
     cls_tokens = [f"<CLS{token_i}>" for token_i in range(args.num_virtual_tokens)]
-    encoder_tokenizer.add_tokens(cls_tokens)
+    encoder_tokenizer.add_tokens(cls_tokens) # type: ignore
     base_encoder.resize_token_embeddings(len(encoder_tokenizer))
     logger.info("Base models loaded.")
 
@@ -231,9 +243,9 @@ def main():
         decoder_model = PeftModel.from_pretrained(base_decoder, dec_weight_path) if not args.tie_models else encoder_model
     logger.info("loaded encoder and decoder model weights")
 
-    conditioning_projection = None
+    conditioning_projection: Optional[Union[Hidden2PrefixProjection, Hidden2PromptProjection]] = None
     if args.conditioning_method not in ["prefix2prefix", "hidden2prompt"]:
-        conditioning_projection: Union[Hidden2PrefixProjection, Hidden2PromptProjection] = torch.load(proj_weight_path, weights_only=False, map_location=accelerator.device)
+        conditioning_projection = torch.load(proj_weight_path, weights_only=False, map_location=accelerator.device)
         logger.info("loaded conditioning projection weights")
 
     # set requires grad for model weight conversion
@@ -327,7 +339,7 @@ def main():
         debug_random_pad=False, # HARDCODE
         debug_pad_len=-1, # HARDCODE
         encoder_pad_side=args.encoder_pad_side,
-        decoder_pad_side="right", # not used
+        decoder_pad_side="right", # HARDCODE
         decoder_gen_pad_side=args.decoder_gen_pad_side,
     )
     eval_collate_fn = partial(collate_fn_eval, dataset=eval_dataset) # only use tokenizer, debug_random_pad
@@ -344,21 +356,23 @@ def main():
         conditioning_projection=conditioning_projection,
         dataset=eval_dataset,
         accelerator=accelerator,
-        num_virtual_tokens=args.num_virtual_tokens,
-        decoder_tokenizer=decoder_tokenizer,
         batch_size=args.batch_size,
         collate_fn=eval_collate_fn,
-        compact_grids=args.compact_grids,
         no_lora=args.no_lora,
         decoder_ce_loss=args.decoder_ce_loss,
         trainable_nbit=args.trainable_nbit,
         flash_attn=args.flash_attn,
         tie_models=args.tie_models,
         output_dir=args.output_dir,
-        encoder_pad_side=args.encoder_pad_side,
-        decoder_pad_side="right", # HARDCODE
-        decoder_gen_pad_side=args.decoder_gen_pad_side,
-        search_iters=args.search_iters,
+        gs_iters=args.gs_iters,
+        gs_lr=args.gs_lr,
+        gs_beta1=args.gs_beta1,
+        gs_beta2=args.gs_beta2,
+        gs_batch_size=args.gs_batch_size,
+        gs_optimizer=args.gs_optimizer,
+        gs_max_grad_norm=args.gs_max_grad_norm,
+        gs_lr_scheduler=args.gs_lr_scheduler,
+        gs_take_best=args.gs_take_best,
     )
 
     if accelerator.is_main_process:

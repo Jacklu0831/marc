@@ -9,7 +9,7 @@ import random
 import torch
 from torch.utils.data import Dataset
 from torch.nn.utils.rnn import pad_sequence
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Tuple, Iterator
 from pathlib import Path
 from typing import List, Optional
 import numpy as np
@@ -74,10 +74,10 @@ def get_augmenters(
         else []
     )
 
-    concat_augmenters_to_apply = (
+    concat_augmenters_to_apply: List = (
         [
-            Concat((IdentityAugmenter(), Rotate(180)), axis=0),
-            Concat((IdentityAugmenter(), Rotate(180)), axis=1),
+            Concat((IdentityAugmenter(), Rotate(180)), axis=0), # type: ignore
+            Concat((IdentityAugmenter(), Rotate(180)), axis=1), # type: ignore
         ]
         if include_concat
         else []
@@ -85,12 +85,12 @@ def get_augmenters(
 
     chain_augmenters_to_apply = (
         [
-            Chain([Rotate(90), IncreaseResolution(2)]),
-            Chain([Rotate(270), IncreaseResolution(2)]),
-            Chain([Rotate(180), IncreaseResolution(2)]),
-            Chain([Flip(0), IncreaseResolution(2)]),
-            Chain([Flip(1), IncreaseResolution(2)]),
-            Chain([Transpose(), IncreaseResolution(2)]),
+            Chain([Rotate(90), IncreaseResolution(2)]), # type: ignore
+            Chain([Rotate(270), IncreaseResolution(2)]), # type: ignore
+            Chain([Rotate(180), IncreaseResolution(2)]), # type: ignore
+            Chain([Flip(0), IncreaseResolution(2)]), # type: ignore
+            Chain([Flip(1), IncreaseResolution(2)]), # type: ignore
+            Chain([Transpose(), IncreaseResolution(2)]), # type: ignore
         ]
         if include_chain
         else []
@@ -175,21 +175,21 @@ def plot_histogram_with_frequencies(data: List[int], save_path: str, bins: int =
     import matplotlib.pyplot as plt
     _, ax = plt.subplots()
     # Create histogram
-    counts, bins, bars = ax.hist(data, bins=bins, edgecolor='black', alpha=0.7)
+    counts, bins, bars = ax.hist(data, bins=bins, edgecolor='black', alpha=0.7)  # type: ignore
     # Add frequency labels to each bar
-    for bar, count in zip(bars, counts):
+    for bar, count in zip(bars, counts): # type: ignore
         height = bar.get_height()
         ax.text(bar.get_x() + bar.get_width() / 2, height, f'{int(count)}',
                 ha='center', va='bottom', fontsize=10)
     # Set x-ticks if bins are evenly spaced integers
-    if np.allclose(np.diff(bins), bins[1] - bins[0]):  # Check if bins are evenly spaced
-        ax.set_xticks(bins[:-1] + np.diff(bins) / 2)
+    if np.allclose(np.diff(bins), bins[1] - bins[0]):  # Check if bins are evenly spaced  # type: ignore
+        ax.set_xticks(bins[:-1] + np.diff(bins) / 2) # type: ignore
     ax.tick_params(axis='x', labelsize=5)
     plt.savefig(save_path, dpi=200)
     plt.close()
 
 
-def remove_val_from_1dtokenized(tokenized: torch.Tensor, val: int):
+def remove_val_from_1dtokenized(tokenized: Dict, val: int) -> None:
     mask = tokenized['input_ids'][0] != val
     tokenized['input_ids'] = tokenized['input_ids'][0][mask][None, ...]
     tokenized['attention_mask'] = tokenized['attention_mask'][0][mask][None, ...]
@@ -198,7 +198,7 @@ def remove_val_from_1dtokenized(tokenized: torch.Tensor, val: int):
 ########################################
 # Test-Time-Training Dataset
 ########################################
-class TTTDataset:
+class TTTDataset(Dataset):
     def __init__(
         self,
         data_path: str,
@@ -210,8 +210,8 @@ class TTTDataset:
         seed: int,
         compact_grids: bool,
         num_virtual_tokens: int,
-        encoder_pad_side: int,
-        decoder_pad_side: int,
+        encoder_pad_side: str,
+        decoder_pad_side: str,
         encoder_loss_type: bool,
         debug_no_aug: bool,
     ):
@@ -244,12 +244,12 @@ class TTTDataset:
         self.task = Task(
             name=f'{self.task_id}',
             train_examples=train_examples,
-            test_example=None,
+            test_example=None, # type: ignore
         )
 
         # get data
         rng = np.random.RandomState(seed)
-        self.ttt_tasks = self.task_to_ttt_filtered_data(max_gen=max_samples_per_task)
+        self.ttt_tasks: List[Any] = self.task_to_ttt_filtered_data(max_gen=max_samples_per_task)
         rng.shuffle(self.ttt_tasks)
 
     def task_to_ttt_filtered_data(self, max_gen: int) -> List[Task]:
@@ -335,7 +335,6 @@ class TTTDataset:
         assert self.encoder_tokenizer.decode(enc_tokens["input_ids"][0][-self.num_virtual_tokens:]) == "".join(self.cls_tokens)
         dec_in_tokens  = self.decoder_tokenizer(dec_in_text,  return_tensors="pt", truncation=False)
         dec_out_tokens = self.decoder_tokenizer(dec_out_text, return_tensors="pt", truncation=False)
-        assert all(t[-1].item() == self.decoder_tokenizer.eos_token_id for t in dec_out_tokens["input_ids"])
         assert dec_out_tokens["input_ids"][0][-1].item() == self.decoder_tokenizer.eos_token_id
 
         # remove begin of sentence of dec_out_tokens
@@ -414,7 +413,7 @@ class TTTDataset:
         return self.format_and_filter(self.ttt_tasks[idx])
 
 
-def collate_fn_ttt(batch, dataset: "TTTDataset"):
+def collate_fn_ttt(batch: List[Dict], dataset: TTTDataset) -> Dict:
     enc_ids = [x["encoder_input_ids"] for x in batch]
     enc_mask = [x["encoder_attention_mask"] for x in batch]
     enc_labs = [x["encoder_labels"] for x in batch]
@@ -443,7 +442,7 @@ def collate_fn_ttt(batch, dataset: "TTTDataset"):
     }
 
 
-def collate_fn_ttt_dummy(batch, debug_enc_len: int, debug_dec_len: int):
+def collate_fn_ttt_dummy(batch: List[Dict], debug_enc_len: int, debug_dec_len: int) -> Dict:
     batch_size = len(batch)
     assert batch_size > 0 and batch_size % 2 == 0, f"Batch size must be even, got {batch_size}"
     del batch  # we don't use it directly
@@ -488,8 +487,8 @@ class TrainDataset(Dataset):
         debug_random_pad: bool,
         debug_pad_len: int,
         debug_batch_size_1: bool,
-        encoder_pad_side: int,
-        decoder_pad_side: int,
+        encoder_pad_side: str,
+        decoder_pad_side: str,
         encoder_loss_type: bool,
     ):
         self.tasks_dict = tasks_dict
@@ -500,7 +499,7 @@ class TrainDataset(Dataset):
         self.min_prefix = min_prefix
         self.max_prefix = max_prefix
         self.max_seq_len = max_seq_len
-        self.augmenters = get_augmenters(include_basic=True, include_size=True, include_chain=True, include_repeat=True)
+        self.augmenters: List[Augmenter] = get_augmenters(include_basic=True, include_size=True, include_chain=True, include_repeat=True)
         self.augment_ratio = augment_ratio
         self.rng = np.random.RandomState(seed)
         self.compact_grids = compact_grids
@@ -527,7 +526,7 @@ class TrainDataset(Dataset):
         return 0
 
 
-def collate_fn_train(batch, dataset: "TrainDataset"):
+def collate_fn_train(batch: List[int], dataset: TrainDataset) -> Dict:
     batch_size = len(batch)
     if not dataset.debug_batch_size_1:
         assert batch_size > 0 and batch_size % 2 == 0, f"Batch size must be even, got {batch_size}"
@@ -541,10 +540,10 @@ def collate_fn_train(batch, dataset: "TrainDataset"):
         pairs_for_task = dataset.tasks_dict[task_id]
 
         # sample augmentation
-        augmenter = None
+        augmenter: Optional[Augmenter] = None
         io_augmentation_choice = None
         if dataset.rng.rand() < dataset.augment_ratio:
-            augmenter = dataset.rng.choice(dataset.augmenters)
+            augmenter = dataset.rng.choice(dataset.augmenters) # type: ignore
             io_augmentation_choice = dataset.rng.choice(['input_only', 'output_only', 'both'])
 
         # We'll attempt to produce exactly 2 examples from this single task
@@ -558,7 +557,7 @@ def collate_fn_train(batch, dataset: "TrainDataset"):
             # sample task
             chosen_pairs = pairs_for_task[:required_count]
             if not dataset.debug_fixed_train_order:
-                chosen_pairs = dataset.rng.choice(pairs_for_task, size=required_count, replace=False)
+                chosen_pairs = dataset.rng.choice(pairs_for_task, size=required_count, replace=False) # type: ignore
             chosen_pairs = copy.deepcopy(chosen_pairs)
 
             # apply augmentation
@@ -712,7 +711,7 @@ def collate_fn_train(batch, dataset: "TrainDataset"):
     }
 
 
-def collate_fn_train_dummy(batch, debug_enc_len: int, debug_dec_len: int):
+def collate_fn_train_dummy(batch: List[int], debug_enc_len: int, debug_dec_len: int) -> Dict:
     batch_size = len(batch)
     assert batch_size > 0 and batch_size % 2 == 0, f"Batch size must be even, got {batch_size}"
     del batch  # we don't use it directly
@@ -744,7 +743,7 @@ class EvalDataset:
         self,
         eval_dir: str,
         select_tasks_path: Optional[str],
-        leave_ns: int,
+        leave_ns: List[int],
         leave_ns_inc: bool,
         permute_n: int,
         augment_n: int,
@@ -755,12 +754,12 @@ class EvalDataset:
         max_seq_len: int,
         compact_grids: bool,
         num_virtual_tokens: int,
-        encoder_loss_type: bool,
+        encoder_loss_type: str,
         debug_random_pad: bool,
         debug_pad_len: int,
-        encoder_pad_side: int,
-        decoder_pad_side: int,
-        decoder_gen_pad_side: int,
+        encoder_pad_side: str,
+        decoder_pad_side: str,
+        decoder_gen_pad_side: str,
     ):
         self.permute_n = permute_n
         self.permute_iters = permute_iters
@@ -845,7 +844,7 @@ class EvalDataset:
         # print details of parsed data
         parsed_data = [self[data_i] for data_i in range(len(self))]
         # task to number of augmented queries
-        task_id_to_counts = Counter(d["task_id"] for d in parsed_data)
+        task_id_to_counts = Counter(d["task_id"] for d in parsed_data) # type: ignore
         task_id_to_counts = [(task_id, count) for task_id, count in task_id_to_counts.items()]
         for task_id, count in sorted(task_id_to_counts):
             logger.info(f"{task_id}: Number of Queries: {count}")
@@ -853,10 +852,10 @@ class EvalDataset:
         enc_min_len, enc_max_len = 1e6, 0
         dec_min_len, dec_max_len = 1e6, 0
         for d in parsed_data:
-            enc_min_len = min(enc_min_len, len(d['encoder_input_ids']))
-            enc_max_len = max(enc_max_len, len(d['encoder_input_ids']))
-            dec_min_len = min(dec_min_len, len(d['decoder_input_ids']))
-            dec_max_len = max(dec_max_len, len(d['decoder_input_ids']))
+            enc_min_len = min(enc_min_len, len(d['encoder_input_ids'])) # type: ignore
+            enc_max_len = max(enc_max_len, len(d['encoder_input_ids'])) # type: ignore
+            dec_min_len = min(dec_min_len, len(d['decoder_input_ids'])) # type: ignore
+            dec_max_len = max(dec_max_len, len(d['decoder_input_ids'])) # type: ignore
         logger.info(f"encoder sequence length range from {enc_min_len} to {enc_max_len}]")
         logger.info(f"decoder sequence length range from {dec_min_len} to {dec_max_len}]")
         del parsed_data
@@ -968,7 +967,6 @@ class EvalDataset:
         assert self.encoder_tokenizer.decode(enc_tokens["input_ids"][0][-self.num_virtual_tokens:]) == "".join(self.cls_tokens)
         dec_in_tokens  = self.decoder_tokenizer(dec_in_text,  return_tensors="pt", truncation=False)
         dec_out_tokens = self.decoder_tokenizer(dec_out_text, return_tensors="pt", truncation=False)
-        assert all(t[-1].item() == self.decoder_tokenizer.eos_token_id for t in dec_out_tokens["input_ids"])
         assert dec_out_tokens["input_ids"][0][-1].item() == self.decoder_tokenizer.eos_token_id
 
         # remove begin of sentence of dec_out_tokens
@@ -1033,7 +1031,7 @@ class EvalDataset:
 
         return {
             "task_id": task.name,
-            "inverter": task.inverter if hasattr(task, "inverter") else "",
+            "inverter": task.inverter if hasattr(task, "inverter") else "", # type: ignore
             "encoder_input_ids": encoder_input_ids,
             "encoder_attention_mask": enc_tokens["attention_mask"].squeeze(0),
             "encoder_labels": encoder_labels,
@@ -1052,7 +1050,7 @@ class EvalDataset:
     def __getitem__(self, idx):
         return self.format_and_filter(self.eval_tasks[idx])
 
-    def get_io_permuted_batches(self, batch_idxs):
+    def get_io_permuted_batches(self, batch_idxs: List[int]) -> Iterator[Tuple[List[Optional[Dict]], List[bool]]]:
         # TODO: optionally can leave1, but might mess with underlying program
         batch_size = len(batch_idxs)
         eval_tasks = [self.eval_tasks[idx] for idx in batch_idxs]
@@ -1086,7 +1084,7 @@ class EvalDataset:
             )
 
 
-def collate_fn_eval(batch, dataset: "EvalDataset"):
+def collate_fn_eval(batch: List[Dict], dataset: EvalDataset) -> Dict:
     task_ids = [x['task_id'] for x in batch]
     inverters = [x['inverter'] for x in batch]
     enc_ids = [x["encoder_input_ids"] for x in batch]
@@ -1152,7 +1150,161 @@ def collate_fn_eval(batch, dataset: "EvalDataset"):
     return batch_dict
 
 
-def collate_fn_eval_dummy(batch, debug_enc_len: int, debug_dec_len: int):
+def collate_fn_eval_dummy(batch: List[Dict], debug_enc_len: int, debug_dec_len: int) -> Dict:
+    batch_size = len(batch)
+    task_ids = [str(x) for x in range(100000, 100000 + batch_size)]
+    enc_ids = torch.randint(1, 101, (batch_size, debug_enc_len), dtype=torch.int64, device='cpu')
+    enc_mask = torch.full((batch_size, debug_enc_len), 1, dtype=torch.int64, device='cpu')
+    dec_ids = torch.randint(1, 101, (batch_size, debug_dec_len), dtype=torch.int64, device='cpu')
+    dec_mask = torch.full((batch_size, debug_dec_len), 1, dtype=torch.int64, device='cpu')
+    dec_gen_ids = torch.randint(1, 101, (batch_size, int(debug_dec_len * 0.4)), dtype=torch.int64, device='cpu')
+    dec_gen_mask = torch.full((batch_size, int(debug_dec_len * 0.4)), 1, dtype=torch.int64, device='cpu')
+    enc_ids_lens = [len(x) for x in enc_ids]
+    dec_ids_lens = [len(x) for x in dec_ids]
+    dec_gen_ids_lens = [len(x) for x in dec_gen_ids]
+
+    batch_dict = {
+        "task_ids": task_ids,
+        "inverters": [""] * batch_size,
+        "encoder_input_ids": enc_ids,
+        "encoder_attention_mask": enc_mask,
+        "encoder_labels": enc_ids,
+        "decoder_input_ids": dec_ids,
+        "decoder_attention_mask": dec_mask,
+        "decoder_labels": dec_ids,
+        "decoder_gen_input_ids": dec_gen_ids,
+        "decoder_gen_attention_mask": dec_gen_mask,
+        "decoder_out_token_length": [math.ceil(debug_dec_len * 0.6)] * batch_size,
+        "decoder_label_texts": ['helloworld'] * batch_size,
+        "encoder_input_ids_lens": enc_ids_lens,
+        "decoder_input_ids_lens": dec_ids_lens,
+        "decoder_gen_input_ids_lens": dec_gen_ids_lens,
+    }
+    return batch_dict
+
+
+
+########################################
+# Gradient Search Dataset
+########################################
+class GSDataset(Dataset):
+    def __init__(
+        self,
+        task: Task,
+        encoder_tokenizer,
+        decoder_tokenizer,
+        max_seq_len: int,
+        compact_grids: bool,
+        num_virtual_tokens: int,
+        debug_random_pad: bool,
+        debug_pad_len: int,
+        decoder_pad_side: str,
+    ):
+        self.task = task
+        self.encoder_tokenizer = encoder_tokenizer
+        self.decoder_tokenizer = decoder_tokenizer
+        self.max_seq_len = max_seq_len
+        self.compact_grids = compact_grids
+        self.num_virtual_tokens = num_virtual_tokens
+        self.debug_random_pad = debug_random_pad
+        self.debug_pad_len = debug_pad_len
+        self.decoder_pad_side = decoder_pad_side
+
+        self.decoder_space_token_id = decoder_tokenizer(" ")['input_ids'][1]
+
+        # format and filter data
+        self.parsed_examples = []
+        for example in task.train_examples:
+            data = self.format_and_filter(example)
+            if data is not None:
+                self.parsed_examples.append(data)
+
+    def __len__(self):
+        return len(self.parsed_examples)
+
+    def __getitem__(self, idx):
+        return self.parsed_examples[idx]
+
+    def format_and_filter(self, example: Example) -> Optional[Dict]:
+        # tasks are filtered by EvalDataset already, shouldn't have grids too big
+        # but each example might still be too long (in practice this probably won't happen)
+        assert max(example.input.shape) <= 30 and max(example.output.shape) <= 30
+
+        dec_in_text  = grid_to_text(example.input.tolist(), True)
+        dec_out_text = grid_to_text(example.output.tolist(), False)
+
+        # tiny optimization to include output:\n in input
+        assert dec_out_text.startswith("output:\n")
+        dec_in_text = dec_in_text + "\n" + dec_out_text[:len("output:\n")]
+        dec_out_text = dec_out_text[len("output:\n"):]
+        dec_out_text += "<|eot_id|>"
+
+        dec_in_tokens  = self.decoder_tokenizer(dec_in_text,  return_tensors="pt", truncation=False)
+        dec_out_tokens = self.decoder_tokenizer(dec_out_text, return_tensors="pt", truncation=False)
+        assert dec_out_tokens["input_ids"][0][-1].item() == self.decoder_tokenizer.eos_token_id
+
+        # remove begin of sentence of dec_out_tokens
+        dec_out_tokens['input_ids'] = dec_out_tokens['input_ids'][:, 1:]
+        dec_out_tokens['attention_mask'] = dec_out_tokens['attention_mask'][:, 1:]
+
+        # compact grids (optional)
+        if self.compact_grids:
+            remove_val_from_1dtokenized(dec_in_tokens, self.decoder_space_token_id)
+            remove_val_from_1dtokenized(dec_out_tokens, self.decoder_space_token_id)
+
+        # Build final decoder input + labels
+        decoder_input_ids = torch.cat([
+            dec_in_tokens["input_ids"].squeeze(0),
+            dec_out_tokens["input_ids"].squeeze(0),
+        ], dim=0)
+        decoder_labels = torch.cat([
+            torch.full(dec_in_tokens["input_ids"].shape[1:], -100),
+            dec_out_tokens["input_ids"].squeeze(0),
+        ], dim=0)
+        decoder_attention_mask = torch.cat([
+            dec_in_tokens["attention_mask"].squeeze(0),
+            dec_out_tokens["attention_mask"].squeeze(0),
+        ], dim=0)
+
+        # Check length
+        if decoder_input_ids.shape[0] > self.max_seq_len // 2: # dec_len should be short
+            return None
+
+        return {
+            "decoder_input_ids": decoder_input_ids,
+            "decoder_attention_mask": decoder_attention_mask,
+            "decoder_labels": decoder_labels,
+        }
+
+
+def collate_fn_gs(batch: List[Dict], dataset: GSDataset) -> Dict:
+    dec_ids = [x["decoder_input_ids"] for x in batch]
+    dec_mask = [x["decoder_attention_mask"] for x in batch]
+    dec_labs = [x["decoder_labels"] for x in batch]
+
+    dec_ids_lens = [len(x) for x in dec_ids]
+    dec_ids = pad_sequence_with_side(dec_ids, padding_value=dataset.decoder_tokenizer.pad_token_id, side=dataset.decoder_pad_side)
+    dec_mask = pad_sequence_with_side(dec_mask, padding_value=0, side=dataset.decoder_pad_side)
+    dec_labs = pad_sequence_with_side(dec_labs, padding_value=-100, side=dataset.decoder_pad_side)
+
+    if dataset.debug_random_pad and dataset.debug_pad_len > -1:
+        dec_ids, dec_mask, dec_labs = extra_pad_tensors(
+            [dec_ids, dec_mask, dec_labs],
+            padding_values=[dataset.decoder_tokenizer.pad_token_id, 0, -100],
+            pad_len=dataset.debug_pad_len,
+            side=dataset.decoder_pad_side,
+        )
+
+    batch_dict = {
+        "decoder_input_ids": dec_ids,
+        "decoder_attention_mask": dec_mask,
+        "decoder_labels": dec_labs,
+        "decoder_input_ids_lens": dec_ids_lens,
+    }
+    return batch_dict
+
+
+def collate_fn_gs_dummy(batch: List[Dict], debug_enc_len: int, debug_dec_len: int) -> Dict:
     batch_size = len(batch)
     task_ids = [str(x) for x in range(100000, 100000 + batch_size)]
     enc_ids = torch.randint(1, 101, (batch_size, debug_enc_len), dtype=torch.int64, device='cpu')

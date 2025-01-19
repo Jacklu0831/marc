@@ -1,10 +1,9 @@
 from datetime import timedelta
-from collections import Counter
 import copy
 import arclib # required
 import numpy as np
 from collections import defaultdict
-from typing import Union, Callable, List, Tuple, Dict, Optional, Set
+from typing import Union, Callable, List, Tuple, Dict, Optional, Set, Iterator
 import pprint
 import math
 import json
@@ -19,11 +18,12 @@ from transformers import (
     AutoTokenizer,
     AutoModelForCausalLM,
     get_cosine_schedule_with_warmup,
+    get_constant_schedule,
 )
 from accelerate import Accelerator, PartialState, InitProcessGroupKwargs
 from accelerate.logging import get_logger
 from accelerate.utils import ProjectConfiguration, set_seed, gather_object
-from peft import LoraConfig, TaskType, get_peft_model, prepare_model_for_kbit_training
+from peft import LoraConfig, TaskType, get_peft_model, prepare_model_for_kbit_training # type: ignore
 
 import logging
 import datasets
@@ -35,8 +35,10 @@ from data_utils import (
     load_tasks_from_data_dir,
     TrainDataset,
     EvalDataset,
+    GSDataset,
     collate_fn_train,
     collate_fn_eval,
+    collate_fn_gs,
     collate_fn_train_dummy,
     collate_fn_eval_dummy,
 )
@@ -203,7 +205,7 @@ def encoder_decoder_loss(
     encoder_model: nn.Module,
     decoder_model: nn.Module,
     conditioning_method: str,
-    conditioning_projection: nn.Module,
+    conditioning_projection: Optional[Union[Hidden2PrefixProjection, Hidden2PromptProjection]],
     encoder_input_ids: torch.Tensor,
     encoder_attention_mask: torch.Tensor,
     encoder_labels: torch.Tensor,
@@ -221,7 +223,7 @@ def encoder_decoder_loss(
     decoder_pad_side: str,
     trainable_nbit: int,
     flash_attn: bool,
-) -> Tuple[Optional[torch.Tensor], torch.Tensor, torch.Tensor, torch.Tensor,
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor,
            Union[torch.Tensor, List[Tuple[torch.Tensor, torch.Tensor]]]]:
     # Encoder forward and get loss
     enc_out = encoder_model(
@@ -257,6 +259,7 @@ def encoder_decoder_loss(
             enc_hidden_states = torch.stack([x[l-num_virtual_tokens:l] for x, l in zip(enc_hidden_states, enc_ids_lens)])
         else:
             enc_hidden_states = torch.stack([x[-num_virtual_tokens:] for x in enc_hidden_states])
+        assert conditioning_projection is not None
         predicted_program = conditioning_projection(enc_hidden_states=enc_hidden_states)
     elif conditioning_method == "hidden2prompt":
         enc_hidden_states = enc_out.hidden_states[-1] # [B, seq_len, hidden_dim]
@@ -271,18 +274,53 @@ def encoder_decoder_loss(
             enc_hidden_states = torch.stack([x[l-num_virtual_tokens:l] for x, l in zip(enc_hidden_states, enc_ids_lens)])
         else:
             enc_hidden_states = torch.stack([x[-num_virtual_tokens:] for x in enc_hidden_states])
+        assert conditioning_projection is not None
         predicted_program = conditioning_projection(enc_hidden_states)
     else:
         raise ValueError(f"invalid conditioning method {conditioning_method}")
 
-    if not decoder_ce_loss:
-        ce_loss = torch.tensor(-1.0, device=encoder_input_ids.device)
-        invar_loss = torch.tensor(0.0, device=encoder_input_ids.device)
-        if enc_hidden_states.shape[0] % 2 == 0:
-            invar_loss = nn.functional.mse_loss(enc_hidden_states[::2], enc_hidden_states[1::2])
-        total_loss = ce_loss + invar_loss_lambda * invar_loss + encoder_loss_lambda * encoder_loss
-        return ce_loss, invar_loss, encoder_loss, total_loss, predicted_program
+    # decoder ce loss
+    ce_loss = torch.tensor(-1.0, device=encoder_input_ids.device)
+    if decoder_ce_loss:
+        ce_loss = decoder_loss(
+            decoder_model=decoder_model,
+            conditioning_method=conditioning_method,
+            decoder_input_ids=decoder_input_ids,
+            decoder_attention_mask=decoder_attention_mask,
+            decoder_labels=decoder_labels,
+            dec_ids_lens=dec_ids_lens,
+            num_virtual_tokens=num_virtual_tokens,
+            no_lora=no_lora,
+            decoder_pad_side=decoder_pad_side,
+            trainable_nbit=trainable_nbit,
+            flash_attn=flash_attn,
+            predicted_program=predicted_program,
+        )
 
+    # invariance loss (batch only not 2x in evaluation)
+    assert enc_hidden_states.shape[0] == encoder_input_ids.shape[0]
+    invar_loss = torch.tensor(0.0, device=encoder_input_ids.device)
+    if enc_hidden_states.shape[0] % 2 == 0:
+        invar_loss = nn.functional.mse_loss(enc_hidden_states[::2], enc_hidden_states[1::2])
+
+    total_loss = ce_loss + invar_loss_lambda * invar_loss + encoder_loss_lambda * encoder_loss
+    return ce_loss, invar_loss, encoder_loss, total_loss, predicted_program
+
+
+def decoder_loss(
+    decoder_model: nn.Module,
+    conditioning_method: str,
+    decoder_input_ids: torch.Tensor,
+    decoder_attention_mask: torch.Tensor,
+    decoder_labels: torch.Tensor,
+    dec_ids_lens: List[int],
+    num_virtual_tokens: int,
+    no_lora: bool,
+    decoder_pad_side: str,
+    trainable_nbit: int,
+    flash_attn: bool,
+    predicted_program: Union[torch.Tensor, List[Tuple[torch.Tensor, torch.Tensor]]],
+) -> torch.Tensor:
     # decoder attention mask must be extended
     prefix_attention_mask = torch.full(
         (decoder_attention_mask.shape[0], num_virtual_tokens),
@@ -297,7 +335,7 @@ def encoder_decoder_loss(
         if flash_attn:
             predicted_program = [
                 tuple([x[0].to(NBIT_TO_DTYPE[trainable_nbit]), x[1].to(NBIT_TO_DTYPE[trainable_nbit])])
-            for x in predicted_program]
+            for x in predicted_program] # type: ignore
         # decoder forward
         dec_out = decoder_model(
             input_ids=decoder_input_ids,
@@ -322,8 +360,10 @@ def encoder_decoder_loss(
         else:
             decoder_inputs_embeds = decoder_module.model.model.embed_tokens(decoder_input_ids)
         if decoder_pad_side == "right":
+            assert isinstance(predicted_program, torch.Tensor)
             decoder_inputs_embeds = torch.cat([predicted_program, decoder_inputs_embeds], dim=1)
         else:
+            assert isinstance(predicted_program, torch.Tensor)
             decoder_inputs_embeds_new = []
             for x, p, l in zip(decoder_inputs_embeds, predicted_program, dec_ids_lens):
                 x = torch.cat([x[:-l], p, x[-l:]])
@@ -351,24 +391,15 @@ def encoder_decoder_loss(
             labels=decoder_labels,
         )
 
-    # cross-entropy loss
-    ce_loss = dec_out.loss
-
-    # invariance loss (batch only not 2x in evaluation)
-    invar_loss = torch.tensor(0.0, device=encoder_input_ids.device)
-    if enc_hidden_states.shape[0] % 2 == 0:
-        invar_loss = nn.functional.mse_loss(enc_hidden_states[::2], enc_hidden_states[1::2])
-
-    total_loss = ce_loss + invar_loss_lambda * invar_loss + encoder_loss_lambda * encoder_loss
-    return ce_loss, invar_loss, encoder_loss, total_loss, predicted_program
+    return dec_out.loss
 
 
-def chunks(lst, n):
+def chunks(lst: List[int], n: int) -> Iterator[List[int]]:
     for i in range(0, len(lst), n):
         yield lst[i:i + n]
 
 
-def chunks_uniform_batch(task_ids, data_idxs, n):
+def chunks_uniform_batch(task_ids: List[str], data_idxs: List[int], n: int) -> Iterator[List[int]]:
     assert len(task_ids) == len(data_idxs)
     # group by first item in tuple (task_id)
     task_id_to_data_idx = defaultdict(list)
@@ -379,35 +410,193 @@ def chunks_uniform_batch(task_ids, data_idxs, n):
         yield from chunks(data_idxs, n)
 
 
+@torch.enable_grad()
+def gradient_search(
+        batch_idxs: List[int],
+        eval_dataset: EvalDataset,
+        batch_size: int,
+        optimizer: str,
+        lr_scheduler: str,
+        lr: float,
+        take_best: bool,
+        beta1: float,
+        beta2: float,
+        accelerator: Accelerator,
+        decoder_model: nn.Module,
+        iters: int,
+        predicted_program: Union[torch.Tensor, List[Tuple[torch.Tensor, torch.Tensor]]],
+        conditioning_method: str,
+        no_lora: bool,
+        trainable_nbit: int,
+        flash_attn: bool,
+        max_grad_norm: float,
+    ) -> Union[torch.Tensor, List[Tuple[torch.Tensor, torch.Tensor]]]:
+    # note gradient checkpointing does not matter because we are freezing the model here
+    # however, if we choose to tune the decoder as well, then gradient checkpointing might be desired
+
+    assert len(batch_idxs) == 1
+    eval_task = eval_dataset.eval_tasks[batch_idxs[0]]
+
+    # gradient search dataset and dataloader
+    gs_dataset = GSDataset(
+        task=eval_task,
+        encoder_tokenizer=eval_dataset.encoder_tokenizer,
+        decoder_tokenizer=eval_dataset.decoder_tokenizer,
+        max_seq_len=eval_dataset.max_seq_len,
+        compact_grids=eval_dataset.compact_grids,
+        num_virtual_tokens=eval_dataset.num_virtual_tokens,
+        debug_random_pad=eval_dataset.debug_random_pad,
+        debug_pad_len=eval_dataset.debug_pad_len,
+        decoder_pad_side=eval_dataset.decoder_pad_side,
+    )
+    if take_best:
+        assert batch_size >= len(gs_dataset)
+    batch_size = min(batch_size, len(gs_dataset))
+    gs_collate_fn = partial(collate_fn_gs, dataset=gs_dataset)
+    gs_loader = DataLoader(
+        gs_dataset,
+        batch_size=batch_size,
+        shuffle=True,
+        collate_fn=gs_collate_fn,
+        drop_last=False,
+        num_workers=0,
+    )
+
+    # get program parameters
+    if isinstance(predicted_program, torch.Tensor):
+        program_params = [predicted_program]
+    else:
+        program_params = [item for sublist in predicted_program for item in sublist]
+    assert all(not p.requires_grad for p in program_params)
+    for p in program_params:
+        p.requires_grad = True
+
+    # expand to match predicted program with batch size
+    if isinstance(predicted_program, torch.Tensor):
+        assert predicted_program.shape[0] == 1
+        predicted_program = predicted_program.expand(batch_size, *predicted_program.shape[1:])
+    else:
+        for layer_i, (layer_program_0, layer_program_1) in enumerate(predicted_program):
+            assert layer_program_0.shape[0] == layer_program_1.shape[0] == 1
+            predicted_program[layer_i] = (
+                layer_program_0.expand(batch_size, *layer_program_0.shape[1:]),
+                layer_program_1.expand(batch_size, *layer_program_1.shape[1:]),
+            )
+
+    # optimizer
+    if optimizer == 'adamw':
+        optim = torch.optim.AdamW(program_params, weight_decay=0.0, lr=lr, betas=(beta1, beta2)) # type: ignore
+    else:
+        optim = torch.optim.SGD(program_params, lr=lr) # type: ignore
+
+    # lr scheduler
+    if lr_scheduler == "cosine":
+        scheduler = get_cosine_schedule_with_warmup(
+            optim,
+            num_warmup_steps=0,
+            num_training_steps=iters,
+        )
+    else:
+        scheduler = get_constant_schedule(optim)
+    optim, gs_loader = accelerator.prepare(optim, gs_loader)
+
+    curr_iter = 0
+    best_loss = float("inf")
+    best_program = None
+    decoder_model.train()
+
+    # train!
+    while curr_iter < iters:
+        for gs_batch_data in gs_loader:
+            dec_ids = gs_batch_data["decoder_input_ids"].to(accelerator.device)
+            dec_mask = gs_batch_data["decoder_attention_mask"].to(accelerator.device)
+            dec_labels = gs_batch_data["decoder_labels"].to(accelerator.device)
+            dec_ids_lens = gs_batch_data["decoder_input_ids_lens"]
+            with accelerator.autocast():
+                gs_loss = decoder_loss(
+                    decoder_model=decoder_model,
+                    conditioning_method=conditioning_method,
+                    decoder_input_ids=dec_ids,
+                    decoder_attention_mask=dec_mask,
+                    decoder_labels=dec_labels,
+                    dec_ids_lens=dec_ids_lens,
+                    num_virtual_tokens=eval_dataset.num_virtual_tokens,
+                    no_lora=no_lora,
+                    decoder_pad_side=eval_dataset.decoder_pad_side,
+                    trainable_nbit=trainable_nbit,
+                    flash_attn=flash_attn,
+                    predicted_program=predicted_program,
+                )
+            accelerator.backward(gs_loss)
+            accelerator.clip_grad_norm_(program_params, max_grad_norm)
+            optim.step()
+            scheduler.step()
+
+            if take_best and gs_loss.item() < best_loss:
+                best_loss = gs_loss.item()
+                if isinstance(predicted_program, torch.Tensor):
+                    best_program = predicted_program.detach().clone()
+                else:
+                    best_program = [
+                        (layer_program_0.detach().clone(), layer_program_1.detach().clone())
+                        for layer_program_0, layer_program_1 in predicted_program
+                    ]
+
+            curr_iter += 1
+            if curr_iter >= iters:
+                break
+
+    # set decoder back to eval mode
+    decoder_model.eval()
+
+    for p in program_params:
+        p.requires_grad = False
+
+    if take_best:
+        assert best_program is not None
+        predicted_program = best_program
+
+    # shrink to match predicted program with batch size 1
+    if isinstance(predicted_program, torch.Tensor):
+        predicted_program = predicted_program[:1]
+    else:
+        for layer_i, (layer_program_0, layer_program_1) in enumerate(predicted_program):
+            predicted_program[layer_i] = (layer_program_0[:1], layer_program_1[:1])
+
+    return predicted_program
+
+
 ################################################
 # Evaluate with cross-entropy + exact-match
 ################################################
 @torch.no_grad()
 def evaluate(
-    task_to_ttt_model_paths: Optional[Dict[str, Tuple[str, str, str]]],
+    task_to_ttt_model_paths: Optional[Dict[str, Tuple[str, Optional[str], Optional[str]]]],
     encoder_ttt_param_names: Optional[Set[str]],
     decoder_ttt_param_names: Optional[Set[str]],
     encoder_model: nn.Module,
     decoder_model: nn.Module,
     conditioning_method: str,
-    conditioning_projection: Union[Hidden2PrefixProjection, Hidden2PromptProjection],
+    conditioning_projection: Optional[Union[Hidden2PrefixProjection, Hidden2PromptProjection]],
     dataset: EvalDataset,
     accelerator: Accelerator,
-    num_virtual_tokens: int,
-    decoder_tokenizer,
     batch_size: int,
     collate_fn: Callable,
-    compact_grids: bool,
     no_lora: bool,
     decoder_ce_loss: bool,
     trainable_nbit: int,
     flash_attn: bool,
     tie_models: bool,
     output_dir: str,
-    encoder_pad_side: str,
-    decoder_pad_side: str,
-    decoder_gen_pad_side: str,
-    search_iters: int,
+    gs_iters: int,
+    gs_batch_size: int,
+    gs_lr: float,
+    gs_beta1: float,
+    gs_beta2: float,
+    gs_optimizer: str,
+    gs_max_grad_norm: float,
+    gs_lr_scheduler: str,
+    gs_take_best: bool,
 ):
     encoder_model.eval()
     if not tie_models:
@@ -423,6 +612,7 @@ def evaluate(
     cached_enc_weights_path = None
     cached_dec_weights_path = None
     cached_proj_weights_path = None
+    curr_ttt_task_name = None
     if task_to_ttt_model_paths is not None: # run on both processes
         # save encoder
         cached_enc_weights_path = os.path.join(output_dir, f"process{accelerator.process_index}_encoder_cache.pt")
@@ -452,10 +642,10 @@ def evaluate(
 
     # setup terminators and suppress warning
     terminators = [
-        decoder_tokenizer.eos_token_id,
-        decoder_tokenizer.convert_tokens_to_ids("<|eot_id|>")
+        dataset.decoder_tokenizer.eos_token_id,
+        dataset.decoder_tokenizer.convert_tokens_to_ids("<|eot_id|>")
     ]
-    decoder_module.generation_config.pad_token_id = decoder_tokenizer.pad_token_id
+    decoder_module.generation_config.pad_token_id = dataset.decoder_tokenizer.pad_token_id
 
     distributed_state = PartialState()
     task_id_and_text_list = []
@@ -468,18 +658,21 @@ def evaluate(
     ttt_provided_list = []
 
     data_idxs = list(range(len(dataset)))
+    assert len(data_idxs) >= accelerator.num_processes # avoid padding issue
+
     with distributed_state.split_between_processes(data_idxs) as process_data_idxs:
+        assert isinstance(process_data_idxs, list)
         n_batches = math.ceil(len(process_data_idxs) / batch_size)
 
         # if ttt provided, make sure all batches are of the same task name
         if task_to_ttt_model_paths is not None:
             # tackle tasks in orderly fashion
-            task_names = [dataset.eval_tasks[idx].name for idx in process_data_idxs]
+            task_names = [dataset.eval_tasks[idx].name for idx in process_data_idxs] # type: ignore
             task_ids = [task_name.split('-')[0] for task_name in task_names]
             n_batches = len(list(chunks_uniform_batch(task_ids, process_data_idxs, batch_size)))
-            data_idx_iterator = tqdm(chunks_uniform_batch(task_ids, process_data_idxs, batch_size), total=n_batches)
+            data_idx_iterator = tqdm(chunks_uniform_batch(task_ids, process_data_idxs, batch_size), total=n_batches) # type: ignore
         else:
-            data_idx_iterator = tqdm(chunks(process_data_idxs, batch_size), total=n_batches)
+            data_idx_iterator = tqdm(chunks(process_data_idxs, batch_size), total=n_batches)  # type: ignore
 
         for batch_idxs in data_idx_iterator:
             bs = len(batch_idxs)
@@ -498,18 +691,30 @@ def evaluate(
                     # get paths
                     enc_ttt_path, dec_ttt_path, proj_ttt_path = task_to_ttt_model_paths[task_name]
                     # load encoder
-                    encoder_model_ttt_state_dict = torch.load(enc_ttt_path, weights_only=True, map_location=accelerator.device)
+                    encoder_model_ttt_state_dict = torch.load(
+                        enc_ttt_path,
+                        weights_only=True,
+                        map_location=accelerator.device
+                    )
                     assert set(encoder_model_ttt_state_dict.keys()) == encoder_ttt_param_names
                     encoder_module.load_state_dict(encoder_model_ttt_state_dict, strict=False)
                     del encoder_model_ttt_state_dict
                     # load decoder
                     if dec_ttt_path is not None:
-                        decoder_model_ttt_state_dict = torch.load(dec_ttt_path, weights_only=True, map_location=accelerator.device)
+                        decoder_model_ttt_state_dict = torch.load(
+                            dec_ttt_path,
+                            weights_only=True,
+                            map_location=accelerator.device
+                        )
                         assert set(decoder_model_ttt_state_dict.keys()) == decoder_ttt_param_names
                         decoder_module.load_state_dict(decoder_model_ttt_state_dict, strict=False)
                         del decoder_model_ttt_state_dict
                     if proj_ttt_path is not None:
-                        conditioning_projection = torch.load(proj_ttt_path, weights_only=False, map_location=accelerator.device)
+                        conditioning_projection = torch.load(
+                            proj_ttt_path,
+                            weights_only=False,
+                            map_location=accelerator.device
+                        )
                     # set current task name
                     curr_ttt_task_name = task_name
 
@@ -556,10 +761,14 @@ def evaluate(
                     first_batch = {
                         "task_ids": copy.deepcopy(task_ids),
                         "inverters": copy.deepcopy(inverters),
+                        "decoder_input_ids": copy.deepcopy(dec_ids),
+                        "decoder_attention_mask": copy.deepcopy(dec_mask),
                         "decoder_gen_input_ids": copy.deepcopy(dec_gen_ids),
                         "decoder_gen_attention_mask": copy.deepcopy(dec_gen_mask),
+                        "decoder_labels": copy.deepcopy(dec_labels),
                         "decoder_label_texts": copy.deepcopy(label_texts),
                         "decoder_out_token_length": copy.deepcopy(out_token_length),
+                        "decoder_input_ids_lens": copy.deepcopy(dec_ids_lens),
                         "decoder_gen_input_ids_lens": copy.deepcopy(dec_gen_ids_lens),
                     }
 
@@ -578,13 +787,13 @@ def evaluate(
                         decoder_labels=dec_labels,
                         enc_ids_lens=enc_ids_lens,
                         dec_ids_lens=dec_ids_lens,
-                        num_virtual_tokens=num_virtual_tokens,
+                        num_virtual_tokens=dataset.num_virtual_tokens,
                         invar_loss_lambda=0.0,
                         encoder_loss_lambda=0.0,
                         no_lora=no_lora,
                         decoder_ce_loss=decoder_ce_loss,
-                        encoder_pad_side=encoder_pad_side,
-                        decoder_pad_side=decoder_pad_side,
+                        encoder_pad_side=dataset.encoder_pad_side,
+                        decoder_pad_side=dataset.decoder_pad_side,
                         trainable_nbit=trainable_nbit,
                         flash_attn=flash_attn,
                     )
@@ -598,21 +807,21 @@ def evaluate(
                     predicted_program_accum = predicted_program
                 elif "2prefix" in conditioning_method:
                     assert isinstance(predicted_program, list)
-                    assert len(predicted_program) == len(predicted_program_accum) # same number of layers
+                    assert len(predicted_program) == len(predicted_program_accum) # same number of layers # type: ignore
                     for layer_i, (layer_program_0, layer_program_1) in enumerate(predicted_program):
                         avail_count = 0
                         for batch_i, avail in enumerate(batch_avail):
                             if avail:
-                                predicted_program_accum[layer_i][0][batch_i] += layer_program_0[avail_count]
-                                predicted_program_accum[layer_i][1][batch_i] += layer_program_1[avail_count]
+                                predicted_program_accum[layer_i][0][batch_i] += layer_program_0[avail_count] # type: ignore
+                                predicted_program_accum[layer_i][1][batch_i] += layer_program_1[avail_count] # type: ignore
                                 avail_count += 1
                 else:
                     assert isinstance(predicted_program, torch.Tensor)
-                    assert predicted_program.shape[1:] == predicted_program_accum.shape[1:]
+                    assert predicted_program.shape[1:] == predicted_program_accum.shape[1:] # type: ignore
                     for batch_i, avail in enumerate(batch_avail):
                         avail_count = 0
                         if avail:
-                            predicted_program_accum[batch_i] += predicted_program[avail_count]
+                            predicted_program_accum[batch_i] += predicted_program[avail_count] # type: ignore
                             avail_count += 1
 
                 # accumulate avail (count of permutations)
@@ -623,19 +832,73 @@ def evaluate(
             # average program
             assert all(avail > 0 for avail in avail_accum)
             if "2prefix" in conditioning_method:
-                for layer_i, (layer_program_0, layer_program_1) in enumerate(predicted_program_accum):
+                for layer_i, (layer_program_0, layer_program_1) in enumerate(predicted_program_accum): # type: ignore
                     assert len(layer_program_0) == len(layer_program_1) == len(avail_accum) == bs
                     for batch_i in range(bs):
                         layer_program_0[batch_i] /= avail_accum[batch_i]
                         layer_program_1[batch_i] /= avail_accum[batch_i]
-                    predicted_program_accum[layer_i] = (layer_program_0, layer_program_1)
+                    predicted_program_accum[layer_i] = (layer_program_0, layer_program_1) # type: ignore
             else:
-                assert len(predicted_program_accum) == len(avail_accum) == bs
+                assert len(predicted_program_accum) == len(avail_accum) == bs # type: ignore
                 for i, avail in enumerate(avail_accum):
-                    predicted_program_accum[i] /= avail
-            predicted_program = predicted_program_accum
+                    predicted_program_accum[i] /= avail # type: ignore
+            predicted_program: Union[torch.Tensor, List[Tuple[torch.Tensor, torch.Tensor]]] = predicted_program_accum # type: ignore
 
             # recover data from first batch (e.g. task_ids might be missing tasks due to permute_iters)
+            assert isinstance(first_batch, dict)
+            task_ids = first_batch["task_ids"]
+            inverters = first_batch["inverters"]
+            dec_ids = first_batch["decoder_input_ids"].to(accelerator.device)
+            dec_mask = first_batch["decoder_attention_mask"].to(accelerator.device)
+            dec_gen_ids = first_batch["decoder_gen_input_ids"].to(accelerator.device)
+            dec_gen_mask = first_batch["decoder_gen_attention_mask"].to(accelerator.device)
+            dec_labels = first_batch["decoder_labels"].to(accelerator.device)
+            label_texts = first_batch["decoder_label_texts"]
+            out_token_length = first_batch["decoder_out_token_length"]
+            dec_ids_lens = first_batch["decoder_input_ids_lens"]
+            dec_gen_ids_lens = first_batch["decoder_gen_input_ids_lens"]
+
+            if gs_iters > 0:
+                predicted_program = gradient_search(
+                    batch_idxs=batch_idxs,
+                    eval_dataset=dataset,
+                    batch_size=gs_batch_size,
+                    optimizer=gs_optimizer,
+                    lr_scheduler=gs_lr_scheduler,
+                    lr=gs_lr,
+                    take_best=gs_take_best,
+                    beta1=gs_beta1,
+                    beta2=gs_beta2,
+                    accelerator=accelerator,
+                    decoder_model=decoder_model,
+                    iters=gs_iters,
+                    predicted_program=predicted_program,
+                    conditioning_method=conditioning_method,
+                    no_lora=no_lora,
+                    trainable_nbit=trainable_nbit,
+                    flash_attn=flash_attn,
+                    max_grad_norm=gs_max_grad_norm,
+                )
+                # need to compute new ce loss to be more representative
+                with accelerator.autocast():
+                    ce_loss = decoder_loss(
+                        decoder_model=decoder_model,
+                        conditioning_method=conditioning_method,
+                        decoder_input_ids=dec_ids,
+                        decoder_attention_mask=dec_mask,
+                        decoder_labels=dec_labels,
+                        dec_ids_lens=dec_ids_lens,
+                        num_virtual_tokens=dataset.num_virtual_tokens,
+                        no_lora=no_lora,
+                        decoder_pad_side=dataset.decoder_pad_side,
+                        trainable_nbit=trainable_nbit,
+                        flash_attn=flash_attn,
+                        predicted_program=predicted_program,
+                    )
+                    loss_list[-1] = ce_loss.item()
+
+            # recover data from first batch (e.g. task_ids might be missing tasks due to permute_iters)
+            assert isinstance(first_batch, dict)
             task_ids = first_batch["task_ids"]
             inverters = first_batch["inverters"]
             dec_gen_ids = first_batch["decoder_gen_input_ids"].to(accelerator.device)
@@ -654,7 +917,8 @@ def evaluate(
                     else:
                         decoder_inputs_embeds = decoder_module.model.model.embed_tokens(dec_gen_ids)
                     # pad decoder inputs embeds
-                    if decoder_gen_pad_side == "right":
+                    assert isinstance(predicted_program, torch.Tensor)
+                    if dataset.decoder_gen_pad_side == "right":
                         decoder_inputs_embeds = torch.cat([predicted_program, decoder_inputs_embeds], dim=1)
                     else:
                         decoder_inputs_embeds_new = []
@@ -666,12 +930,12 @@ def evaluate(
                         decoder_inputs_embeds = decoder_inputs_embeds.to(NBIT_TO_DTYPE[trainable_nbit])
                     # pad decoder attention masks
                     prefix_attention_mask = torch.full(
-                        (dec_gen_mask.shape[0], num_virtual_tokens),
+                        (dec_gen_mask.shape[0], dataset.num_virtual_tokens),
                         1,
                         device=dec_gen_mask.device,
                         dtype=dec_gen_mask.dtype,
                     )
-                    if decoder_gen_pad_side == "right":
+                    if dataset.decoder_gen_pad_side == "right":
                         dec_gen_mask = torch.cat([prefix_attention_mask, dec_gen_mask], dim=1)
                     else:
                         dec_gen_mask_new = []
@@ -690,16 +954,20 @@ def evaluate(
                         do_sample=False,
                         eos_token_id=terminators,
                     )
-                    gen_texts = decoder_tokenizer.batch_decode(gen_tokens, skip_special_tokens=True)
+                    gen_texts = dataset.decoder_tokenizer.batch_decode(gen_tokens, skip_special_tokens=True)
                 else:
                     dec_gen_ids = torch.cat([
-                        torch.ones((bs, num_virtual_tokens), device=dec_gen_ids.device, dtype=dec_gen_ids.dtype),
+                        torch.ones((bs, dataset.num_virtual_tokens), device=dec_gen_ids.device, dtype=dec_gen_ids.dtype),
                         dec_gen_ids
                     ], dim=1) # the addition will be ignored, double checked
                     dec_gen_mask = torch.cat([
-                        torch.ones((bs, num_virtual_tokens), device=dec_gen_mask.device, dtype=dec_gen_mask.dtype),
+                        torch.ones((bs, dataset.num_virtual_tokens), device=dec_gen_mask.device, dtype=dec_gen_mask.dtype),
                         dec_gen_mask
                     ], dim=1)
+                    if flash_attn:
+                        predicted_program = [
+                            tuple([x[0].to(NBIT_TO_DTYPE[trainable_nbit]), x[1].to(NBIT_TO_DTYPE[trainable_nbit])])
+                        for x in predicted_program] # type: ignore
                     gen_tokens = decoder_module.generate(
                         input_ids=dec_gen_ids,
                         attention_mask=dec_gen_mask,
@@ -711,7 +979,7 @@ def evaluate(
                         do_sample=False,
                         eos_token_id=terminators,
                     )
-                    gen_texts = decoder_tokenizer.batch_decode(gen_tokens[:, dec_gen_ids.shape[1]:], skip_special_tokens=True)
+                    gen_texts = dataset.decoder_tokenizer.batch_decode(gen_tokens[:, dec_gen_ids.shape[1]:], skip_special_tokens=True)
 
             # Compare each gen_text with label_texts
             assert len(task_ids) == len(inverters) == bs, (len(task_ids), len(inverters), bs)
@@ -722,14 +990,16 @@ def evaluate(
                 # exact acc
                 exact_acc_list.append(int(gen_text == label_text))
                 # is valid grid
-                gen_grid, gen_is_grid = text_to_2d_grid(gen_text, compact_grids)
-                label_grid, label_is_grid = text_to_2d_grid(label_text, compact_grids)
+                gen_grid, gen_is_grid = text_to_2d_grid(gen_text, dataset.compact_grids)
+                label_grid, label_is_grid = text_to_2d_grid(label_text, dataset.compact_grids)
                 assert label_is_grid
                 valid_grid_list.append(int(gen_is_grid))
                 if not gen_is_grid:
                     correct_grid_dim_list.append(0)
                     token_acc_list.append(0)
                     continue
+                assert isinstance(gen_grid, list)
+                assert isinstance(label_grid, list)
                 # save gen and gt grid
                 task_id_and_inverter_grids.append((task_id, inverter, gen_grid, label_grid))
                 # correct grid dim
@@ -809,16 +1079,16 @@ def evaluate(
 
 
 def list2d_to_tuple(l: List[List[int]]) -> Tuple[Tuple[int]]:
-    return tuple(tuple(row) for row in l)
+    return tuple(tuple(row) for row in l) # type: ignore
 
 
 def row_base_majority_voting(
-        grids: Tuple[Tuple[int]],
-        transpose: bool = False
+        grids: List[Tuple[Tuple[int]]],
+        transpose: bool = False,
     ) -> Tuple[Tuple[int]]:
     # transpose if needed
     if transpose:
-        grids = [list2d_to_tuple((np.array(grid).T).tolist()) for grid in grids]
+        grids = [list2d_to_tuple((np.array(grid).T).tolist()) for grid in grids] # type: ignore
     # get most common shape
     shapes = [np.array(grid).shape for grid in grids]
     most_common_n_row, most_common_n_col = max(set(shapes), key=shapes.count)
@@ -837,7 +1107,7 @@ def row_base_majority_voting(
     return list2d_to_tuple(grid.tolist())
 
 
-def get_three_votes(grids: Tuple[Tuple[int]]) -> List[Tuple[Tuple[int]]]:
+def get_three_votes(grids: List[Tuple[Tuple[int]]]) -> List[Tuple[Tuple[int]]]:
     unique_grids = list(set(grids))
     counts = [grids.count(grid) for grid in unique_grids]
     common1 = unique_grids[np.argmax(counts)]
@@ -895,7 +1165,7 @@ def invert_and_vote(inverters_and_grids: List[Tuple[str, Tuple[Tuple[int]]]]):
     return c1, c2, grids_all
 
 
-def text_to_2d_grid(text: str, compact_grids: bool):
+def text_to_2d_grid(text: str, compact_grids: bool) -> Tuple[Optional[List[List[int]]], bool]:
     try:
         grid_lines = text.split('\n')
         height, width = int(grid_lines[0]), int(grid_lines[1])
@@ -918,12 +1188,12 @@ def text_to_2d_grid(text: str, compact_grids: bool):
 
 
 class EMASpikeDetector:
-    def __init__(self, spike_multiplier, momentum=0.9):
+    def __init__(self, spike_multiplier: float, momentum: float = 0.9):
         self.moving_average = None
         self.momentum = momentum
         self.spike_multiplier = spike_multiplier
 
-    def update(self, new_val):
+    def update(self, new_val: float) -> bool:
         if self.moving_average == None:
             self.moving_average = new_val
             return False
@@ -932,7 +1202,7 @@ class EMASpikeDetector:
         return is_spike
 
 
-def compute_grad_norm2(parameters):
+def compute_grad_norm2(parameters) -> float:
     total_norm = 0.0
     for p in parameters:
         if p.grad is not None:
@@ -941,7 +1211,14 @@ def compute_grad_norm2(parameters):
     return total_norm ** 0.5
 
 
-def save_train_model(encoder_model, decoder_model, conditioning_projection, output_dir, epoch, tie_models):
+def save_train_model(
+        encoder_model: nn.Module,
+        decoder_model: nn.Module,
+        conditioning_projection: Optional[Union[Hidden2PrefixProjection, Hidden2PromptProjection]],
+        output_dir: str,
+        epoch: int,
+        tie_models: bool,
+    ) -> Tuple[str, Optional[str], Optional[str]]:
     # encoder
     save_enc_path = os.path.join(output_dir, f"encoder_lora_epoch_{epoch+1}")
     encoder_module = encoder_model.module if isinstance(encoder_model, DistributedDataParallel) else encoder_model
@@ -958,7 +1235,9 @@ def save_train_model(encoder_model, decoder_model, conditioning_projection, outp
     save_proj_path = None
     if conditioning_projection is not None:
         save_proj_path = os.path.join(output_dir, f"conditioning_projection_epoch_{epoch+1}.pt")
-        conditioning_projection_module = conditioning_projection.module if isinstance(conditioning_projection, DistributedDataParallel) else conditioning_projection
+        conditioning_projection_module = conditioning_projection
+        if isinstance(conditioning_projection, DistributedDataParallel):
+            conditioning_projection_module = conditioning_projection.module
         torch.save(conditioning_projection_module, save_proj_path)
         logger.info(f"Saved conditioning projection to {save_proj_path}")
     return save_enc_path, save_dec_path, save_proj_path
@@ -1080,6 +1359,17 @@ def main():
     parser.add_argument("--eval_eval_permute_n", type=int, default=0)
     parser.add_argument("--eval_eval_augment_n", type=int, default=0)
 
+    # gradient search
+    parser.add_argument("--gs_iters", type=int, default=0)
+    parser.add_argument("--gs_lr", type=float, default=1.0)
+    parser.add_argument("--gs_beta1", type=float, default=0.9)
+    parser.add_argument("--gs_beta2", type=float, default=0.9)
+    parser.add_argument("--gs_batch_size", type=int, default=2)
+    parser.add_argument("--gs_optimizer", type=str, choices=["adamw", "sgd"], default="adamw")
+    parser.add_argument("--gs_lr_scheduler", type=str, choices=["cosine", "constant"], default="cosine")
+    parser.add_argument("--gs_max_grad_norm", default=1e8, type=float, help="Max gradient norm.")
+    parser.add_argument("--gs_take_best", action="store_true")
+
     # Lora encoder
     parser.add_argument("--encoder_lora_rank", type=int, default=256)
     parser.add_argument("--encoder_lora_alpha", type=float, default=24.0)
@@ -1131,6 +1421,8 @@ def main():
         args.untrainable_nbit = args.trainable_nbit # untrainable become trainable
     if args.debug_enc_len > -1 and args.debug_dec_len == -1:
         args.debug_dec_len = args.debug_enc_len // 2
+    if args.gs_iters > 0:
+        assert args.eval_batch_size == 1
 
     args.output_dir = os.path.join(args.output_dir, args.tag)
 
@@ -1165,6 +1457,10 @@ def main():
     logger.info("#### END ALL ARGUMENTS ####\n")
 
     # setup spike detector
+    gradnorm_spike_detector = None
+    loss_spike_detector = None
+    spike_gradnorm_samples_path = None
+    spike_loss_samples_path = None
     if not args.no_log_spikes and accelerator.is_main_process:
         spike_gradnorm_samples_path = os.path.join(args.output_dir, "spike_gradnorm_samples.jsonl")
         spike_loss_samples_path = os.path.join(args.output_dir, "spike_loss_samples.jsonl")
@@ -1240,7 +1536,7 @@ def main():
 
     # add new CLS tokens for program encoding
     cls_tokens = [f"<CLS{token_i}>" for token_i in range(args.num_virtual_tokens)]
-    encoder_tokenizer.add_tokens(cls_tokens)
+    encoder_tokenizer.add_tokens(cls_tokens) # type: ignore
     base_encoder.resize_token_embeddings(len(encoder_tokenizer))
     logger.info("Base models loaded.")
 
@@ -1365,7 +1661,7 @@ def main():
     train_loader = DataLoader(
         train_dataset,
         batch_size=args.train_batch_size,
-        shuffle=False,
+        shuffle=False, # this doesn't matter, collate does all the work
         collate_fn=train_collate_fn,
         drop_last=True,
         num_workers=args.num_workers,
@@ -1399,12 +1695,12 @@ def main():
     ]
     all_params = embedding_params + other_params
     if args.optimizer == 'adamw':
-        optimizer = torch.optim.AdamW(optimizer_grouped_params, weight_decay=args.weight_decay)
+        optimizer = torch.optim.AdamW(optimizer_grouped_params, weight_decay=args.weight_decay) # type: ignore
     elif args.optimizer == 'adamw8bit':
         optimizer = bnb.optim.Adam8bit(optimizer_grouped_params, weight_decay=args.weight_decay)
         # optimizer = bnb.optim.PagedAdamW(optimizer_grouped_params, weight_decay=args.weight_decay)
     else:
-        optimizer = torch.optim.SGD(optimizer_grouped_params)
+        optimizer = torch.optim.SGD(optimizer_grouped_params) # type: ignore
     logger.info(f"Optimizer with {len(embedding_params)} embed-params lr={args.lr_embedding}, {len(other_params)} other-params lr={args.lr_other}")
 
     # LR schedule
@@ -1461,6 +1757,7 @@ def main():
 
     # when these conditions are met, DDP requires setting static graph due to reusing parameters
     if args.tie_models and args.encoder_gradient_checkpointing and accelerator.num_processes > 0:
+        assert args.gs_iters == 0 # gradient search changes static graph? idk havent tried
         # set to train
         encoder_model.train()
         decoder_model.train()
@@ -1551,10 +1848,10 @@ def main():
                     )
 
                 # just accumulate for logging
-                avg_ce_loss = accelerator.gather(ce_loss.repeat(args.train_batch_size)).mean()
-                avg_invar_loss = accelerator.gather(invar_loss.repeat(args.train_batch_size)).mean()
-                avg_encoder_loss = accelerator.gather(encoder_loss.repeat(args.train_batch_size)).mean()
-                avg_total_loss = accelerator.gather(total_loss.repeat(args.train_batch_size)).mean()
+                avg_ce_loss = accelerator.gather(ce_loss.repeat(args.train_batch_size)).mean() # type: ignore
+                avg_invar_loss = accelerator.gather(invar_loss.repeat(args.train_batch_size)).mean() # type: ignore
+                avg_encoder_loss = accelerator.gather(encoder_loss.repeat(args.train_batch_size)).mean() # type: ignore
+                avg_total_loss = accelerator.gather(total_loss.repeat(args.train_batch_size)).mean() # type: ignore
                 ce_loss_accum += avg_ce_loss.item() / args.grad_accum_steps
                 invar_loss_accum += avg_invar_loss.item() / args.grad_accum_steps
                 encoder_loss_accum += avg_encoder_loss.item() / args.grad_accum_steps
@@ -1562,23 +1859,26 @@ def main():
 
                 accelerator.backward(total_loss)
                 if accelerator.sync_gradients:
-                    grad_norm_accum += accelerator.clip_grad_norm_(all_params, args.max_grad_norm).item()
+                    grad_norm_accum += accelerator.clip_grad_norm_(all_params, args.max_grad_norm).item() # type: ignore
                 optimizer.step()
                 lr_scheduler.step()
 
                 # detect and log spike
                 if not args.no_log_spikes and accelerator.is_main_process:
+                    assert gradnorm_spike_detector is not None
+                    assert loss_spike_detector is not None
+                    assert isinstance(spike_gradnorm_samples_path, str)
+                    assert isinstance(spike_loss_samples_path, str)
                     is_gradnorm_spike = gradnorm_spike_detector.update(compute_grad_norm2(all_params))
                     is_loss_spike = loss_spike_detector.update(total_loss.item())
-                    if is_gradnorm_spike or is_loss_spike:
-                        enc_texts = encoder_tokenizer.batch_decode(enc_ids, skip_special_tokens=True)
-                        dec_texts = decoder_tokenizer.batch_decode(dec_ids, skip_special_tokens=True)
-                        data_string = json.dumps({'enc': enc_texts, 'dec': dec_texts})
+                    enc_texts = encoder_tokenizer.batch_decode(enc_ids, skip_special_tokens=True)
+                    dec_texts = decoder_tokenizer.batch_decode(dec_ids, skip_special_tokens=True)
+                    data_string = json.dumps({"enc": enc_texts, "dec": dec_texts})
                     if is_gradnorm_spike:
-                        with open(spike_gradnorm_samples_path, 'a') as f:
+                        with open(spike_gradnorm_samples_path, "a") as f:
                             f.write(f"{global_step} {data_string}\n")
                     if is_loss_spike:
-                        with open(spike_loss_samples_path, 'a') as f:
+                        with open(spike_loss_samples_path, "a") as f:
                             f.write(f"{global_step} {data_string}\n")
 
                 optimizer.zero_grad()
@@ -1668,21 +1968,23 @@ def main():
                 conditioning_projection=conditioning_projection,
                 dataset=eval_train_dataset,
                 accelerator=accelerator,
-                num_virtual_tokens=args.num_virtual_tokens,
-                decoder_tokenizer=decoder_tokenizer,
                 batch_size=args.eval_batch_size,
                 collate_fn=eval_collate_fn,
-                compact_grids=args.compact_grids,
                 no_lora=args.no_lora,
                 decoder_ce_loss=True, # HARDCODE
                 trainable_nbit=args.trainable_nbit,
                 flash_attn=args.flash_attn,
                 tie_models=args.tie_models,
                 output_dir=args.output_dir,
-                encoder_pad_side=args.encoder_pad_side,
-                decoder_pad_side=args.decoder_pad_side,
-                decoder_gen_pad_side=args.decoder_gen_pad_side,
-                search_iters=0, # HARDCODE
+                gs_iters=args.gs_iters,
+                gs_lr=args.gs_lr,
+                gs_beta1=args.gs_beta1,
+                gs_beta2=args.gs_beta2,
+                gs_batch_size=args.gs_batch_size,
+                gs_optimizer=args.gs_optimizer,
+                gs_max_grad_norm=args.gs_max_grad_norm,
+                gs_lr_scheduler=args.gs_lr_scheduler,
+                gs_take_best=args.gs_take_best,
             )
             eval_ce, eval_exact_acc, eval_valid_grid, eval_correct_grid_dim, eval_token_acc, eval_texts, \
                 eval_votes, eval_competition_sub_acc, eval_competition_all_acc, _ = evaluate(
@@ -1695,21 +1997,23 @@ def main():
                 conditioning_projection=conditioning_projection,
                 dataset=eval_eval_dataset,
                 accelerator=accelerator,
-                num_virtual_tokens=args.num_virtual_tokens,
-                decoder_tokenizer=decoder_tokenizer,
                 batch_size=args.eval_batch_size,
                 collate_fn=eval_collate_fn,
-                compact_grids=args.compact_grids,
                 no_lora=args.no_lora,
                 decoder_ce_loss=True, # HARDCODE
                 trainable_nbit=args.trainable_nbit,
                 flash_attn=args.flash_attn,
                 tie_models=args.tie_models,
                 output_dir=args.output_dir,
-                encoder_pad_side=args.encoder_pad_side,
-                decoder_pad_side=args.decoder_pad_side,
-                decoder_gen_pad_side=args.decoder_gen_pad_side,
-                search_iters=0, # HARDCODE
+                gs_iters=args.gs_iters,
+                gs_lr=args.gs_lr,
+                gs_beta1=args.gs_beta1,
+                gs_beta2=args.gs_beta2,
+                gs_batch_size=args.gs_batch_size,
+                gs_optimizer=args.gs_optimizer,
+                gs_max_grad_norm=args.gs_max_grad_norm,
+                gs_lr_scheduler=args.gs_lr_scheduler,
+                gs_take_best=args.gs_take_best,
             )
 
             if accelerator.is_main_process:
