@@ -127,7 +127,7 @@ def main():
     parser.add_argument("--encoder_name", type=str, default="llama1b")
     parser.add_argument("--decoder_name", type=str, default="llama1b")
     parser.add_argument("--tie_models", action="store_true")
-    parser.add_argument("--flash_attn", action="store_true")
+    parser.add_argument("--no_flash_attn", action="store_true")
     parser.add_argument("--untrainable_nbit", type=float, choices=[3.6, 4, 8, 16, 32], default=16)
     parser.add_argument("--trainable_nbit", type=float, choices=[16, 32], default=16)
     parser.add_argument("--encoder_gradient_checkpointing", action="store_true")
@@ -168,7 +168,7 @@ def main():
     parser.add_argument("--weight_decay", type=float, default=0.0)
     parser.add_argument("--num_epochs", type=int, default=10)
     parser.add_argument("--max_samples_per_task", type=int, default=250)
-    parser.add_argument("--max_seq_len", type=int, default=8192)
+    parser.add_argument("--max_seq_len", type=int, default=5120)
     parser.add_argument("--encoder_loss_lambda", type=float, default=1.0)
     parser.add_argument("--encoder_loss_type", type=str, choices=["last", "rest", "all"], default="rest")
     parser.add_argument("--max_grad_norm", default=1.0, type=float, help="Max gradient norm.")
@@ -178,7 +178,7 @@ def main():
     parser.add_argument("--data_dir", type=str, default="/scratch/yl11330/re-arc/train_data/tasks")
     parser.add_argument("--select_tasks_path", type=str, default=None)
     parser.add_argument("--num_workers", type=int, default=8)
-    parser.add_argument("--compact_grids", action="store_true")
+    parser.add_argument("--no_compact_grids", action="store_true")
     parser.add_argument("--encoder_pad_side", type=str, choices=["left", "right"], default="right")
     parser.add_argument("--decoder_pad_side", type=str, choices=["left", "right"], default="right")
     parser.add_argument("--decoder_gen_pad_side", type=str, choices=["left", "right"], default="left")
@@ -280,7 +280,7 @@ def main():
         "cache_dir": "./encoder_decoder_cache",
         "low_cpu_mem_usage": True
     }
-    if args.flash_attn:
+    if not args.no_flash_attn:
         from_pretrained_kwargs["attn_implementation"] = "flash_attention_2"
     if args.untrainable_nbit in NBIT_TO_DTYPE:
         from_pretrained_kwargs["torch_dtype"] = NBIT_TO_DTYPE[args.untrainable_nbit]
@@ -419,7 +419,7 @@ def main():
         decoder_tokenizer=decoder_tokenizer,
         max_seq_len=args.max_seq_len,
         seed=args.seed,
-        compact_grids=args.compact_grids,
+        no_compact_grids=args.no_compact_grids,
         ntokens=args.ntokens,
         encoder_pad_side=args.encoder_pad_side,
         decoder_pad_side=args.decoder_pad_side,
@@ -590,7 +590,7 @@ def main():
                     encoder_pad_side=args.encoder_pad_side,
                     decoder_pad_side=args.decoder_pad_side,
                     trainable_nbit=args.trainable_nbit,
-                    flash_attn=args.flash_attn,
+                    no_flash_attn=args.no_flash_attn,
                     debug_vae_no_sample=args.debug_vae_train_no_sample,
                     debug_vae_no_kl=args.debug_vae_no_kl,
                 )
@@ -639,7 +639,7 @@ def main():
                             encoder_pad_side=args.encoder_pad_side,
                             decoder_pad_side=args.decoder_pad_side,
                             trainable_nbit=args.trainable_nbit,
-                            flash_attn=args.flash_attn,
+                            no_flash_attn=args.no_flash_attn,
                             debug_vae_no_sample=args.debug_vae_train_no_sample,
                             debug_vae_no_kl=args.debug_vae_no_kl,
                         )

@@ -208,7 +208,7 @@ class TTTDataset(Dataset):
         decoder_tokenizer,
         max_seq_len: int,
         seed: int,
-        compact_grids: bool,
+        no_compact_grids: bool,
         ntokens: int,
         encoder_pad_side: str,
         decoder_pad_side: str,
@@ -221,7 +221,7 @@ class TTTDataset(Dataset):
         self.encoder_tokenizer = encoder_tokenizer
         self.decoder_tokenizer = decoder_tokenizer
         self.max_seq_len = max_seq_len
-        self.compact_grids = compact_grids
+        self.no_compact_grids = no_compact_grids
         self.ntokens = ntokens
         self.cls_tokens = [f"<CLS{token_i}>" for token_i in range(ntokens)]
         self.encoder_pad_side = encoder_pad_side
@@ -342,7 +342,7 @@ class TTTDataset(Dataset):
         dec_out_tokens['attention_mask'] = dec_out_tokens['attention_mask'][:, 1:]
 
         # compact grids (optional)
-        if self.compact_grids:
+        if not self.no_compact_grids:
             remove_val_from_1dtokenized(enc_tokens, self.encoder_space_token_id)
             remove_val_from_1dtokenized(dec_in_tokens, self.decoder_space_token_id)
             remove_val_from_1dtokenized(dec_out_tokens, self.decoder_space_token_id)
@@ -362,7 +362,7 @@ class TTTDataset(Dataset):
         ], dim=0)
 
         dec_label_texts = dec_out_text[:-len("<|eot_id|>")]
-        if self.compact_grids:
+        if not self.no_compact_grids:
             dec_label_texts = dec_label_texts.replace(' ', '')
 
         # Check length
@@ -480,8 +480,9 @@ class TrainDataset(Dataset):
         max_prefix: int,
         max_seq_len: int,
         augment_ratio: float,
+        augment_single_grid: bool,
         seed: int,
-        compact_grids: bool,
+        no_compact_grids: bool,
         ntokens: int,
         debug_fixed_train_order: bool,
         debug_random_pad: bool,
@@ -501,8 +502,9 @@ class TrainDataset(Dataset):
         self.max_seq_len = max_seq_len
         self.augmenters: List[Augmenter] = get_augmenters(include_basic=True, include_size=True, include_chain=True, include_repeat=True)
         self.augment_ratio = augment_ratio
+        self.augment_single_grid = augment_single_grid
         self.rng = np.random.RandomState(seed)
-        self.compact_grids = compact_grids
+        self.no_compact_grids = no_compact_grids
         self.ntokens = ntokens
         self.cls_tokens = [f"<CLS{token_i}>" for token_i in range(ntokens)]
         self.debug_fixed_train_order = debug_fixed_train_order
@@ -544,7 +546,9 @@ def collate_fn_train(batch: List[int], dataset: TrainDataset) -> Dict:
         io_augmentation_choice = None
         if dataset.rng.rand() < dataset.augment_ratio:
             augmenter = dataset.rng.choice(dataset.augmenters) # type: ignore
-            io_augmentation_choice = dataset.rng.choice(['input_only', 'output_only', 'both'])
+            io_augmentation_choice = "both"
+            if dataset.augment_single_grid:
+                io_augmentation_choice = dataset.rng.choice(["input_only", "output_only", "both"])
 
         # We'll attempt to produce exactly 2 examples from this single task
         two_task_list = []
@@ -601,7 +605,7 @@ def collate_fn_train(batch: List[int], dataset: TrainDataset) -> Dict:
             dec_out_tokens['attention_mask'] = dec_out_tokens['attention_mask'][:, 1:]
 
             # compact grids (optional)
-            if dataset.compact_grids:
+            if not dataset.no_compact_grids:
                 remove_val_from_1dtokenized(enc_tokens, dataset.encoder_space_token_id)
                 remove_val_from_1dtokenized(dec_in_tokens, dataset.decoder_space_token_id)
                 remove_val_from_1dtokenized(dec_out_tokens, dataset.decoder_space_token_id)
@@ -752,7 +756,7 @@ class EvalDataset:
         encoder_tokenizer,
         decoder_tokenizer,
         max_seq_len: int,
-        compact_grids: bool,
+        no_compact_grids: bool,
         ntokens: int,
         encoder_loss_type: str,
         debug_random_pad: bool,
@@ -769,7 +773,7 @@ class EvalDataset:
         self.encoder_tokenizer = encoder_tokenizer
         self.decoder_tokenizer = decoder_tokenizer
         self.max_seq_len = max_seq_len
-        self.compact_grids = compact_grids
+        self.no_compact_grids = no_compact_grids
         self.ntokens = ntokens
         self.cls_tokens = [f"<CLS{token_i}>" for token_i in range(ntokens)]
         self.encoder_loss_type = encoder_loss_type
@@ -974,7 +978,7 @@ class EvalDataset:
         dec_out_tokens['attention_mask'] = dec_out_tokens['attention_mask'][:, 1:]
 
         # compact grids (optional)
-        if self.compact_grids:
+        if not self.no_compact_grids:
             remove_val_from_1dtokenized(enc_tokens, self.encoder_space_token_id)
             remove_val_from_1dtokenized(dec_in_tokens, self.decoder_space_token_id)
             remove_val_from_1dtokenized(dec_out_tokens, self.decoder_space_token_id)
@@ -994,7 +998,7 @@ class EvalDataset:
         ], dim=0)
 
         dec_label_texts = dec_out_text[:-len("<|eot_id|>")]
-        if self.compact_grids:
+        if not self.no_compact_grids:
             dec_label_texts = dec_label_texts.replace(' ', '')
 
         # Check length
@@ -1194,7 +1198,7 @@ class GSDataset(Dataset):
         encoder_tokenizer,
         decoder_tokenizer,
         max_seq_len: int,
-        compact_grids: bool,
+        no_compact_grids: bool,
         ntokens: int,
         debug_random_pad: bool,
         debug_pad_len: int,
@@ -1204,7 +1208,7 @@ class GSDataset(Dataset):
         self.encoder_tokenizer = encoder_tokenizer
         self.decoder_tokenizer = decoder_tokenizer
         self.max_seq_len = max_seq_len
-        self.compact_grids = compact_grids
+        self.no_compact_grids = no_compact_grids
         self.ntokens = ntokens
         self.debug_random_pad = debug_random_pad
         self.debug_pad_len = debug_pad_len
@@ -1248,7 +1252,7 @@ class GSDataset(Dataset):
         dec_out_tokens['attention_mask'] = dec_out_tokens['attention_mask'][:, 1:]
 
         # compact grids (optional)
-        if self.compact_grids:
+        if not self.no_compact_grids:
             remove_val_from_1dtokenized(dec_in_tokens, self.decoder_space_token_id)
             remove_val_from_1dtokenized(dec_out_tokens, self.decoder_space_token_id)
 

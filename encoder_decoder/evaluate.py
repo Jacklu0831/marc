@@ -60,7 +60,7 @@ def main():
     parser.add_argument("--encoder_name", type=str, default="llama1b")
     parser.add_argument("--decoder_name", type=str, default="llama1b")
     parser.add_argument("--tie_models", action="store_true")
-    parser.add_argument("--flash_attn", action="store_true")
+    parser.add_argument("--no_flash_attn", action="store_true")
     parser.add_argument("--untrainable_nbit", type=float, choices=[3.6, 4, 8, 16, 32], default=16)
     parser.add_argument("--trainable_nbit", type=float, choices=[16, 32], default=16)
     parser.add_argument("--no_lora", action="store_true")
@@ -80,13 +80,13 @@ def main():
 
     # Evaluation
     parser.add_argument("--batch_size", type=int, default=2)
-    parser.add_argument("--max_seq_len", type=int, default=8192)
+    parser.add_argument("--max_seq_len", type=int, default=5120)
     parser.add_argument("--decoder_ce_loss", action="store_true")
     parser.add_argument("--encoder_loss_type", type=str, choices=["last", "rest", "all"], default="rest")
 
     # data
     parser.add_argument("--num_workers", type=int, default=8)
-    parser.add_argument("--compact_grids", action="store_true")
+    parser.add_argument("--no_compact_grids", action="store_true")
     parser.add_argument("--encoder_pad_side", type=str, choices=["left", "right"], default="right")
     parser.add_argument("--decoder_gen_pad_side", type=str, choices=["left", "right"], default="left")
 
@@ -183,7 +183,7 @@ def main():
         "cache_dir": "./encoder_decoder_cache",
         "low_cpu_mem_usage": True,
     }
-    if args.flash_attn:
+    if not args.no_flash_attn:
         from_pretrained_kwargs["attn_implementation"] = "flash_attention_2"
     if args.untrainable_nbit in NBIT_TO_DTYPE:
         from_pretrained_kwargs["torch_dtype"] = NBIT_TO_DTYPE[args.untrainable_nbit]
@@ -326,7 +326,7 @@ def main():
         encoder_tokenizer=encoder_tokenizer,
         decoder_tokenizer=decoder_tokenizer,
         max_seq_len=args.max_seq_len,
-        compact_grids=args.compact_grids,
+        no_compact_grids=args.no_compact_grids,
         ntokens=args.ntokens,
         encoder_loss_type=args.encoder_loss_type,
         debug_random_pad=False, # HARDCODE
@@ -354,7 +354,7 @@ def main():
         no_lora=args.no_lora,
         decoder_ce_loss=args.decoder_ce_loss,
         trainable_nbit=args.trainable_nbit,
-        flash_attn=args.flash_attn,
+        no_flash_attn=args.no_flash_attn,
         tie_models=args.tie_models,
         output_dir=args.output_dir,
         gs_iters=args.gs_iters,

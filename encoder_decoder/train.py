@@ -103,10 +103,13 @@ class Prefix2PrefixProjection(nn.Module):
             device: torch.device,
         ):
         super(Prefix2PrefixProjection, self).__init__()
+
         # prefixes are formatted as 16 of (2=2, BS=1, nhead=8, nvirtualtoken=1, tokendim / nhead=64)
         self.ntokens = ntokens
         self.vae = vae
         self.device = device
+        self.projection_type = projection_type
+
         # model config
         self.enc_num_layers = encoder_model.config.num_hidden_layers
         self.enc_num_kv_heads = encoder_model.config.num_key_value_heads
@@ -116,6 +119,7 @@ class Prefix2PrefixProjection(nn.Module):
         self.dec_num_kv_heads = decoder_model.config.num_key_value_heads
         self.dec_embed_size_per_head = decoder_model.config.hidden_size // decoder_model.config.num_attention_heads
         self.dec_size = self.dec_num_layers * self.dec_num_kv_heads * self.dec_embed_size_per_head
+
         # weights
         if projection_type == "none":
             pass
@@ -272,13 +276,16 @@ class Hidden2PromptProjection(nn.Module):
             device: torch.device,
         ):
         super(Hidden2PromptProjection, self).__init__()
+
         self.ntokens = ntokens
         self.vae = vae
         self.projection_type = projection_type
         self.device = device
+
         # model config
         self.encoder_hidden_size = encoder_model.config.hidden_size
         self.decoder_hidden_size = decoder_model.config.hidden_size
+
         # weights
         if projection_type == "none":
             pass
@@ -410,11 +417,12 @@ def encoder_decoder_loss(
     encoder_pad_side: str,
     decoder_pad_side: str,
     trainable_nbit: int,
-    flash_attn: bool,
+    no_flash_attn: bool,
     debug_vae_no_sample: bool,
     debug_vae_no_kl: bool,
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor,
            Union[torch.Tensor, List[Tuple[torch.Tensor, torch.Tensor]]]]:
+
     # Encoder forward and get loss
     enc_out = encoder_model(
         input_ids=encoder_input_ids,
@@ -449,6 +457,7 @@ def encoder_decoder_loss(
         # hidden state will be used for invar loss, so make it a batch first tensor
         enc_hidden_states = torch.stack([torch.stack(x) for x in predicted_program]) # each (batch_size, num_kv_heads, ntokens, embed_size_per_head)
         enc_hidden_states = enc_hidden_states.permute(2, 0, 1, 3, 4, 5) # (batch_size, num_layer, 2, num_kv_heads, ntokens, embed_size_per_head)
+
     elif conditioning_method == "hidden2prompt":
         # get hidden states
         enc_hidden_states = enc_out.hidden_states[-1] # [B, seq_len, hidden_dim]
@@ -462,6 +471,7 @@ def encoder_decoder_loss(
             vae_no_sample=debug_vae_no_sample,
             vae_no_kl=debug_vae_no_kl,
         )
+
     else:
         raise ValueError(f"invalid conditioning method {conditioning_method}")
 
@@ -479,7 +489,7 @@ def encoder_decoder_loss(
             no_lora=no_lora,
             decoder_pad_side=decoder_pad_side,
             trainable_nbit=trainable_nbit,
-            flash_attn=flash_attn,
+            no_flash_attn=no_flash_attn,
             predicted_program=predicted_program,
         )
 
@@ -504,9 +514,10 @@ def decoder_loss(
     no_lora: bool,
     decoder_pad_side: str,
     trainable_nbit: int,
-    flash_attn: bool,
+    no_flash_attn: bool,
     predicted_program: Union[torch.Tensor, List[Tuple[torch.Tensor, torch.Tensor]]],
 ) -> torch.Tensor:
+
     # decoder attention mask must be extended
     prefix_attention_mask = torch.full(
         (decoder_attention_mask.shape[0], ntokens),
@@ -519,7 +530,7 @@ def decoder_loss(
         assert isinstance(predicted_program, list)
         # pad decoder attention mask
         decoder_attention_mask = torch.cat([prefix_attention_mask, decoder_attention_mask], dim=1)
-        if flash_attn:
+        if not no_flash_attn:
             predicted_program = [
                 tuple([x[0].to(NBIT_TO_DTYPE[trainable_nbit]), x[1].to(NBIT_TO_DTYPE[trainable_nbit])])
             for x in predicted_program] # type: ignore
@@ -530,6 +541,7 @@ def decoder_loss(
             past_key_values=predicted_program,
             labels=decoder_labels,
         )
+
     elif conditioning_method == "hidden2prompt":
         assert isinstance(predicted_program, torch.Tensor)
         # pad decoder attention mask
@@ -576,6 +588,7 @@ def decoder_loss(
             attention_mask=decoder_attention_mask,
             labels=decoder_labels,
         )
+
     else:
         raise ValueError(f"invalid conditioning method {conditioning_method}")
 
@@ -616,7 +629,7 @@ def gradient_search(
         conditioning_method: str,
         no_lora: bool,
         trainable_nbit: int,
-        flash_attn: bool,
+        no_flash_attn: bool,
         max_grad_norm: float,
     ) -> Union[torch.Tensor, List[Tuple[torch.Tensor, torch.Tensor]]]:
     # note gradient checkpointing does not matter because we are freezing the model here
@@ -631,7 +644,7 @@ def gradient_search(
         encoder_tokenizer=eval_dataset.encoder_tokenizer,
         decoder_tokenizer=eval_dataset.decoder_tokenizer,
         max_seq_len=eval_dataset.max_seq_len,
-        compact_grids=eval_dataset.compact_grids,
+        no_compact_grids=eval_dataset.no_compact_grids,
         ntokens=eval_dataset.ntokens,
         debug_random_pad=eval_dataset.debug_random_pad,
         debug_pad_len=eval_dataset.debug_pad_len,
@@ -712,7 +725,7 @@ def gradient_search(
                     no_lora=no_lora,
                     decoder_pad_side=eval_dataset.decoder_pad_side,
                     trainable_nbit=trainable_nbit,
-                    flash_attn=flash_attn,
+                    no_flash_attn=no_flash_attn,
                     predicted_program=predicted_program,
                 )
             accelerator.backward(gs_loss)
@@ -773,7 +786,7 @@ def evaluate(
     no_lora: bool,
     decoder_ce_loss: bool,
     trainable_nbit: int,
-    flash_attn: bool,
+    no_flash_attn: bool,
     tie_models: bool,
     output_dir: str,
     gs_iters: int,
@@ -981,7 +994,7 @@ def evaluate(
                         encoder_pad_side=dataset.encoder_pad_side,
                         decoder_pad_side=dataset.decoder_pad_side,
                         trainable_nbit=trainable_nbit,
-                        flash_attn=flash_attn,
+                        no_flash_attn=no_flash_attn,
                         debug_vae_no_sample=debug_vae_no_sample,
                         debug_vae_no_kl=debug_vae_no_kl,
                     )
@@ -1064,7 +1077,7 @@ def evaluate(
                     conditioning_method=conditioning_method,
                     no_lora=no_lora,
                     trainable_nbit=trainable_nbit,
-                    flash_attn=flash_attn,
+                    no_flash_attn=no_flash_attn,
                     max_grad_norm=gs_max_grad_norm,
                 )
                 # need to compute new ce loss to be more representative
@@ -1080,7 +1093,7 @@ def evaluate(
                         no_lora=no_lora,
                         decoder_pad_side=dataset.decoder_pad_side,
                         trainable_nbit=trainable_nbit,
-                        flash_attn=flash_attn,
+                        no_flash_attn=no_flash_attn,
                         predicted_program=predicted_program,
                     )
                     loss_list[-1] = ce_loss.item()
@@ -1109,7 +1122,7 @@ def evaluate(
                         torch.ones((bs, dataset.ntokens), device=dec_gen_mask.device, dtype=dec_gen_mask.dtype),
                         dec_gen_mask
                     ], dim=1)
-                    if flash_attn:
+                    if not no_flash_attn:
                         predicted_program = [
                             ([x[0].to(NBIT_TO_DTYPE[trainable_nbit]), x[1].to(NBIT_TO_DTYPE[trainable_nbit])])
                         for x in predicted_program] # type: ignore
@@ -1140,7 +1153,7 @@ def evaluate(
                             x = torch.cat([x[:-l], p, x[-l:]])
                             decoder_inputs_embeds_new.append(x)
                         decoder_inputs_embeds = torch.stack(decoder_inputs_embeds_new)
-                    if flash_attn:
+                    if not no_flash_attn:
                         decoder_inputs_embeds = decoder_inputs_embeds.to(NBIT_TO_DTYPE[trainable_nbit])
                     # pad decoder attention masks
                     prefix_attention_mask = torch.full(
@@ -1181,8 +1194,8 @@ def evaluate(
                 # exact acc
                 exact_acc_list.append(int(gen_text == label_text))
                 # is valid grid
-                gen_grid, gen_is_grid = text_to_2d_grid(gen_text, dataset.compact_grids)
-                label_grid, label_is_grid = text_to_2d_grid(label_text, dataset.compact_grids)
+                gen_grid, gen_is_grid = text_to_2d_grid(gen_text, dataset.no_compact_grids)
+                label_grid, label_is_grid = text_to_2d_grid(label_text, dataset.no_compact_grids)
                 assert label_is_grid
                 valid_grid_list.append(int(gen_is_grid))
                 if not gen_is_grid:
@@ -1356,7 +1369,7 @@ def invert_and_vote(inverters_and_grids: List[Tuple[str, Tuple[Tuple[int]]]]):
     return c1, c2, grids_all
 
 
-def text_to_2d_grid(text: str, compact_grids: bool) -> Tuple[Optional[List[List[int]]], bool]:
+def text_to_2d_grid(text: str, no_compact_grids: bool) -> Tuple[Optional[List[List[int]]], bool]:
     try:
         grid_lines = text.split('\n')
         height, width = int(grid_lines[0]), int(grid_lines[1])
@@ -1364,7 +1377,7 @@ def text_to_2d_grid(text: str, compact_grids: bool) -> Tuple[Optional[List[List[
         grid = []
         row_lens = []
         for l in grid_lines[2:]:
-            if compact_grids:
+            if not no_compact_grids:
                 row = [int(x) for x in l]
             else:
                 row = [int(x) for x in l.split(' ')]
@@ -1484,7 +1497,7 @@ def main():
     parser.add_argument("--encoder_name", type=str, default="llama1b")
     parser.add_argument("--decoder_name", type=str, default="llama1b")
     parser.add_argument("--tie_models", action="store_true")
-    parser.add_argument("--flash_attn", action="store_true")
+    parser.add_argument("--no_flash_attn", action="store_true")
     parser.add_argument("--untrainable_nbit", type=float, choices=[3.6, 4, 8, 16, 32], default=16)
     parser.add_argument("--trainable_nbit", type=float, choices=[16, 32], default=16)
     parser.add_argument("--encoder_gradient_checkpointing", action="store_true")
@@ -1493,7 +1506,7 @@ def main():
 
     # Conditioning projection
     parser.add_argument("--conditioning_method", type=str, choices=["prefix2prefix", "hidden2prompt"], default="hidden2prompt")
-    parser.add_argument("--projection_type", type=str, choices=["none", "shared", "full"], default="shared")
+    parser.add_argument("--projection_type", type=str, choices=["none", "shared", "full"], default="none")
     parser.add_argument("--identity_init", action="store_true")
 
     # vae
@@ -1513,8 +1526,8 @@ def main():
     parser.add_argument("--num_epochs", type=int, default=25)
     parser.add_argument("--samples_per_epoch", type=int, default=20000)
     parser.add_argument("--eval_epochs", type=int, default=1)
-    parser.add_argument("--max_seq_len", type=int, default=8192)
-    parser.add_argument("--invar_loss_lambda", type=float, default=0.03)
+    parser.add_argument("--max_seq_len", type=int, default=5120)
+    parser.add_argument("--invar_loss_lambda", type=float, default=0.0)
     parser.add_argument("--encoder_loss_lambda", type=float, default=1.0)
     parser.add_argument("--encoder_loss_type", type=str, choices=["last", "rest", "all"], default="rest")
     parser.add_argument("--max_grad_norm", default=1.0, type=float, help="Max gradient norm.")
@@ -1522,7 +1535,7 @@ def main():
 
     # both data
     parser.add_argument("--num_workers", type=int, default=8)
-    parser.add_argument("--compact_grids", action="store_true")
+    parser.add_argument("--no_compact_grids", action="store_true")
     parser.add_argument("--encoder_pad_side", type=str, choices=["left", "right"], default="right")
     parser.add_argument("--decoder_pad_side", type=str, choices=["left", "right"], default="right")
     parser.add_argument("--decoder_gen_pad_side", type=str, choices=["left", "right"], default="left")
@@ -1532,6 +1545,7 @@ def main():
     parser.add_argument("--min_prefix", type=int, default=2)
     parser.add_argument("--max_prefix", type=int, default=7)
     parser.add_argument("--augment_ratio", type=float, default=0.0)
+    parser.add_argument("--augment_single_grid", action="store_true")
 
     # eval train data
     parser.add_argument("--eval_train_dir", type=str, default="/scratch/yl11330/re-arc/arc_original/training")
@@ -1579,7 +1593,7 @@ def main():
     parser.add_argument("--decoder_no_rslora", action='store_true')
 
     # Virtual tokens approach
-    parser.add_argument("--ntokens", type=int, default=8)
+    parser.add_argument("--ntokens", type=int, default=64)
     parser.add_argument("--seed", type=int, default=0)
     args = parser.parse_args()
 
@@ -1682,7 +1696,7 @@ def main():
         "cache_dir": "./encoder_decoder_cache",
         "low_cpu_mem_usage": True,
     }
-    if args.flash_attn:
+    if not args.no_flash_attn:
         from_pretrained_kwargs["attn_implementation"] = "flash_attention_2"
     if args.untrainable_nbit in NBIT_TO_DTYPE:
         from_pretrained_kwargs["torch_dtype"] = NBIT_TO_DTYPE[args.untrainable_nbit]
@@ -1836,8 +1850,9 @@ def main():
         max_prefix=args.max_prefix,
         max_seq_len=args.max_seq_len,
         augment_ratio=args.augment_ratio,
+        augment_single_grid=args.augment_single_grid,
         seed=args.seed,
-        compact_grids=args.compact_grids,
+        no_compact_grids=args.no_compact_grids,
         ntokens=args.ntokens,
         debug_fixed_train_order=args.debug_fixed_train_order,
         debug_random_pad=args.debug_random_pad,
@@ -1910,7 +1925,6 @@ def main():
     logger.info(f'lr scheduler with {steps_per_epoch} warmup steps')
 
     # Prepare with accelerator
-    encoder_model = accelerator.prepare(encoder_model)
     (
         encoder_model,
         decoder_model,
@@ -1982,7 +1996,7 @@ def main():
                 encoder_pad_side=args.encoder_pad_side,
                 decoder_pad_side=args.decoder_pad_side,
                 trainable_nbit=args.trainable_nbit,
-                flash_attn=args.flash_attn,
+                no_flash_attn=args.no_flash_attn,
                 debug_vae_no_sample=args.debug_vae_train_no_sample,
                 debug_vae_no_kl=args.debug_vae_no_kl,
             )
@@ -2035,7 +2049,7 @@ def main():
                         encoder_pad_side=args.encoder_pad_side,
                         decoder_pad_side=args.decoder_pad_side,
                         trainable_nbit=args.trainable_nbit,
-                        flash_attn=args.flash_attn,
+                        no_flash_attn=args.no_flash_attn,
                         debug_vae_no_sample=args.debug_vae_train_no_sample,
                         debug_vae_no_kl=args.debug_vae_no_kl,
                     )
@@ -2115,7 +2129,7 @@ def main():
                 encoder_tokenizer=encoder_tokenizer,
                 decoder_tokenizer=decoder_tokenizer,
                 max_seq_len=args.max_seq_len,
-                compact_grids=args.compact_grids,
+                no_compact_grids=args.no_compact_grids,
                 ntokens=args.ntokens,
                 encoder_loss_type=args.encoder_loss_type,
                 debug_random_pad=args.debug_random_pad,
@@ -2136,7 +2150,7 @@ def main():
                 encoder_tokenizer=encoder_tokenizer,
                 decoder_tokenizer=decoder_tokenizer,
                 max_seq_len=args.max_seq_len,
-                compact_grids=args.compact_grids,
+                no_compact_grids=args.no_compact_grids,
                 ntokens=args.ntokens,
                 encoder_loss_type=args.encoder_loss_type,
                 debug_random_pad=args.debug_random_pad,
@@ -2170,7 +2184,7 @@ def main():
                 no_lora=args.no_lora,
                 decoder_ce_loss=True, # HARDCODE
                 trainable_nbit=args.trainable_nbit,
-                flash_attn=args.flash_attn,
+                no_flash_attn=args.no_flash_attn,
                 tie_models=args.tie_models,
                 output_dir=args.output_dir,
                 gs_iters=args.gs_iters,
@@ -2201,7 +2215,7 @@ def main():
                 no_lora=args.no_lora,
                 decoder_ce_loss=True, # HARDCODE
                 trainable_nbit=args.trainable_nbit,
-                flash_attn=args.flash_attn,
+                no_flash_attn=args.no_flash_attn,
                 tie_models=args.tie_models,
                 output_dir=args.output_dir,
                 gs_iters=args.gs_iters,
