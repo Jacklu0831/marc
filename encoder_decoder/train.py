@@ -1,3 +1,4 @@
+from datetime import timedelta
 from collections import Counter
 import copy
 import arclib # required
@@ -19,7 +20,7 @@ from transformers import (
     AutoModelForCausalLM,
     get_cosine_schedule_with_warmup,
 )
-from accelerate import Accelerator, PartialState
+from accelerate import Accelerator, PartialState, InitProcessGroupKwargs
 from accelerate.logging import get_logger
 from accelerate.utils import ProjectConfiguration, set_seed, gather_object
 from peft import LoraConfig, TaskType, get_peft_model, prepare_model_for_kbit_training
@@ -43,6 +44,9 @@ from data_utils import (
 import os
 os.environ["TOKENIZERS_PARALLELISM"] = "false" # weird tokenizer issue
 os.environ["NCCL_TIMEOUT"] = "14400" # 4hr for evaluation time variance across gpus
+os.environ["NCCL_TIMEOUT_MS"] = "14400000"
+os.environ["NCCL_ASYNC_ERROR_HANDLING"] = "1"
+os.environ["NCCL_BLOCKING_WAIT"] = "1"
 
 import wandb
 wandb.login(key='faf21d9ff65ee150697c7e96f070616f6b662134', relogin=True)
@@ -1132,11 +1136,14 @@ def main():
 
     # Setup accelerator
     project_config = ProjectConfiguration(project_dir=args.output_dir)
+    init_process_process_kwargs = InitProcessGroupKwargs()
+    init_process_process_kwargs.timeout = timedelta(seconds=14400)
     accelerator = Accelerator(
         gradient_accumulation_steps=args.grad_accum_steps,
         mixed_precision="bf16",
         project_config=project_config,
         log_with="wandb" if args.wandb else None,
+        kwargs_handlers=[init_process_process_kwargs],
     )
     set_up_main_process_logger(accelerator, logger)
     set_seed(args.seed + accelerator.process_index)

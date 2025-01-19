@@ -1,3 +1,4 @@
+from datetime import timedelta
 from pathlib import Path
 import glob
 from typing import Union
@@ -10,7 +11,7 @@ from transformers import (
     AutoTokenizer,
     AutoModelForCausalLM,
 )
-from accelerate import Accelerator
+from accelerate import Accelerator, InitProcessGroupKwargs
 from accelerate.logging import get_logger
 from accelerate.utils import ProjectConfiguration, set_seed
 from peft import prepare_model_for_kbit_training
@@ -25,6 +26,10 @@ from train import Hidden2PrefixProjection, Hidden2PromptProjection
 
 import os
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
+os.environ["NCCL_TIMEOUT"] = "14400" # 4hr for evaluation time variance across gpus
+os.environ["NCCL_TIMEOUT_MS"] = "14400000"
+os.environ["NCCL_ASYNC_ERROR_HANDLING"] = "1"
+os.environ["NCCL_BLOCKING_WAIT"] = "1"
 
 import wandb
 wandb.login(key='faf21d9ff65ee150697c7e96f070616f6b662134', relogin=True)
@@ -124,10 +129,13 @@ def main():
 
     # Setup accelerator
     project_config = ProjectConfiguration(project_dir=args.output_dir)
+    init_process_process_kwargs = InitProcessGroupKwargs()
+    init_process_process_kwargs.timeout = timedelta(seconds=14400)
     accelerator = Accelerator(
         mixed_precision="bf16",
         project_config=project_config,
         log_with="wandb" if args.wandb else None,
+        kwargs_handlers=[init_process_process_kwargs],
     )
     set_up_main_process_logger(accelerator, logger)
     set_seed(args.seed + accelerator.process_index)
