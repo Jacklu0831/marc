@@ -44,3 +44,8 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
     --tag 0119_ntokens512 \
     --ntokens 512 \
     --wandb
+
+# Submitted batch job 56074006
+# Submitted batch job 56074007
+# Submitted batch job 56074008
+# Submitted batch job 56074009

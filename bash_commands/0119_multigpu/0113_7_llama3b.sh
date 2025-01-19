@@ -15,3 +15,5 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
     --decoder_name llama3b \
     --untrainable_nbit 4 \
     --wandb
+
+# Submitted batch job 56073999

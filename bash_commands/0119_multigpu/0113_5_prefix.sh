@@ -39,3 +39,7 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
     --projection_type shared \
     --ntokens 16 \
     --wandb
+
+# Submitted batch job 56073990
+# Submitted batch job 56073991
+# Submitted batch job 56073992

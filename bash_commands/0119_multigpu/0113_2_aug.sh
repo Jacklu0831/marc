@@ -46,3 +46,8 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
     --augment_ratio 0.3 \
     --augment_single_grid \
     --wandb
+
+# Submitted batch job 56073977
+# Submitted batch job 56073978
+# Submitted batch job 56073979
+# Submitted batch job 56073980

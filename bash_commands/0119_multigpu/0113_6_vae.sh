@@ -50,3 +50,8 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
     --projection_type full \
     --identity_init \
     --wandb
+
+# Submitted batch job 56073993
+# Submitted batch job 56073994
+# Submitted batch job 56073995
+# Submitted batch job 56073996

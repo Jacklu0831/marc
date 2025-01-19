@@ -1,5 +1,5 @@
 # python make_sbatch.py --ngpu 2 --time 48 --bash_files bash_commands/0119_multigpu/0113_1_invarloss.sh
-# 8gpus
+# 16gpus
 
 # invar0.03 antiinvarratio0.0
 accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder/train.py \
@@ -92,3 +92,12 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
     --invar_loss_lambda 0.5 \
     --anti_invar_ratio 0.5 \
     --wandb
+
+# Submitted batch job 56073969
+# Submitted batch job 56073970
+# Submitted batch job 56073971
+# Submitted batch job 56073972
+# Submitted batch job 56073973
+# Submitted batch job 56073974
+# Submitted batch job 56073975
+# Submitted batch job 56073976
