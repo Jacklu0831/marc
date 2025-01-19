@@ -1,7 +1,9 @@
+from collections import Counter
+import copy
 import arclib # required
 import numpy as np
 from collections import defaultdict
-from typing import Union, Callable, List, Tuple, Dict
+from typing import Union, Callable, List, Tuple, Dict, Optional, Set
 import pprint
 import math
 import json
@@ -117,7 +119,7 @@ class Hidden2PrefixProjection(nn.Module):
             raise ValueError(f'unrecognized conditioning method {self.conditioning_method}')
         del projections
 
-    def forward(self, enc_hidden_states):
+    def forward(self, enc_hidden_states: torch.Tensor) -> List[Tuple[torch.Tensor, torch.Tensor]]:
         # enc_hidden_states has shape (batch_size, num_virtual_tokens, hidden_dim)
         assert enc_hidden_states.shape[1] == self.num_virtual_tokens
         if self.conditioning_method == "hidden2prefix_shared":
@@ -176,7 +178,7 @@ class Hidden2PromptProjection(nn.Module):
             raise ValueError(f'unrecognized conditioning method {self.conditioning_method}')
         del projections
 
-    def forward(self, enc_hidden_states):
+    def forward(self, enc_hidden_states: torch.Tensor) -> torch.Tensor:
         # enc_hidden_states has shape (batch_size, num_virtual_tokens, hidden_dim)
         assert enc_hidden_states.shape[1] == self.num_virtual_tokens
         # outs (batch_size, num_virtual_tokens, out_dim)
@@ -213,7 +215,10 @@ def encoder_decoder_loss(
     decoder_ce_loss: bool,
     encoder_pad_side: str,
     decoder_pad_side: str,
-):
+    trainable_nbit: int,
+    flash_attn: bool,
+) -> Tuple[Optional[torch.Tensor], torch.Tensor, torch.Tensor, torch.Tensor,
+           Union[torch.Tensor, List[Tuple[torch.Tensor, torch.Tensor]]]]:
     # Encoder forward and get loss
     enc_out = encoder_model(
         input_ids=encoder_input_ids,
@@ -267,11 +272,12 @@ def encoder_decoder_loss(
         raise ValueError(f"invalid conditioning method {conditioning_method}")
 
     if not decoder_ce_loss:
+        ce_loss = torch.tensor(-1.0, device=encoder_input_ids.device)
         invar_loss = torch.tensor(0.0, device=encoder_input_ids.device)
         if enc_hidden_states.shape[0] % 2 == 0:
             invar_loss = nn.functional.mse_loss(enc_hidden_states[::2], enc_hidden_states[1::2])
-        total_loss = invar_loss_lambda * invar_loss + encoder_loss_lambda * encoder_loss
-        return None, invar_loss, encoder_loss, total_loss, predicted_program
+        total_loss = ce_loss + invar_loss_lambda * invar_loss + encoder_loss_lambda * encoder_loss
+        return ce_loss, invar_loss, encoder_loss, total_loss, predicted_program
 
     # decoder attention mask must be extended
     prefix_attention_mask = torch.full(
@@ -284,6 +290,10 @@ def encoder_decoder_loss(
     if conditioning_method in ["prefix2prefix", "hidden2prefix_shared", "hidden2prefix_full"]:
         # pad decoder attention mask
         decoder_attention_mask = torch.cat([prefix_attention_mask, decoder_attention_mask], dim=1)
+        if flash_attn:
+            predicted_program = [
+                tuple([x[0].to(NBIT_TO_DTYPE[trainable_nbit]), x[1].to(NBIT_TO_DTYPE[trainable_nbit])])
+            for x in predicted_program]
         # decoder forward
         dec_out = decoder_model(
             input_ids=decoder_input_ids,
@@ -354,12 +364,25 @@ def chunks(lst, n):
         yield lst[i:i + n]
 
 
+def chunks_uniform_batch(task_ids, data_idxs, n):
+    assert len(task_ids) == len(data_idxs)
+    # group by first item in tuple (task_id)
+    task_id_to_data_idx = defaultdict(list)
+    for task_id, data_idx in zip(task_ids, data_idxs):
+        task_id_to_data_idx[task_id].append(data_idx)
+    # for each task_id, yield chunks of data idxs
+    for task_id, data_idxs in task_id_to_data_idx.items():
+        yield from chunks(data_idxs, n)
+
+
 ################################################
 # Evaluate with cross-entropy + exact-match
 ################################################
 @torch.no_grad()
 def evaluate(
-    ttt_model_paths: Dict[str, Tuple[str, str, str]],
+    task_to_ttt_model_paths: Optional[Dict[str, Tuple[str, str, str]]],
+    encoder_ttt_param_names: Optional[Set[str]],
+    decoder_ttt_param_names: Optional[Set[str]],
     encoder_model: nn.Module,
     decoder_model: nn.Module,
     conditioning_method: str,
@@ -375,16 +398,53 @@ def evaluate(
     decoder_ce_loss: bool,
     trainable_nbit: int,
     flash_attn: bool,
+    tie_models: bool,
+    output_dir: str,
     encoder_pad_side: str,
     decoder_pad_side: str,
     decoder_gen_pad_side: str,
+    search_iters: int,
 ):
     encoder_model.eval()
-    decoder_model.eval()
-    if conditioning_projection != None:
+    if not tie_models:
+        decoder_model.eval()
+    if conditioning_projection is not None:
         conditioning_projection.eval()
 
+    # get modules in case of DDP
+    encoder_module = encoder_model.module if isinstance(encoder_model, DistributedDataParallel) else encoder_model
     decoder_module = decoder_model.module if isinstance(decoder_model, DistributedDataParallel) else decoder_model
+
+    # if ttt provided, same model weights for the missing ttt task weights
+    cached_enc_weights_path = None
+    cached_dec_weights_path = None
+    cached_proj_weights_path = None
+    if task_to_ttt_model_paths is not None: # run on both processes
+        # save encoder
+        cached_enc_weights_path = os.path.join(output_dir, f"process{accelerator.process_index}_encoder_cache.pt")
+        assert isinstance(encoder_ttt_param_names, set)
+        enc_name_to_params = set(name for name, _ in encoder_module.named_parameters())
+        assert all(name in enc_name_to_params for name in encoder_ttt_param_names), f"process{accelerator.process_index} {encoder_ttt_param_names} {enc_name_to_params}"
+        enc_weights = {name: param for name, param in encoder_module.named_parameters() if name in encoder_ttt_param_names}
+        torch.save(enc_weights, cached_enc_weights_path)
+        logger.info(f"ttt provided, cached {len(enc_weights)} encoder weights to {cached_enc_weights_path}")
+        # save decoder
+        if not tie_models:
+            cached_dec_weights_path = os.path.join(output_dir, f"process{accelerator.process_index}_decoder_cache.pt")
+            assert isinstance(decoder_ttt_param_names, set)
+            dec_name_to_params = set(name for name, _ in decoder_module.named_parameters())
+            assert all(name in dec_name_to_params for name in decoder_ttt_param_names), f"process{accelerator.process_index} {decoder_ttt_param_names}"
+            dec_weights = {name: param for name, param in decoder_module.named_parameters() if name in decoder_ttt_param_names}
+            torch.save(dec_weights, cached_dec_weights_path)
+            logger.info(f"ttt provided, cached {len(dec_weights)} decoder weights to {cached_dec_weights_path}")
+        # save projection
+        if conditioning_projection is not None:
+            cached_proj_weights_path = os.path.join(output_dir, f"process{accelerator.process_index}_conditioning_projection_cache.pt")
+            torch.save(conditioning_projection, cached_proj_weights_path)
+            logger.info(f"ttt provided, cached conditioning projection weights to {cached_proj_weights_path}")
+        # save default to model paths and set current ttt weights to default
+        task_to_ttt_model_paths["default"] = (cached_enc_weights_path, cached_dec_weights_path, cached_proj_weights_path)
+        curr_ttt_task_name = "default"
 
     # setup terminators and suppress warning
     terminators = [
@@ -401,57 +461,184 @@ def evaluate(
     valid_grid_list = []
     correct_grid_dim_list = []
     token_acc_list = []
+    ttt_provided_list = []
 
-    with distributed_state.split_between_processes(dataset.parsed_data) as data:
-        n_batches = math.ceil(len(data) / batch_size)
-        for batch in tqdm(chunks(data, batch_size), total=n_batches):
-            batch = collate_fn(batch)
-            bs = batch["encoder_input_ids"].size(0)
+    data_idxs = list(range(len(dataset)))
+    with distributed_state.split_between_processes(data_idxs) as process_data_idxs:
+        n_batches = math.ceil(len(process_data_idxs) / batch_size)
 
-            task_ids = batch["task_ids"]
-            inverters = batch["inverters"]
-            enc_ids = batch["encoder_input_ids"].to(accelerator.device)
-            enc_mask = batch["encoder_attention_mask"].to(accelerator.device)
-            enc_labels = batch["encoder_labels"].to(accelerator.device)
-            dec_ids = batch["decoder_input_ids"].to(accelerator.device)
-            dec_mask = batch["decoder_attention_mask"].to(accelerator.device)
-            dec_gen_ids = batch["decoder_gen_input_ids"].to(accelerator.device)
-            dec_gen_mask = batch["decoder_gen_attention_mask"].to(accelerator.device)
-            dec_labels = batch["decoder_labels"].to(accelerator.device)
-            label_texts = batch["decoder_label_texts"]
-            out_token_length = batch["decoder_out_token_length"]
-            enc_ids_lens = batch["encoder_input_ids_lens"]
-            dec_ids_lens = batch["decoder_input_ids_lens"]
-            dec_gen_ids_lens = batch["decoder_gen_input_ids_lens"]
+        # if ttt provided, make sure all batches are of the same task name
+        if task_to_ttt_model_paths is not None:
+            # tackle tasks in orderly fashion
+            task_names = [dataset.eval_tasks[idx].name for idx in process_data_idxs]
+            task_ids = [task_name.split('-')[0] for task_name in task_names]
+            n_batches = len(list(chunks_uniform_batch(task_ids, process_data_idxs, batch_size)))
+            data_idx_iterator = tqdm(chunks_uniform_batch(task_ids, process_data_idxs, batch_size), total=n_batches)
+        else:
+            data_idx_iterator = tqdm(chunks(process_data_idxs, batch_size), total=n_batches)
 
-            # compute ce loss
-            with accelerator.autocast():
-                ce_loss, _, _, _, predicted_program = encoder_decoder_loss(
-                    encoder_model=encoder_model,
-                    decoder_model=decoder_model,
-                    conditioning_method=conditioning_method,
-                    conditioning_projection=conditioning_projection,
-                    encoder_input_ids=enc_ids,
-                    encoder_attention_mask=enc_mask,
-                    encoder_labels=enc_labels,
-                    decoder_input_ids=dec_ids,
-                    decoder_attention_mask=dec_mask,
-                    decoder_labels=dec_labels,
-                    enc_ids_lens=enc_ids_lens,
-                    dec_ids_lens=dec_ids_lens,
-                    num_virtual_tokens=num_virtual_tokens,
-                    invar_loss_lambda=0.0,
-                    encoder_loss_lambda=0.0,
-                    no_lora=no_lora,
-                    decoder_ce_loss=decoder_ce_loss,
-                    encoder_pad_side=encoder_pad_side,
-                    decoder_pad_side=decoder_pad_side,
-                )
+        for batch_idxs in data_idx_iterator:
+            bs = len(batch_idxs)
 
-            if decoder_ce_loss:
-                loss_list += [ce_loss.item()] * bs
+            # optionally load ttt lora
+            ttt_provided = [0] * bs
+            if task_to_ttt_model_paths is not None:
+                task_names = [dataset.eval_tasks[idx].name.split('-')[0] for idx in batch_idxs]
+                assert len(set(task_names)) == 1 # have to be the same task
+                task_name = task_names[0]
+                if task_name != curr_ttt_task_name:
+                    if task_name not in task_to_ttt_model_paths:
+                        task_name = "default"
+                    else:
+                        ttt_provided = [1] * bs
+                    # get paths
+                    enc_ttt_path, dec_ttt_path, proj_ttt_path = task_to_ttt_model_paths[task_name]
+                    # load encoder
+                    encoder_model_ttt_state_dict = torch.load(enc_ttt_path, weights_only=True, map_location=accelerator.device)
+                    assert set(encoder_model_ttt_state_dict.keys()) == encoder_ttt_param_names
+                    encoder_module.load_state_dict(encoder_model_ttt_state_dict, strict=False)
+                    del encoder_model_ttt_state_dict
+                    # load decoder
+                    if dec_ttt_path is not None:
+                        decoder_model_ttt_state_dict = torch.load(dec_ttt_path, weights_only=True, map_location=accelerator.device)
+                        assert set(decoder_model_ttt_state_dict.keys()) == decoder_ttt_param_names
+                        decoder_module.load_state_dict(decoder_model_ttt_state_dict, strict=False)
+                        del decoder_model_ttt_state_dict
+                    if proj_ttt_path is not None:
+                        conditioning_projection = torch.load(proj_ttt_path, weights_only=False, map_location=accelerator.device)
+                    # set current task name
+                    curr_ttt_task_name = task_name
+
+                    # another eval after loading weight just in case
+                    encoder_model.eval()
+                    if not tie_models:
+                        decoder_model.eval()
+                    if conditioning_projection is not None:
+                        conditioning_projection.eval()
+
+            ttt_provided_list += ttt_provided
+
+            # predict multiple programs from i/o permutations
+            predicted_program_accum = None
+            avail_accum = [0] * bs
+            first_batch = None
+
+            for batch_permute_i, (batch_data, batch_avail) in enumerate(dataset.get_io_permuted_batches(batch_idxs)):
+                batch = collate_fn(batch_data)
+                assert len(batch["task_ids"]) <= bs
+                assert len(batch["task_ids"]) == sum(batch_avail)
+                if batch_permute_i == 0:
+                    assert len(batch["task_ids"]) == sum(batch_avail) == bs
+                assert len(batch_avail) == bs
+                # get tensors
+                task_ids = batch["task_ids"]
+                inverters = batch["inverters"]
+                enc_ids = batch["encoder_input_ids"].to(accelerator.device)
+                enc_mask = batch["encoder_attention_mask"].to(accelerator.device)
+                enc_labels = batch["encoder_labels"].to(accelerator.device)
+                dec_ids = batch["decoder_input_ids"].to(accelerator.device)
+                dec_mask = batch["decoder_attention_mask"].to(accelerator.device)
+                dec_gen_ids = batch["decoder_gen_input_ids"].to(accelerator.device)
+                dec_gen_mask = batch["decoder_gen_attention_mask"].to(accelerator.device)
+                dec_labels = batch["decoder_labels"].to(accelerator.device)
+                label_texts = batch["decoder_label_texts"]
+                out_token_length = batch["decoder_out_token_length"]
+                enc_ids_lens = batch["encoder_input_ids_lens"]
+                dec_ids_lens = batch["decoder_input_ids_lens"]
+                dec_gen_ids_lens = batch["decoder_gen_input_ids_lens"]
+
+                # save first batch with complete tasks, rest might be incomplete
+                if batch_permute_i == 0:
+                    first_batch = {
+                        "task_ids": copy.deepcopy(task_ids),
+                        "inverters": copy.deepcopy(inverters),
+                        "decoder_gen_input_ids": copy.deepcopy(dec_gen_ids),
+                        "decoder_gen_attention_mask": copy.deepcopy(dec_gen_mask),
+                        "decoder_label_texts": copy.deepcopy(label_texts),
+                        "decoder_out_token_length": copy.deepcopy(out_token_length),
+                        "decoder_gen_input_ids_lens": copy.deepcopy(dec_gen_ids_lens),
+                    }
+
+                # compute ce loss
+                with accelerator.autocast():
+                    ce_loss, _, _, _, predicted_program = encoder_decoder_loss(
+                        encoder_model=encoder_model,
+                        decoder_model=decoder_model,
+                        conditioning_method=conditioning_method,
+                        conditioning_projection=conditioning_projection,
+                        encoder_input_ids=enc_ids,
+                        encoder_attention_mask=enc_mask,
+                        encoder_labels=enc_labels,
+                        decoder_input_ids=dec_ids,
+                        decoder_attention_mask=dec_mask,
+                        decoder_labels=dec_labels,
+                        enc_ids_lens=enc_ids_lens,
+                        dec_ids_lens=dec_ids_lens,
+                        num_virtual_tokens=num_virtual_tokens,
+                        invar_loss_lambda=0.0,
+                        encoder_loss_lambda=0.0,
+                        no_lora=no_lora,
+                        decoder_ce_loss=decoder_ce_loss,
+                        encoder_pad_side=encoder_pad_side,
+                        decoder_pad_side=decoder_pad_side,
+                        trainable_nbit=trainable_nbit,
+                        flash_attn=flash_attn,
+                    )
+
+                # ce loss should be from the original permutation, which is set to the first permuted batch
+                if batch_permute_i == 0:
+                    loss_list += [ce_loss.item()] * bs
+
+                # accumulate program
+                if batch_permute_i == 0:
+                    predicted_program_accum = predicted_program
+                elif "2prefix" in conditioning_method:
+                    assert isinstance(predicted_program, list)
+                    assert len(predicted_program) == len(predicted_program_accum) # same number of layers
+                    for layer_i, (layer_program_0, layer_program_1) in enumerate(predicted_program):
+                        avail_count = 0
+                        for batch_i, avail in enumerate(batch_avail):
+                            if avail:
+                                predicted_program_accum[layer_i][0][batch_i] += layer_program_0[avail_count]
+                                predicted_program_accum[layer_i][1][batch_i] += layer_program_1[avail_count]
+                                avail_count += 1
+                else:
+                    assert isinstance(predicted_program, torch.Tensor)
+                    assert predicted_program.shape[1:] == predicted_program_accum.shape[1:]
+                    for batch_i, avail in enumerate(batch_avail):
+                        avail_count = 0
+                        if avail:
+                            predicted_program_accum[batch_i] += predicted_program[avail_count]
+                            avail_count += 1
+
+                # accumulate avail (count of permutations)
+                assert len(batch_avail) == len(avail_accum) == bs
+                for batch_i in range(bs):
+                    avail_accum[batch_i] += batch_avail[batch_i]
+
+            # average program
+            assert all(avail > 0 for avail in avail_accum)
+            if "2prefix" in conditioning_method:
+                for layer_i, (layer_program_0, layer_program_1) in enumerate(predicted_program_accum):
+                    assert len(layer_program_0) == len(layer_program_1) == len(avail_accum) == bs
+                    for batch_i in range(bs):
+                        layer_program_0[batch_i] /= avail_accum[batch_i]
+                        layer_program_1[batch_i] /= avail_accum[batch_i]
+                    predicted_program_accum[layer_i] = (layer_program_0, layer_program_1)
             else:
-                loss_list += [-1.0] * bs
+                assert len(predicted_program_accum) == len(avail_accum) == bs
+                for i, avail in enumerate(avail_accum):
+                    predicted_program_accum[i] /= avail
+            predicted_program = predicted_program_accum
+
+            # recover data from first batch (e.g. task_ids might be missing tasks due to permute_iters)
+            task_ids = first_batch["task_ids"]
+            inverters = first_batch["inverters"]
+            dec_gen_ids = first_batch["decoder_gen_input_ids"].to(accelerator.device)
+            dec_gen_mask = first_batch["decoder_gen_attention_mask"].to(accelerator.device)
+            label_texts = first_batch["decoder_label_texts"]
+            out_token_length = first_batch["decoder_out_token_length"]
+            dec_gen_ids_lens = first_batch["decoder_gen_input_ids_lens"]
 
             # compute accuracy
             with accelerator.autocast():
@@ -523,6 +710,8 @@ def evaluate(
                     gen_texts = decoder_tokenizer.batch_decode(gen_tokens[:, dec_gen_ids.shape[1]:], skip_special_tokens=True)
 
             # Compare each gen_text with label_texts
+            assert len(task_ids) == len(inverters) == bs, (len(task_ids), len(inverters), bs)
+            assert len(gen_texts) == len(label_texts) == bs, (len(gen_texts), len(label_texts), bs)
             for task_id, inverter, gen_text, label_text in zip(task_ids, inverters, gen_texts, label_texts):
                 # save gen and gt text
                 task_id_and_text_list.append((task_id, gen_text, label_text))
@@ -555,21 +744,29 @@ def evaluate(
 
     distributed_state.wait_for_everyone()
     task_id_and_text_list = gather_object(task_id_and_text_list)
-    task_id_and_inverter_grids = gather_object(task_id_and_inverter_grids)
+    task_id_and_inverter_grids = gather_object(task_id_and_inverter_grids) # likely diff len from dataset
     loss_list = gather_object(loss_list)
     exact_acc_list = gather_object(exact_acc_list)
     valid_grid_list = gather_object(valid_grid_list)
     correct_grid_dim_list = gather_object(correct_grid_dim_list)
     token_acc_list = gather_object(token_acc_list)
-    assert len(task_id_and_text_list) == len(loss_list) == len(exact_acc_list) == len(dataset.parsed_data)
-    assert len(valid_grid_list) == len(correct_grid_dim_list) == len(token_acc_list) == len(dataset.parsed_data)
+    ttt_provided_list = gather_object(ttt_provided_list)
+    assert len(task_id_and_text_list) == len(dataset), (len(task_id_and_text_list), len(dataset))
+    assert len(loss_list) == len(dataset), (len(loss_list), len(dataset))
+    assert len(exact_acc_list) == len(dataset), (len(exact_acc_list), len(dataset))
+    assert len(valid_grid_list) == len(dataset), (len(valid_grid_list), len(dataset))
+    assert len(correct_grid_dim_list) == len(dataset), (len(correct_grid_dim_list), len(dataset))
+    assert len(token_acc_list) == len(dataset), (len(token_acc_list), len(dataset))
+    assert len(ttt_provided_list) == len(dataset), (len(ttt_provided_list), len(dataset))
 
     # average metrics
-    avg_ce = sum(loss_list) / len(dataset.parsed_data)
-    exact_acc = sum(exact_acc_list) / len(dataset.parsed_data)
-    valid_grid = sum(valid_grid_list) / len(dataset.parsed_data)
-    correct_grid_dim = sum(correct_grid_dim_list) / len(dataset.parsed_data)
-    token_acc = sum(token_acc_list) / len(dataset.parsed_data)
+    # note these are all computed without accounting for skipped eval grids
+    avg_ce = sum(loss_list) / len(dataset)
+    exact_acc = sum(exact_acc_list) / len(dataset)
+    valid_grid = sum(valid_grid_list) / len(dataset)
+    correct_grid_dim = sum(correct_grid_dim_list) / len(dataset)
+    token_acc = sum(token_acc_list) / len(dataset)
+    ttt_provided = sum(ttt_provided_list) / len(dataset)
 
     # grab all results
     task_id_to_texts = defaultdict(list)
@@ -604,7 +801,7 @@ def evaluate(
     competition_all_acc = competition_all_correct / len(task_name_to_corrects)
 
     return avg_ce, exact_acc, valid_grid, correct_grid_dim, token_acc, task_id_to_texts, \
-        votes, competition_sub_acc, competition_all_acc
+        votes, competition_sub_acc, competition_all_acc, ttt_provided
 
 
 def list2d_to_tuple(l: List[List[int]]) -> Tuple[Tuple[int]]:
@@ -757,7 +954,8 @@ def save_train_model(encoder_model, decoder_model, conditioning_projection, outp
     save_proj_path = None
     if conditioning_projection is not None:
         save_proj_path = os.path.join(output_dir, f"conditioning_projection_epoch_{epoch+1}.pt")
-        torch.save(conditioning_projection, save_proj_path)
+        conditioning_projection_module = conditioning_projection.module if isinstance(conditioning_projection, DistributedDataParallel) else conditioning_projection
+        torch.save(conditioning_projection_module, save_proj_path)
         logger.info(f"Saved conditioning projection to {save_proj_path}")
     return save_enc_path, save_dec_path, save_proj_path
 
@@ -1254,6 +1452,49 @@ def main():
     last_save_model_path = None
     epoch_to_eval_exact_acc = {}
 
+    # when these conditions are met, DDP requires setting static graph due to reusing parameters
+    if args.tie_models and args.encoder_gradient_checkpointing and accelerator.num_processes > 0:
+        # set to train
+        encoder_model.train()
+        decoder_model.train()
+        if conditioning_projection is not None:
+            conditioning_projection.train()
+        # set static graph
+        encoder_model._set_static_graph()
+        decoder_model._set_static_graph()
+        if conditioning_projection is not None:
+            conditioning_projection._set_static_graph()
+        # get any data, single forward and backward pass
+        batch_data = next(iter(train_loader))
+        with accelerator.autocast():
+            _, _, _, total_loss, _ = encoder_decoder_loss(
+                encoder_model=encoder_model,
+                decoder_model=decoder_model,
+                conditioning_method=args.conditioning_method,
+                conditioning_projection=conditioning_projection,
+                encoder_input_ids=batch_data["encoder_input_ids"].to(accelerator.device),
+                encoder_attention_mask=batch_data["encoder_attention_mask"].to(accelerator.device),
+                encoder_labels=batch_data["encoder_labels"].to(accelerator.device),
+                decoder_input_ids=batch_data["decoder_input_ids"].to(accelerator.device),
+                decoder_attention_mask=batch_data["decoder_attention_mask"].to(accelerator.device),
+                decoder_labels=batch_data["decoder_labels"].to(accelerator.device),
+                enc_ids_lens=batch_data["encoder_input_ids_lens"],
+                dec_ids_lens=batch_data["decoder_input_ids_lens"],
+                num_virtual_tokens=args.num_virtual_tokens,
+                encoder_loss_lambda=args.encoder_loss_lambda,
+                invar_loss_lambda=args.invar_loss_lambda,
+                no_lora=args.no_lora,
+                decoder_ce_loss=True, # HARDCODE
+                encoder_pad_side=args.encoder_pad_side,
+                decoder_pad_side=args.decoder_pad_side,
+                trainable_nbit=args.trainable_nbit,
+                flash_attn=args.flash_attn,
+            )
+        accelerator.backward(total_loss)
+        optimizer.zero_grad()
+        logger.info(f'To avoid DDP error, static graph is applied after doing one iteration of forward backward')
+
+    # train!
     for epoch in range(args.num_epochs):
         encoder_model.train()
         decoder_model.train()
@@ -1298,6 +1539,8 @@ def main():
                         decoder_ce_loss=True, # HARDCODE
                         encoder_pad_side=args.encoder_pad_side,
                         decoder_pad_side=args.decoder_pad_side,
+                        trainable_nbit=args.trainable_nbit,
+                        flash_attn=args.flash_attn,
                     )
 
                 # just accumulate for logging
@@ -1345,7 +1588,7 @@ def main():
                         "train/total_loss": total_loss_accum,
                         "train/grad_norm_accum": grad_norm_accum,
                         "train/lr_embedding": lr_scheduler.get_last_lr()[0],
-                        "train/lr_other": lr_scheduler.get_last_lr()[1]
+                        "train/lr_other": lr_scheduler.get_last_lr()[1],
                     }, step=global_step)
 
                 ce_loss_accum = 0.0
@@ -1364,6 +1607,7 @@ def main():
                 leave_ns_inc=args.eval_train_leave_ns_inc,
                 permute_n=args.eval_train_permute_n,
                 augment_n=args.eval_train_augment_n,
+                permute_iters=0, # HARDCODE
                 seed=args.seed,
                 encoder_tokenizer=encoder_tokenizer,
                 decoder_tokenizer=decoder_tokenizer,
@@ -1384,6 +1628,7 @@ def main():
                 leave_ns_inc=args.eval_eval_leave_ns_inc,
                 permute_n=args.eval_eval_permute_n,
                 augment_n=args.eval_eval_augment_n,
+                permute_iters=0, # HARDCODE
                 seed=args.seed,
                 encoder_tokenizer=encoder_tokenizer,
                 decoder_tokenizer=decoder_tokenizer,
@@ -1406,8 +1651,10 @@ def main():
                 )
 
             train_ce, train_exact_acc, train_valid_grid, train_correct_grid_dim, train_token_acc, train_texts, \
-                train_votes, train_competition_sub_acc, train_competition_all_acc = evaluate(
-                ttt_model_paths=None,
+                train_votes, train_competition_sub_acc, train_competition_all_acc, _ = evaluate(
+                task_to_ttt_model_paths=None, # HARDCODE
+                encoder_ttt_param_names=None, # HARDCODE
+                decoder_ttt_param_names=None, # HARDCODE
                 encoder_model=encoder_model,
                 decoder_model=decoder_model,
                 conditioning_method=args.conditioning_method,
@@ -1423,13 +1670,18 @@ def main():
                 decoder_ce_loss=True, # HARDCODE
                 trainable_nbit=args.trainable_nbit,
                 flash_attn=args.flash_attn,
+                tie_models=args.tie_models,
+                output_dir=args.output_dir,
                 encoder_pad_side=args.encoder_pad_side,
                 decoder_pad_side=args.decoder_pad_side,
                 decoder_gen_pad_side=args.decoder_gen_pad_side,
+                search_iters=0, # HARDCODE
             )
             eval_ce, eval_exact_acc, eval_valid_grid, eval_correct_grid_dim, eval_token_acc, eval_texts, \
-                eval_votes, eval_competition_sub_acc, eval_competition_all_acc = evaluate(
-                ttt_model_paths=None,
+                eval_votes, eval_competition_sub_acc, eval_competition_all_acc, _ = evaluate(
+                task_to_ttt_model_paths=None, # HARDCODE
+                encoder_ttt_param_names=None, # HARDCODE
+                decoder_ttt_param_names=None, # HARDCODE
                 encoder_model=encoder_model,
                 decoder_model=decoder_model,
                 conditioning_method=args.conditioning_method,
@@ -1445,9 +1697,12 @@ def main():
                 decoder_ce_loss=True, # HARDCODE
                 trainable_nbit=args.trainable_nbit,
                 flash_attn=args.flash_attn,
+                tie_models=args.tie_models,
+                output_dir=args.output_dir,
                 encoder_pad_side=args.encoder_pad_side,
                 decoder_pad_side=args.decoder_pad_side,
                 decoder_gen_pad_side=args.decoder_gen_pad_side,
+                search_iters=0, # HARDCODE
             )
 
             if accelerator.is_main_process:

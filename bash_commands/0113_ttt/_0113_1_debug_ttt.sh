@@ -7,7 +7,7 @@ python ttt_old/test_time_train.py \
     --experiment_folder train_outputs/test \
     --data_file kaggle_dataset/arc-agi_evaluation_challenges_selected_easy.json \
     --batch_size 2 \
-    --epochs 2 \
+    --epochs 1 \
     --lora_rank 128 \
     --lora_alpha 16.0 \
     --learning_rate 5e-5 \
@@ -129,3 +129,47 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
     --no_lora
 
 # 01/14/2025 22:33:28 - INFO - __main__ - Optimizer with 2 embed-params lr=1e-05, 285 other-params lr=0.0001
+
+# debug ddp error
+accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder_new/ttt.py \
+    --tag test_ddp_error \
+    --weight_dir test_tiemodels \
+    --weight_epoch 1 \
+    --data_dir /scratch/yl11330/re-arc/arc_original_debug_overfit4_ttt/training \
+    --save_epochs 2 \
+    --num_epochs 2 \
+    --compact_grids \
+    --max_seq_len 5120 \
+    --conditioning_method hidden2prompt_shared \
+    --max_samples_per_task 50 \
+    --tie_models \
+    --flash_attn \
+    --encoder_gradient_checkpointing \
+    --decoder_gradient_checkpointing \
+    --full_lora
+
+
+
+# train2 ttt fulllora
+accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder_new/ttt.py \
+    --tag test2_fulllora \
+    --weight_dir test_ttt_2 \
+    --weight_epoch 1 \
+    --data_dir /scratch/yl11330/re-arc/arc_original_debug_overfit4_ttt/training \
+    --compact_grids \
+    --max_seq_len 5120 \
+    --flash_attn \
+    --conditioning_method prefix2prefix \
+    --encoder_loss_lambda 1.0 \
+    --max_samples_per_task 4 \
+    --grad_accum_steps 1 \
+    --optimizer sgd \
+    --debug_no_aug \
+    --max_grad_norm 1e8 \
+    --lr_embedding 1e-3 \
+    --lr_other 1e-2 \
+    --num_epochs 100 \
+    --debug_no_aug \
+    --log_every 1 \
+    --save_epochs 100 \
+    --full_lora

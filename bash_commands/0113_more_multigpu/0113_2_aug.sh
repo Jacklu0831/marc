@@ -1,7 +1,7 @@
 # python make_sbatch.py --ngpu 2 --time 48 --bash_files bash_commands/0113_more_multigpu/0113_2_aug.sh
 
 # aug0.1
-accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder/train.py \
+accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder_new3/train.py \
     --tag 0113_aug0.1 \
     --augment_ratio 0.1 \
     --compact_grids \
@@ -11,7 +11,7 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
     --wandb
 
 # aug0.3
-accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder/train.py \
+accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder_new3/train.py \
     --tag 0113_aug0.3 \
     --augment_ratio 0.3 \
     --compact_grids \
@@ -21,7 +21,7 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
     --wandb
 
 # aug0.5
-accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder/train.py \
+accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder_new3/train.py \
     --tag 0113_aug0.5 \
     --augment_ratio 0.5 \
     --compact_grids \
@@ -30,6 +30,6 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
     --tie_models \
     --wandb
 
-# Submitted batch job 55905922
-# Submitted batch job 55905923
-# Submitted batch job 55905924
+# Submitted batch job 55974665
+# Submitted batch job 55974666
+# Submitted batch job 55974667

@@ -30,6 +30,29 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
     --no_lora \
     --trainable_nbit 16
 
+# debug ddp error
+accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder_new/train.py \
+    --tag test \
+    --train_data_dir /scratch/yl11330/re-arc/train_data_debug_overfit/tasks \
+    --eval_train_dir /scratch/yl11330/re-arc/arc_original_debug_overfit/training \
+    --eval_eval_dir /scratch/yl11330/re-arc/arc_original_debug_overfit/training \
+    --eval_epochs 1 \
+    --num_epochs 100 \
+    --samples_per_epoch 500 \
+    --conditioning_method hidden2prompt_full \
+    --tie_models \
+    --encoder_gradient_checkpointing \
+    --decoder_gradient_checkpointing \
+    --min_prefix 4 \
+    --max_prefix 4 \
+    --augment_ratio 0.0 \
+    --lr_embedding 3e-4 \
+    --lr_other 3e-3 \
+    --debug_fixed_train_order \
+    --invar_loss_lambda 0.0 \
+    --max_grad_norm 1e8 \
+    --optimizer sgd
+
 # debug overfit 2 token (did not work)
 accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder/train.py \
     --tag test2 \
