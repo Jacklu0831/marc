@@ -487,10 +487,10 @@ class TrainDataset(Dataset):
         debug_fixed_train_order: bool,
         debug_random_pad: bool,
         debug_pad_len: int,
-        debug_batch_size_1: bool,
         encoder_pad_side: str,
         decoder_pad_side: str,
         encoder_loss_type: bool,
+        anti_invar_ratio: float,
     ):
         self.tasks_dict = tasks_dict
         self.encoder_tokenizer = encoder_tokenizer
@@ -510,10 +510,10 @@ class TrainDataset(Dataset):
         self.debug_fixed_train_order = debug_fixed_train_order
         self.debug_random_pad = debug_random_pad
         self.debug_pad_len = debug_pad_len
-        self.debug_batch_size_1 = debug_batch_size_1
         self.encoder_pad_side = encoder_pad_side
         self.decoder_pad_side = decoder_pad_side
         self.encoder_loss_type = encoder_loss_type
+        self.anti_invar_ratio = anti_invar_ratio
 
         self.encoder_space_token_id = encoder_tokenizer(" ")['input_ids'][1]
         self.decoder_space_token_id = decoder_tokenizer(" ")['input_ids'][1]
@@ -530,29 +530,45 @@ class TrainDataset(Dataset):
 
 def collate_fn_train(batch: List[int], dataset: TrainDataset) -> Dict:
     batch_size = len(batch)
-    if not dataset.debug_batch_size_1:
-        assert batch_size > 0 and batch_size % 2 == 0, f"Batch size must be even, got {batch_size}"
+    assert batch_size > 0 and batch_size % 2 == 0, f"Batch size must be even, got {batch_size}"
     del batch  # we don't use it directly
 
     out_list = []
 
     while len(out_list) < batch_size:
-        # Pick a random task
-        task_id = dataset.rng.choice(dataset.all_task_ids)
-        pairs_for_task = dataset.tasks_dict[task_id]
-
-        # sample augmentation
-        augmenter: Optional[Augmenter] = None
-        io_augmentation_choice = None
-        if dataset.rng.rand() < dataset.augment_ratio:
-            augmenter = dataset.rng.choice(dataset.augmenters) # type: ignore
-            io_augmentation_choice = "both"
-            if dataset.augment_single_grid:
-                io_augmentation_choice = dataset.rng.choice(["input_only", "output_only", "both"])
+        # whether to do opposite invar loss
+        anti_invar = dataset.rng.rand() < dataset.anti_invar_ratio
+        if anti_invar:
+            # must be different tasks
+            task_ids = dataset.rng.choice(dataset.all_task_ids, size=2, replace=False)
+            pairs_for_tasks = [dataset.tasks_dict[task_ids[0]], dataset.tasks_dict[task_ids[1]]]
+            # same or different augmentation
+            augmenters = []
+            io_augmentation_choices = []
+            for _ in range(2):
+                if dataset.rng.rand() < dataset.augment_ratio:
+                    augmenters.append(dataset.rng.choice(dataset.augmenters)) # type: ignore
+                else:
+                    augmenters.append(None)
+                io_augmentation_choice = dataset.rng.choice(["input_only", "output_only", "both"]) if dataset.augment_single_grid else "both"
+                io_augmentation_choices.append(io_augmentation_choice)
+        else:
+            # must be same task
+            task_id = dataset.rng.choice(dataset.all_task_ids)
+            pairs_for_tasks = [dataset.tasks_dict[task_id], dataset.tasks_dict[task_id]]
+            # must be same augmentation
+            augmenters = [None, None]
+            io_augmentation_choices = [dataset.rng.choice(["input_only", "output_only", "both"]) if dataset.augment_single_grid else "both"] * 2
+            if dataset.rng.rand() < dataset.augment_ratio:
+                augmenters = [dataset.rng.choice(dataset.augmenters)] * 2 # type: ignore
 
         # We'll attempt to produce exactly 2 examples from this single task
         two_task_list = []
-        for _ in range(1 if dataset.debug_batch_size_1 else 2):
+        for task_i12 in range(2):
+            pairs_for_task = pairs_for_tasks[task_i12]
+            augmenter = augmenters[task_i12]
+            io_augmentation_choice = io_augmentation_choices[task_i12]
+
             prefix_count = random.randint(dataset.min_prefix, dataset.max_prefix)
             required_count = prefix_count + 1
             if len(pairs_for_task) < required_count:
@@ -662,10 +678,11 @@ def collate_fn_train(batch: List[int], dataset: TrainDataset) -> Dict:
                 "decoder_input_ids": decoder_input_ids,
                 "decoder_attention_mask": decoder_attention_mask,
                 "decoder_labels": decoder_labels,
+                "anti_invar": anti_invar,
             })
 
         # Check if we got 2 valid items from this task
-        if len(two_task_list) == 2 or (len(two_task_list) == 1 and dataset.debug_batch_size_1):
+        if len(two_task_list) == 2:
             if dataset.debug_fixed_train_order or not torch.equal(two_task_list[0]['encoder_input_ids'], two_task_list[1]['encoder_input_ids']):
                 # Add them to out_list
                 out_list.extend(two_task_list)
@@ -679,6 +696,7 @@ def collate_fn_train(batch: List[int], dataset: TrainDataset) -> Dict:
     dec_ids  = [x["decoder_input_ids"] for x in out_list]
     dec_mask = [x["decoder_attention_mask"] for x in out_list]
     dec_labs = [x["decoder_labels"] for x in out_list]
+    anti_invars = [x["anti_invar"] for x in out_list]
 
     enc_ids_lens = [len(x) for x in enc_ids]
     dec_ids_lens = [len(x) for x in dec_ids]
@@ -712,6 +730,7 @@ def collate_fn_train(batch: List[int], dataset: TrainDataset) -> Dict:
         "decoder_labels": dec_labs,
         "encoder_input_ids_lens": enc_ids_lens,
         "decoder_input_ids_lens": dec_ids_lens,
+        "anti_invars": anti_invars,
     }
 
 

@@ -338,7 +338,8 @@ def main():
     eval_collate_fn = partial(collate_fn_eval, dataset=eval_dataset) # only use tokenizer, debug_random_pad
 
     # evaluate
-    ce, exact_acc, valid_grid, correct_grid_dim, token_acc, texts, \
+    ce_loss, encoder_loss, kl_loss, \
+        exact_acc, valid_grid, correct_grid_dim, token_acc, texts, \
         votes, competition_sub_acc, competition_all_acc, ttt_provided = evaluate(
         task_to_ttt_model_paths=task_to_ttt_model_paths,
         encoder_ttt_param_names=encoder_ttt_param_names,
@@ -373,7 +374,9 @@ def main():
     if accelerator.is_main_process:
         # log metrics
         metric_dict = {
-            "eval/ce_loss": ce,
+            "eval/ce_loss": ce_loss,
+            "eval/encoder_loss": encoder_loss,
+            "eval/kl_loss": kl_loss,
             "eval/exact_acc": exact_acc,
             "eval/valid_grid": valid_grid,
             "eval/correct_grid_dim": correct_grid_dim,
@@ -387,7 +390,7 @@ def main():
         try:
             accelerator.log(metric_dict, step=1)
         except:
-            print(f"wandb failed on process {accelerator.process_index}, skipping the error")
+            logger.info(f"wandb failed on process {accelerator.process_index}, skipping the error")
 
         # Save outputs
         save_pred_gt_path = os.path.join(args.output_dir, f"eval_pred_gt.json")

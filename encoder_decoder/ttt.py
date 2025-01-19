@@ -569,7 +569,7 @@ def main():
             # get any data, single forward and backward pass
             batch_data = next(iter(ttt_dataloader))
             with accelerator.autocast():
-                _, _, _, total_loss, _ = encoder_decoder_loss(
+                _, _, _, _, total_loss, _ = encoder_decoder_loss(
                     encoder_model=encoder_model,
                     decoder_model=decoder_model,
                     conditioning_method=args.conditioning_method,
@@ -582,6 +582,7 @@ def main():
                     decoder_labels=batch_data["decoder_labels"].to(accelerator.device),
                     enc_ids_lens=batch_data["encoder_input_ids_lens"],
                     dec_ids_lens=batch_data["decoder_input_ids_lens"],
+                    anti_invars=batch_data["anti_invars"],
                     ntokens=args.ntokens,
                     encoder_loss_lambda=args.encoder_loss_lambda,
                     invar_loss_lambda=0.0, # HARDCODE (not same program across batch)
@@ -602,8 +603,9 @@ def main():
         for epoch in range(args.num_epochs):
             ce_loss_accum = 0.0
             invar_loss_accum = 0.0
-            total_loss_accum = 0.0
             encoder_loss_accum = 0.0
+            kl_loss_accum = 0.0
+            total_loss_accum = 0.0
             grad_norm_accum = 0.0
 
             for batch_data in ttt_dataloader:
@@ -615,10 +617,11 @@ def main():
                 dec_labels = batch_data["decoder_labels"].to(accelerator.device)
                 enc_ids_lens = batch_data["encoder_input_ids_lens"]
                 dec_ids_lens = batch_data["decoder_input_ids_lens"]
+                anti_invars = batch_data["anti_invars"]
 
                 with accelerator.accumulate(encoder_model, decoder_model, conditioning_projection):
                     with accelerator.autocast():
-                        ce_loss, invar_loss, encoder_loss, total_loss, _ = encoder_decoder_loss(
+                        ce_loss, invar_loss, encoder_loss, kl_loss, total_loss, _ = encoder_decoder_loss(
                             encoder_model=encoder_model,
                             decoder_model=decoder_model,
                             conditioning_method=args.conditioning_method,
@@ -631,6 +634,7 @@ def main():
                             decoder_labels=dec_labels,
                             enc_ids_lens=enc_ids_lens,
                             dec_ids_lens=dec_ids_lens,
+                            anti_invars=anti_invars,
                             ntokens=args.ntokens,
                             encoder_loss_lambda=args.encoder_loss_lambda,
                             invar_loss_lambda=0.0, # HARDCODE (not same program across batch)
@@ -648,10 +652,12 @@ def main():
                     avg_ce_loss = accelerator.gather(ce_loss.repeat(args.train_batch_size)).mean() # type: ignore
                     avg_invar_loss = accelerator.gather(invar_loss.repeat(args.train_batch_size)).mean() # type: ignore
                     avg_encoder_loss = accelerator.gather(encoder_loss.repeat(args.train_batch_size)).mean() # type: ignore
+                    avg_kl_loss = accelerator.gather(kl_loss.repeat(args.train_batch_size)).mean() # type: ignore
                     avg_total_loss = accelerator.gather(total_loss.repeat(args.train_batch_size)).mean() # type: ignore
                     ce_loss_accum += avg_ce_loss.item() / args.grad_accum_steps
                     invar_loss_accum += avg_invar_loss.item() / args.grad_accum_steps
                     encoder_loss_accum += avg_encoder_loss.item() / args.grad_accum_steps
+                    kl_loss_accum += avg_kl_loss.item() / args.grad_accum_steps
                     total_loss_accum += avg_total_loss.item() / args.grad_accum_steps
 
                     accelerator.backward(total_loss)
@@ -671,6 +677,7 @@ def main():
                                 f"train/{task_id}_ce_loss": ce_loss_accum,
                                 f"train/{task_id}_invar_loss": invar_loss_accum,
                                 f"train/{task_id}_encoder_loss": encoder_loss_accum,
+                                f"train/{task_id}_kl_loss": kl_loss_accum,
                                 f"train/{task_id}_total_loss": total_loss_accum,
                                 f"train/{task_id}_grad_norm_accum": grad_norm_accum,
                                 f"train/{task_id}_lr_embedding": lr_scheduler.get_last_lr()[0],
@@ -678,11 +685,12 @@ def main():
                                 'Steps': global_step,
                             })
                         except:
-                            print(f"wandb failed on process {accelerator.process_index}, skipping the error")
+                            logger.info(f"wandb failed on process {accelerator.process_index}, skipping the error")
 
                     ce_loss_accum = 0.0
                     invar_loss_accum = 0.0
                     encoder_loss_accum = 0.0
+                    kl_loss_accum = 0.0
                     total_loss_accum = 0.0
                     grad_norm_accum = 0.0
 

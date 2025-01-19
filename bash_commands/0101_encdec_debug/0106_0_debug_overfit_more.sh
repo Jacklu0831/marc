@@ -21,9 +21,6 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
     --eval_batch_size 2 \
     --num_workers 0 \
     --optimizer sgd \
-    --encoder_pad_side right \
-    --decoder_pad_side right \
-    --decoder_gen_pad_side left \
     --debug_random_pad \
     --conditioning_method hidden2prompt \
     --projection_type none \

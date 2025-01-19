@@ -409,6 +409,7 @@ def encoder_decoder_loss(
     decoder_labels: torch.Tensor,
     enc_ids_lens: List[int],
     dec_ids_lens: List[int],
+    anti_invars: List[bool],
     ntokens: int,
     invar_loss_lambda: float,
     encoder_loss_lambda: float,
@@ -420,9 +421,9 @@ def encoder_decoder_loss(
     no_flash_attn: bool,
     debug_vae_no_sample: bool,
     debug_vae_no_kl: bool,
-) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor,
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor,
            Union[torch.Tensor, List[Tuple[torch.Tensor, torch.Tensor]]]]:
-
+    # batch size is not necessarily true due to eval
     # Encoder forward and get loss
     enc_out = encoder_model(
         input_ids=encoder_input_ids,
@@ -494,13 +495,18 @@ def encoder_decoder_loss(
         )
 
     # invariance loss (batch only not 2x in evaluation)
-    assert enc_hidden_states.shape[0] == encoder_input_ids.shape[0]
+    batch_size = encoder_input_ids.shape[0]
+    assert enc_hidden_states.shape[0] == len(anti_invars) == batch_size
     invar_loss = torch.tensor(0.0, device=encoder_input_ids.device)
-    if enc_hidden_states.shape[0] % 2 == 0:
-        invar_loss = nn.functional.mse_loss(enc_hidden_states[::2], enc_hidden_states[1::2])
+    if batch_size % 2 == 0:
+        for batch_i in range(0, batch_size, 2):
+            assert anti_invars[batch_i] == anti_invars[batch_i + 1]
+            l = nn.functional.mse_loss(enc_hidden_states[batch_i], enc_hidden_states[batch_i + 1])
+            invar_loss += -l if anti_invars[batch_i] else l
+        invar_loss /= (batch_size // 2)
 
     total_loss = ce_loss + invar_loss_lambda * invar_loss + encoder_loss_lambda * encoder_loss + kl_loss
-    return ce_loss, invar_loss, encoder_loss, total_loss, predicted_program
+    return ce_loss, invar_loss, encoder_loss, kl_loss, total_loss, predicted_program
 
 
 def decoder_loss(
@@ -851,7 +857,9 @@ def evaluate(
     distributed_state = PartialState()
     task_id_and_text_list = []
     task_id_and_inverter_grids = []
-    loss_list = []
+    ce_loss_list = []
+    encoder_loss_list = []
+    kl_loss_list = []
     exact_acc_list = []
     valid_grid_list = []
     correct_grid_dim_list = []
@@ -973,7 +981,8 @@ def evaluate(
 
                 # compute ce loss
                 with accelerator.autocast():
-                    ce_loss, _, _, _, predicted_program = encoder_decoder_loss(
+                    # invarloss is always 0, lambdas and total loss are unnecessary
+                    ce_loss, _, encoder_loss, kl_loss, _, predicted_program = encoder_decoder_loss(
                         encoder_model=encoder_model,
                         decoder_model=decoder_model,
                         conditioning_method=conditioning_method,
@@ -986,9 +995,10 @@ def evaluate(
                         decoder_labels=dec_labels,
                         enc_ids_lens=enc_ids_lens,
                         dec_ids_lens=dec_ids_lens,
+                        anti_invars=[True] * len(dec_ids_lens), # HARDCODE
                         ntokens=dataset.ntokens,
-                        invar_loss_lambda=0.0,
-                        encoder_loss_lambda=0.0,
+                        invar_loss_lambda=0.0, # HARDCODE
+                        encoder_loss_lambda=0.0, # HARDCODE
                         no_lora=no_lora,
                         decoder_ce_loss=decoder_ce_loss,
                         encoder_pad_side=dataset.encoder_pad_side,
@@ -1001,7 +1011,9 @@ def evaluate(
 
                 # ce loss should be from the original permutation, which is set to the first permuted batch
                 if batch_permute_i == 0:
-                    loss_list += [ce_loss.item()] * bs
+                    ce_loss_list += [ce_loss.item()] * bs
+                    encoder_loss_list += [encoder_loss.item()] * bs
+                    kl_loss_list += [kl_loss.item()] * bs
 
                 # accumulate program
                 if batch_permute_i == 0:
@@ -1096,7 +1108,7 @@ def evaluate(
                         no_flash_attn=no_flash_attn,
                         predicted_program=predicted_program,
                     )
-                    loss_list[-1] = ce_loss.item()
+                    ce_loss_list[-1] = ce_loss.item()
 
             # recover data from first batch (e.g. task_ids might be missing tasks due to permute_iters)
             assert isinstance(first_batch, dict)
@@ -1221,16 +1233,24 @@ def evaluate(
                 token_acc_list.append(num_token_correct / grid_size)
 
     distributed_state.wait_for_everyone()
+    # results
     task_id_and_text_list = gather_object(task_id_and_text_list)
     task_id_and_inverter_grids = gather_object(task_id_and_inverter_grids) # likely diff len from dataset
-    loss_list = gather_object(loss_list)
+    # losses
+    ce_loss_list = gather_object(ce_loss_list)
+    encoder_loss_list = gather_object(encoder_loss_list)
+    kl_loss_list = gather_object(kl_loss_list)
+    # accuracies
     exact_acc_list = gather_object(exact_acc_list)
     valid_grid_list = gather_object(valid_grid_list)
     correct_grid_dim_list = gather_object(correct_grid_dim_list)
     token_acc_list = gather_object(token_acc_list)
     ttt_provided_list = gather_object(ttt_provided_list)
+
     assert len(task_id_and_text_list) == len(dataset), (len(task_id_and_text_list), len(dataset))
-    assert len(loss_list) == len(dataset), (len(loss_list), len(dataset))
+    assert len(ce_loss_list) == len(dataset), (len(ce_loss_list), len(dataset))
+    assert len(encoder_loss_list) == len(dataset), (len(encoder_loss_list), len(dataset))
+    assert len(kl_loss_list) == len(dataset), (len(kl_loss_list), len(dataset))
     assert len(exact_acc_list) == len(dataset), (len(exact_acc_list), len(dataset))
     assert len(valid_grid_list) == len(dataset), (len(valid_grid_list), len(dataset))
     assert len(correct_grid_dim_list) == len(dataset), (len(correct_grid_dim_list), len(dataset))
@@ -1239,7 +1259,9 @@ def evaluate(
 
     # average metrics
     # note these are all computed without accounting for skipped eval grids
-    avg_ce = sum(loss_list) / len(dataset)
+    avg_ce_loss = sum(ce_loss_list) / len(dataset)
+    avg_encoder_loss = sum(encoder_loss_list) / len(dataset)
+    avg_kl_loss = sum(kl_loss_list) / len(dataset)
     exact_acc = sum(exact_acc_list) / len(dataset)
     valid_grid = sum(valid_grid_list) / len(dataset)
     correct_grid_dim = sum(correct_grid_dim_list) / len(dataset)
@@ -1278,7 +1300,8 @@ def evaluate(
     competition_sub_acc = competition_sub_correct / sum(len(corrects) for corrects in task_name_to_corrects.values())
     competition_all_acc = competition_all_correct / len(task_name_to_corrects)
 
-    return avg_ce, exact_acc, valid_grid, correct_grid_dim, token_acc, task_id_to_texts, \
+    return avg_ce_loss, avg_encoder_loss, avg_kl_loss, \
+        exact_acc, valid_grid, correct_grid_dim, token_acc, task_id_to_texts, \
         votes, competition_sub_acc, competition_all_acc, ttt_provided
 
 
@@ -1491,7 +1514,6 @@ def main():
     parser.add_argument("--debug_fixed_train_order", action="store_true")
     parser.add_argument("--debug_random_pad", action="store_true")
     parser.add_argument("--debug_pad_len", type=int, default=-1)
-    parser.add_argument("--debug_batch_size_1", action="store_true")
 
     # Model
     parser.add_argument("--encoder_name", type=str, default="llama1b")
@@ -1528,6 +1550,7 @@ def main():
     parser.add_argument("--eval_epochs", type=int, default=1)
     parser.add_argument("--max_seq_len", type=int, default=5120)
     parser.add_argument("--invar_loss_lambda", type=float, default=0.0)
+    parser.add_argument("--anti_invar_ratio", type=float, default=0.0)
     parser.add_argument("--encoder_loss_lambda", type=float, default=1.0)
     parser.add_argument("--encoder_loss_type", type=str, choices=["last", "rest", "all"], default="rest")
     parser.add_argument("--max_grad_norm", default=1.0, type=float, help="Max gradient norm.")
@@ -1857,10 +1880,10 @@ def main():
         debug_fixed_train_order=args.debug_fixed_train_order,
         debug_random_pad=args.debug_random_pad,
         debug_pad_len=args.debug_pad_len,
-        debug_batch_size_1=args.debug_batch_size_1,
         encoder_pad_side=args.encoder_pad_side,
         decoder_pad_side=args.decoder_pad_side,
         encoder_loss_type=args.encoder_loss_type,
+        anti_invar_ratio=args.anti_invar_ratio,
     )
     train_collate_fn = partial(collate_fn_train, dataset=train_dataset)
     if args.debug_enc_len > 0:
@@ -1975,7 +1998,7 @@ def main():
         # get any data, single forward and backward pass
         batch_data = next(iter(train_loader))
         with accelerator.autocast():
-            _, _, _, total_loss, _ = encoder_decoder_loss(
+            _, _, _, _, total_loss, _ = encoder_decoder_loss(
                 encoder_model=encoder_model,
                 decoder_model=decoder_model,
                 conditioning_method=args.conditioning_method,
@@ -1988,6 +2011,7 @@ def main():
                 decoder_labels=batch_data["decoder_labels"].to(accelerator.device),
                 enc_ids_lens=batch_data["encoder_input_ids_lens"],
                 dec_ids_lens=batch_data["decoder_input_ids_lens"],
+                anti_invars=batch_data["anti_invars"],
                 ntokens=args.ntokens,
                 encoder_loss_lambda=args.encoder_loss_lambda,
                 invar_loss_lambda=args.invar_loss_lambda,
@@ -2012,8 +2036,9 @@ def main():
 
         ce_loss_accum = 0.0
         invar_loss_accum = 0.0
-        total_loss_accum = 0.0
         encoder_loss_accum = 0.0
+        kl_loss_accum = 0.0
+        total_loss_accum = 0.0
         grad_norm_accum = 0.0
 
         for batch_data in train_loader:
@@ -2025,10 +2050,11 @@ def main():
             dec_labels = batch_data["decoder_labels"].to(accelerator.device)
             enc_ids_lens = batch_data["encoder_input_ids_lens"]
             dec_ids_lens = batch_data["decoder_input_ids_lens"]
+            anti_invars = batch_data["anti_invars"]
 
             with accelerator.accumulate(encoder_model, decoder_model, conditioning_projection):
                 with accelerator.autocast():
-                    ce_loss, invar_loss, encoder_loss, total_loss, _ = encoder_decoder_loss(
+                    ce_loss, invar_loss, encoder_loss, kl_loss, total_loss, _ = encoder_decoder_loss(
                         encoder_model=encoder_model,
                         decoder_model=decoder_model,
                         conditioning_method=args.conditioning_method,
@@ -2041,6 +2067,7 @@ def main():
                         decoder_labels=dec_labels,
                         enc_ids_lens=enc_ids_lens,
                         dec_ids_lens=dec_ids_lens,
+                        anti_invars=anti_invars,
                         ntokens=args.ntokens,
                         encoder_loss_lambda=args.encoder_loss_lambda,
                         invar_loss_lambda=args.invar_loss_lambda,
@@ -2058,10 +2085,12 @@ def main():
                 avg_ce_loss = accelerator.gather(ce_loss.repeat(args.train_batch_size)).mean() # type: ignore
                 avg_invar_loss = accelerator.gather(invar_loss.repeat(args.train_batch_size)).mean() # type: ignore
                 avg_encoder_loss = accelerator.gather(encoder_loss.repeat(args.train_batch_size)).mean() # type: ignore
+                avg_kl_loss = accelerator.gather(kl_loss.repeat(args.train_batch_size)).mean() # type: ignore
                 avg_total_loss = accelerator.gather(total_loss.repeat(args.train_batch_size)).mean() # type: ignore
                 ce_loss_accum += avg_ce_loss.item() / args.grad_accum_steps
                 invar_loss_accum += avg_invar_loss.item() / args.grad_accum_steps
                 encoder_loss_accum += avg_encoder_loss.item() / args.grad_accum_steps
+                kl_loss_accum += avg_kl_loss.item() / args.grad_accum_steps
                 total_loss_accum += avg_total_loss.item() / args.grad_accum_steps
 
                 accelerator.backward(total_loss)
@@ -2100,17 +2129,19 @@ def main():
                             "train/ce_loss": ce_loss_accum,
                             "train/invar_loss": invar_loss_accum,
                             "train/encoder_loss": encoder_loss_accum,
+                            "train/kl_loss": kl_loss_accum,
                             "train/total_loss": total_loss_accum,
                             "train/grad_norm_accum": grad_norm_accum,
                             "train/lr_embedding": lr_scheduler.get_last_lr()[0],
                             "train/lr_other": lr_scheduler.get_last_lr()[1],
                         }, step=global_step)
                     except:
-                        print(f"wandb failed on process {accelerator.process_index}, skipping the error")
+                        logger.info(f"wandb failed on process {accelerator.process_index}, skipping the error")
 
                 ce_loss_accum = 0.0
                 invar_loss_accum = 0.0
                 encoder_loss_accum = 0.0
+                kl_loss_accum = 0.0
                 total_loss_accum = 0.0
                 grad_norm_accum = 0.0
 
@@ -2168,7 +2199,8 @@ def main():
                     debug_dec_len=args.debug_dec_len,
                 )
 
-            train_ce, train_exact_acc, train_valid_grid, train_correct_grid_dim, train_token_acc, train_texts, \
+            train_ce_loss, train_encoder_loss, train_kl_loss, \
+                train_exact_acc, train_valid_grid, train_correct_grid_dim, train_token_acc, train_texts, \
                 train_votes, train_competition_sub_acc, train_competition_all_acc, _ = evaluate(
                 task_to_ttt_model_paths=None, # HARDCODE
                 encoder_ttt_param_names=None, # HARDCODE
@@ -2199,7 +2231,8 @@ def main():
                 debug_vae_no_kl=args.debug_vae_no_kl,
                 debug_vae_no_sample=args.debug_vae_eval_no_sample,
             )
-            eval_ce, eval_exact_acc, eval_valid_grid, eval_correct_grid_dim, eval_token_acc, eval_texts, \
+            eval_ce_loss, eval_encoder_loss, eval_kl_loss, \
+                eval_exact_acc, eval_valid_grid, eval_correct_grid_dim, eval_token_acc, eval_texts, \
                 eval_votes, eval_competition_sub_acc, eval_competition_all_acc, _ = evaluate(
                 task_to_ttt_model_paths=None, # HARDCODE
                 encoder_ttt_param_names=None, # HARDCODE
@@ -2233,14 +2266,18 @@ def main():
 
             if accelerator.is_main_process:
                 eval_metric_dict = {
-                    "eval/train_ce_loss": train_ce,
+                    "eval/train_ce_loss": train_ce_loss,
+                    "eval/train_encoder_loss": train_encoder_loss,
+                    "eval/train_kl_loss": train_kl_loss,
                     "eval/train_exact_acc": train_exact_acc,
                     "eval/train_valid_grid": train_valid_grid,
                     "eval/train_correct_grid_dim": train_correct_grid_dim,
                     "eval/train_token_acc": train_token_acc,
                     "eval/train_competition_all_acc": train_competition_all_acc,
                     "eval/train_competition_sub_acc": train_competition_sub_acc,
-                    "eval/eval_ce_loss": eval_ce,
+                    "eval/eval_ce_loss": eval_ce_loss,
+                    "eval/eval_encoder_loss": eval_encoder_loss,
+                    "eval/eval_kl_loss": eval_kl_loss,
                     "eval/eval_exact_acc": eval_exact_acc,
                     "eval/eval_valid_grid": eval_valid_grid,
                     "eval/eval_correct_grid_dim": eval_correct_grid_dim,
@@ -2252,7 +2289,7 @@ def main():
                 try:
                     accelerator.log(eval_metric_dict, step=global_step)
                 except:
-                    print(f"wandb failed on process {accelerator.process_index}, skipping the error")
+                    logger.info(f"wandb failed on process {accelerator.process_index}, skipping the error")
 
                 # Save outputs
                 save_eval_train_pred_gt_path = os.path.join(args.output_dir, f"eval_train_{epoch+1}_pred_gt.json")
