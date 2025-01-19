@@ -540,8 +540,15 @@ def collate_fn_train(batch, dataset: "TrainDataset"):
         task_id = dataset.rng.choice(dataset.all_task_ids)
         pairs_for_task = dataset.tasks_dict[task_id]
 
+        # sample augmentation
+        augmenter = None
+        io_augmentation_choice = None
+        if dataset.rng.rand() < dataset.augment_ratio:
+            augmenter = dataset.rng.choice(dataset.augmenters)
+            io_augmentation_choice = dataset.rng.choice(['input_only', 'output_only', 'both'])
+
         # We'll attempt to produce exactly 2 examples from this single task
-        task_out_list = []
+        two_task_list = []
         for _ in range(1 if dataset.debug_batch_size_1 else 2):
             prefix_count = random.randint(dataset.min_prefix, dataset.max_prefix)
             required_count = prefix_count + 1
@@ -555,9 +562,7 @@ def collate_fn_train(batch, dataset: "TrainDataset"):
             chosen_pairs = copy.deepcopy(chosen_pairs)
 
             # apply augmentation
-            if dataset.rng.rand() < dataset.augment_ratio:
-                augmenter = dataset.rng.choice(dataset.augmenters)
-                io_augmentation_choice = dataset.rng.choice(['input_only', 'output_only', 'both'])
+            if augmenter is not None:
                 for pair in chosen_pairs:
                     if io_augmentation_choice in ['input_only', 'both']:
                         pair['input'] = augmenter.apply_to_grid(np.array(pair['input']), dataset.rng)
@@ -647,21 +652,20 @@ def collate_fn_train(batch, dataset: "TrainDataset"):
                     p2 -= not is_last # remove \n
                     encoder_labels[p1:p2] = copy.deepcopy(encoder_input_ids[p1:p2])
 
-            example_dict = {
+            two_task_list.append({
                 "encoder_input_ids": encoder_input_ids,
                 "encoder_attention_mask": enc_tokens["attention_mask"].squeeze(0),
                 "encoder_labels": encoder_labels,
                 "decoder_input_ids": decoder_input_ids,
                 "decoder_attention_mask": decoder_attention_mask,
                 "decoder_labels": decoder_labels,
-            }
-            task_out_list.append(example_dict)
+            })
 
         # Check if we got 2 valid items from this task
-        if len(task_out_list) == 2 or (len(task_out_list) == 1 and dataset.debug_batch_size_1):
-            if dataset.debug_fixed_train_order or not torch.equal(task_out_list[0]['encoder_input_ids'], task_out_list[1]['encoder_input_ids']):
+        if len(two_task_list) == 2 or (len(two_task_list) == 1 and dataset.debug_batch_size_1):
+            if dataset.debug_fixed_train_order or not torch.equal(two_task_list[0]['encoder_input_ids'], two_task_list[1]['encoder_input_ids']):
                 # Add them to out_list
-                out_list.extend(task_out_list)
+                out_list.extend(two_task_list)
 
     # Now we must truncate out_list if we overshoot
     assert len(out_list) == batch_size, f"Should produce exactly {batch_size} items"
