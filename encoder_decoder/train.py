@@ -90,59 +90,130 @@ def set_up_main_process_logger(accelerator, logger):
         datasets.utils.logging.set_verbosity_error()
         transformers.utils.logging.set_verbosity_error()
 
-
-class Hidden2PrefixProjection(nn.Module):
+class Prefix2PrefixProjection(nn.Module):
     def __init__(
             self,
             num_virtual_tokens: int,
             encoder_model: nn.Module,
             decoder_model: nn.Module,
             conditioning_method: str,
+            vae: bool,
+            vae_identity_init: bool,
         ):
-        super(Hidden2PrefixProjection, self).__init__()
+        super(Prefix2PrefixProjection, self).__init__()
         # prefixes are formatted as 16 of (2=2, BS=1, nhead=8, nvirtualtoken=1, tokendim / nhead=64)
         self.num_virtual_tokens = num_virtual_tokens
-        self.num_layers = decoder_model.config.num_hidden_layers
-        self.num_kv_heads = decoder_model.config.num_key_value_heads
-        self.embed_size_per_head = decoder_model.config.hidden_size // decoder_model.config.num_attention_heads
         self.conditioning_method = conditioning_method
+        self.vae = vae
+        # model config
+        self.enc_num_layers = encoder_model.config.num_hidden_layers
+        self.enc_num_kv_heads = encoder_model.config.num_key_value_heads
+        self.enc_embed_size_per_head = encoder_model.config.hidden_size // encoder_model.config.num_attention_heads
+        self.enc_size = self.enc_num_layers * self.enc_num_kv_heads * self.enc_embed_size_per_head
+        self.dec_num_layers = decoder_model.config.num_hidden_layers
+        self.dec_num_kv_heads = decoder_model.config.num_key_value_heads
+        self.dec_embed_size_per_head = decoder_model.config.hidden_size // decoder_model.config.num_attention_heads
+        self.dec_size = self.dec_num_layers * self.dec_num_kv_heads * self.dec_embed_size_per_head
         # weights
-        if self.conditioning_method == "hidden2prefix_shared":
-            projections = nn.Linear(
-                encoder_model.config.hidden_size,
-                self.num_layers * 2 * self.num_kv_heads * self.embed_size_per_head
-            )
-            self.weights = nn.Parameter(projections.weight)
-            self.biases = nn.Parameter(projections.bias)
-        elif self.conditioning_method == "hidden2prefix_full":
-            projections = nn.ModuleList([
-                nn.Linear(
-                    encoder_model.config.hidden_size,
-                    self.num_layers * 2 * self.num_kv_heads * self.embed_size_per_head
-                ) for _ in range(self.num_virtual_tokens)
-            ])
-            self.weights = nn.Parameter(torch.stack([projection.weight for projection in projections], dim=0))
-            self.biases = nn.Parameter(torch.stack([projection.bias for projection in projections], dim=0))
+        if conditioning_method == "prefix2prefix" and not self.vae:
+            pass
+        elif conditioning_method == "prefix2prefix" and self.vae:
+            if vae_identity_init:
+                self.mu_k_weights, self.mu_v_weights, self.mu_k_biases, self.mu_v_biases = self.get_projection_full(scheme="identity")
+                self.logvar_k_weights, self.logvar_v_weights, self.logvar_k_biases, self.logvar_v_biases = self.get_projection_full(scheme="zero")
+            else:
+                self.mu_k_weights, self.mu_v_weights, self.mu_k_biases, self.mu_v_biases = self.get_projection_full(scheme="random")
+                self.logvar_k_weights, self.logvar_v_weights, self.logvar_k_biases, self.logvar_v_biases = self.get_projection_full(scheme="random")
+        elif conditioning_method == "prefix2prefix_full":
+            self.k_weights, self.v_weights, self.k_biases, self.v_biases = self.get_projection_full(scheme="random")
+        elif conditioning_method == "prefix2prefix_full_identity":
+            self.k_weights, self.v_weights, self.k_biases, self.v_biases = self.get_projection_full(scheme="identity")
         else:
-            raise ValueError(f'unrecognized conditioning method {self.conditioning_method}')
-        del projections
+            raise ValueError(f"invalid conditioning method {conditioning_method}")
 
-    def forward(self, enc_hidden_states: torch.Tensor) -> List[Tuple[torch.Tensor, torch.Tensor]]:
-        # enc_hidden_states has shape (batch_size, num_virtual_tokens, hidden_dim)
-        assert enc_hidden_states.shape[1] == self.num_virtual_tokens
-        if self.conditioning_method == "hidden2prefix_shared":
-            outs = torch.einsum("bnh,hd->bnd", enc_hidden_states, self.weights.transpose(0, 1)) + self.biases
+    def get_projection_full(self, scheme: str) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        k_projections = nn.ModuleList(
+            nn.Linear(
+                self.enc_size, self.dec_size
+            ) for _ in range(self.num_virtual_tokens)
+        )
+        v_projections = nn.ModuleList(
+            nn.Linear(
+                self.enc_size, self.dec_size
+            ) for _ in range(self.num_virtual_tokens)
+        )
+        if scheme == "identity":
+            assert self.enc_size == self.dec_size
+            with torch.no_grad():
+                for projection in k_projections:
+                    projection.weight.data.copy_(torch.eye(self.enc_size, dtype=projection.weight.dtype))
+                    projection.bias.data.zero_()
+                for projection in v_projections:
+                    projection.weight.data.copy_(torch.eye(self.enc_size, dtype=projection.weight.dtype))
+                    projection.bias.data.zero_()
+        elif scheme == "zero":
+            with torch.no_grad():
+                for projection in k_projections:
+                    projection.weight.data.zero_()
+                    projection.bias.data.zero_()
+                for projection in v_projections:
+                    projection.weight.data.zero_()
+                    projection.bias.data.zero_()
+
+        k_weights = nn.Parameter(torch.stack([projection.weight for projection in k_projections], dim=0))
+        v_weights = nn.Parameter(torch.stack([projection.weight for projection in v_projections], dim=0))
+        k_biases = nn.Parameter(torch.stack([projection.bias for projection in k_projections], dim=0))
+        v_biases = nn.Parameter(torch.stack([projection.bias for projection in k_projections], dim=0))
+        del k_projections, v_projections
+        return k_weights, v_weights, k_biases, v_biases
+
+    def forward(
+            self,
+            predicted_program: List[Tuple[torch.Tensor, torch.Tensor]],
+            vae_no_sample: bool,
+            vae_no_kl: bool,
+        ) -> Tuple[List[Tuple[torch.Tensor, torch.Tensor]], torch.Tensor]:
+
+        kv_tensor = torch.stack([torch.stack(p) for p in predicted_program]) # (num_layer, 2, batch_size, nhead, nvirtualtoken, token_per_nhead)
+        kv_tensor = kv_tensor.permute(1, 2, 4, 0, 3, 5) # (2, batch_size, nvirtualtoken, num_layer, nhead, token_per_nhead)
+        kv_tensor = kv_tensor.flatten(start_dim=3) # (2, batch_size, nvirtualtoken, num_layer x nhead x token_per_nhead = enc_size)
+        assert kv_tensor.shape[0] == 2
+        k_tensor, v_tensor = kv_tensor[0], kv_tensor[1] # (batch_size, nvirtualtoken, num_layer x nhead x token_per_nhead = enc_size)
+
+        kl = torch.tensor(0.0, device=predicted_program[0][0].device)
+        if self.conditioning_method == "prefix2prefix" and not self.vae:
+            return predicted_program, kl
+        elif self.conditioning_method == "prefix2prefix" and self.vae:
+            k_mu = torch.einsum("bnh,nhd->bnd", k_tensor, self.mu_k_weights.transpose(1, 2)) + self.mu_k_biases
+            v_mu = torch.einsum("bnh,nhd->bnd", v_tensor, self.mu_v_weights.transpose(1, 2)) + self.mu_v_biases
+            k_logvar = torch.einsum("bnh,nhd->bnd", k_tensor, self.logvar_k_weights.transpose(1, 2)) + self.logvar_k_biases
+            v_logvar = torch.einsum("bnh,nhd->bnd", v_tensor, self.logvar_v_weights.transpose(1, 2)) + self.logvar_v_biases
+            mu = torch.stack([k_mu, v_mu]) # (2, batch_size, nvirtualtoken, num_layer x nhead x token_per_nhead = dec_size)
+            logvar = torch.stack([k_logvar, v_logvar]) # (2, batch_size, nvirtualtoken, num_layer x nhead x token_per_nhead = dec_size)
+            std = torch.exp(0.5 * logvar)
+            eps = torch.zeros_like(std) if vae_no_sample else torch.randn_like(std)
+            kv_tensor = mu + eps * std
+            if not vae_no_kl:
+                kl = -0.5 * torch.sum(1.0 + logvar - mu.pow(2.0) - logvar.exp())
+            # format
+            kv_tensor = kv_tensor.view(2, kv_tensor.shape[1], self.num_virtual_tokens, self.dec_num_layers, self.dec_num_kv_heads, self.dec_embed_size_per_head)
+            kv_tensor = kv_tensor.permute(3, 0, 1, 4, 2, 5) # (num_layer, 2, batch_size, nhead, nvirtualtoken, token_per_nhead)
+            return [(kv[0], kv[1]) for kv in kv_tensor], kl
+        elif self.conditioning_method in ["prefix2prefix_full", "prefix2prefix_full_identity"]:
+            # self.k_weights size (nvirtualtoken, enc_size, dec_size)
+            k_tensor = torch.einsum("bnh,nhd->bnd", k_tensor, self.k_weights.transpose(1, 2)) + self.k_biases
+            v_tensor = torch.einsum("bnh,nhd->bnd", v_tensor, self.v_weights.transpose(1, 2)) + self.v_biases
+            # format
+            kv_tensor = torch.stack([k_tensor, v_tensor]) # (2, batch_size, nvirtualtoken, num_layer x nhead x token_per_nhead = dec_size)
+            kv_tensor = kv_tensor.view(2, kv_tensor.shape[1], self.num_virtual_tokens, self.dec_num_layers, self.dec_num_kv_heads, self.dec_embed_size_per_head)
+            kv_tensor = kv_tensor.permute(3, 0, 1, 4, 2, 5) # (num_layer, 2, batch_size, nhead, nvirtualtoken, token_per_nhead)
+            return [(kv[0], kv[1]) for kv in kv_tensor], kl
         else:
-            outs = torch.einsum("bnh,nhd->bnd", enc_hidden_states, self.weights.transpose(1, 2)) + self.biases # (batch_size, num_virtual_tokens, out_dim)
-        outs = outs.view(outs.size(0), outs.size(1), self.num_layers, 2, self.num_kv_heads, self.embed_size_per_head)
-        outs = outs.permute(2, 3, 0, 4, 1, 5)
-        past_key_values = [(x[0], x[1]) for x in outs] # each (batch_size, num_kv_heads, num_virtual_tokens, embed_size_per_head)
-        return past_key_values
+            raise ValueError(f"invalid conditioning method {self.conditioning_method}")
 
     def get_memory_footprint(self):
         return sum(p.nelement() * p.element_size() for p in self.parameters()) + \
             sum(p.nelement() * p.element_size() for p in self.buffers())
-
 
 class Hidden2PromptProjection(nn.Module):
     def __init__(
@@ -151,49 +222,85 @@ class Hidden2PromptProjection(nn.Module):
             encoder_model: nn.Module,
             decoder_model: nn.Module,
             conditioning_method: str,
+            vae: bool,
+            vae_identity_init: bool,
         ):
         super(Hidden2PromptProjection, self).__init__()
         self.num_virtual_tokens = num_virtual_tokens
         self.conditioning_method = conditioning_method
+        self.vae = vae
+        # model config
         self.encoder_hidden_size = encoder_model.config.hidden_size
         self.decoder_hidden_size = decoder_model.config.hidden_size
         # weights
-        if "hidden2prompt_shared" in self.conditioning_method:
-            projections = nn.Linear(encoder_model.config.hidden_size, decoder_model.config.hidden_size)
-            if "identity" in self.conditioning_method:
-                assert self.encoder_hidden_size == self.decoder_hidden_size
-                with torch.no_grad():
-                    projections.weight.data.copy_(torch.eye(encoder_model.config.hidden_size, dtype=projections.weight.dtype))
-                    projections.bias.data.zero_()
-            self.weights = nn.Parameter(projections.weight)
-            self.biases = nn.Parameter(projections.bias)
-        elif "hidden2prompt_full" in conditioning_method:
-            projections = nn.ModuleList([
-                nn.Linear(
-                    encoder_model.config.hidden_size,
-                    decoder_model.config.hidden_size,
-                ) for _ in range(self.num_virtual_tokens)
-            ])
-            if "identity" in self.conditioning_method:
-                assert self.encoder_hidden_size == self.decoder_hidden_size
-                with torch.no_grad():
-                    for projection in projections:
-                        projection.weight.data.copy_(torch.eye(encoder_model.config.hidden_size, dtype=projection.weight.dtype))
-                        projection.bias.data.zero_()
-            self.weights = nn.Parameter(torch.stack([projection.weight for projection in projections], dim=0))
-            self.biases = nn.Parameter(torch.stack([projection.bias for projection in projections], dim=0))
+        if conditioning_method == "hidden2prompt" and not self.vae:
+            pass
+        elif conditioning_method == "hidden2prompt" and self.vae:
+            if vae_identity_init:
+                self.mu_weights, self.mu_biases = self.get_projection_full(scheme="identity")
+                self.logvar_weights, self.logvar_biases = self.get_projection_full(scheme="zero")
+            else:
+                self.mu_weights, self.mu_biases = self.get_projection_full(scheme="random")
+                self.logvar_weights, self.logvar_biases = self.get_projection_full(scheme="random")
+        elif conditioning_method == "hidden2prompt_full":
+            self.weights, self.biases = self.get_projection_full(scheme="random")
+        elif conditioning_method == "hidden2prompt_full_identity":
+            self.weights, self.biases = self.get_projection_full(scheme="identity")
         else:
-            raise ValueError(f'unrecognized conditioning method {self.conditioning_method}')
-        del projections
+            raise ValueError(f"invalid conditioning method {conditioning_method}")
 
-    def forward(self, enc_hidden_states: torch.Tensor) -> torch.Tensor:
+    def get_projection_full(self, scheme: str) -> Tuple[torch.Tensor, torch.Tensor]:
+        projections = nn.ModuleList([
+            nn.Linear(
+                self.encoder_hidden_size,
+                self.decoder_hidden_size,
+            ) for _ in range(self.num_virtual_tokens)
+        ])
+        if scheme == "identity":
+            assert self.encoder_hidden_size == self.decoder_hidden_size
+            with torch.no_grad():
+                for projection in projections:
+                    projection.weight.data.copy_(torch.eye(self.encoder_hidden_size, dtype=projection.weight.dtype))
+                    projection.bias.data.zero_()
+        elif scheme == "zero":
+            with torch.no_grad():
+                for projection in projections:
+                    projection.weight.data.zero_()
+                    projection.bias.data.zero_()
+
+        weights = nn.Parameter(torch.stack([projection.weight for projection in projections], dim=0))
+        biases = nn.Parameter(torch.stack([projection.bias for projection in projections], dim=0))
+        del projections
+        return weights, biases
+
+    def forward(
+            self,
+            enc_hidden_states: torch.Tensor,
+            vae_no_sample: bool,
+            vae_no_kl: bool
+        ) -> Tuple[torch.Tensor, torch.Tensor]:
+
         # enc_hidden_states has shape (batch_size, num_virtual_tokens, hidden_dim)
         assert enc_hidden_states.shape[1] == self.num_virtual_tokens
-        # outs (batch_size, num_virtual_tokens, out_dim)
-        if self.conditioning_method in ["hidden2prompt_shared", "hidden2prompt_shared_identity"]:
-            return torch.einsum("bnh,hd->bnd", enc_hidden_states, self.weights.transpose(0, 1)) + self.biases
+
+        kl = torch.tensor(0.0, device=enc_hidden_states.device)
+        if self.conditioning_method == "hidden2prompt" and not self.vae:
+            return enc_hidden_states, kl
+        elif self.conditioning_method == "hidden2prompt" and self.vae:
+            mu = torch.einsum("bnh,nhd->bnd", enc_hidden_states, self.mu_weights.transpose(1, 2)) + self.mu_biases
+            logvar = torch.einsum("bnh,nhd->bnd", enc_hidden_states, self.logvar_weights.transpose(1, 2)) + self.logvar_biases
+            std = torch.exp(0.5 * logvar)
+            eps = torch.zeros_like(std) if vae_no_sample else torch.randn_like(std)
+            enc_hidden_states = mu + eps * std
+            if not vae_no_kl:
+                kl = -0.5 * torch.sum(1.0 + logvar - mu.pow(2.0) - logvar.exp())
+            return enc_hidden_states, kl
+        elif self.conditioning_method in ["hidden2prompt_full", "hidden2prompt_full_identity"]:
+            # outs (batch_size, num_virtual_tokens, out_dim)
+            enc_hidden_states = torch.einsum("bnh,nhd->bnd", enc_hidden_states, self.weights.transpose(1, 2)) + self.biases
+            return enc_hidden_states, kl
         else:
-            return torch.einsum("bnh,nhd->bnd", enc_hidden_states, self.weights.transpose(1, 2)) + self.biases
+            raise ValueError(f"invalid conditioning method {self.conditioning_method}")
 
     def get_memory_footprint(self):
         return sum(p.nelement() * p.element_size() for p in self.parameters()) + \
@@ -207,7 +314,7 @@ def encoder_decoder_loss(
     encoder_model: nn.Module,
     decoder_model: nn.Module,
     conditioning_method: str,
-    conditioning_projection: Optional[Union[Hidden2PrefixProjection, Hidden2PromptProjection]],
+    conditioning_projection: Union[Prefix2PrefixProjection, Hidden2PromptProjection],
     encoder_input_ids: torch.Tensor,
     encoder_attention_mask: torch.Tensor,
     encoder_labels: torch.Tensor,
@@ -225,6 +332,8 @@ def encoder_decoder_loss(
     decoder_pad_side: str,
     trainable_nbit: int,
     flash_attn: bool,
+    debug_vae_no_sample: bool,
+    debug_vae_no_kl: bool,
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor,
            Union[torch.Tensor, List[Tuple[torch.Tensor, torch.Tensor]]]]:
     # Encoder forward and get loss
@@ -237,9 +346,9 @@ def encoder_decoder_loss(
     encoder_loss = enc_out.loss
 
     # get predicted program for decoder and enc_hidden_states for invar loss
-    enc_hidden_states = None
-    predicted_program = None
-    if conditioning_method == "prefix2prefix":
+    if "prefix2prefix" in conditioning_method:
+        assert isinstance(conditioning_projection, Prefix2PrefixProjection)
+        # get prefix
         predicted_program = []
         if encoder_pad_side == "right":
             for x1, x2 in enc_out.past_key_values:
@@ -253,31 +362,29 @@ def encoder_decoder_loss(
                     torch.stack([x[:, -num_virtual_tokens:, :] for x in x1]),
                     torch.stack([x[:, -num_virtual_tokens:, :] for x in x2]),
                 ))
+        # prefix to either prefix or prompt
+        predicted_program, kl_loss = conditioning_projection(
+            predicted_program=predicted_program,
+            vae_no_sample=debug_vae_no_sample,
+            vae_no_kl=debug_vae_no_kl,
+        )
+        # hidden state will be used for invar loss, so make it a batch first tensor
         enc_hidden_states = torch.stack([torch.stack(x) for x in predicted_program]) # each (batch_size, num_kv_heads, num_virtual_tokens, embed_size_per_head)
-        enc_hidden_states = enc_hidden_states.permute(2, 0, 1, 3, 4, 5)
-    elif conditioning_method in ["hidden2prefix_shared", "hidden2prefix_full"]:
+        enc_hidden_states = enc_hidden_states.permute(2, 0, 1, 3, 4, 5) # (batch_size, num_layer, 2, num_kv_heads, num_virtual_tokens, embed_size_per_head)
+    elif "hidden2prompt" in conditioning_method:
+        assert isinstance(conditioning_projection, Hidden2PromptProjection)
+        # get hidden states
         enc_hidden_states = enc_out.hidden_states[-1] # [B, seq_len, hidden_dim]
         if encoder_pad_side == "right":
             enc_hidden_states = torch.stack([x[l-num_virtual_tokens:l] for x, l in zip(enc_hidden_states, enc_ids_lens)])
         else:
             enc_hidden_states = torch.stack([x[-num_virtual_tokens:] for x in enc_hidden_states])
-        assert conditioning_projection is not None
-        predicted_program = conditioning_projection(enc_hidden_states=enc_hidden_states)
-    elif conditioning_method == "hidden2prompt":
-        enc_hidden_states = enc_out.hidden_states[-1] # [B, seq_len, hidden_dim]
-        if encoder_pad_side == "right":
-            enc_hidden_states = torch.stack([x[l-num_virtual_tokens:l] for x, l in zip(enc_hidden_states, enc_ids_lens)])
-        else:
-            enc_hidden_states = torch.stack([x[-num_virtual_tokens:] for x in enc_hidden_states])
-        predicted_program = enc_hidden_states
-    elif conditioning_method in ["hidden2prompt_shared", "hidden2prompt_full", "hidden2prompt_shared_identity", "hidden2prompt_full_identity"]:
-        enc_hidden_states = enc_out.hidden_states[-1] # [B, seq_len, hidden_dim]
-        if encoder_pad_side == "right":
-            enc_hidden_states = torch.stack([x[l-num_virtual_tokens:l] for x, l in zip(enc_hidden_states, enc_ids_lens)])
-        else:
-            enc_hidden_states = torch.stack([x[-num_virtual_tokens:] for x in enc_hidden_states])
-        assert conditioning_projection is not None
-        predicted_program = conditioning_projection(enc_hidden_states)
+        # predicted program is either just the hidden states, or projected
+        predicted_program, kl_loss = conditioning_projection(
+            enc_hidden_states=enc_hidden_states,
+            vae_no_sample=debug_vae_no_sample,
+            vae_no_kl=debug_vae_no_kl,
+        )
     else:
         raise ValueError(f"invalid conditioning method {conditioning_method}")
 
@@ -305,7 +412,7 @@ def encoder_decoder_loss(
     if enc_hidden_states.shape[0] % 2 == 0:
         invar_loss = nn.functional.mse_loss(enc_hidden_states[::2], enc_hidden_states[1::2])
 
-    total_loss = ce_loss + invar_loss_lambda * invar_loss + encoder_loss_lambda * encoder_loss
+    total_loss = ce_loss + invar_loss_lambda * invar_loss + encoder_loss_lambda * encoder_loss + kl_loss
     return ce_loss, invar_loss, encoder_loss, total_loss, predicted_program
 
 
@@ -331,7 +438,8 @@ def decoder_loss(
         dtype=decoder_attention_mask.dtype,
     )
 
-    if conditioning_method in ["prefix2prefix", "hidden2prefix_shared", "hidden2prefix_full"]:
+    if "prefix2prefix" in conditioning_method:
+        assert isinstance(predicted_program, list)
         # pad decoder attention mask
         decoder_attention_mask = torch.cat([prefix_attention_mask, decoder_attention_mask], dim=1)
         if flash_attn:
@@ -345,7 +453,8 @@ def decoder_loss(
             past_key_values=predicted_program,
             labels=decoder_labels,
         )
-    else:
+    elif "hidden2prompt" in conditioning_method:
+        assert isinstance(predicted_program, torch.Tensor)
         # pad decoder attention mask
         if decoder_pad_side == "right":
             decoder_attention_mask = torch.cat([prefix_attention_mask, decoder_attention_mask], dim=1)
@@ -362,10 +471,8 @@ def decoder_loss(
         else:
             decoder_inputs_embeds = decoder_module.model.model.embed_tokens(decoder_input_ids)
         if decoder_pad_side == "right":
-            assert isinstance(predicted_program, torch.Tensor)
             decoder_inputs_embeds = torch.cat([predicted_program, decoder_inputs_embeds], dim=1)
         else:
-            assert isinstance(predicted_program, torch.Tensor)
             decoder_inputs_embeds_new = []
             for x, p, l in zip(decoder_inputs_embeds, predicted_program, dec_ids_lens):
                 x = torch.cat([x[:-l], p, x[-l:]])
@@ -392,6 +499,8 @@ def decoder_loss(
             attention_mask=decoder_attention_mask,
             labels=decoder_labels,
         )
+    else:
+        raise ValueError(f"invalid conditioning method {conditioning_method}")
 
     return dec_out.loss
 
@@ -573,13 +682,13 @@ def gradient_search(
 ################################################
 @torch.no_grad()
 def evaluate(
-    task_to_ttt_model_paths: Optional[Dict[str, Tuple[str, Optional[str], Optional[str]]]],
+    task_to_ttt_model_paths: Optional[Dict[str, Tuple[str, Optional[str], str]]],
     encoder_ttt_param_names: Optional[Set[str]],
     decoder_ttt_param_names: Optional[Set[str]],
     encoder_model: nn.Module,
     decoder_model: nn.Module,
     conditioning_method: str,
-    conditioning_projection: Optional[Union[Hidden2PrefixProjection, Hidden2PromptProjection]],
+    conditioning_projection: Union[Prefix2PrefixProjection, Hidden2PromptProjection],
     dataset: EvalDataset,
     accelerator: Accelerator,
     batch_size: int,
@@ -599,12 +708,13 @@ def evaluate(
     gs_max_grad_norm: float,
     gs_lr_scheduler: str,
     gs_take_best: bool,
+    debug_vae_no_sample: bool,
+    debug_vae_no_kl: bool,
 ):
     encoder_model.eval()
     if not tie_models:
         decoder_model.eval()
-    if conditioning_projection is not None:
-        conditioning_projection.eval()
+    conditioning_projection.eval()
 
     # get modules in case of DDP
     encoder_module = encoder_model.module if isinstance(encoder_model, DistributedDataParallel) else encoder_model
@@ -634,10 +744,9 @@ def evaluate(
             torch.save(dec_weights, cached_dec_weights_path)
             logger.info(f"ttt provided, cached {len(dec_weights)} decoder weights to {cached_dec_weights_path}")
         # save projection
-        if conditioning_projection is not None:
-            cached_proj_weights_path = os.path.join(output_dir, f"process{accelerator.process_index}_conditioning_projection_cache.pt")
-            torch.save(conditioning_projection, cached_proj_weights_path)
-            logger.info(f"ttt provided, cached conditioning projection weights to {cached_proj_weights_path}")
+        cached_proj_weights_path = os.path.join(output_dir, f"process{accelerator.process_index}_conditioning_projection_cache.pt")
+        torch.save(conditioning_projection, cached_proj_weights_path)
+        logger.info(f"ttt provided, cached conditioning projection weights to {cached_proj_weights_path}")
         # save default to model paths and set current ttt weights to default
         task_to_ttt_model_paths["default"] = (cached_enc_weights_path, cached_dec_weights_path, cached_proj_weights_path)
         curr_ttt_task_name = "default"
@@ -711,12 +820,11 @@ def evaluate(
                         assert set(decoder_model_ttt_state_dict.keys()) == decoder_ttt_param_names
                         decoder_module.load_state_dict(decoder_model_ttt_state_dict, strict=False)
                         del decoder_model_ttt_state_dict
-                    if proj_ttt_path is not None:
-                        conditioning_projection = torch.load(
-                            proj_ttt_path,
-                            weights_only=False,
-                            map_location=accelerator.device
-                        )
+                    conditioning_projection = torch.load(
+                        proj_ttt_path,
+                        weights_only=False,
+                        map_location=accelerator.device
+                    )
                     # set current task name
                     curr_ttt_task_name = task_name
 
@@ -724,8 +832,7 @@ def evaluate(
                     encoder_model.eval()
                     if not tie_models:
                         decoder_model.eval()
-                    if conditioning_projection is not None:
-                        conditioning_projection.eval()
+                    conditioning_projection.eval()
 
             ttt_provided_list += ttt_provided
 
@@ -798,6 +905,8 @@ def evaluate(
                         decoder_pad_side=dataset.decoder_pad_side,
                         trainable_nbit=trainable_nbit,
                         flash_attn=flash_attn,
+                        debug_vae_no_sample=debug_vae_no_sample,
+                        debug_vae_no_kl=debug_vae_no_kl,
                     )
 
                 # ce loss should be from the original permutation, which is set to the first permuted batch
@@ -913,13 +1022,13 @@ def evaluate(
             with accelerator.autocast():
                 # padding at front because HF ignores it
                 gen_texts = None
-                if "hidden2prompt" in conditioning_method:
+                if "2prompt" in conditioning_method:
+                    assert isinstance(predicted_program, torch.Tensor)
                     if no_lora:
                         decoder_inputs_embeds = decoder_module.model.embed_tokens(dec_gen_ids)
                     else:
                         decoder_inputs_embeds = decoder_module.model.model.embed_tokens(dec_gen_ids)
                     # pad decoder inputs embeds
-                    assert isinstance(predicted_program, torch.Tensor)
                     if dataset.decoder_gen_pad_side == "right":
                         decoder_inputs_embeds = torch.cat([predicted_program, decoder_inputs_embeds], dim=1)
                     else:
@@ -958,6 +1067,7 @@ def evaluate(
                     )
                     gen_texts = dataset.decoder_tokenizer.batch_decode(gen_tokens, skip_special_tokens=True)
                 else:
+                    assert isinstance(predicted_program, list)
                     dec_gen_ids = torch.cat([
                         torch.ones((bs, dataset.num_virtual_tokens), device=dec_gen_ids.device, dtype=dec_gen_ids.dtype),
                         dec_gen_ids
@@ -968,7 +1078,7 @@ def evaluate(
                     ], dim=1)
                     if flash_attn:
                         predicted_program = [
-                            tuple([x[0].to(NBIT_TO_DTYPE[trainable_nbit]), x[1].to(NBIT_TO_DTYPE[trainable_nbit])])
+                            ([x[0].to(NBIT_TO_DTYPE[trainable_nbit]), x[1].to(NBIT_TO_DTYPE[trainable_nbit])])
                         for x in predicted_program] # type: ignore
                     gen_tokens = decoder_module.generate(
                         input_ids=dec_gen_ids,
@@ -1216,16 +1326,18 @@ def compute_grad_norm2(parameters) -> float:
 def save_train_model(
         encoder_model: nn.Module,
         decoder_model: nn.Module,
-        conditioning_projection: Optional[Union[Hidden2PrefixProjection, Hidden2PromptProjection]],
+        conditioning_projection: Union[Prefix2PrefixProjection, Hidden2PromptProjection],
         output_dir: str,
         epoch: int,
         tie_models: bool,
-    ) -> Tuple[str, Optional[str], Optional[str]]:
+    ) -> Tuple[str, Optional[str], str]:
+
     # encoder
     save_enc_path = os.path.join(output_dir, f"encoder_lora_epoch_{epoch+1}")
     encoder_module = encoder_model.module if isinstance(encoder_model, DistributedDataParallel) else encoder_model
     encoder_module.save_pretrained(save_enc_path, save_embedding_layers=True)
     logger.info(f"Saved encoder to {save_enc_path}")
+
     # decoder
     save_dec_path = None
     if not tie_models:
@@ -1233,15 +1345,15 @@ def save_train_model(
         decoder_module = decoder_model.module if isinstance(decoder_model, DistributedDataParallel) else decoder_model
         decoder_module.save_pretrained(save_dec_path, save_embedding_layers=True)
         logger.info(f"Saved decoder to {save_dec_path}")
+
     # projection
-    save_proj_path = None
-    if conditioning_projection is not None:
-        save_proj_path = os.path.join(output_dir, f"conditioning_projection_epoch_{epoch+1}.pt")
-        conditioning_projection_module = conditioning_projection
-        if isinstance(conditioning_projection, DistributedDataParallel):
-            conditioning_projection_module = conditioning_projection.module
-        torch.save(conditioning_projection_module, save_proj_path)
-        logger.info(f"Saved conditioning projection to {save_proj_path}")
+    save_proj_path = os.path.join(output_dir, f"conditioning_projection_epoch_{epoch+1}.pt")
+    conditioning_projection_module = conditioning_projection
+    if isinstance(conditioning_projection, DistributedDataParallel):
+        conditioning_projection_module = conditioning_projection.module
+    torch.save(conditioning_projection_module, save_proj_path)
+    logger.info(f"Saved conditioning projection to {save_proj_path}")
+
     return save_enc_path, save_dec_path, save_proj_path
 
 
@@ -1300,16 +1412,22 @@ def main():
     parser.add_argument("--decoder_gradient_checkpointing", action="store_true")
     parser.add_argument("--no_lora", action="store_true")
 
+    # vae
+    # can try different projections, but just linear for now because llama already norms it
+    parser.add_argument("--vae", action="store_true")
+    parser.add_argument("--vae_identity_init", action="store_true")
+    parser.add_argument("--debug_vae_no_kl", action="store_true")
+    parser.add_argument("--debug_vae_train_no_sample", action="store_true")
+    parser.add_argument("--debug_vae_eval_no_sample", action="store_true")
+
     # Conditioning projection
     parser.add_argument("--conditioning_method",
                         type=str,
                         choices=[
                             "prefix2prefix",
-                            "hidden2prefix_shared",
-                            "hidden2prefix_full",
+                            "prefix2prefix_full",
+                            "prefix2prefix_full_identity",
                             "hidden2prompt",
-                            "hidden2prompt_shared",
-                            "hidden2prompt_shared_identity",
                             "hidden2prompt_full",
                             "hidden2prompt_full_identity",
                         ],
@@ -1413,16 +1531,21 @@ def main():
     if "2prefix" in args.conditioning_method:
         assert not args.decoder_gradient_checkpointing
         assert args.decoder_pad_side == "right" # right for no middle padding
-    if args.encoder_name == args.decoder_name:
-        assert args.encoder_gradient_checkpointing == args.decoder_gradient_checkpointing
-    if args.conditioning_method in ["prefix2prefix", "hidden2prompt"] or "identity" in args.conditioning_method:
+    if "identity" in args.conditioning_method:
+        assert args.encoder_name == args.decoder_name
+    if args.conditioning_method in ["prefix2prefix", "hidden2prompt"]:
+        assert args.encoder_name == args.decoder_name
+    if args.vae:
+        assert args.conditioning_method in ["prefix2prefix", "hidden2prompt"] # just support these for now
+    if args.vae_identity_init:
         assert args.encoder_name == args.decoder_name
     if args.tie_models:
         assert args.encoder_name == args.decoder_name
-    if args.no_lora:
-        args.untrainable_nbit = args.trainable_nbit # untrainable become trainable
+        assert args.encoder_gradient_checkpointing == args.decoder_gradient_checkpointing
     if args.debug_enc_len > -1 and args.debug_dec_len == -1:
         args.debug_dec_len = args.debug_enc_len // 2
+    if args.no_lora:
+        args.untrainable_nbit = args.trainable_nbit # untrainable become trainable
     if args.gs_iters > 0:
         assert args.eval_batch_size == 1
 
@@ -1516,14 +1639,14 @@ def main():
 
     base_encoder = AutoModelForCausalLM.from_pretrained(
         pretrained_model_name_or_path=MODEL_NAME_TO_PATH[args.encoder_name],
-        **from_pretrained_kwargs
+        **from_pretrained_kwargs,
     )
     if args.tie_models:
         base_decoder = base_encoder
     else:
         base_decoder = AutoModelForCausalLM.from_pretrained(
             pretrained_model_name_or_path=MODEL_NAME_TO_PATH[args.decoder_name],
-            **from_pretrained_kwargs
+            **from_pretrained_kwargs,
         )
 
     if args.untrainable_nbit in ['4bit', '8bit']:
@@ -1576,25 +1699,30 @@ def main():
 
     logger.info("LoRA-wrapped models initialized (optional)")
 
-    conditioning_projection = None
-    if "hidden2prefix" in args.conditioning_method:
-        conditioning_projection = Hidden2PrefixProjection(
+    if "prefix2prefix" in args.conditioning_method:
+        conditioning_projection = Prefix2PrefixProjection(
             num_virtual_tokens=args.num_virtual_tokens,
             encoder_model=encoder_model,
             decoder_model=decoder_model,
             conditioning_method=args.conditioning_method,
+            vae=args.vae,
+            vae_identity_init=args.vae_identity_init,
         )
-    elif ("hidden2prompt" in args.conditioning_method) and (args.conditioning_method != "hidden2prompt"):
+    elif "hidden2prompt" in args.conditioning_method:
         conditioning_projection = Hidden2PromptProjection(
             num_virtual_tokens=args.num_virtual_tokens,
             encoder_model=encoder_model,
             decoder_model=decoder_model,
             conditioning_method=args.conditioning_method,
+            vae=args.vae,
+            vae_identity_init=args.vae_identity_init,
         )
+    else:
+        raise ValueError(f"invalid conditioning method {args.conditioning_method}")
     logger.info("conditioning projection initialized (optional)")
 
     # if only encoder prefix is needed, the non-kv-projection weights of encoder model last layer are not used
-    if (args.conditioning_method == "prefix2prefix") and not args.tie_models:
+    if ("prefix2prefix" in args.conditioning_method) and not args.tie_models:
         encoder_num_layer = len(encoder_model.model.layers) if args.no_lora else len(encoder_model.model.model.layers)
         for name, param in encoder_model.named_parameters():
             if f'layers.{encoder_num_layer-1}' in name and param.requires_grad:
@@ -1610,26 +1738,23 @@ def main():
         for name, param in decoder_model.named_parameters():
             if param.requires_grad:
                 param.data = param.data.to(NBIT_TO_DTYPE[args.trainable_nbit])
-    if conditioning_projection is not None:
-        for name, param in conditioning_projection.named_parameters():
-            if param.requires_grad:
-                param.data = param.data.to(NBIT_TO_DTYPE[args.trainable_nbit])
+    for name, param in conditioning_projection.named_parameters():
+        if param.requires_grad:
+            param.data = param.data.to(NBIT_TO_DTYPE[args.trainable_nbit])
     logger.info(f'converted trainable model weights to {NBIT_TO_DTYPE[args.trainable_nbit]}')
 
     # number of parameters
     print_trainable_parameters(encoder_model)
     if not args.tie_models:
         print_trainable_parameters(decoder_model)
-    if conditioning_projection is not None:
-        proj_n_params = sum(p.numel() for p in conditioning_projection.parameters())
-        logger.info(f'conditioning projection params {three_commas(proj_n_params)}')
+    proj_n_params = sum(p.numel() for p in conditioning_projection.parameters())
+    logger.info(f'conditioning projection params {three_commas(proj_n_params)}')
 
     # model size
     logger.info(f'encoder size {round(encoder_model.get_memory_footprint() / 1024 ** 3, 2)}GB')
     if not args.tie_models:
         logger.info(f'decoder size {round(decoder_model.get_memory_footprint() / 1024 ** 3, 2)}GB')
-    if conditioning_projection is not None:
-        logger.info(f'conditioning projection size {round(conditioning_projection.get_memory_footprint() / 1024 ** 3, 2)}GB')
+    logger.info(f'conditioning projection size {round(conditioning_projection.get_memory_footprint() / 1024 ** 3, 2)}GB')
 
     # Build training dataset
     train_tasks_dict = load_tasks_from_data_dir(args.train_data_dir)
@@ -1687,9 +1812,8 @@ def main():
                     embedding_params.append(param)
                 else:
                     other_params.append(param)
-    if conditioning_projection is not None:
-        for param in conditioning_projection.parameters():
-            other_params.append(param)
+    for param in conditioning_projection.parameters():
+        other_params.append(param)
 
     optimizer_grouped_params = [
         {"params": embedding_params, "lr": args.lr_embedding},
@@ -1730,11 +1854,6 @@ def main():
         train_loader,
     )
 
-    # for name, param in encoder_model.named_parameters(): print(name, param.dtype)
-    # for name, param in conditioning_projection.named_parameters(): print(name, param.dtype)
-    # for name, param in decoder_model.named_parameters(): print(name, param.dtype)
-    # breakpoint()
-
     logger.info(f'======= TRAINING INFO START ======')
     logger.info(f'num_epochs={args.num_epochs}')
     logger.info(f'train_batch_size={args.train_batch_size}')
@@ -1763,13 +1882,11 @@ def main():
         # set to train
         encoder_model.train()
         decoder_model.train()
-        if conditioning_projection is not None:
-            conditioning_projection.train()
+        conditioning_projection.train()
         # set static graph
         encoder_model._set_static_graph()
         decoder_model._set_static_graph()
-        if conditioning_projection is not None:
-            conditioning_projection._set_static_graph()
+        conditioning_projection._set_static_graph()
         # get any data, single forward and backward pass
         batch_data = next(iter(train_loader))
         with accelerator.autocast():
@@ -1795,6 +1912,8 @@ def main():
                 decoder_pad_side=args.decoder_pad_side,
                 trainable_nbit=args.trainable_nbit,
                 flash_attn=args.flash_attn,
+                debug_vae_no_sample=args.debug_vae_train_no_sample,
+                debug_vae_no_kl=args.debug_vae_no_kl,
             )
         accelerator.backward(total_loss)
         optimizer.zero_grad()
@@ -1804,8 +1923,7 @@ def main():
     for epoch in range(args.num_epochs):
         encoder_model.train()
         decoder_model.train()
-        if conditioning_projection is not None:
-            conditioning_projection.train()
+        conditioning_projection.train()
 
         ce_loss_accum = 0.0
         invar_loss_accum = 0.0
@@ -1847,6 +1965,8 @@ def main():
                         decoder_pad_side=args.decoder_pad_side,
                         trainable_nbit=args.trainable_nbit,
                         flash_attn=args.flash_attn,
+                        debug_vae_no_sample=args.debug_vae_train_no_sample,
+                        debug_vae_no_kl=args.debug_vae_no_kl,
                     )
 
                 # just accumulate for logging
@@ -1990,6 +2110,8 @@ def main():
                 gs_max_grad_norm=args.gs_max_grad_norm,
                 gs_lr_scheduler=args.gs_lr_scheduler,
                 gs_take_best=args.gs_take_best,
+                debug_vae_no_kl=args.debug_vae_no_kl,
+                debug_vae_no_sample=args.debug_vae_eval_no_sample,
             )
             eval_ce, eval_exact_acc, eval_valid_grid, eval_correct_grid_dim, eval_token_acc, eval_texts, \
                 eval_votes, eval_competition_sub_acc, eval_competition_all_acc, _ = evaluate(
@@ -2019,6 +2141,8 @@ def main():
                 gs_max_grad_norm=args.gs_max_grad_norm,
                 gs_lr_scheduler=args.gs_lr_scheduler,
                 gs_take_best=args.gs_take_best,
+                debug_vae_no_kl=args.debug_vae_no_kl,
+                debug_vae_no_sample=args.debug_vae_eval_no_sample,
             )
 
             if accelerator.is_main_process:

@@ -21,7 +21,7 @@ from peft import PeftModel # type: ignore
 
 from data_utils import EvalDataset, collate_fn_eval
 from train import set_up_main_process_logger, evaluate
-from train import Hidden2PrefixProjection, Hidden2PromptProjection
+from train import Prefix2PrefixProjection, Hidden2PromptProjection
 
 
 import os
@@ -74,18 +74,21 @@ def main():
     parser.add_argument("--ttt_weight_dir", type=str, default=None)
     parser.add_argument("--ttt_weight_epoch", type=int, default=-1)
 
+    # vae
+    # can try different projections, but just linear for now because llama already norms it
+    parser.add_argument("--debug_vae_no_kl", action="store_true")
+    parser.add_argument("--debug_vae_eval_no_sample", action="store_true")
+
     # Conditioning projection
     parser.add_argument("--conditioning_method",
                         type=str,
                         choices=[
                             "prefix2prefix",
-                            "hidden2prefix_shared",
-                            "hidden2prefix_full",
+                            "prefix2prefix_full",
+                            "prefix2prefix_full_identity",
                             "hidden2prompt",
-                            "hidden2prompt_shared",
-                            "hidden2prompt_shared_identity",
                             "hidden2prompt_full",
-                            "hidden2prompt_full_identity"
+                            "hidden2prompt_full_identity",
                         ],
                         default="hidden2prompt")
 
@@ -129,7 +132,11 @@ def main():
     assert args.trainable_nbit == 16 # TODO, test this
 
     # check args
-    if args.conditioning_method in ["prefix2prefix", "hidden2prompt"] or "identity" in args.conditioning_method:
+    if "2prefix" in args.conditioning_method:
+        assert args.decoder_pad_side == "right" # right for no middle padding
+    if "identity" in args.conditioning_method:
+        assert args.encoder_name == args.decoder_name
+    if args.conditioning_method in ["prefix2prefix", "hidden2prompt"]:
         assert args.encoder_name == args.decoder_name
     if args.tie_models:
         assert args.encoder_name == args.decoder_name
@@ -245,10 +252,8 @@ def main():
         decoder_model = PeftModel.from_pretrained(base_decoder, dec_weight_path) if not args.tie_models else encoder_model
     logger.info("loaded encoder and decoder model weights")
 
-    conditioning_projection: Optional[Union[Hidden2PrefixProjection, Hidden2PromptProjection]] = None
-    if args.conditioning_method not in ["prefix2prefix", "hidden2prompt"]:
-        conditioning_projection = torch.load(proj_weight_path, weights_only=False, map_location=accelerator.device)
-        logger.info("loaded conditioning projection weights")
+    conditioning_projection = torch.load(proj_weight_path, weights_only=False, map_location=accelerator.device)
+    logger.info("loaded conditioning projection weights")
 
     # set requires grad for model weight conversion
     if args.no_lora:
@@ -261,9 +266,8 @@ def main():
         if not args.tie_models:
             for name, param in decoder_model.named_parameters():
                 param.requires_grad = ("lora" in name)
-        if conditioning_projection is not None:
-            for param in conditioning_projection.parameters():
-                param.requires_grad = True
+        for param in conditioning_projection.parameters():
+            param.requires_grad = True
 
     # convert model weights
     for _, param in encoder_model.named_parameters():
@@ -273,10 +277,9 @@ def main():
         for _, param in decoder_model.named_parameters():
             if param.requires_grad:
                 param.data = param.data.to(NBIT_TO_DTYPE[args.trainable_nbit])
-    if conditioning_projection is not None:
-        for _, param in conditioning_projection.named_parameters():
-            if param.requires_grad:
-                param.data = param.data.to(NBIT_TO_DTYPE[args.trainable_nbit])
+    for _, param in conditioning_projection.named_parameters():
+        if param.requires_grad:
+            param.data = param.data.to(NBIT_TO_DTYPE[args.trainable_nbit])
     logger.info(f'converted model weights to {NBIT_TO_DTYPE[args.trainable_nbit]}')
     # we do not log model weight and model memory size because they are inaccurate
 
@@ -307,9 +310,8 @@ def main():
                 if not args.tie_models:
                     dec_ttt_path = os.path.join(task_weight_dir, f"decoder_lora_epoch_{args.ttt_weight_epoch}.pt")
                     assert os.path.exists(dec_ttt_path), dec_ttt_path
-                if conditioning_projection is not None:
-                    proj_ttt_path = os.path.join(task_weight_dir, f"conditioning_projection_epoch_{args.ttt_weight_epoch}.pt")
-                    assert os.path.exists(proj_ttt_path), proj_ttt_path
+                proj_ttt_path = os.path.join(task_weight_dir, f"conditioning_projection_epoch_{args.ttt_weight_epoch}.pt")
+                assert os.path.exists(proj_ttt_path), proj_ttt_path
                 task_to_ttt_model_paths[task_name] = (enc_ttt_path, dec_ttt_path, proj_ttt_path)
         logger.info(f"found {len(task_to_ttt_model_paths)} ttt task loras")
         assert len(task_to_ttt_model_paths) > 0, ttt_weight_dir
@@ -375,6 +377,8 @@ def main():
         gs_max_grad_norm=args.gs_max_grad_norm,
         gs_lr_scheduler=args.gs_lr_scheduler,
         gs_take_best=args.gs_take_best,
+        debug_vae_no_kl=args.debug_vae_no_kl,
+        debug_vae_no_sample=args.debug_vae_eval_no_sample,
     )
 
     if accelerator.is_main_process:

@@ -31,7 +31,7 @@ from train import (
     encoder_decoder_loss,
     set_up_main_process_logger,
 )
-from train import Hidden2PrefixProjection, Hidden2PromptProjection
+from train import Prefix2PrefixProjection, Hidden2PromptProjection
 
 
 import os
@@ -63,7 +63,7 @@ NBIT_TO_DTYPE = {
 def save_model_ttt(
         encoder_model: nn.Module,
         decoder_model: nn.Module,
-        conditioning_projection: Optional[Union[Hidden2PrefixProjection, Hidden2PromptProjection]],
+        conditioning_projection: Union[Prefix2PrefixProjection, Hidden2PromptProjection],
         output_dir: str,
         task_id: str,
         epoch: int,
@@ -90,14 +90,12 @@ def save_model_ttt(
         logger.info(f"Saved decoder to {save_dec_path}")
 
     # projection
-    save_proj_path = None
-    if conditioning_projection is not None:
-        save_proj_path = os.path.join(output_dir, task_id, f"conditioning_projection_epoch_{epoch+1}.pt")
-        conditioning_projection_module = conditioning_projection
-        if isinstance(conditioning_projection, DistributedDataParallel):
-            conditioning_projection_module = conditioning_projection.module
-        torch.save(conditioning_projection_module, save_proj_path)
-        logger.info(f"Saved conditioning projection to {save_proj_path}")
+    save_proj_path = os.path.join(output_dir, task_id, f"conditioning_projection_epoch_{epoch+1}.pt")
+    conditioning_projection_module = conditioning_projection
+    if isinstance(conditioning_projection, DistributedDataParallel):
+        conditioning_projection_module = conditioning_projection.module
+    torch.save(conditioning_projection_module, save_proj_path)
+    logger.info(f"Saved conditioning projection to {save_proj_path}")
 
     return save_enc_path, save_dec_path, save_proj_path
 
@@ -135,6 +133,13 @@ def main():
     parser.add_argument("--encoder_gradient_checkpointing", action="store_true")
     parser.add_argument("--decoder_gradient_checkpointing", action="store_true")
 
+    # vae
+    # can try different projections, but just linear for now because llama already norms it
+    parser.add_argument("--vae", action="store_true")
+    parser.add_argument("--vae_identity_init", action="store_true")
+    parser.add_argument("--debug_vae_no_kl", action="store_true")
+    parser.add_argument("--debug_vae_train_no_sample", action="store_true")
+
     # Weights
     parser.add_argument("--weight_root_dir", type=str, default="./encoder_decoder/outputs")
     parser.add_argument("--weight_dir", type=str, default="test_evaluation")
@@ -145,16 +150,13 @@ def main():
                         type=str,
                         choices=[
                             "prefix2prefix",
-                            "hidden2prefix_shared",
-                            "hidden2prefix_full",
+                            "prefix2prefix_full",
+                            "prefix2prefix_full_identity",
                             "hidden2prompt",
-                            "hidden2prompt_shared",
-                            "hidden2prompt_shared_identity",
                             "hidden2prompt_full",
                             "hidden2prompt_full_identity",
                         ],
                         default="hidden2prompt")
-
     # Training
     parser.add_argument("--warmup_epochs", type=int, default=1)
     parser.add_argument("--save_epochs", type=int, default=1)
@@ -198,12 +200,17 @@ def main():
     if "2prefix" in args.conditioning_method:
         assert not args.decoder_gradient_checkpointing
         assert args.decoder_pad_side == "right" # right for no middle padding
+    if "identity" in args.conditioning_method:
+        assert args.encoder_name == args.decoder_name
+    if args.conditioning_method in ["prefix2prefix", "hidden2prompt"]:
+        assert args.encoder_name == args.decoder_name
+    if args.vae:
+        assert args.conditioning_method in ["prefix2prefix", "hidden2prompt"] # just support these for now
+    if args.vae_identity_init:
+        assert args.encoder_name == args.decoder_name
     if args.tie_models:
+        assert args.encoder_name == args.decoder_name
         assert args.encoder_gradient_checkpointing == args.decoder_gradient_checkpointing
-    if args.conditioning_method in ["prefix2prefix", "hidden2prompt"] or "identity" in args.conditioning_method:
-        assert args.encoder_name == args.decoder_name
-    if args.tie_models:
-        assert args.encoder_name == args.decoder_name
     if args.debug_enc_len > -1 and args.debug_dec_len == -1:
         args.debug_dec_len = args.debug_enc_len // 2
 
@@ -349,7 +356,7 @@ def main():
         param.requires_grad = ("lora" in name) and any(t in name for t in lora_target_modules)
 
     # if only encoder prefix is needed, the non-kv-projection weights of encoder model last layer are not used
-    if (args.conditioning_method == "prefix2prefix") and not args.tie_models:
+    if ("prefix2prefix" in args.conditioning_method) and not args.tie_models:
         encoder_num_layer = len(encoder_model.model.model.layers)
         for name, param in encoder_model.named_parameters():
             if f'layers.{encoder_num_layer-1}' in name and param.requires_grad:
@@ -470,13 +477,10 @@ def main():
             )
 
         # load and set conditioning projection grads and nbit
-        conditioning_projection: Optional[Union[Hidden2PrefixProjection, Hidden2PromptProjection]] = None
-        if args.conditioning_method not in ["prefix2prefix", "hidden2prompt"]:
-            conditioning_projection = torch.load(proj_weight_path, weights_only=False, map_location=accelerator.device)
-            assert conditioning_projection is not None
-            for param in conditioning_projection.parameters():
-                param.requires_grad = True
-                param.data = param.data.to(NBIT_TO_DTYPE[args.trainable_nbit])
+        conditioning_projection = torch.load(proj_weight_path, weights_only=False, map_location=accelerator.device)
+        for param in conditioning_projection.parameters():
+            param.requires_grad = True
+            param.data = param.data.to(NBIT_TO_DTYPE[args.trainable_nbit])
 
         # Param groups for LoRA
         embedding_params = []
@@ -494,9 +498,8 @@ def main():
                         embedding_params.append(param)
                     else:
                         other_params.append(param)
-        if conditioning_projection is not None:
-            for param in conditioning_projection.parameters():
-                other_params.append(param)
+        for param in conditioning_projection.parameters():
+            other_params.append(param)
 
         optimizer_grouped_params = [
             {"params": embedding_params, "lr": args.lr_embedding},
@@ -554,16 +557,14 @@ def main():
 
         encoder_model.train()
         decoder_model.train()
-        if conditioning_projection is not None:
-            conditioning_projection.train()
+        conditioning_projection.train()
 
         # when these conditions are met, DDP requires setting static graph due to reusing parameters
         if args.tie_models and args.encoder_gradient_checkpointing and accelerator.num_processes > 0 and args.full_lora:
             # set static graph
             encoder_model._set_static_graph()
             decoder_model._set_static_graph()
-            if conditioning_projection is not None:
-                conditioning_projection._set_static_graph()
+            conditioning_projection._set_static_graph()
             # get any data, single forward and backward pass
             batch_data = next(iter(ttt_dataloader))
             with accelerator.autocast():
@@ -589,6 +590,8 @@ def main():
                     decoder_pad_side=args.decoder_pad_side,
                     trainable_nbit=args.trainable_nbit,
                     flash_attn=args.flash_attn,
+                    debug_vae_no_sample=args.debug_vae_train_no_sample,
+                    debug_vae_no_kl=args.debug_vae_no_kl,
                 )
             accelerator.backward(total_loss)
             optimizer.zero_grad()
@@ -636,6 +639,8 @@ def main():
                             decoder_pad_side=args.decoder_pad_side,
                             trainable_nbit=args.trainable_nbit,
                             flash_attn=args.flash_attn,
+                            debug_vae_no_sample=args.debug_vae_train_no_sample,
+                            debug_vae_no_kl=args.debug_vae_no_kl,
                         )
 
                     # just accumulate for logging
@@ -696,10 +701,10 @@ def main():
 
         # zero grads
         optimizer.state.clear()
-        if conditioning_projection is not None:
-            conditioning_projection.zero_grad(set_to_none=True)
         encoder_model.zero_grad(set_to_none=True)
-        decoder_model.zero_grad(set_to_none=True)
+        if not args.tie_models:
+            decoder_model.zero_grad(set_to_none=True)
+        conditioning_projection.zero_grad(set_to_none=True)
 
         # delete stuff
         del ttt_datasets[0], ttt_collate_fn, ttt_dataloader
