@@ -30,7 +30,7 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
     --eval_eval_leave_ns_inc \
     --eval_eval_select_tasks_path task_info_selected.csv \
     --tag 0119_weightdecay \
-    --weightdecay 0.01 \
+    --weight_decay 0.01 \
     --wandb
 
 # quantized3.6
@@ -55,6 +55,7 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
     --untrainable_nbit 4 \
     --wandb
 
+# OOM
 # quantized8
 accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder/train.py \
     --eval_eval_leave_ns 0 \
@@ -66,9 +67,8 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
     --untrainable_nbit 8 \
     --wandb
 
-# Submitted batch job 56073964
-# Submitted batch job 56073965
-# Submitted batch job 56073966
-# Submitted batch job 56074010
-# Submitted batch job 56073967
-# Submitted batch job 56073968
+# Submitted batch job 56073964 # base
+# Submitted batch job 56073965 # tiemodels
+# Submitted batch job 56142522 # CANCELLED before running
+# Submitted batch job 56142523 # CANCELLED before running
+# Submitted batch job 56073967 # quantized4
