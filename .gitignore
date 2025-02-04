@@ -178,3 +178,5 @@ encoder_decoder/outputs_eval
 encoder_decoder/outputs_ttt
 encoder_decoder_cache/
 debug_train_data/
+ttt_old/
+bash_commands_old/
