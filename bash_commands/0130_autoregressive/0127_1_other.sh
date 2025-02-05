@@ -9,7 +9,16 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
 
 # ar nolora
 accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder1031_autoregressive/train.py \
-    --tag 0202_ar_nolora \
+    --tag 0202_ar_kl1e-4_nolora \
+    --kl_loss_lambda 1e-4 \
+    --no_lora \
+    --wandb
+
+# ar novae_nolora
+accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder1031_autoregressive/train.py \
+    --tag 0202_ar_novae_nolora \
+    --train_no_sample \
+    --eval_no_sample \
     --no_lora \
     --wandb
 
@@ -19,8 +28,10 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
     --eval_eval_permute_n 2 \
     --eval_eval_augment_n 5 \
     --eval_eval_leave_ns_inc \
+    --eval_eval_select_tasks_path task_info_selected.csv \
     --tag 0202_ar_novae_voting \
-    --no_lora \
+    --train_no_sample \
+    --eval_no_sample \
     --wandb
 
 # ar kl1e-5_evalnosample
@@ -30,7 +41,8 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
     --eval_no_sample \
     --wandb
 
-# Submitted batch job 56865479
-# Submitted batch job 56865480
-# Submitted batch job 56865481
-# Submitted batch job 56865482
+# Submitted batch job 56923713
+# Submitted batch job 56923714
+# Submitted batch job 56923715
+# Submitted batch job 56923716
+# Submitted batch job 56923717

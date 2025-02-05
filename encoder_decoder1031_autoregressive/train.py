@@ -1380,8 +1380,8 @@ def main():
     num_training_steps = steps_per_epoch * args.num_epochs
     lr_scheduler = get_cosine_schedule_with_warmup(
         optimizer,
-        num_warmup_steps=steps_per_epoch * args.grad_accum_steps,  # 1 epoch warmup
-        num_training_steps=num_training_steps * args.grad_accum_steps,
+        num_warmup_steps=steps_per_epoch,  # 1 epoch warmup
+        num_training_steps=num_training_steps,
     )
     logger.info(f'lr scheduler with {steps_per_epoch} warmup steps')
 
