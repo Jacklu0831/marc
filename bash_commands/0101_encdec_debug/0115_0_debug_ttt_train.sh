@@ -1,9 +1,9 @@
 # quick ckpt 1
 accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder_new/train.py \
     --tag test_ttt_1 \
-    --train_data_dir /scratch/yl11330/re-arc/train_data_debug_overfit4/tasks \
-    --eval_train_dir /scratch/yl11330/re-arc/arc_original_debug_overfit4/training \
-    --eval_eval_dir /scratch/yl11330/re-arc/arc_original_debug_overfit4/training \
+    --train_data_dir /scratch/zy3101/re-arc/train_data_debug_overfit4/tasks \
+    --eval_train_dir /scratch/zy3101/re-arc/arc_original_debug_overfit4/training \
+    --eval_eval_dir /scratch/zy3101/re-arc/arc_original_debug_overfit4/training \
     --tie_models \
     --compact_grids \
     --max_seq_len 5120 \
@@ -16,9 +16,9 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
 # quick ckpt 2
 accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder_new/train.py \
     --tag test_ttt_2 \
-    --train_data_dir /scratch/yl11330/re-arc/train_data_debug_overfit4/tasks \
-    --eval_train_dir /scratch/yl11330/re-arc/arc_original_debug_overfit4/training \
-    --eval_eval_dir /scratch/yl11330/re-arc/arc_original_debug_overfit4/training \
+    --train_data_dir /scratch/zy3101/re-arc/train_data_debug_overfit4/tasks \
+    --eval_train_dir /scratch/zy3101/re-arc/arc_original_debug_overfit4/training \
+    --eval_eval_dir /scratch/zy3101/re-arc/arc_original_debug_overfit4/training \
     --compact_grids \
     --max_seq_len 5120 \
     --flash_attn \
@@ -32,7 +32,7 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
     --tag test1_partiallora_single_gpu \
     --weight_dir test_ttt_1 \
     --weight_epoch 1 \
-    --data_dir /scratch/yl11330/re-arc/arc_original_debug_overfit2_ttt/training \
+    --data_dir /scratch/zy3101/re-arc/arc_original_debug_overfit2_ttt/training \
     --tie_models \
     --compact_grids \
     --max_seq_len 5120 \
@@ -55,7 +55,7 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
     --tag test1_partiallora_multi_gpu \
     --weight_dir test_ttt_1 \
     --weight_epoch 1 \
-    --data_dir /scratch/yl11330/re-arc/arc_original_debug_overfit2_ttt/training \
+    --data_dir /scratch/zy3101/re-arc/arc_original_debug_overfit2_ttt/training \
     --tie_models \
     --compact_grids \
     --max_seq_len 5120 \
@@ -78,7 +78,7 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
     --tag test2_partiallora \
     --weight_dir test_ttt_2 \
     --weight_epoch 1 \
-    --data_dir /scratch/yl11330/re-arc/arc_original_debug_overfit4_ttt/training \
+    --data_dir /scratch/zy3101/re-arc/arc_original_debug_overfit4_ttt/training \
     --compact_grids \
     --max_seq_len 5120 \
     --flash_attn \
@@ -101,7 +101,7 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
     --tag test1_fulllora \
     --weight_dir test_ttt_1 \
     --weight_epoch 1 \
-    --data_dir /scratch/yl11330/re-arc/arc_original_debug_overfit4_ttt/training \
+    --data_dir /scratch/zy3101/re-arc/arc_original_debug_overfit4_ttt/training \
     --tie_models \
     --compact_grids \
     --max_seq_len 5120 \
@@ -126,7 +126,7 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
     --tag test2_fulllora \
     --weight_dir test_ttt_2 \
     --weight_epoch 1 \
-    --data_dir /scratch/yl11330/re-arc/arc_original_debug_overfit4_ttt/training \
+    --data_dir /scratch/zy3101/re-arc/arc_original_debug_overfit4_ttt/training \
     --compact_grids \
     --max_seq_len 5120 \
     --flash_attn \

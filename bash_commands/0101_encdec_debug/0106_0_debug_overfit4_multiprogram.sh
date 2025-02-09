@@ -1,9 +1,9 @@
 # repro
 accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder1024_debug1/train.py \
     --tag test \
-    --train_data_dir /scratch/yl11330/re-arc/train_data_debug_overfit/tasks \
-    --eval_train_dir /scratch/yl11330/re-arc/arc_original_debug_overfit/training \
-    --eval_eval_dir /scratch/yl11330/re-arc/arc_original_debug_overfit/training \
+    --train_data_dir /scratch/zy3101/re-arc/train_data_debug_overfit/tasks \
+    --eval_train_dir /scratch/zy3101/re-arc/arc_original_debug_overfit/training \
+    --eval_eval_dir /scratch/zy3101/re-arc/arc_original_debug_overfit/training \
     --eval_epochs 1 \
     --min_prefix 4 \
     --max_prefix 4 \
@@ -21,9 +21,9 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
 # overfit1
 accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder1030_bugged_multiprogram/train.py \
     --tag test \
-    --train_data_dir /scratch/yl11330/re-arc/train_data_debug_overfit/tasks \
-    --eval_train_dir /scratch/yl11330/re-arc/arc_original_debug_overfit_perfect/training \
-    --eval_eval_dir /scratch/yl11330/re-arc/arc_original_debug_overfit_perfect/training \
+    --train_data_dir /scratch/zy3101/re-arc/train_data_debug_overfit/tasks \
+    --eval_train_dir /scratch/zy3101/re-arc/arc_original_debug_overfit_perfect/training \
+    --eval_eval_dir /scratch/zy3101/re-arc/arc_original_debug_overfit_perfect/training \
     --eval_epochs 1 \
     --num_epochs 100 \
     --samples_per_epoch 500 \
@@ -45,9 +45,9 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
 # overfit1 multiprogram
 accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder1025_bugged_multiprogram/train.py \
     --tag test \
-    --train_data_dir /scratch/yl11330/re-arc/train_data_debug_overfit/tasks \
-    --eval_train_dir /scratch/yl11330/re-arc/arc_original_debug_overfit/training \
-    --eval_eval_dir /scratch/yl11330/re-arc/arc_original_debug_overfit/training \
+    --train_data_dir /scratch/zy3101/re-arc/train_data_debug_overfit/tasks \
+    --eval_train_dir /scratch/zy3101/re-arc/arc_original_debug_overfit/training \
+    --eval_eval_dir /scratch/zy3101/re-arc/arc_original_debug_overfit/training \
     --eval_epochs 1 \
     --min_chosen 5 \
     --max_chosen 5 \
@@ -71,9 +71,9 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
 # overfit4
 accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder1025_bugged_multiprogram/train.py \
     --tag test \
-    --train_data_dir /scratch/yl11330/re-arc/train_data_debug_overfit4/tasks \
-    --eval_train_dir /scratch/yl11330/re-arc/arc_original_debug_overfit4/training \
-    --eval_eval_dir /scratch/yl11330/re-arc/arc_original_debug_overfit4/training \
+    --train_data_dir /scratch/zy3101/re-arc/train_data_debug_overfit4/tasks \
+    --eval_train_dir /scratch/zy3101/re-arc/arc_original_debug_overfit4/training \
+    --eval_eval_dir /scratch/zy3101/re-arc/arc_original_debug_overfit4/training \
     --eval_epochs 1 \
     --min_chosen 5 \
     --max_chosen 5 \

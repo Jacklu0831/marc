@@ -59,12 +59,12 @@ def visualize_task(
     print(out_path)
 
 
-# x = json.load(open("/scratch/yl11330/re-arc/train_data/tasks/99fa7670.json", 'r'))
+# x = json.load(open("/scratch/zy3101/re-arc/train_data/tasks/99fa7670.json", 'r'))
 # visualize_task(x[:10], out_path="temp1.jpg")
 
-# x = json.load(open("/scratch/yl11330/re-arc/arc_original/training/99fa7670.json", 'r'))
+# x = json.load(open("/scratch/zy3101/re-arc/arc_original/training/99fa7670.json", 'r'))
 # visualize_task(x["train"] + x["test"], out_path="temp2.jpg")
 
 for i in range(1, 5):
-    x = json.load(open(f"/scratch/yl11330/ConceptARC/corpus/Count/Count{i}.json", 'r'))
+    x = json.load(open(f"/scratch/zy3101/ConceptARC/corpus/Count/Count{i}.json", 'r'))
     visualize_task(x["train"] + x["test"], out_path=f"temp{i}.jpg")

@@ -103,7 +103,7 @@ def main():
     parser.add_argument("--decoder_gen_pad_side", type=str, choices=["left", "right"], default="left")
 
     # eval data
-    parser.add_argument("--data_dir", type=str, default="/scratch/yl11330/re-arc/arc_original/training")
+    parser.add_argument("--data_dir", type=str, default="/scratch/zy3101/re-arc/arc_original/training")
     parser.add_argument("--select_tasks_path", type=str, default=None)
     parser.add_argument("--leave_ns", type=int, nargs="+", default=[0])
     parser.add_argument("--leave_ns_inc", action="store_true")
@@ -155,6 +155,7 @@ def main():
     project_config = ProjectConfiguration(project_dir=args.output_dir)
     init_process_process_kwargs = InitProcessGroupKwargs()
     init_process_process_kwargs.timeout = timedelta(seconds=28800)
+    8f75801720d1540f03dd3a73e52f11d8ec74f395
     os.environ["WANDB_API_KEY"]="faf21d9ff65ee150697c7e96f070616f6b662134"
     accelerator = Accelerator(
         mixed_precision="bf16",

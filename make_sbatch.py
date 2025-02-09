@@ -19,9 +19,9 @@ module purge
 MASTER_PORT=$(comm -23 <(seq 10000 65000 | sort) <(ss -tan | awk '{print $4}' | cut -d':' -f2 | sort -u) | shuf | head -n 1)
 
 singularity exec --nv \\
-    --overlay /scratch/yl11330/my_env/overlay-50G-10M-pytorch.ext3:ro \\
+    --overlay /scratch/zy3101/my_env/overlay-50G-10M-pytorch.ext3:ro \\
     /scratch/work/public/singularity/cuda11.6.124-cudnn8.4.0.27-devel-ubuntu20.04.4.sif \\
-    /bin/bash -c "source /ext3/env.sh; cd /scratch/yl11330/marc; conda activate ./penv; export MASTER_PORT; \\
+    /bin/bash -c "source /ext3/env.sh; cd /scratch/zy3101/marc; conda activate ./penv; export MASTER_PORT; \\
         $CMD"
 """
 
@@ -31,7 +31,7 @@ parser.add_argument('--gb', type=int, help='bash file of commands', default=32)
 parser.add_argument('--ngpu', type=int, help='bash file of commands', default=1)
 parser.add_argument('--ncpu', type=int, help='bash file of commands', default=8)
 parser.add_argument('--time', type=str, help='bash file of commands', required=True)
-parser.add_argument('--sbatch_dir', type=str, help='bash file of commands', default='/scratch/yl11330/marc/sbatch_files')
+parser.add_argument('--sbatch_dir', type=str, help='bash file of commands', default='/scratch/zy3101/marc/sbatch_files')
 args = parser.parse_args()
 
 # remove existing sbatch files
@@ -49,9 +49,13 @@ template = template.replace('$GPULINE', gpu_line)
 
 # get job clusters from bash files
 model_dirs_dict = {}
+print(args.bash_files)
 for bash_file in args.bash_files:
     # filter lines
+    print(bash_file)
     orig_lines = open(bash_file, 'r').readlines()
+    print('orig_lines')
+    print(orig_lines)
     orig_lines = [l.strip() for l in orig_lines if l.strip()]
     orig_lines = [l for l in orig_lines if 'Submitted batch job' not in l]
     # collapse "\\"
@@ -76,6 +80,9 @@ for bash_file in args.bash_files:
             add_to_previous_line = False
     # just for assertions
     job_lines = [l for l in lines if not l.startswith('#')]
+    print(job_lines)
+    print('lines')
+    print(lines)
     assert len(job_lines) == len(set(job_lines)), 'duplicate jobs'
     if '--tag' in job_lines[0]:
         tags = [l.split()[l.split().index('--tag') + 1] for l in job_lines]
@@ -93,11 +100,12 @@ for bash_file in args.bash_files:
         i += 1
     assert len(job_cluster_names) == len(job_clusters)
     # filter out empty clusters (random comments)
+    print(job_cluster_names)
     for cluster_name, job_cluster in zip(job_cluster_names, job_clusters):
         if len(job_cluster) >= 1:
             model_dirs_dict[cluster_name] = job_cluster
 
-
+print(model_dirs_dict)
 sbatch_paths = []
 for cluster_name, job_cluster in model_dirs_dict.items():
     for job_i, cmd in enumerate(job_cluster):

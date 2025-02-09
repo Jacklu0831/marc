@@ -159,7 +159,7 @@ def main():
     parser.add_argument("--optimizer", type=str, choices=["adamw8bit", "adamw", "sgd"], default="adamw")
 
     # both data
-    parser.add_argument("--data_dir", type=str, default="/scratch/yl11330/re-arc/train_data/tasks")
+    parser.add_argument("--data_dir", type=str, default="/scratch/zy3101/re-arc/train_data/tasks")
     parser.add_argument("--select_tasks_path", type=str, default=None)
     parser.add_argument("--num_workers", type=int, default=8)
     parser.add_argument("--encoder_pad_side", type=str, choices=["left", "right"], default="right")

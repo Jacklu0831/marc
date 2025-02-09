@@ -1,9 +1,9 @@
 # nemo8b
 accelerate launch --main_process_port $MASTER_PORT --num_processes 1 --mixed_precision bf16 encoder_decoder2/train.py \
     --tag test_nemo8b \
-    --train_data_dir /scratch/yl11330/re-arc/train_data_debug_overfit4/tasks \
-    --eval_train_dir /scratch/yl11330/re-arc/arc_original_debug_overfit4/training \
-    --eval_eval_dir /scratch/yl11330/re-arc/arc_original_debug_overfit4/training \
+    --train_data_dir /scratch/zy3101/re-arc/train_data_debug_overfit4/tasks \
+    --eval_train_dir /scratch/zy3101/re-arc/arc_original_debug_overfit4/training \
+    --eval_eval_dir /scratch/zy3101/re-arc/arc_original_debug_overfit4/training \
     --eval_epochs 1 \
     --min_prefix 4 \
     --max_prefix 4 \
@@ -34,7 +34,7 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
     --tag test \
     --weight_dir test_nemo8b \
     --weight_epoch 1 \
-    --data_dir /scratch/yl11330/re-arc/arc_original_debug_overfit4/training \
+    --data_dir /scratch/zy3101/re-arc/arc_original_debug_overfit4/training \
     --ntokens 2 \
     --encoder_name nemo8b \
     --decoder_name nemo8b \
@@ -47,9 +47,9 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
 # llama3b
 accelerate launch --main_process_port $MASTER_PORT --num_processes 1 --mixed_precision bf16 encoder_decoder2/train.py \
     --tag test_llama3b \
-    --train_data_dir /scratch/yl11330/re-arc/train_data_debug_overfit4/tasks \
-    --eval_train_dir /scratch/yl11330/re-arc/arc_original_debug_overfit4/training \
-    --eval_eval_dir /scratch/yl11330/re-arc/arc_original_debug_overfit4/training \
+    --train_data_dir /scratch/zy3101/re-arc/train_data_debug_overfit4/tasks \
+    --eval_train_dir /scratch/zy3101/re-arc/arc_original_debug_overfit4/training \
+    --eval_eval_dir /scratch/zy3101/re-arc/arc_original_debug_overfit4/training \
     --eval_epochs 1 \
     --min_prefix 4 \
     --max_prefix 4 \
@@ -80,7 +80,7 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
     --tag test \
     --weight_dir test_llama3b \
     --weight_epoch 1 \
-    --data_dir /scratch/yl11330/re-arc/arc_original_debug_overfit4/training \
+    --data_dir /scratch/zy3101/re-arc/arc_original_debug_overfit4/training \
     --ntokens 2 \
     --encoder_name llama3b \
     --decoder_name llama3b \
@@ -90,9 +90,9 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
 # llama8b
 accelerate launch --main_process_port $MASTER_PORT --num_processes 1 --mixed_precision bf16 encoder_decoder/train.py \
     --tag test_llama8b \
-    --train_data_dir /scratch/yl11330/re-arc/train_data_debug_overfit4/tasks \
-    --eval_train_dir /scratch/yl11330/re-arc/arc_original_debug_overfit4/training \
-    --eval_eval_dir /scratch/yl11330/re-arc/arc_original_debug_overfit4/training \
+    --train_data_dir /scratch/zy3101/re-arc/train_data_debug_overfit4/tasks \
+    --eval_train_dir /scratch/zy3101/re-arc/arc_original_debug_overfit4/training \
+    --eval_eval_dir /scratch/zy3101/re-arc/arc_original_debug_overfit4/training \
     --eval_epochs 1 \
     --min_prefix 4 \
     --max_prefix 4 \
@@ -125,7 +125,7 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
     --tag test \
     --weight_dir test_llama8b \
     --weight_epoch 1 \
-    --data_dir /scratch/yl11330/re-arc/arc_original_debug_overfit4/training \
+    --data_dir /scratch/zy3101/re-arc/arc_original_debug_overfit4/training \
     --ntokens 2 \
     --encoder_name llama8b \
     --decoder_name llama8b \
@@ -135,9 +135,9 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
 # llama1b
 accelerate launch --main_process_port $MASTER_PORT --num_processes 1 --mixed_precision bf16 encoder_decoder2/train.py \
     --tag test_llama1b \
-    --train_data_dir /scratch/yl11330/re-arc/train_data_debug_overfit4/tasks \
-    --eval_train_dir /scratch/yl11330/re-arc/arc_original_debug_overfit4/training \
-    --eval_eval_dir /scratch/yl11330/re-arc/arc_original_debug_overfit4/training \
+    --train_data_dir /scratch/zy3101/re-arc/train_data_debug_overfit4/tasks \
+    --eval_train_dir /scratch/zy3101/re-arc/arc_original_debug_overfit4/training \
+    --eval_eval_dir /scratch/zy3101/re-arc/arc_original_debug_overfit4/training \
     --eval_epochs 1 \
     --min_prefix 4 \
     --max_prefix 4 \
@@ -163,6 +163,6 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
     --tag test \
     --weight_dir test_llama1b \
     --weight_epoch 1 \
-    --data_dir /scratch/yl11330/re-arc/arc_original_debug_overfit4/training \
+    --data_dir /scratch/zy3101/re-arc/arc_original_debug_overfit4/training \
     --ntokens 2 \
     --decoder_ce_loss

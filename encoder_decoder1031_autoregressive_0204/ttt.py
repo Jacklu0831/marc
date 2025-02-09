@@ -159,7 +159,7 @@ def main():
     parser.add_argument("--optimizer", type=str, choices=["adamw8bit", "adamw", "sgd"], default="adamw")
 
     # both data
-    parser.add_argument("--data_dir", type=str, default="/scratch/yl11330/re-arc/train_data/tasks")
+    parser.add_argument("--data_dir", type=str, default="/scratch/zy3101/re-arc/train_data/tasks")
     parser.add_argument("--select_tasks_path", type=str, default=None)
     parser.add_argument("--num_workers", type=int, default=8)
     parser.add_argument("--encoder_pad_side", type=str, choices=["left", "right"], default="right")
@@ -209,7 +209,9 @@ def main():
     project_config = ProjectConfiguration(project_dir=args.output_dir)
     init_process_process_kwargs = InitProcessGroupKwargs()
     init_process_process_kwargs.timeout = timedelta(seconds=28800)
-    os.environ["WANDB_API_KEY"]="faf21d9ff65ee150697c7e96f070616f6b662134"
+    
+    os.environ["WANDB_API_KEY"]="8f75801720d1540f03dd3a73e52f11d8ec74f395"
+    # os.environ["WANDB_API_KEY"]="faf21d9ff65ee150697c7e96f070616f6b662134"
     accelerator = Accelerator(
         gradient_accumulation_steps=args.grad_accum_steps,
         mixed_precision="bf16",

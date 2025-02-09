@@ -463,8 +463,8 @@ def load_re_arc_from_data_dir(data_dir: str) -> Dict[str, List[Dict[str, List[Li
 
 
 def load_concept_arc() -> Dict[str, List[Dict[str, List[List[int]]]]]:
-    files = glob.glob(f'/scratch/yl11330/ConceptARC/corpus/*/*.json')
-    files += glob.glob(f'/scratch/yl11330/ConceptARC/MinimalTasks/*.json')
+    files = glob.glob(f'/scratch/zy3101/ConceptARC/corpus/*/*.json')
+    files += glob.glob(f'/scratch/zy3101/ConceptARC/MinimalTasks/*.json')
     tasks_dict = {}
     for data_i, file in enumerate(files):
         data = json.load(open(file, 'r'))

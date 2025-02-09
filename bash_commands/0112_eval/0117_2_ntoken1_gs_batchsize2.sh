@@ -5,7 +5,7 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
     --tag 400task_gs1_batchsize2_beta0.9 \
     --weight_dir manual_copy_0113_ntoken1 \
     --weight_epoch 14 \
-    --data_dir /scratch/yl11330/re-arc/arc_original/evaluation \
+    --data_dir /scratch/zy3101/re-arc/arc_original/evaluation \
     --compact_grids \
     --max_seq_len 5120 \
     --flash_attn \
@@ -21,7 +21,7 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
     --tag 400task_gs5_batchsize2_beta0.9 \
     --weight_dir manual_copy_0113_ntoken1 \
     --weight_epoch 14 \
-    --data_dir /scratch/yl11330/re-arc/arc_original/evaluation \
+    --data_dir /scratch/zy3101/re-arc/arc_original/evaluation \
     --compact_grids \
     --max_seq_len 5120 \
     --flash_attn \
@@ -37,7 +37,7 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
     --tag 400task_gs25_batchsize2_beta0.9 \
     --weight_dir manual_copy_0113_ntoken1 \
     --weight_epoch 14 \
-    --data_dir /scratch/yl11330/re-arc/arc_original/evaluation \
+    --data_dir /scratch/zy3101/re-arc/arc_original/evaluation \
     --compact_grids \
     --max_seq_len 5120 \
     --flash_attn \
@@ -53,7 +53,7 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
     --tag 400task_gs100_batchsize2_beta0.9 \
     --weight_dir manual_copy_0113_ntoken1 \
     --weight_epoch 14 \
-    --data_dir /scratch/yl11330/re-arc/arc_original/evaluation \
+    --data_dir /scratch/zy3101/re-arc/arc_original/evaluation \
     --compact_grids \
     --max_seq_len 5120 \
     --flash_attn \
