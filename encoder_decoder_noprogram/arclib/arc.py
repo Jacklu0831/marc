@@ -97,13 +97,6 @@ class Task:
         """return the size of the task"""
         return max([example.size() for example in self.train_examples])
 
-    def total_size(self) -> int:
-        total_size = 0
-        for example in self.train_examples + [self.test_example]:
-            total_size += example.input.size
-            total_size += example.output.size
-        return total_size
-
     def max_height(self) -> int:
         max_x = 0
         for example in self.train_examples:

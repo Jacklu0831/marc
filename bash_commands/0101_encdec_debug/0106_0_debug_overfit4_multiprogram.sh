@@ -19,7 +19,7 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
     --conditioning_method hidden2prompt
 
 # overfit1
-accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder1030_bugged_multiprogram/train.py \
+accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder_multiprogram_0203/train.py \
     --tag test \
     --train_data_dir /scratch/yl11330/re-arc/train_data_debug_overfit/tasks \
     --eval_train_dir /scratch/yl11330/re-arc/arc_original_debug_overfit_perfect/training \
@@ -35,12 +35,16 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
     --num_workers 0 \
     --optimizer sgd \
     --debug_random_pad \
-    --no_basic_aug \
+    --no_color_permute \
+    --no_pair_permute \
+    --no_d8 \
     --max_num_sample_program 4 \
     --min_num_pair_for_program 4 \
     --max_num_train_program 1 \
     --no_train_original \
-    --debug_fixed_order
+    --debug_fixed_order \
+    --limit_eval_to_max_program \
+    --colon_encoding
 
 # overfit1 multiprogram
 accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder1025_bugged_multiprogram/train.py \

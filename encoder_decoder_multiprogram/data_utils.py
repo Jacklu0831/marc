@@ -15,7 +15,7 @@ import random
 import torch
 from torch.utils.data import Dataset, get_worker_info
 from torch.nn.utils.rnn import pad_sequence
-from typing import Dict, Any, List, Tuple, Iterator, Union
+from typing import Dict, List, Tuple, Iterator, Union
 from pathlib import Path
 from typing import List, Optional
 import numpy as np
@@ -64,53 +64,19 @@ class ARCTokenizer:
         self.pad_token_id = self.token_to_id[pad_token]
         self.special_token_ids = set([self.bos_token_id, self.eos_token_id, self.pad_token_id])
 
-    # def __call__(self, text: str, add_bos: bool, add_eos: bool) -> List[int]:
-    #     input_ids = [self.bos_token_id] if add_bos else []
-
-    #     while text:
-    #         # special tokens
-    #         if text.startswith(self.eos_token):
-    #             input_ids.append(self.eos_token_id)
-    #             text = text[len(self.eos_token):]
-    #         elif text.startswith(self.bos_token):
-    #             input_ids.append(self.bos_token_id)
-    #             text = text[len(self.bos_token):]
-    #         elif text.startswith(self.pad_token):
-    #             input_ids.append(self.pad_token_id)
-    #             text = text[len(self.pad_token):]
-    #         # input output
-    #         elif text.startswith("input"):
-    #             input_ids.append(self.token_to_id["input"])
-    #             text = text[5:]
-    #         elif text.startswith("output"):
-    #             input_ids.append(self.token_to_id["output"])
-    #             text = text[6:]
-    #         # double digit
-    #         elif text[:2] in self.token_to_id:
-    #             input_ids.append(self.token_to_id[text[:2]])
-    #             text = text[2:]
-    #         # single digit
-    #         elif text[0] in self.token_to_id:
-    #             input_ids.append(self.token_to_id[text[0]])
-    #             text = text[1:]
-    #         else:
-    #             raise ValueError(f"cannot tokenize: {text}")
-
-    #     if add_eos:
-    #         input_ids.append(self.eos_token_id)
-
-    #     return input_ids
-
-    # def encode_to_tensor(self, text: str, add_bos: bool, add_eos: bool) -> torch.Tensor:
-    #     input_ids = self(text, add_bos, add_eos)
-    #     return torch.tensor(input_ids, dtype=torch.int64)
-
-    def encode_dimensions_to_tensor(self, height: int, width: int) -> torch.Tensor:
-        return torch.tensor(
-            [self.token_to_id[str(height)],
-             self.token_to_id[str(width)],
-             self.token_to_id["\n"]],
-            dtype=torch.int64)
+    def encode_dimensions_to_tensor(self, height: int, width: int, colon_encoding: bool) -> torch.Tensor:
+        if colon_encoding:
+            return torch.tensor(
+                [self.token_to_id[str(height)],
+                self.token_to_id[str(width)],
+                self.token_to_id[":\n"]],
+                dtype=torch.int64)
+        else:
+            return torch.tensor(
+                [self.token_to_id[str(height)],
+                self.token_to_id[str(width)],
+                self.token_to_id["\n"]],
+                dtype=torch.int64)
 
     def encode_grid_to_tensor(self, grid: np.ndarray) -> torch.Tensor:
         assert grid.ndim == 2
@@ -125,9 +91,9 @@ class ARCTokenizer:
     def convert_token_to_id(self, token: str) -> torch.Tensor:
         return torch.tensor([self.token_to_id[token]], dtype=torch.int64)
 
-    def get_input_and_output_grid_ids(self, example: Example, add_bos: bool) -> Tuple[torch.Tensor, torch.Tensor]:
-        input_dim_ids = self.encode_dimensions_to_tensor(len(example.input), len(example.input[0]))
-        output_dim_ids = self.encode_dimensions_to_tensor(len(example.output), len(example.output[0]))
+    def get_input_and_output_grid_ids(self, example: Example, add_bos: bool, colon_encoding: bool) -> Tuple[torch.Tensor, torch.Tensor]:
+        input_dim_ids = self.encode_dimensions_to_tensor(len(example.input), len(example.input[0]), colon_encoding)
+        output_dim_ids = self.encode_dimensions_to_tensor(len(example.output), len(example.output[0]), colon_encoding)
         input_grid_ids = self.encode_grid_to_tensor(example.input)
         output_grid_ids = self.encode_grid_to_tensor(example.output)
 
@@ -483,23 +449,6 @@ def load_train_original_data_from_dir(data_dir: str) -> Dict[str, List[Dict[str,
     return tasks_dict
 
 
-# def grid_to_text(grid: np.ndarray, is_input: bool) -> str:
-#     assert grid.ndim == 2
-#     height = len(grid)
-#     width = len(grid[0])
-#     lines = [f"{height}", f"{width}"]
-#     for row in grid:
-#         assert len(row) == width
-#         row_str = "".join(str(x) for x in row)
-#         lines.append(row_str)
-#     assert len(lines) == height
-#     # final parsed
-#     header = "input" if is_input else ""
-#     footer = "output" if is_input else ""
-#     parsed = header + "\n".join(lines) + footer
-#     return parsed
-
-
 def plot_histogram_with_frequencies(data: List[int], save_path: str, bins: int = 20) -> None:
     import matplotlib.pyplot as plt
     _, ax = plt.subplots()
@@ -516,265 +465,6 @@ def plot_histogram_with_frequencies(data: List[int], save_path: str, bins: int =
     ax.tick_params(axis='x', labelsize=5)
     plt.savefig(save_path, dpi=200)
     plt.close()
-
-
-########################################
-# Test-Time-Training Dataset
-########################################
-class TTTDataset(Dataset):
-    def __init__(
-        self,
-        data_path: str,
-        max_samples_per_task: int,
-        permute_n: int,
-        encoder_tokenizer: ARCTokenizer,
-        decoder_tokenizer: ARCTokenizer,
-        max_seq_len: int,
-        seed: int,
-        ntokens: int,
-        encoder_pad_side: str,
-        decoder_pad_side: str,
-        encoder_loss_type: bool,
-        debug_no_aug: bool,
-    ):
-        self.permute_n = permute_n
-        # for ttt, only use mit augmenters for now
-        self.augmenters: List[Augmenter] = get_mit_augmenters(include_basic=True, include_size=True, include_chain=True, include_repeat=True)
-        self.seed = seed
-        self.encoder_tokenizer = encoder_tokenizer
-        self.decoder_tokenizer = decoder_tokenizer
-        self.max_seq_len = max_seq_len
-        self.ntokens = ntokens
-        self.cls_tokens = [f"<CLS{token_i}>" for token_i in range(ntokens)]
-        self.encoder_pad_side = encoder_pad_side
-        self.decoder_pad_side = decoder_pad_side
-        self.encoder_loss_type = encoder_loss_type
-        self.debug_no_aug = debug_no_aug
-
-        self.encoder_input_token_id = encoder_tokenizer("input")['input_ids'][1]
-        self.encoder_output_token_id = encoder_tokenizer("output")['input_ids'][1]
-
-        # load data
-        self.task_id = Path(data_path).stem
-        with open(data_path, "r") as f:
-            task_data = json.load(f)
-
-        # create task
-        train_examples = [Example(input=np.array(x["input"]), output=np.array(x["output"])) for x in task_data['train']]
-        self.task = Task(
-            name=f'{self.task_id}',
-            train_examples=train_examples,
-            test_example=None, # type: ignore
-        )
-
-        # get data
-        rng = np.random.RandomState(seed)
-        self.ttt_tasks: List[Any] = self.task_to_ttt_filtered_data(max_gen=max_samples_per_task)
-        rng.shuffle(self.ttt_tasks)
-
-    def task_to_ttt_filtered_data(self, max_gen: int) -> List[Task]:
-        # if leave 1 is enough, return it
-        leave_1_train_tasks = self.task_to_ttt_filtered_data_leave_n(leave_n=1, max_gen=max_gen)
-        if len(leave_1_train_tasks) >= max_gen:
-            return leave_1_train_tasks
-        # else generate leave 2 and append to leave 1
-        max_gen_leave_2 = max_gen - len(leave_1_train_tasks)
-        leave_1_train_tasks += self.task_to_ttt_filtered_data_leave_n(leave_n=2, max_gen=max_gen_leave_2)
-        return leave_1_train_tasks
-
-    def task_to_ttt_filtered_data_leave_n(self, leave_n: int, max_gen: int) -> List[Task]:
-        rng = np.random.RandomState(self.seed)
-
-        # get leave_n tasks
-        initial_tasks = []
-        n_train_examples = len(self.task.train_examples)
-        for test_idx in range(n_train_examples):
-            potential_train_idxs = set(range(n_train_examples)) - {test_idx}
-            # we already remove i, so we need to remove n-1 more
-            for leave_idxs in itertools.combinations(potential_train_idxs, leave_n - 1):
-                train_idxs = potential_train_idxs - set(leave_idxs)
-                examples = self.task.train_examples.copy()
-                initial_tasks.append(
-                    Task(name="", train_examples=[examples[i] for i in train_idxs], test_example=examples[test_idx])
-                )
-
-        if self.debug_no_aug:
-            augmented_tasks = initial_tasks
-        else:
-            # get augmented tasks
-            augmented_tasks = []
-            for augmenter in self.augmenters:
-                for task in initial_tasks:
-                    task = augmenter.apply_to_task(task, to_input=True, to_output=True, rng=rng)
-                    if task.max_height() <= 30 and task.max_width() <= 30:
-                        augmented_tasks.append(task)
-            augmented_tasks = list(dict.fromkeys(augmented_tasks + initial_tasks))
-
-            # get permute-color then i/o-permuted tasks
-            color_and_permute_augmented_tasks = []
-            for _ in range(self.permute_n):
-                for task in augmented_tasks:
-                    new_task = task
-                    if len(self.augmenters) > 0:
-                        new_task = PermuteColors().apply_to_task(task, to_input=True, to_output=True, rng=rng)
-                    new_task = PermuteExamples().apply_to_task(new_task, rng=rng, to_input=True, to_output=True)
-                    color_and_permute_augmented_tasks.append(new_task)
-            augmented_tasks = list(dict.fromkeys(color_and_permute_augmented_tasks + augmented_tasks))
-
-        # format
-        rng.shuffle(augmented_tasks)
-        filtered_tasks = []
-        for task in augmented_tasks:
-            if len(filtered_tasks) >= max_gen:
-                break
-            if self.format_and_filter(task) is not None:
-                filtered_tasks.append(task)
-        return filtered_tasks
-
-    def format_and_filter(self, task: Task) -> Optional[Dict]:
-        # big grids are filtered out during augmentation already
-        assert task.max_height() <= 30 and task.max_width() <= 30
-
-        # Build encoder text
-        prefix_texts = []
-        for p in task.train_examples:
-            prefix_texts.append(grid_to_text(p.input.tolist(), True))
-            prefix_texts.append(grid_to_text(p.output.tolist(), False))
-        encoder_text = "\n".join(prefix_texts) + "".join(self.cls_tokens)
-
-        dec_in_text  = grid_to_text(task.test_example.input.tolist(), True)
-        dec_out_text = grid_to_text(task.test_example.output.tolist(), False)
-
-        # tiny optimization to include output\n in input
-        assert dec_out_text.startswith("output\n")
-        dec_in_text = dec_in_text + "\n" + dec_out_text[:len("output\n")]
-        dec_out_text = dec_out_text[len("output\n"):]
-        dec_out_text += self.decoder_tokenizer.eos_token
-
-        enc_tokens = self.encoder_tokenizer.encode_to_tensor(encoder_text)
-        assert self.encoder_tokenizer.decode(enc_tokens["input_ids"][0][-self.ntokens:]) == "".join(self.cls_tokens)
-        dec_in_tokens = self.decoder_tokenizer.encode_to_tensor(dec_in_text)
-        dec_out_tokens = self.decoder_tokenizer.encode_to_tensor(dec_out_text)
-        assert dec_out_tokens["input_ids"][0][-1].item() == self.decoder_tokenizer.eos_token_id
-
-        # remove begin of sentence of dec_out_tokens
-        assert dec_out_tokens['input_ids'][0][0] == self.decoder_tokenizer.bos_token_id
-        dec_out_tokens['input_ids'] = dec_out_tokens['input_ids'][:, 1:]
-        dec_out_tokens['attention_mask'] = dec_out_tokens['attention_mask'][:, 1:]
-
-        # Build final decoder input + labels
-        decoder_input_ids = torch.cat([
-            dec_in_tokens["input_ids"].squeeze(0),
-            dec_out_tokens["input_ids"].squeeze(0),
-        ], dim=0)
-        decoder_labels = torch.cat([
-            torch.full(dec_in_tokens["input_ids"].shape[1:], -100),
-            dec_out_tokens["input_ids"].squeeze(0),
-        ], dim=0)
-        decoder_attention_mask = torch.cat([
-            dec_in_tokens["attention_mask"].squeeze(0),
-            dec_out_tokens["attention_mask"].squeeze(0),
-        ], dim=0)
-
-        # Check length
-        if enc_tokens["input_ids"].shape[1] - self.ntokens > self.max_seq_len or decoder_input_ids.shape[0] > self.max_seq_len // 2: # dec_len should be short
-            return None
-
-        # construct encoder label
-        prefix_count = len(task.train_examples)
-        encoder_input_ids = enc_tokens["input_ids"].squeeze(0)
-        input_token_positions = [enc_i for enc_i, enc_token_id in enumerate(encoder_input_ids) if enc_token_id == self.encoder_input_token_id]
-        output_token_positions = [enc_i for enc_i, enc_token_id in enumerate(encoder_input_ids) if enc_token_id == self.encoder_output_token_id]
-        assert len(input_token_positions) == len(output_token_positions) == prefix_count
-        assert all(p1 < p2 for p1, p2 in zip(input_token_positions, output_token_positions))
-
-        encoder_labels = torch.full_like(encoder_input_ids, -100, dtype=encoder_input_ids.dtype)
-        end_position = len(encoder_input_ids) - self.ntokens
-        for pos, (p1, p2) in enumerate(zip(output_token_positions, input_token_positions[1:] + [end_position])):
-            is_first = (pos == 0)
-            is_last = (pos == prefix_count - 1)
-            if self.encoder_loss_type == "last":
-                if is_last:
-                    p1 += 2 # remove output and \n
-                    p2 -= not is_last # remove \n
-                    encoder_labels[p1:p2] = copy.deepcopy(encoder_input_ids[p1:p2])
-            elif self.encoder_loss_type == "rest":
-                if not is_first:
-                    p1 += 2 # remove output and \n
-                    p2 -= not is_last # remove \n
-                    encoder_labels[p1:p2] = copy.deepcopy(encoder_input_ids[p1:p2])
-            else:
-                p1 += 2 # remove output and \n
-                p2 -= not is_last # remove \n
-                encoder_labels[p1:p2] = copy.deepcopy(encoder_input_ids[p1:p2])
-
-        return {
-            "encoder_input_ids": encoder_input_ids,
-            "encoder_attention_mask": enc_tokens["attention_mask"].squeeze(0),
-            "encoder_labels": encoder_labels,
-            "decoder_input_ids": decoder_input_ids,
-            "decoder_attention_mask": decoder_attention_mask,
-            "decoder_labels": decoder_labels,
-        }
-
-    def __len__(self):
-        return len(self.ttt_tasks)
-
-    def __getitem__(self, idx):
-        return self.format_and_filter(self.ttt_tasks[idx])
-
-
-def collate_fn_ttt(batch: List[Dict], dataset: TTTDataset) -> Dict:
-    enc_ids = [x["encoder_input_ids"] for x in batch]
-    enc_mask = [x["encoder_attention_mask"] for x in batch]
-    enc_labs = [x["encoder_labels"] for x in batch]
-    dec_ids = [x["decoder_input_ids"] for x in batch]
-    dec_mask = [x["decoder_attention_mask"] for x in batch]
-    dec_labs = [x["decoder_labels"] for x in batch]
-
-    enc_ids_lens = [len(x) for x in enc_ids]
-    dec_ids_lens = [len(x) for x in dec_ids]
-    enc_ids = pad_sequence_with_side(enc_ids, padding_value=dataset.encoder_tokenizer.pad_token_id, side=dataset.encoder_pad_side)
-    enc_mask = pad_sequence_with_side(enc_mask, padding_value=0, side=dataset.encoder_pad_side)
-    enc_labs = pad_sequence_with_side(enc_labs, padding_value=-100, side=dataset.encoder_pad_side)
-    dec_ids = pad_sequence_with_side(dec_ids, padding_value=dataset.decoder_tokenizer.pad_token_id, side=dataset.decoder_pad_side)
-    dec_mask = pad_sequence_with_side(dec_mask, padding_value=0, side=dataset.decoder_pad_side)
-    dec_labs = pad_sequence_with_side(dec_labs, padding_value=-100, side=dataset.decoder_pad_side)
-
-    return {
-        "encoder_input_ids": enc_ids,
-        "encoder_attention_mask": enc_mask,
-        "encoder_labels": enc_labs,
-        "decoder_input_ids": dec_ids,
-        "decoder_attention_mask": dec_mask,
-        "decoder_labels": dec_labs,
-        "encoder_input_ids_lens": enc_ids_lens,
-        "decoder_input_ids_lens": dec_ids_lens,
-    }
-
-
-def collate_fn_ttt_dummy(batch: List[Dict], ntokens: int, debug_enc_len: int, debug_dec_len: int) -> Dict:
-    batch_size = len(batch)
-    assert batch_size > 0 and batch_size % 2 == 0, f"Batch size must be even, got {batch_size}"
-    del batch  # we don't use it directly
-
-    enc_ids = torch.randint(1, 101, (batch_size, debug_enc_len + ntokens), dtype=torch.int64, device='cpu')
-    enc_mask = torch.full((batch_size, debug_enc_len + ntokens), 1, dtype=torch.int64, device='cpu')
-    dec_ids = torch.randint(1, 101, (batch_size, debug_dec_len), dtype=torch.int64, device='cpu')
-    dec_mask = torch.full((batch_size, debug_dec_len), 1, dtype=torch.int64, device='cpu')
-    enc_ids_lens = [len(x) for x in enc_ids]
-    dec_ids_lens = [len(x) for x in dec_ids]
-
-    return {
-        "encoder_input_ids": enc_ids,
-        "encoder_attention_mask": enc_mask,
-        "encoder_labels": enc_ids,
-        "decoder_input_ids": dec_ids,
-        "decoder_attention_mask": dec_mask,
-        "decoder_labels": dec_ids,
-        "encoder_input_ids_lens": enc_ids_lens,
-        "decoder_input_ids_lens": dec_ids_lens,
-    }
 
 
 ########################################
@@ -817,6 +507,7 @@ class TrainDataset(Dataset):
         debug_dec_len: int,
         max_num_train_program: int,
         num_workers: int,
+        colon_encoding: bool,
     ):
         self.re_arc_ratio = re_arc_ratio
         self.concept_arc_ratio = concept_arc_ratio
@@ -845,6 +536,7 @@ class TrainDataset(Dataset):
         self.debug_enc_len = debug_enc_len
         self.debug_dec_len = debug_dec_len
         self.max_num_train_program = max_num_train_program
+        self.colon_encoding = colon_encoding
 
         # setup args
         self.normalized_ratio = np.array([self.re_arc_ratio, self.concept_arc_ratio, self.arc_heavy_ratio])
@@ -1182,6 +874,7 @@ def collate_fn_train(batch: List[int], dataset: TrainDataset) -> Dict:
                     input_grid_ids, output_grid_ids = dataset.encoder_tokenizer.get_input_and_output_grid_ids(
                         example=example,
                         add_bos=(example_i == 0),
+                        colon_encoding=dataset.colon_encoding,
                     )
 
                     # update encoder_input_ids
@@ -1215,6 +908,7 @@ def collate_fn_train(batch: List[int], dataset: TrainDataset) -> Dict:
                 input_grid_ids, output_grid_ids = dataset.decoder_tokenizer.get_input_and_output_grid_ids(
                     example=task.test_example,
                     add_bos=True,
+                    colon_encoding=dataset.colon_encoding,
                 )
                 decoder_input_ids = torch.cat([input_grid_ids, output_grid_ids])
                 decoder_label_ids = torch.cat([torch.full(input_grid_ids.shape, -100, dtype=torch.int64),
@@ -1443,6 +1137,8 @@ class EvalDataset:
         max_num_sample_program: int,
         debug_enc_len: int,
         debug_dec_len: int,
+        limit_eval_to_max_program: bool,
+        colon_encoding: bool,
     ):
         self.permute_n = permute_n
         self.permute_iters = permute_iters
@@ -1463,6 +1159,8 @@ class EvalDataset:
         self.max_num_sample_program = max_num_sample_program
         self.debug_enc_len = debug_enc_len
         self.debug_dec_len = debug_dec_len
+        self.limit_eval_to_max_program = limit_eval_to_max_program
+        self.colon_encoding = colon_encoding
 
         # get file_paths
         if not os.path.isdir(eval_dir):
@@ -1638,6 +1336,11 @@ class EvalDataset:
         # Build encoder text
         task = copy.deepcopy(task)
 
+        if self.limit_eval_to_max_program:
+            num_program_in_task = len(task.train_examples) - self.min_num_pair_for_program + 1
+            if num_program_in_task > self.max_num_sample_program:
+                task.train_examples = task.train_examples[:self.max_num_sample_program + self.min_num_pair_for_program - 1]
+
         # get encoder_input_ids, encoder_label_ids, encoder_program_start, encoder_attention_mask
         # use dummy ids for program tokens
         encoder_input_ids = []
@@ -1650,6 +1353,7 @@ class EvalDataset:
             input_grid_ids, output_grid_ids = self.encoder_tokenizer.get_input_and_output_grid_ids(
                 example=example,
                 add_bos=(example_i == 0),
+                colon_encoding=self.colon_encoding,
             )
 
             # update encoder_input_ids
@@ -1688,6 +1392,7 @@ class EvalDataset:
         input_grid_ids, output_grid_ids = self.decoder_tokenizer.get_input_and_output_grid_ids(
             example=task.test_example,
             add_bos=True,
+            colon_encoding=self.colon_encoding,
         )
 
         decoder_input_ids = torch.cat([input_grid_ids, output_grid_ids])
@@ -1906,152 +1611,5 @@ def collate_fn_eval_dummy(batch: List[Dict], dataset: EvalDataset) -> Dict:
         "encoder_input_ids_lens": encoder_input_ids_lens,
         "decoder_input_ids_lens": decoder_input_ids_lens,
         "decoder_gen_input_ids_lens": decoder_gen_input_ids_lens,
-    }
-    return batch_dict
-
-
-########################################
-# Gradient Search Dataset
-########################################
-class GSDataset(Dataset):
-    def __init__(
-        self,
-        task: Task,
-        encoder_tokenizer: ARCTokenizer,
-        decoder_tokenizer: ARCTokenizer,
-        max_seq_len: int,
-        ntokens: int,
-        debug_random_pad: bool,
-        debug_pad_len: int,
-        decoder_pad_side: str,
-    ):
-        self.task = task
-        self.encoder_tokenizer = encoder_tokenizer
-        self.decoder_tokenizer = decoder_tokenizer
-        self.max_seq_len = max_seq_len
-        self.ntokens = ntokens
-        self.debug_random_pad = debug_random_pad
-        self.debug_pad_len = debug_pad_len
-        self.decoder_pad_side = decoder_pad_side
-
-        # format and filter data
-        self.parsed_examples = []
-        for example in task.train_examples:
-            data = self.format_and_filter(example)
-            if data is not None:
-                self.parsed_examples.append(data)
-
-    def __len__(self):
-        return len(self.parsed_examples)
-
-    def __getitem__(self, idx):
-        return self.parsed_examples[idx]
-
-    def format_and_filter(self, example: Example) -> Optional[Dict]:
-        # tasks are filtered by EvalDataset already, shouldn't have grids too big
-        # but each example might still be too long (in practice this probably won't happen)
-        assert max(example.input.shape) <= 30 and max(example.output.shape) <= 30
-
-        dec_in_text  = grid_to_text(example.input.tolist(), True)
-        dec_out_text = grid_to_text(example.output.tolist(), False)
-
-        # tiny optimization to include output\n in input
-        assert dec_out_text.startswith("output\n")
-        dec_in_text = dec_in_text + "\n" + dec_out_text[:len("output\n")]
-        dec_out_text = dec_out_text[len("output\n"):]
-        dec_out_text += self.decoder_tokenizer.eos_token
-
-        dec_in_tokens = self.decoder_tokenizer.encode_to_tensor(dec_in_text)
-        dec_out_tokens = self.decoder_tokenizer.encode_to_tensor(dec_out_text)
-        assert dec_out_tokens["input_ids"][0][-1].item() == self.decoder_tokenizer.eos_token_id
-
-        # remove begin of sentence of dec_out_tokens
-        assert dec_out_tokens['input_ids'][0][0] == self.decoder_tokenizer.bos_token_id
-        dec_out_tokens['input_ids'] = dec_out_tokens['input_ids'][:, 1:]
-        dec_out_tokens['attention_mask'] = dec_out_tokens['attention_mask'][:, 1:]
-
-        # Build final decoder input + labels
-        decoder_input_ids = torch.cat([
-            dec_in_tokens["input_ids"].squeeze(0),
-            dec_out_tokens["input_ids"].squeeze(0),
-        ], dim=0)
-        decoder_labels = torch.cat([
-            torch.full(dec_in_tokens["input_ids"].shape[1:], -100),
-            dec_out_tokens["input_ids"].squeeze(0),
-        ], dim=0)
-        decoder_attention_mask = torch.cat([
-            dec_in_tokens["attention_mask"].squeeze(0),
-            dec_out_tokens["attention_mask"].squeeze(0),
-        ], dim=0)
-
-        # Check length
-        # should never be evoked in practice
-        if decoder_input_ids.shape[0] > self.max_seq_len // 2: # dec_len should be short
-            return None
-
-        return {
-            "decoder_input_ids": decoder_input_ids,
-            "decoder_attention_mask": decoder_attention_mask,
-            "decoder_labels": decoder_labels,
-        }
-
-
-def collate_fn_gs(batch: List[Dict], dataset: GSDataset) -> Dict:
-    dec_ids = [x["decoder_input_ids"] for x in batch]
-    dec_mask = [x["decoder_attention_mask"] for x in batch]
-    dec_labs = [x["decoder_labels"] for x in batch]
-
-    dec_ids_lens = [len(x) for x in dec_ids]
-    dec_ids = pad_sequence_with_side(dec_ids, padding_value=dataset.decoder_tokenizer.pad_token_id, side=dataset.decoder_pad_side)
-    dec_mask = pad_sequence_with_side(dec_mask, padding_value=0, side=dataset.decoder_pad_side)
-    dec_labs = pad_sequence_with_side(dec_labs, padding_value=-100, side=dataset.decoder_pad_side)
-
-    if dataset.debug_random_pad and dataset.debug_pad_len > -1:
-        dec_ids, dec_mask, dec_labs = debug_extra_pad_tensors(
-            [dec_ids, dec_mask, dec_labs],
-            padding_values=[dataset.decoder_tokenizer.pad_token_id, 0, -100],
-            pad_len=dataset.debug_pad_len,
-            side=dataset.decoder_pad_side,
-        )
-
-    batch_dict = {
-        "decoder_input_ids": dec_ids,
-        "decoder_attention_mask": dec_mask,
-        "decoder_labels": dec_labs,
-        "decoder_input_ids_lens": dec_ids_lens,
-    }
-    return batch_dict
-
-
-# not used yet
-def collate_fn_gs_dummy(batch: List[Dict], ntokens: int, debug_enc_len: int, debug_dec_len: int) -> Dict:
-    batch_size = len(batch)
-    task_ids = [str(x) for x in range(100000, 100000 + batch_size)]
-    enc_ids = torch.randint(1, 101, (batch_size, debug_enc_len + ntokens), dtype=torch.int64, device='cpu')
-    enc_mask = torch.full((batch_size, debug_enc_len + ntokens), 1, dtype=torch.int64, device='cpu')
-    dec_ids = torch.randint(1, 101, (batch_size, debug_dec_len), dtype=torch.int64, device='cpu')
-    dec_mask = torch.full((batch_size, debug_dec_len), 1, dtype=torch.int64, device='cpu')
-    dec_gen_ids = torch.randint(1, 101, (batch_size, int(debug_dec_len * 0.4)), dtype=torch.int64, device='cpu')
-    dec_gen_mask = torch.full((batch_size, int(debug_dec_len * 0.4)), 1, dtype=torch.int64, device='cpu')
-    enc_ids_lens = [len(x) for x in enc_ids]
-    dec_ids_lens = [len(x) for x in dec_ids]
-    dec_gen_ids_lens = [len(x) for x in dec_gen_ids]
-
-    batch_dict = {
-        "task_ids": task_ids,
-        "inverters": [""] * batch_size,
-        "encoder_input_ids": enc_ids,
-        "encoder_attention_mask": enc_mask,
-        "encoder_labels": enc_ids,
-        "decoder_input_ids": dec_ids,
-        "decoder_attention_mask": dec_mask,
-        "decoder_labels": dec_ids,
-        "decoder_gen_input_ids": dec_gen_ids,
-        "decoder_gen_attention_mask": dec_gen_mask,
-        "decoder_out_token_length": [math.ceil(debug_dec_len * 0.6)] * batch_size,
-        "decoder_label_texts": ['1\n1\n1'] * batch_size,
-        "encoder_input_ids_lens": enc_ids_lens,
-        "decoder_input_ids_lens": dec_ids_lens,
-        "decoder_gen_input_ids_lens": dec_gen_ids_lens,
     }
     return batch_dict

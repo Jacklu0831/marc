@@ -61,47 +61,6 @@ class ARCTokenizer:
         self.pad_token_id = self.token_to_id[pad_token]
         self.special_token_ids = set([self.bos_token_id, self.eos_token_id, self.pad_token_id])
 
-    # def __call__(self, text: str, add_bos: bool, add_eos: bool) -> List[int]:
-    #     input_ids = [self.bos_token_id] if add_bos else []
-
-    #     while text:
-    #         # special tokens
-    #         if text.startswith(self.eos_token):
-    #             input_ids.append(self.eos_token_id)
-    #             text = text[len(self.eos_token):]
-    #         elif text.startswith(self.bos_token):
-    #             input_ids.append(self.bos_token_id)
-    #             text = text[len(self.bos_token):]
-    #         elif text.startswith(self.pad_token):
-    #             input_ids.append(self.pad_token_id)
-    #             text = text[len(self.pad_token):]
-    #         # input output
-    #         elif text.startswith("input"):
-    #             input_ids.append(self.token_to_id["input"])
-    #             text = text[5:]
-    #         elif text.startswith("output"):
-    #             input_ids.append(self.token_to_id["output"])
-    #             text = text[6:]
-    #         # double digit
-    #         elif text[:2] in self.token_to_id:
-    #             input_ids.append(self.token_to_id[text[:2]])
-    #             text = text[2:]
-    #         # single digit
-    #         elif text[0] in self.token_to_id:
-    #             input_ids.append(self.token_to_id[text[0]])
-    #             text = text[1:]
-    #         else:
-    #             raise ValueError(f"cannot tokenize: {text}")
-
-    #     if add_eos:
-    #         input_ids.append(self.eos_token_id)
-
-    #     return input_ids
-
-    # def encode_to_tensor(self, text: str, add_bos: bool, add_eos: bool) -> torch.Tensor:
-    #     input_ids = self(text, add_bos, add_eos)
-    #     return torch.tensor(input_ids, dtype=torch.int64)
-
     def encode_dimensions_to_tensor(self, height: int, width: int) -> torch.Tensor:
         return torch.tensor(
             [self.token_to_id[str(height)],
@@ -557,6 +516,7 @@ class TrainDatasetAutoregressive(Dataset):
         self.normalized_ratio = np.array([self.re_arc_ratio, self.concept_arc_ratio, self.arc_heavy_ratio])
         self.normalized_ratio /= np.sum(self.normalized_ratio)
         self.d8_augmenters = get_d8_augmenters()
+        self.extra_augmenters = get_mit_augmenters(include_basic=True, include_size=True, include_chain=True, include_repeat=True)
 
         # seed and process_index
         if num_workers == 0:
@@ -928,7 +888,7 @@ class EvalDatasetAutoregressive:
         min_len, max_len = 1e6, 0
         for d in parsed_data:
             min_len = min(min_len, sum(len(i) for i in d['input_ids'])) # type: ignore
-            max_len = min(max_len, sum(len(i) for i in d['input_ids'])) # type: ignore
+            max_len = max(max_len, sum(len(i) for i in d['input_ids'])) # type: ignore
         logger.info(f"encoder sequence length range from {min_len} to {max_len}]")
         del parsed_data
 
@@ -1214,5 +1174,80 @@ def collate_fn_eval_dummy_autoregressive(batch: List[Dict], dataset: EvalDataset
         "input_ids_lens": input_ids_lens,
         "gen_input_ids_lens": gen_input_ids_lens,
         "num_pairs": num_pairs,
+    }
+    return batch_dict
+
+
+########################################
+# Gradient Search Dataset
+########################################
+class GSDatasetAutoregressive(Dataset):
+    def __init__(
+        self,
+        task: Task,
+        tokenizer: ARCTokenizer,
+        ntokens: int,
+        debug_random_pad: bool,
+        debug_pad_len: int,
+        gen_pad_side: str,
+    ):
+        self.task = task
+        self.tokenizer = tokenizer
+        self.ntokens = ntokens
+        self.debug_random_pad = debug_random_pad
+        self.debug_pad_len = debug_pad_len
+        self.gen_pad_side = gen_pad_side
+
+        # format data (only use demonstration pairs)
+        self.parsed_examples = [self.format(example) for example in task.train_examples]
+
+    def __len__(self):
+        return len(self.parsed_examples)
+
+    def __getitem__(self, idx):
+        return self.parsed_examples[idx]
+
+    def format(self, example: Example) -> Optional[Dict]:
+        # tasks are filtered by EvalDataset already, shouldn't have grids too big
+        assert max(example.input.shape) <= 30 and max(example.output.shape) <= 30
+
+        input_grid_ids, output_grid_ids = self.tokenizer.get_input_and_output_grid_ids(example=example, add_bos=True)
+        input_ids = torch.cat([input_grid_ids, output_grid_ids])
+        attention_mask = torch.full(input_ids.shape, 1, dtype=torch.int64)
+        label_ids = torch.cat([
+            torch.full(input_grid_ids.shape, -100, dtype=torch.int64),
+            output_grid_ids,
+        ])
+
+        return {
+            "input_ids": input_ids,
+            "attention_mask": attention_mask,
+            "label_ids": label_ids,
+        }
+
+
+def collate_fn_gs_autoregressive(batch: List[Dict], dataset: GSDatasetAutoregressive) -> Dict:
+    input_ids = [x["input_ids"] for x in batch]
+    attention_mask = [x["attention_mask"] for x in batch]
+    label_ids = [x["label_ids"] for x in batch]
+
+    input_ids_lens = [len(x) for x in input_ids]
+    input_ids = pad_sequence_with_side(input_ids, padding_value=dataset.tokenizer.pad_token_id, side=dataset.gen_pad_side)
+    attention_mask = pad_sequence_with_side(attention_mask, padding_value=0, side=dataset.gen_pad_side)
+    label_ids = pad_sequence_with_side(label_ids, padding_value=-100, side=dataset.gen_pad_side)
+
+    if dataset.debug_random_pad and dataset.debug_pad_len > -1:
+        input_ids, attention_mask, label_ids = debug_extra_pad_tensors(
+            [input_ids, attention_mask, label_ids],
+            padding_values=[dataset.tokenizer.pad_token_id, 0, -100],
+            pad_len=dataset.debug_pad_len,
+            side=dataset.gen_pad_side,
+        )
+
+    batch_dict = {
+        "input_ids": input_ids,
+        "attention_mask": attention_mask,
+        "label_ids": label_ids,
+        "input_ids_lens": input_ids_lens,
     }
     return batch_dict

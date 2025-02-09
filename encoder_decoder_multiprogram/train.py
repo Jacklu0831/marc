@@ -4,7 +4,7 @@ import copy
 import arclib # required
 import numpy as np
 from collections import defaultdict
-from typing import Union, Callable, List, Tuple, Dict, Optional, Set, Iterator
+from typing import Union, Callable, List, Tuple, Optional, Iterator
 import pprint
 import math
 import json
@@ -19,7 +19,6 @@ from transformers import (
     AutoTokenizer,
     AutoModelForCausalLM,
     get_cosine_schedule_with_warmup,
-    get_constant_schedule,
 )
 from accelerate import Accelerator, PartialState, InitProcessGroupKwargs
 from accelerate.logging import get_logger
@@ -35,10 +34,8 @@ import bitsandbytes as bnb
 from data_utils import (
     TrainDataset,
     EvalDataset,
-    GSDataset,
     collate_fn_train,
     collate_fn_eval,
-    collate_fn_gs,
     collate_fn_train_dummy,
     collate_fn_eval_dummy,
     ARCTokenizer,
@@ -300,6 +297,7 @@ class InvarLoss:
 def encoder_decoder_loss(
     encoder_model: Union[nn.Module, DistributedDataParallel],
     decoder_model: Union[nn.Module, DistributedDataParallel],
+    decoder_tokenizer: ARCTokenizer,
     program_embeddings: Union[nn.Module, DistributedDataParallel],
     conditioning_projection: Union[nn.Module, DistributedDataParallel],
     encoder_input_ids: torch.Tensor,
@@ -402,6 +400,7 @@ def encoder_decoder_loss(
     if do_decoder_loss:
         ce_loss = decoder_loss(
             decoder_model=decoder_model,
+            decoder_tokenizer=decoder_tokenizer,
             decoder_input_ids=decoder_input_ids,
             decoder_attention_mask=decoder_attention_mask,
             decoder_label_ids=decoder_label_ids,
@@ -434,25 +433,46 @@ def encoder_decoder_loss(
     return ce_loss, subset_invar_loss, batch_invar_loss, encoder_loss, kl_loss, total_loss, final_program
 
 
-def insert_based_on_padding_side(
+def insert_based_on_sides(
         data: torch.Tensor,
         to_insert: torch.Tensor,
         lens: List[int],
+        insert_side: str,
         pad_side: str,
+        pad_id: Union[int, torch.Tensor],
     ) -> torch.Tensor:
 
     if pad_side == "right":
-        return torch.cat([to_insert, data], dim=1)
+        if insert_side == "left":
+            return torch.cat([to_insert, data], dim=1)
+        else:
+            data_new = []
+            for x, m, l in zip(data, to_insert, lens):
+                if isinstance(pad_id, int):
+                    assert torch.equal(x[l:], torch.full(x[l:].shape, pad_id, device=x[l:].device)), x[l:]
+                else:
+                    assert torch.equal(x[l:], pad_id.unsqueeze(0).expand(x[l:].shape[0], -1)), x[l:]
+                x = torch.cat([x[:l], m, x[l:]])
+                data_new.append(x)
+            return torch.stack(data_new)
     else:
-        data_new = []
-        for x, m, l in zip(data, to_insert, lens):
-            x = torch.cat([x[:-l], m, x[-l:]])
-            data_new.append(x)
-        return torch.stack(data_new)
+        if insert_side == "left":
+            data_new = []
+            for x, m, l in zip(data, to_insert, lens):
+                if isinstance(pad_id, int):
+                    assert torch.equal(x[:-l], torch.full(x[:-l].shape, pad_id, device=x[:-l].device)), x[:-l]
+                else:
+                    assert torch.equal(x[:-l], pad_id.unsqueeze(0).expand(x[:-l].shape[0], -1)), x[:-l]
+                x = torch.cat([x[:-l], m, x[-l:]])
+                data_new.append(x)
+            return torch.stack(data_new)
+        else:
+            return torch.cat([data, to_insert], dim=1)
 
 
 def decoder_loss(
     decoder_model: Union[nn.Module, DistributedDataParallel],
+    decoder_tokenizer: ARCTokenizer,
     decoder_input_ids: torch.Tensor,
     decoder_attention_mask: torch.Tensor,
     decoder_label_ids: torch.Tensor,
@@ -466,6 +486,7 @@ def decoder_loss(
     num_program = predicted_program.shape[1]
     decoder_module = decoder_model.module if isinstance(decoder_model, DistributedDataParallel) else decoder_model
     embed_tokens = decoder_module.model.embed_tokens if hasattr(decoder_module.model, "embed_tokens") else decoder_module.model.model.embed_tokens
+    pad_embeds = embed_tokens(torch.tensor(decoder_tokenizer.pad_token_id, device=predicted_program.device))
 
     # pad decoder attention mask
     prefix_attention_mask = torch.full(
@@ -474,11 +495,13 @@ def decoder_loss(
         device=decoder_attention_mask.device,
         dtype=decoder_attention_mask.dtype,
     )
-    decoder_attention_mask = insert_based_on_padding_side(
+    decoder_attention_mask = insert_based_on_sides(
         data=decoder_attention_mask,
         to_insert=prefix_attention_mask,
         lens=dec_ids_lens,
+        insert_side="left",
         pad_side=decoder_pad_side,
+        pad_id=0,
     )
 
     # pad label
@@ -488,11 +511,13 @@ def decoder_loss(
         device=decoder_label_ids.device,
         dtype=decoder_label_ids.dtype,
     )
-    decoder_label_ids = insert_based_on_padding_side(
+    decoder_label_ids = insert_based_on_sides(
         data=decoder_label_ids,
         to_insert=prefix_label_mask,
         lens=dec_ids_lens,
+        insert_side="left",
         pad_side=decoder_pad_side,
+        pad_id=-100,
     )
 
     # expand decoder attention mask and label (ex. [1, 2] becomes [1, 1, 2, 2])
@@ -515,11 +540,13 @@ def decoder_loss(
     assert len(decoder_inputs_embeds_expanded) == len(decoder_attention_mask_expanded) == len(decoder_label_ids_expanded)
 
     # pad decoder inputs embeds
-    decoder_inputs_embeds_with_program = insert_based_on_padding_side(
+    decoder_inputs_embeds_with_program = insert_based_on_sides(
         data=decoder_inputs_embeds_expanded,
         to_insert=predicted_program_expanded,
         lens=dec_ids_lens_expanded,
+        insert_side="left",
         pad_side=decoder_pad_side,
+        pad_id=pad_embeds,
     )
 
     # decoder forward
@@ -546,139 +573,11 @@ def chunks_uniform_batch(task_ids: List[str], data_idxs: List[int], n: int) -> I
         yield from chunks(data_idxs, n)
 
 
-@torch.enable_grad()
-def gradient_search(
-        batch_idxs: List[int],
-        eval_dataset: EvalDataset,
-        batch_size: int,
-        optimizer: str,
-        lr_scheduler: str,
-        lr: float,
-        take_best: bool,
-        beta1: float,
-        beta2: float,
-        accelerator: Accelerator,
-        decoder_model: Union[nn.Module, DistributedDataParallel],
-        iters: int,
-        predicted_program: torch.Tensor,
-        max_grad_norm: float,
-    ) -> torch.Tensor:
-    # note gradient checkpointing does not matter because we are freezing the model here
-    # however, if we choose to tune the decoder as well, then gradient checkpointing might be desired
-
-    assert len(batch_idxs) == 1
-    eval_task = eval_dataset.eval_tasks[batch_idxs[0]]
-
-    # gradient search dataset and dataloader
-    gs_dataset = GSDataset(
-        task=eval_task,
-        encoder_tokenizer=eval_dataset.encoder_tokenizer,
-        decoder_tokenizer=eval_dataset.decoder_tokenizer,
-        max_seq_len=eval_dataset.max_seq_len,
-        ntokens=eval_dataset.ntokens,
-        debug_random_pad=eval_dataset.debug_random_pad,
-        debug_pad_len=eval_dataset.debug_pad_len,
-        decoder_pad_side=eval_dataset.decoder_pad_side,
-    )
-    if take_best:
-        assert batch_size >= len(gs_dataset)
-    batch_size = min(batch_size, len(gs_dataset))
-    gs_collate_fn = partial(collate_fn_gs, dataset=gs_dataset)
-    gs_loader = DataLoader(
-        gs_dataset,
-        batch_size=batch_size,
-        shuffle=True,
-        collate_fn=gs_collate_fn,
-        drop_last=False,
-        num_workers=0,
-    )
-
-    # get program parameters
-    program_params = [predicted_program]
-    assert all(not p.requires_grad for p in program_params)
-    for p in program_params:
-        p.requires_grad = True
-
-    # expand to match predicted program with batch size
-    assert predicted_program.shape[0] == 1
-    predicted_program = predicted_program.expand(batch_size, *predicted_program.shape[1:])
-
-    # optimizer
-    if optimizer == 'adamw':
-        optim = torch.optim.AdamW(program_params, weight_decay=0.0, lr=lr, betas=(beta1, beta2)) # type: ignore
-    else:
-        optim = torch.optim.SGD(program_params, lr=lr) # type: ignore
-
-    # lr scheduler
-    if lr_scheduler == "cosine":
-        scheduler = get_cosine_schedule_with_warmup(
-            optim,
-            num_warmup_steps=0,
-            num_training_steps=iters,
-        )
-    else:
-        scheduler = get_constant_schedule(optim)
-    optim, gs_loader = accelerator.prepare(optim, gs_loader)
-
-    curr_iter = 0
-    best_loss = float("inf")
-    best_program = None
-    decoder_model.train()
-
-    # train!
-    while curr_iter < iters:
-        for gs_batch_data in gs_loader:
-            dec_ids = gs_batch_data["decoder_input_ids"].to(accelerator.device)
-            dec_mask = gs_batch_data["decoder_attention_mask"].to(accelerator.device)
-            dec_label_ids = gs_batch_data["decoder_label_ids"].to(accelerator.device)
-            dec_ids_lens = gs_batch_data["decoder_input_ids_lens"]
-            with accelerator.autocast():
-                gs_loss = decoder_loss(
-                    decoder_model=decoder_model,
-                    decoder_input_ids=dec_ids,
-                    decoder_attention_mask=dec_mask,
-                    decoder_label_ids=dec_label_ids,
-                    dec_ids_lens=dec_ids_lens,
-                    ntokens=eval_dataset.ntokens,
-                    decoder_pad_side=eval_dataset.decoder_pad_side,
-                    predicted_program=predicted_program,
-                )
-            accelerator.backward(gs_loss)
-            accelerator.clip_grad_norm_(program_params, max_grad_norm)
-            optim.step()
-            scheduler.step()
-
-            if take_best and gs_loss.item() < best_loss:
-                best_loss = gs_loss.item()
-                best_program = predicted_program.detach().clone()
-
-            curr_iter += 1
-            if curr_iter >= iters:
-                break
-
-    # set decoder back to eval mode
-    decoder_model.eval()
-
-    for p in program_params:
-        p.requires_grad = False
-
-    if take_best:
-        assert best_program is not None
-        predicted_program = best_program
-
-    # shrink to match predicted program with batch size 1
-    predicted_program = predicted_program[:1]
-    return predicted_program
-
-
 ################################################
 # Evaluate with cross-entropy + exact-match
 ################################################
 @torch.no_grad()
 def evaluate(
-    task_to_ttt_model_paths: Optional[Dict[str, Tuple[str, Optional[str], str]]],
-    encoder_ttt_param_names: Optional[Set[str]],
-    decoder_ttt_param_names: Optional[Set[str]],
     encoder_model: Union[nn.Module, DistributedDataParallel],
     decoder_model: Union[nn.Module, DistributedDataParallel],
     program_embeddings: Union[nn.Module, DistributedDataParallel],
@@ -691,16 +590,6 @@ def evaluate(
     trainable_nbit: int,
     no_flash_attn: bool,
     tie_models: bool,
-    output_dir: str,
-    gs_iters: int,
-    gs_batch_size: int,
-    gs_lr: float,
-    gs_beta1: float,
-    gs_beta2: float,
-    gs_optimizer: str,
-    gs_max_grad_norm: float,
-    gs_lr_scheduler: str,
-    gs_take_best: bool,
     vae_no_sample: bool,
     global_step: int,
     encoder_loss_lambda_scheduler: LambdaScheduler,
@@ -717,40 +606,8 @@ def evaluate(
     conditioning_projection.eval()
 
     # get modules in case of DDP
-    encoder_module = encoder_model.module if isinstance(encoder_model, DistributedDataParallel) else encoder_model
     decoder_module = decoder_model.module if isinstance(decoder_model, DistributedDataParallel) else decoder_model
     decoder_embed_tokens = decoder_module.model.embed_tokens if hasattr(decoder_module.model, "embed_tokens") else decoder_module.model.model.embed_tokens
-
-    # if ttt provided, same model weights for the missing ttt task weights
-    cached_enc_weights_path = None
-    cached_dec_weights_path = None
-    cached_proj_weights_path = None
-    curr_ttt_task_name = None
-    if task_to_ttt_model_paths is not None: # run on both processes
-        # save encoder
-        cached_enc_weights_path = os.path.join(output_dir, f"process{accelerator.process_index}_encoder_cache.pt")
-        assert isinstance(encoder_ttt_param_names, set)
-        enc_name_to_params = set(name for name, _ in encoder_module.named_parameters())
-        assert all(name in enc_name_to_params for name in encoder_ttt_param_names), f"process{accelerator.process_index} {encoder_ttt_param_names} {enc_name_to_params}"
-        enc_weights = {name: param for name, param in encoder_module.named_parameters() if name in encoder_ttt_param_names}
-        torch.save(enc_weights, cached_enc_weights_path)
-        logger.info(f"ttt provided, cached {len(enc_weights)} encoder weights to {cached_enc_weights_path}")
-        # save decoder
-        if not tie_models:
-            cached_dec_weights_path = os.path.join(output_dir, f"process{accelerator.process_index}_decoder_cache.pt")
-            assert isinstance(decoder_ttt_param_names, set)
-            dec_name_to_params = set(name for name, _ in decoder_module.named_parameters())
-            assert all(name in dec_name_to_params for name in decoder_ttt_param_names), f"process{accelerator.process_index} {decoder_ttt_param_names}"
-            dec_weights = {name: param for name, param in decoder_module.named_parameters() if name in decoder_ttt_param_names}
-            torch.save(dec_weights, cached_dec_weights_path)
-            logger.info(f"ttt provided, cached {len(dec_weights)} decoder weights to {cached_dec_weights_path}")
-        # save projection
-        cached_proj_weights_path = os.path.join(output_dir, f"process{accelerator.process_index}_conditioning_projection_cache.pt")
-        torch.save(conditioning_projection, cached_proj_weights_path)
-        logger.info(f"ttt provided, cached conditioning projection weights to {cached_proj_weights_path}")
-        # save default to model paths and set current ttt weights to default
-        task_to_ttt_model_paths["default"] = (cached_enc_weights_path, cached_dec_weights_path, cached_proj_weights_path)
-        curr_ttt_task_name = "default"
 
     # setup terminators and suppress warning
     decoder_module.generation_config.pad_token_id = dataset.decoder_tokenizer.pad_token_id
@@ -765,7 +622,6 @@ def evaluate(
     valid_grid_list = []
     correct_grid_dim_list = []
     token_acc_list = []
-    ttt_provided_list = []
 
     data_idxs = list(range(len(dataset)))
     assert len(data_idxs) >= accelerator.num_processes # avoid padding issue
@@ -773,67 +629,10 @@ def evaluate(
     with distributed_state.split_between_processes(data_idxs) as process_data_idxs:
         assert isinstance(process_data_idxs, list)
         n_batches = math.ceil(len(process_data_idxs) / batch_size)
-
-        # if ttt provided, make sure all batches are of the same task name
-        if task_to_ttt_model_paths is not None:
-            # tackle tasks in orderly fashion
-            task_names = [dataset.eval_tasks[idx].name for idx in process_data_idxs] # type: ignore
-            task_ids = [task_name.split('-')[0] for task_name in task_names]
-            n_batches = len(list(chunks_uniform_batch(task_ids, process_data_idxs, batch_size)))
-            data_idx_iterator = tqdm(chunks_uniform_batch(task_ids, process_data_idxs, batch_size), total=n_batches) # type: ignore
-        else:
-            data_idx_iterator = tqdm(chunks(process_data_idxs, batch_size), total=n_batches)  # type: ignore
+        data_idx_iterator = tqdm(chunks(process_data_idxs, batch_size), total=n_batches)  # type: ignore
 
         for batch_idxs in data_idx_iterator:
             bs = len(batch_idxs)
-
-            # optionally load ttt lora
-            ttt_provided = [0] * bs
-            if task_to_ttt_model_paths is not None:
-                task_names = [dataset.eval_tasks[idx].name.split('-')[0] for idx in batch_idxs]
-                assert len(set(task_names)) == 1 # have to be the same task
-                task_name = task_names[0]
-                if task_name != curr_ttt_task_name:
-                    if task_name not in task_to_ttt_model_paths:
-                        task_name = "default"
-                    else:
-                        ttt_provided = [1] * bs
-                    # get paths
-                    enc_ttt_path, dec_ttt_path, proj_ttt_path = task_to_ttt_model_paths[task_name]
-                    # load encoder
-                    encoder_model_ttt_state_dict = torch.load(
-                        enc_ttt_path,
-                        weights_only=True,
-                        map_location=accelerator.device
-                    )
-                    assert set(encoder_model_ttt_state_dict.keys()) == encoder_ttt_param_names
-                    encoder_module.load_state_dict(encoder_model_ttt_state_dict, strict=False)
-                    del encoder_model_ttt_state_dict
-                    # load decoder
-                    if dec_ttt_path is not None:
-                        decoder_model_ttt_state_dict = torch.load(
-                            dec_ttt_path,
-                            weights_only=True,
-                            map_location=accelerator.device
-                        )
-                        assert set(decoder_model_ttt_state_dict.keys()) == decoder_ttt_param_names
-                        decoder_module.load_state_dict(decoder_model_ttt_state_dict, strict=False)
-                        del decoder_model_ttt_state_dict
-                    conditioning_projection = torch.load(
-                        proj_ttt_path,
-                        weights_only=False,
-                        map_location=accelerator.device
-                    )
-                    # set current task name
-                    curr_ttt_task_name = task_name
-
-                    # another eval after loading weight just in case
-                    encoder_model.eval()
-                    if not tie_models:
-                        decoder_model.eval()
-                    conditioning_projection.eval()
-
-            ttt_provided_list += ttt_provided
 
             # predict multiple programs from i/o permutations
             predicted_program_accum = None
@@ -894,6 +693,7 @@ def evaluate(
                     ce_loss, _, _, encoder_loss, kl_loss, _, predicted_program = encoder_decoder_loss(
                         encoder_model=encoder_model,
                         decoder_model=decoder_model,
+                        decoder_tokenizer=dataset.decoder_tokenizer,
                         program_embeddings=program_embeddings,
                         conditioning_projection=conditioning_projection,
                         encoder_input_ids=enc_ids,
@@ -966,38 +766,6 @@ def evaluate(
             dec_ids_lens = first_batch["decoder_input_ids_lens"]
             dec_gen_ids_lens = first_batch["decoder_gen_input_ids_lens"]
 
-            if gs_iters > 0:
-                assert isinstance(predicted_program, torch.Tensor)
-                predicted_program = gradient_search(
-                    batch_idxs=batch_idxs,
-                    eval_dataset=dataset,
-                    batch_size=gs_batch_size,
-                    optimizer=gs_optimizer,
-                    lr_scheduler=gs_lr_scheduler,
-                    lr=gs_lr,
-                    take_best=gs_take_best,
-                    beta1=gs_beta1,
-                    beta2=gs_beta2,
-                    accelerator=accelerator,
-                    decoder_model=decoder_model,
-                    iters=gs_iters,
-                    predicted_program=predicted_program,
-                    max_grad_norm=gs_max_grad_norm,
-                )
-                # need to compute new ce loss to be more representative
-                with accelerator.autocast():
-                    ce_loss = decoder_loss(
-                        decoder_model=decoder_model,
-                        decoder_input_ids=dec_ids,
-                        decoder_attention_mask=dec_mask,
-                        decoder_label_ids=dec_label_ids,
-                        dec_ids_lens=dec_ids_lens,
-                        ntokens=dataset.ntokens,
-                        decoder_pad_side=dataset.decoder_pad_side,
-                        predicted_program=predicted_program,
-                    )
-                    ce_loss_list[-1] = ce_loss.item()
-
             # recover data from first batch (e.g. task_ids might be missing tasks due to permute_iters)
             assert isinstance(first_batch, dict)
             task_ids = first_batch["task_ids"]
@@ -1011,13 +779,17 @@ def evaluate(
             # compute accuracy
             with accelerator.autocast():
                 assert isinstance(predicted_program, torch.Tensor)
+                decoder_embed_tokens = decoder_module.model.embed_tokens if hasattr(decoder_module.model, "embed_tokens") else decoder_module.model.model.embed_tokens
+                pad_embeds = decoder_embed_tokens(torch.tensor(dataset.decoder_tokenizer.pad_token_id, device=predicted_program.device))
                 decoder_inputs_embeds = decoder_embed_tokens(dec_gen_ids)
                 # pad decoder inputs embeds
-                decoder_inputs_embeds = insert_based_on_padding_side(
+                decoder_inputs_embeds = insert_based_on_sides(
                     data=decoder_inputs_embeds,
                     to_insert=predicted_program,
                     lens=dec_gen_ids_lens,
+                    insert_side="left",
                     pad_side=dataset.decoder_gen_pad_side,
+                    pad_id=pad_embeds,
                 )
                 if not no_flash_attn:
                     decoder_inputs_embeds = decoder_inputs_embeds.to(NBIT_TO_DTYPE[trainable_nbit])
@@ -1028,11 +800,13 @@ def evaluate(
                     device=dec_gen_mask.device,
                     dtype=dec_gen_mask.dtype,
                 )
-                dec_gen_mask = insert_based_on_padding_side(
+                dec_gen_mask = insert_based_on_sides(
                     data=dec_gen_mask,
                     to_insert=prefix_attention_mask,
                     lens=dec_gen_ids_lens,
+                    insert_side="left",
                     pad_side=dataset.decoder_gen_pad_side,
+                    pad_id=0,
                 )
                 # generate
                 gen_tokens = decoder_module.generate(
@@ -1095,7 +869,6 @@ def evaluate(
     valid_grid_list = gather_object(valid_grid_list)
     correct_grid_dim_list = gather_object(correct_grid_dim_list)
     token_acc_list = gather_object(token_acc_list)
-    ttt_provided_list = gather_object(ttt_provided_list)
 
     assert len(task_id_and_text_list) == len(dataset), (len(task_id_and_text_list), len(dataset))
     assert len(ce_loss_list) == len(dataset), (len(ce_loss_list), len(dataset))
@@ -1105,7 +878,6 @@ def evaluate(
     assert len(valid_grid_list) == len(dataset), (len(valid_grid_list), len(dataset))
     assert len(correct_grid_dim_list) == len(dataset), (len(correct_grid_dim_list), len(dataset))
     assert len(token_acc_list) == len(dataset), (len(token_acc_list), len(dataset))
-    assert len(ttt_provided_list) == len(dataset), (len(ttt_provided_list), len(dataset))
 
     # average metrics
     # note these are all computed without accounting for skipped eval grids
@@ -1116,7 +888,6 @@ def evaluate(
     valid_grid = sum(valid_grid_list) / len(dataset)
     correct_grid_dim = sum(correct_grid_dim_list) / len(dataset)
     token_acc = sum(token_acc_list) / len(dataset)
-    ttt_provided = sum(ttt_provided_list) / len(dataset)
 
     # grab all results
     task_id_to_texts = defaultdict(list)
@@ -1152,7 +923,7 @@ def evaluate(
 
     return avg_ce_loss, avg_encoder_loss, avg_kl_loss, \
         exact_acc, valid_grid, correct_grid_dim, token_acc, task_id_to_texts, \
-        votes, competition_sub_acc, competition_all_acc, ttt_provided
+        votes, competition_sub_acc, competition_all_acc
 
 
 def list2d_to_tuple(l: List[List[int]]) -> Tuple[Tuple[int]]:
@@ -1464,6 +1235,8 @@ def main():
     parser.add_argument("--max_num_sample_program", type=int, default=6) # "equivalent" to max_prefix=7
     parser.add_argument("--min_num_pair_for_program", type=int, default=2) # "equivalent" to max_prefix=7
     parser.add_argument("--max_num_train_program", type=int, default=4)
+    parser.add_argument("--limit_eval_to_max_program", action="store_true") # debugging, limit num inference pairs
+    parser.add_argument("--colon_encoding", action="store_true")
 
     # scheduled extra losses
     parser.add_argument("--encoder_loss_lambda", type=float, default=1.0)
@@ -1518,17 +1291,6 @@ def main():
     parser.add_argument("--eval_eval_augment_n", type=int, default=0)
     parser.add_argument("--eval_eval_permute_iters", type=int, default=0)
 
-    # gradient search
-    parser.add_argument("--gs_iters", type=int, default=0)
-    parser.add_argument("--gs_lr", type=float, default=1.0)
-    parser.add_argument("--gs_beta1", type=float, default=0.9)
-    parser.add_argument("--gs_beta2", type=float, default=0.9)
-    parser.add_argument("--gs_batch_size", type=int, default=2)
-    parser.add_argument("--gs_optimizer", type=str, choices=["adamw", "sgd"], default="adamw")
-    parser.add_argument("--gs_lr_scheduler", type=str, choices=["cosine", "constant"], default="cosine")
-    parser.add_argument("--gs_max_grad_norm", default=1e8, type=float, help="Max gradient norm.")
-    parser.add_argument("--gs_take_best", action="store_true")
-
     # Lora encoder
     parser.add_argument("--encoder_lora_rank", type=int, default=256)
     parser.add_argument("--encoder_lora_alpha", type=float, default=24.0)
@@ -1571,8 +1333,6 @@ def main():
         assert args.encoder_gradient_checkpointing == args.decoder_gradient_checkpointing
     if args.debug_enc_len > -1 and args.debug_dec_len == -1:
         args.debug_dec_len = args.debug_enc_len // 2
-    if args.gs_iters > 0:
-        assert args.eval_batch_size == 1
     assert (args.encoder_name == "nemo8b") == (args.decoder_name == "nemo8b")
     if args.encoder_name == "nemo8b":
         assert args.encoder_pad_side == args.decoder_pad_side == args.decoder_gen_pad_side == "left"
@@ -1725,6 +1485,9 @@ def main():
         [encoder_tokenizer.bos_token, encoder_tokenizer.eos_token, "\n", "input", "output", "pad"]
     decoder_keep_tokens = [str(i) for i in range(31)] + \
         [decoder_tokenizer.bos_token, decoder_tokenizer.eos_token, "\n", "input", "output", "pad"]
+    if args.colon_encoding:
+        encoder_keep_tokens.append(":\n")
+        decoder_keep_tokens.append(":\n")
     assert len(set(encoder_keep_tokens)) == len(encoder_keep_tokens)
     assert len(set(decoder_keep_tokens)) == len(decoder_keep_tokens)
 
@@ -1911,6 +1674,7 @@ def main():
         debug_dec_len=args.debug_dec_len,
         max_num_train_program=args.max_num_train_program,
         num_workers=args.num_workers,
+        colon_encoding=args.colon_encoding,
     )
     train_collate_fn = partial(collate_fn_train, dataset=train_dataset)
     if args.debug_enc_len > 0:
@@ -2086,6 +1850,7 @@ def main():
                     ce_loss, subset_invar_loss, batch_invar_loss, encoder_loss, kl_loss, total_loss, _ = encoder_decoder_loss(
                         encoder_model=encoder_model,
                         decoder_model=decoder_model,
+                        decoder_tokenizer=decoder_tokenizer,
                         program_embeddings=program_embeddings,
                         conditioning_projection=conditioning_projection,
                         encoder_input_ids=enc_ids,
@@ -2222,6 +1987,8 @@ def main():
                 max_num_sample_program=args.max_num_sample_program,
                 debug_enc_len=args.debug_enc_len,
                 debug_dec_len=args.debug_dec_len,
+                limit_eval_to_max_program=args.limit_eval_to_max_program,
+                colon_encoding=args.colon_encoding,
             )
             eval_eval_dataset = EvalDataset(
                 eval_dir=args.eval_eval_dir,
@@ -2246,6 +2013,8 @@ def main():
                 max_num_sample_program=args.max_num_sample_program,
                 debug_enc_len=args.debug_enc_len,
                 debug_dec_len=args.debug_dec_len,
+                limit_eval_to_max_program=args.limit_eval_to_max_program,
+                colon_encoding=args.colon_encoding,
             )
             eval_collate_fn = partial(collate_fn_eval, dataset=eval_train_dataset) # only use tokenizer, padding info
             if args.debug_enc_len > 0:
@@ -2253,10 +2022,7 @@ def main():
 
             train_ce_loss, train_encoder_loss, train_kl_loss, \
                 train_exact_acc, train_valid_grid, train_correct_grid_dim, train_token_acc, train_texts, \
-                train_votes, train_competition_sub_acc, train_competition_all_acc, _ = evaluate(
-                task_to_ttt_model_paths=None, # HARDCODE
-                encoder_ttt_param_names=None, # HARDCODE
-                decoder_ttt_param_names=None, # HARDCODE
+                train_votes, train_competition_sub_acc, train_competition_all_acc = evaluate(
                 encoder_model=encoder_model,
                 decoder_model=decoder_model,
                 program_embeddings=program_embeddings,
@@ -2269,16 +2035,6 @@ def main():
                 trainable_nbit=args.trainable_nbit,
                 no_flash_attn=args.no_flash_attn,
                 tie_models=args.tie_models,
-                output_dir=args.output_dir,
-                gs_iters=args.gs_iters,
-                gs_lr=args.gs_lr,
-                gs_beta1=args.gs_beta1,
-                gs_beta2=args.gs_beta2,
-                gs_batch_size=args.gs_batch_size,
-                gs_optimizer=args.gs_optimizer,
-                gs_max_grad_norm=args.gs_max_grad_norm,
-                gs_lr_scheduler=args.gs_lr_scheduler,
-                gs_take_best=args.gs_take_best,
                 vae_no_sample=args.vae_no_sample,
                 encoder_loss_lambda_scheduler=encoder_loss_lambda_scheduler,
                 kl_loss_lambda_scheduler=kl_loss_lambda_scheduler,
@@ -2291,10 +2047,7 @@ def main():
             )
             eval_ce_loss, eval_encoder_loss, eval_kl_loss, \
                 eval_exact_acc, eval_valid_grid, eval_correct_grid_dim, eval_token_acc, eval_texts, \
-                eval_votes, eval_competition_sub_acc, eval_competition_all_acc, _ = evaluate(
-                task_to_ttt_model_paths=None, # HARDCODE
-                encoder_ttt_param_names=None, # HARDCODE
-                decoder_ttt_param_names=None, # HARDCODE
+                eval_votes, eval_competition_sub_acc, eval_competition_all_acc = evaluate(
                 encoder_model=encoder_model,
                 decoder_model=decoder_model,
                 program_embeddings=program_embeddings,
@@ -2307,16 +2060,6 @@ def main():
                 trainable_nbit=args.trainable_nbit,
                 no_flash_attn=args.no_flash_attn,
                 tie_models=args.tie_models,
-                output_dir=args.output_dir,
-                gs_iters=args.gs_iters,
-                gs_lr=args.gs_lr,
-                gs_beta1=args.gs_beta1,
-                gs_beta2=args.gs_beta2,
-                gs_batch_size=args.gs_batch_size,
-                gs_optimizer=args.gs_optimizer,
-                gs_max_grad_norm=args.gs_max_grad_norm,
-                gs_lr_scheduler=args.gs_lr_scheduler,
-                gs_take_best=args.gs_take_best,
                 vae_no_sample=args.vae_no_sample,
                 encoder_loss_lambda_scheduler=encoder_loss_lambda_scheduler,
                 kl_loss_lambda_scheduler=kl_loss_lambda_scheduler,

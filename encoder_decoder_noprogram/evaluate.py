@@ -41,6 +41,7 @@ os.environ["TORCH_NCCL_ASYNC_ERROR_HANDLING"] = "1"
 os.environ["TORCH_NCCL_BLOCKING_WAIT"] = "1"
 
 import wandb
+wandb.login(key='faf21d9ff65ee150697c7e96f070616f6b662134', relogin=True)
 
 logger = get_logger(__name__, log_level="INFO")
 
@@ -155,7 +156,6 @@ def main():
     project_config = ProjectConfiguration(project_dir=args.output_dir)
     init_process_process_kwargs = InitProcessGroupKwargs()
     init_process_process_kwargs.timeout = timedelta(seconds=28800)
-    os.environ["WANDB_API_KEY"]="faf21d9ff65ee150697c7e96f070616f6b662134"
     accelerator = Accelerator(
         mixed_precision="bf16",
         project_config=project_config,

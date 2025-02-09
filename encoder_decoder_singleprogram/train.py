@@ -1,3 +1,4 @@
+import time
 from transformers.tokenization_utils_fast import PreTrainedTokenizerFast
 from datetime import timedelta
 import copy
@@ -413,6 +414,23 @@ class Hidden2PromptProjection(nn.Module):
             sum(p.nelement() * p.element_size() for p in self.buffers())
 
 
+def get_invar_loss(programs: torch.Tensor, anti_invars: List[bool], margin: float) -> torch.Tensor:
+    batch_size = programs.shape[0]
+    assert batch_size % 2 == 0
+    programs = programs.flatten(start_dim=1)
+
+    total_loss = torch.tensor(0.0, device=programs.device)
+    for batch_i in range(0, batch_size, 2):
+        distance = torch.linalg.norm(programs[batch_i] - programs[batch_i + 1], ord=2)
+        if not anti_invars[batch_i]:
+            loss = distance ** 2.0
+        else:
+            loss = torch.clamp(margin - distance, min=0.0) ** 2.0
+        total_loss += loss
+
+    return total_loss / (batch_size // 2)
+
+
 ################################################
 # A shared forward pass for training & evaluation
 ################################################
@@ -441,8 +459,10 @@ def encoder_decoder_loss(
     invar_loss_lambda_scheduler: LambdaScheduler,
     kl_loss_lambda_scheduler: LambdaScheduler,
     global_step: int,
+    anti_invar_margin: float,
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor,
            Union[torch.Tensor, List[Tuple[torch.Tensor, torch.Tensor]]]]:
+
     # batch size is not necessarily true due to eval
     # Encoder forward and get loss
     enc_out = encoder_model(
@@ -511,16 +531,17 @@ def encoder_decoder_loss(
             predicted_program=predicted_program,
         )
 
-    # invariance loss (batch only not 2x in evaluation)
+    # invariance loss (batch only not even in evaluation)
     batch_size = encoder_input_ids.shape[0]
     assert enc_hidden_states.shape[0] == len(anti_invars) == batch_size
     invar_loss = torch.tensor(0.0, device=encoder_input_ids.device)
     if batch_size % 2 == 0:
-        for batch_i in range(0, batch_size, 2):
-            assert anti_invars[batch_i] == anti_invars[batch_i + 1]
-            l = nn.functional.mse_loss(enc_hidden_states[batch_i], enc_hidden_states[batch_i + 1])
-            invar_loss += -l if anti_invars[batch_i] else l
-        invar_loss /= (batch_size // 2)
+        assert anti_invars[::2] == anti_invars[1::2]
+        invar_loss = get_invar_loss(
+            programs=enc_hidden_states,
+            anti_invars=anti_invars,
+            margin=anti_invar_margin,
+        )
 
     # get invar loss and kl loss lambda
     encoder_loss_lambda = encoder_loss_lambda_scheduler.get_lambda(step=global_step)
@@ -674,6 +695,7 @@ def gradient_search(
         debug_random_pad=eval_dataset.debug_random_pad,
         debug_pad_len=eval_dataset.debug_pad_len,
         decoder_pad_side=eval_dataset.decoder_pad_side,
+        color_equiv=eval_dataset.color_equiv,
     )
     if take_best:
         assert batch_size >= len(gs_dataset)
@@ -724,7 +746,7 @@ def gradient_search(
         )
     else:
         scheduler = get_constant_schedule(optim)
-    optim, gs_loader = accelerator.prepare(optim, gs_loader)
+    # optim, gs_loader = accelerator.prepare(optim, gs_loader)
 
     curr_iter = 0
     best_loss = float("inf")
@@ -756,6 +778,7 @@ def gradient_search(
             accelerator.clip_grad_norm_(program_params, max_grad_norm)
             optim.step()
             scheduler.step()
+            optim.zero_grad()
 
             if take_best and gs_loss.item() < best_loss:
                 best_loss = gs_loss.item()
@@ -827,6 +850,7 @@ def evaluate(
     invar_loss_lambda_scheduler: LambdaScheduler,
     kl_loss_lambda_scheduler: LambdaScheduler,
     dry_eval_run: bool,
+    anti_invar_margin: float,
 ):
     encoder_model.eval()
     if not tie_models:
@@ -984,6 +1008,7 @@ def evaluate(
                 enc_ids_lens = batch["encoder_input_ids_lens"]
                 dec_ids_lens = batch["decoder_input_ids_lens"]
                 dec_gen_ids_lens = batch["decoder_gen_input_ids_lens"]
+                inverse_color_maps = batch["inverse_color_maps"]
 
                 # save first batch with complete tasks, rest might be incomplete
                 if batch_permute_i == 0:
@@ -999,6 +1024,7 @@ def evaluate(
                         "decoder_out_token_length": copy.deepcopy(out_token_length),
                         "decoder_input_ids_lens": copy.deepcopy(dec_ids_lens),
                         "decoder_gen_input_ids_lens": copy.deepcopy(dec_gen_ids_lens),
+                        "inverse_color_maps": copy.deepcopy(inverse_color_maps),
                     }
 
                 # compute ce loss
@@ -1029,6 +1055,7 @@ def evaluate(
                         invar_loss_lambda_scheduler=invar_loss_lambda_scheduler,
                         kl_loss_lambda_scheduler=kl_loss_lambda_scheduler,
                         global_step=global_step,
+                        anti_invar_margin=anti_invar_margin,
                     )
 
                 # ce loss should be from the original permutation, which is set to the first permuted batch
@@ -1092,43 +1119,45 @@ def evaluate(
             out_token_length = first_batch["decoder_out_token_length"]
             dec_ids_lens = first_batch["decoder_input_ids_lens"]
             dec_gen_ids_lens = first_batch["decoder_gen_input_ids_lens"]
+            inverse_color_maps = first_batch["inverse_color_maps"]
 
             if gs_iters > 0:
-                predicted_program = gradient_search(
-                    batch_idxs=batch_idxs,
-                    eval_dataset=dataset,
-                    batch_size=gs_batch_size,
-                    optimizer=gs_optimizer,
-                    lr_scheduler=gs_lr_scheduler,
-                    lr=gs_lr,
-                    take_best=gs_take_best,
-                    beta1=gs_beta1,
-                    beta2=gs_beta2,
-                    accelerator=accelerator,
-                    decoder_model=decoder_model,
-                    iters=gs_iters,
-                    predicted_program=predicted_program,
-                    conditioning_method=conditioning_method,
-                    trainable_nbit=trainable_nbit,
-                    no_flash_attn=no_flash_attn,
-                    max_grad_norm=gs_max_grad_norm,
-                )
-                # need to compute new ce loss to be more representative
-                with accelerator.autocast():
-                    ce_loss = decoder_loss(
+                with accelerator.no_sync(decoder_model):
+                    predicted_program = gradient_search(
+                        batch_idxs=batch_idxs,
+                        eval_dataset=dataset,
+                        batch_size=gs_batch_size,
+                        optimizer=gs_optimizer,
+                        lr_scheduler=gs_lr_scheduler,
+                        lr=gs_lr,
+                        take_best=gs_take_best,
+                        beta1=gs_beta1,
+                        beta2=gs_beta2,
+                        accelerator=accelerator,
                         decoder_model=decoder_model,
+                        iters=gs_iters,
+                        predicted_program=predicted_program,
                         conditioning_method=conditioning_method,
-                        decoder_input_ids=dec_ids,
-                        decoder_attention_mask=dec_mask,
-                        decoder_labels=dec_labels,
-                        dec_ids_lens=dec_ids_lens,
-                        ntokens=dataset.ntokens,
-                        decoder_pad_side=dataset.decoder_pad_side,
                         trainable_nbit=trainable_nbit,
                         no_flash_attn=no_flash_attn,
-                        predicted_program=predicted_program,
+                        max_grad_norm=gs_max_grad_norm,
                     )
-                    ce_loss_list[-1] = ce_loss.item()
+                    # need to compute new ce loss to be more representative
+                    with accelerator.autocast():
+                        ce_loss = decoder_loss(
+                            decoder_model=decoder_model,
+                            conditioning_method=conditioning_method,
+                            decoder_input_ids=dec_ids,
+                            decoder_attention_mask=dec_mask,
+                            decoder_labels=dec_labels,
+                            dec_ids_lens=dec_ids_lens,
+                            ntokens=dataset.ntokens,
+                            decoder_pad_side=dataset.decoder_pad_side,
+                            trainable_nbit=trainable_nbit,
+                            no_flash_attn=no_flash_attn,
+                            predicted_program=predicted_program,
+                        )
+                        ce_loss_list[-1] = ce_loss.item()
 
             # recover data from first batch (e.g. task_ids might be missing tasks due to permute_iters)
             assert isinstance(first_batch, dict)
@@ -1139,6 +1168,7 @@ def evaluate(
             label_texts = first_batch["decoder_label_texts"]
             out_token_length = first_batch["decoder_out_token_length"]
             dec_gen_ids_lens = first_batch["decoder_gen_input_ids_lens"]
+            inverse_color_maps = first_batch["inverse_color_maps"]
 
             # compute accuracy
             with accelerator.autocast():
@@ -1220,22 +1250,29 @@ def evaluate(
             # Compare each gen_text with label_texts
             assert len(task_ids) == len(inverters) == bs, (len(task_ids), len(inverters), bs)
             assert len(gen_texts) == len(label_texts) == bs, (len(gen_texts), len(label_texts), bs)
-            for task_id, inverter, gen_text, label_text in zip(task_ids, inverters, gen_texts, label_texts):
-                # save gen and gt text
-                task_id_and_text_list.append((task_id, gen_text, label_text))
-                # exact acc
-                exact_acc_list.append(int(gen_text == label_text))
+            assert len(inverse_color_maps) == bs
+            for task_id, inverter, gen_text, label_text, inverse_color_map in zip(task_ids, inverters, gen_texts, label_texts, inverse_color_maps):
                 # is valid grid
                 gen_grid, gen_is_grid = text_to_2d_grid(gen_text)
                 label_grid, label_is_grid = text_to_2d_grid(label_text)
                 assert label_is_grid
                 valid_grid_list.append(int(gen_is_grid))
                 if not gen_is_grid:
+                    # note gen text cannot be inverse color mapped in this case
+                    task_id_and_text_list.append((task_id, gen_text, label_text))
                     correct_grid_dim_list.append(0)
                     token_acc_list.append(0)
+                    exact_acc_list.append(0)
                     continue
                 assert isinstance(gen_grid, list)
                 assert isinstance(label_grid, list)
+                # now we know it's a valid grid, apply inverse color mapping
+                gen_grid = inverse_color_map[np.array(gen_grid)].tolist()
+                gen_text = grid_2d_to_text(gen_grid)
+                task_id_and_text_list.append((task_id, gen_text, label_text))
+                gen_grid, label_grid = list2d_to_tuple(gen_grid), list2d_to_tuple(label_grid)
+                # exact acc
+                exact_acc_list.append(int(gen_grid == label_grid))
                 # save gen and gt grid
                 task_id_and_inverter_grids.append((task_id, inverter, gen_grid, label_grid))
                 # correct grid dim
@@ -1252,6 +1289,9 @@ def evaluate(
                         num_token_correct += int(gen_x == label_x)
                 token_acc_list.append(num_token_correct / grid_size)
 
+    print(f"Rank {accelerator.process_index} reached barrier at {time.time()}")
+    torch.cuda.synchronize()
+    print(f"GPU synchronized at {time.time()}")
     distributed_state.wait_for_everyone()
     # results
     task_id_and_text_list = gather_object(task_id_and_text_list)
@@ -1412,6 +1452,14 @@ def invert_and_vote(inverters_and_grids: List[Tuple[str, Tuple[Tuple[int]]]]):
     return c1, c2, grids_all
 
 
+def grid_2d_to_text(grid: list[List[int]]):
+    height, width = len(grid), len(grid[0])
+    lines = [str(height), str(width)]
+    for row in grid:
+        lines.append("".join([str(x) for x in row]))
+    return "\n".join(lines)
+
+
 def text_to_2d_grid(text: str) -> Tuple[Optional[List[List[int]]], bool]:
     try:
         grid_lines = text.split('\n')
@@ -1529,7 +1577,7 @@ def main():
     parser.add_argument("--debug", action='store_true')
     parser.add_argument("--debug_enc_len", type=int, default=-1)
     parser.add_argument("--debug_dec_len", type=int, default=-1)
-    parser.add_argument("--debug_fixed_train_order", action="store_true")
+    parser.add_argument("--debug_fixed_order", action="store_true")
     parser.add_argument("--debug_random_pad", action="store_true")
     parser.add_argument("--debug_pad_len", type=int, default=-1)
 
@@ -1567,11 +1615,13 @@ def main():
     parser.add_argument("--eval_epochs", type=int, default=1)
     parser.add_argument("--max_seq_len", type=int, default=5120)
     parser.add_argument("--anti_invar_ratio", type=float, default=0.0)
+    parser.add_argument("--anti_invar_margin", type=float, default=1000.0)
     parser.add_argument("--max_grad_norm", default=1.0, type=float, help="Max gradient norm.")
     parser.add_argument("--optimizer", type=str, choices=["adamw8bit", "adamw", "sgd"], default="adamw")
     parser.add_argument("--encoder_loss_type", type=str, choices=["last", "rest", "all"], default="rest")
     parser.add_argument("--dry_train_run", action="store_true")
     parser.add_argument("--dry_eval_run", action="store_true")
+    parser.add_argument("--warmup_epoch", type=int, default=1)
 
     # scheduled extra losses
     parser.add_argument("--encoder_loss_lambda", type=float, default=1.0)
@@ -1586,6 +1636,8 @@ def main():
     parser.add_argument("--encoder_pad_side", type=str, choices=["left", "right"], default="right")
     parser.add_argument("--decoder_pad_side", type=str, choices=["left", "right"], default="right")
     parser.add_argument("--decoder_gen_pad_side", type=str, choices=["left", "right"], default="left")
+    parser.add_argument("--basic_aug", action='store_true')
+    parser.add_argument("--color_equiv", action='store_true')
 
     # train data
     parser.add_argument("--train_data_dir", type=str, default="/scratch/yl11330/re-arc/train_data/tasks")
@@ -1613,16 +1665,27 @@ def main():
     parser.add_argument("--eval_eval_augment_n", type=int, default=0)
     parser.add_argument("--eval_eval_permute_iters", type=int, default=0)
 
-    # gradient search
-    parser.add_argument("--gs_iters", type=int, default=0)
-    parser.add_argument("--gs_lr", type=float, default=1.0)
-    parser.add_argument("--gs_beta1", type=float, default=0.9)
-    parser.add_argument("--gs_beta2", type=float, default=0.9)
-    parser.add_argument("--gs_batch_size", type=int, default=2)
-    parser.add_argument("--gs_optimizer", type=str, choices=["adamw", "sgd"], default="adamw")
-    parser.add_argument("--gs_lr_scheduler", type=str, choices=["cosine", "constant"], default="cosine")
-    parser.add_argument("--gs_max_grad_norm", default=1e8, type=float, help="Max gradient norm.")
-    parser.add_argument("--gs_take_best", action="store_true")
+    # gradient search train
+    parser.add_argument("--train_gs_iters", type=int, default=0)
+    parser.add_argument("--train_gs_lr", type=float, default=1.0)
+    parser.add_argument("--train_gs_beta1", type=float, default=0.9)
+    parser.add_argument("--train_gs_beta2", type=float, default=0.9)
+    parser.add_argument("--train_gs_batch_size", type=int, default=2)
+    parser.add_argument("--train_gs_optimizer", type=str, choices=["adamw", "sgd"], default="adamw")
+    parser.add_argument("--train_gs_lr_scheduler", type=str, choices=["cosine", "constant"], default="cosine")
+    parser.add_argument("--train_gs_max_grad_norm", default=1e8, type=float, help="Max gradient norm.")
+    parser.add_argument("--train_gs_take_best", action="store_true")
+
+    # gradient search eval
+    parser.add_argument("--eval_gs_iters", type=int, default=0)
+    parser.add_argument("--eval_gs_lr", type=float, default=1.0)
+    parser.add_argument("--eval_gs_beta1", type=float, default=0.9)
+    parser.add_argument("--eval_gs_beta2", type=float, default=0.9)
+    parser.add_argument("--eval_gs_batch_size", type=int, default=2)
+    parser.add_argument("--eval_gs_optimizer", type=str, choices=["adamw", "sgd"], default="adamw")
+    parser.add_argument("--eval_gs_lr_scheduler", type=str, choices=["cosine", "constant"], default="cosine")
+    parser.add_argument("--eval_gs_max_grad_norm", default=1e8, type=float, help="Max gradient norm.")
+    parser.add_argument("--eval_gs_take_best", action="store_true")
 
     # Lora encoder
     parser.add_argument("--encoder_lora_rank", type=int, default=256)
@@ -1670,7 +1733,7 @@ def main():
         assert args.encoder_gradient_checkpointing == args.decoder_gradient_checkpointing
     if args.debug_enc_len > -1 and args.debug_dec_len == -1:
         args.debug_dec_len = args.debug_enc_len // 2
-    if args.gs_iters > 0:
+    if args.train_gs_iters > 0 or args.eval_gs_iters:
         assert args.eval_batch_size == 1
     assert (args.encoder_name == "nemo8b") == (args.decoder_name == "nemo8b")
     if args.encoder_name == "nemo8b":
@@ -1980,7 +2043,7 @@ def main():
         seed=args.seed,
         process_index=accelerator.process_index,
         ntokens=args.ntokens,
-        debug_fixed_train_order=args.debug_fixed_train_order,
+        debug_fixed_order=args.debug_fixed_order,
         debug_random_pad=args.debug_random_pad,
         debug_pad_len=args.debug_pad_len,
         encoder_pad_side=args.encoder_pad_side,
@@ -1988,6 +2051,8 @@ def main():
         encoder_loss_type=args.encoder_loss_type,
         anti_invar_ratio=args.anti_invar_ratio,
         num_workers=args.num_workers,
+        basic_aug=args.basic_aug,
+        color_equiv=args.color_equiv,
     )
     train_collate_fn = partial(collate_fn_train, dataset=train_dataset)
     if args.debug_enc_len > 0:
@@ -2046,7 +2111,7 @@ def main():
     num_training_steps = steps_per_epoch * args.num_epochs
     lr_scheduler = get_cosine_schedule_with_warmup(
         optimizer,
-        num_warmup_steps=steps_per_epoch * args.grad_accum_steps,  # 1 epoch warmup
+        num_warmup_steps=steps_per_epoch * args.grad_accum_steps * args.warmup_epoch,
         num_training_steps=num_training_steps * args.grad_accum_steps
     )
     logger.info(f'lr scheduler with {steps_per_epoch} warmup steps')
@@ -2161,6 +2226,7 @@ def main():
                         invar_loss_lambda_scheduler=invar_loss_lambda_scheduler,
                         kl_loss_lambda_scheduler=kl_loss_lambda_scheduler,
                         global_step=global_step,
+                        anti_invar_margin=args.anti_invar_margin,
                     )
 
                 # just accumulate for logging
@@ -2177,7 +2243,7 @@ def main():
 
                 accelerator.backward(total_loss)
 
-                # sanity check so
+                # sanity check
                 if global_step == 0:
                     for name, param in encoder_model.named_parameters():
                         if param.requires_grad and param.grad is None:
@@ -2262,6 +2328,7 @@ def main():
                 encoder_pad_side=args.encoder_pad_side,
                 decoder_pad_side=args.decoder_pad_side,
                 decoder_gen_pad_side=args.decoder_gen_pad_side,
+                color_equiv=args.color_equiv,
             )
             eval_eval_dataset = EvalDataset(
                 eval_dir=args.eval_eval_dir,
@@ -2282,6 +2349,7 @@ def main():
                 encoder_pad_side=args.encoder_pad_side,
                 decoder_pad_side=args.decoder_pad_side,
                 decoder_gen_pad_side=args.decoder_gen_pad_side,
+                color_equiv=args.color_equiv,
             )
             eval_collate_fn = partial(collate_fn_eval, dataset=eval_train_dataset) # only use tokenizer, padding info
             if args.debug_enc_len > 0:
@@ -2311,21 +2379,22 @@ def main():
                 no_flash_attn=args.no_flash_attn,
                 tie_models=args.tie_models,
                 output_dir=args.output_dir,
-                gs_iters=args.gs_iters,
-                gs_lr=args.gs_lr,
-                gs_beta1=args.gs_beta1,
-                gs_beta2=args.gs_beta2,
-                gs_batch_size=args.gs_batch_size,
-                gs_optimizer=args.gs_optimizer,
-                gs_max_grad_norm=args.gs_max_grad_norm,
-                gs_lr_scheduler=args.gs_lr_scheduler,
-                gs_take_best=args.gs_take_best,
+                gs_iters=args.train_gs_iters,
+                gs_lr=args.train_gs_lr,
+                gs_beta1=args.train_gs_beta1,
+                gs_beta2=args.train_gs_beta2,
+                gs_batch_size=args.train_gs_batch_size,
+                gs_optimizer=args.train_gs_optimizer,
+                gs_max_grad_norm=args.train_gs_max_grad_norm,
+                gs_lr_scheduler=args.train_gs_lr_scheduler,
+                gs_take_best=args.train_gs_take_best,
                 vae_no_sample=args.eval_no_sample,
                 encoder_loss_lambda_scheduler=encoder_loss_lambda_scheduler,
                 invar_loss_lambda_scheduler=invar_loss_lambda_scheduler,
                 kl_loss_lambda_scheduler=kl_loss_lambda_scheduler,
                 global_step=global_step,
                 dry_eval_run=args.dry_eval_run,
+                anti_invar_margin=args.anti_invar_margin,
             )
             eval_ce_loss, eval_encoder_loss, eval_kl_loss, \
                 eval_exact_acc, eval_valid_grid, eval_correct_grid_dim, eval_token_acc, eval_texts, \
@@ -2346,21 +2415,22 @@ def main():
                 no_flash_attn=args.no_flash_attn,
                 tie_models=args.tie_models,
                 output_dir=args.output_dir,
-                gs_iters=args.gs_iters,
-                gs_lr=args.gs_lr,
-                gs_beta1=args.gs_beta1,
-                gs_beta2=args.gs_beta2,
-                gs_batch_size=args.gs_batch_size,
-                gs_optimizer=args.gs_optimizer,
-                gs_max_grad_norm=args.gs_max_grad_norm,
-                gs_lr_scheduler=args.gs_lr_scheduler,
-                gs_take_best=args.gs_take_best,
+                gs_iters=args.eval_gs_iters,
+                gs_lr=args.eval_gs_lr,
+                gs_beta1=args.eval_gs_beta1,
+                gs_beta2=args.eval_gs_beta2,
+                gs_batch_size=args.eval_gs_batch_size,
+                gs_optimizer=args.eval_gs_optimizer,
+                gs_max_grad_norm=args.eval_gs_max_grad_norm,
+                gs_lr_scheduler=args.eval_gs_lr_scheduler,
+                gs_take_best=args.eval_gs_take_best,
                 vae_no_sample=args.eval_no_sample,
                 encoder_loss_lambda_scheduler=encoder_loss_lambda_scheduler,
                 invar_loss_lambda_scheduler=invar_loss_lambda_scheduler,
                 kl_loss_lambda_scheduler=kl_loss_lambda_scheduler,
                 global_step=global_step,
                 dry_eval_run=args.dry_eval_run,
+                anti_invar_margin=args.anti_invar_margin,
             )
 
             if accelerator.is_main_process:

@@ -1,3 +1,4 @@
+from transformers.models.llama.modeling_llama import LlamaRMSNorm
 from transformers.tokenization_utils_fast import PreTrainedTokenizerFast
 from datetime import timedelta
 import copy
@@ -19,6 +20,7 @@ from transformers import (
     AutoTokenizer,
     AutoModelForCausalLM,
     get_cosine_schedule_with_warmup,
+    get_constant_schedule,
 )
 from accelerate import Accelerator, PartialState, InitProcessGroupKwargs
 from accelerate.logging import get_logger
@@ -34,10 +36,12 @@ import bitsandbytes as bnb
 from data_utils import (
     TrainDatasetAutoregressive,
     EvalDatasetAutoregressive,
+    GSDatasetAutoregressive,
     collate_fn_train_autoregressive,
     collate_fn_eval_autoregressive,
     collate_fn_train_dummy_autoregressive,
     collate_fn_eval_dummy_autoregressive,
+    collate_fn_gs_autoregressive,
     ARCTokenizer,
 )
 
@@ -98,6 +102,7 @@ class LambdaScheduler:
         if not self.linear:
             return self.loss_lambda
         return self.loss_lambda * (step / self.total_steps)
+
 
 class VaeProjection(nn.Module):
     def __init__(
@@ -235,8 +240,10 @@ def compute_kl_loss(mu1: torch.Tensor, mu2: torch.Tensor, logvar1: torch.Tensor,
 def model_loss(
     # model
     model: Union[nn.Module, DistributedDataParallel],
+    prior_embeddings: Union[nn.Module, DistributedDataParallel],
     program_embeddings: Union[nn.Module, DistributedDataParallel],
     vae_projection: Union[nn.Module, DistributedDataParallel],
+    program_norm: Optional[Union[nn.Module, DistributedDataParallel]],
     tokenizer: ARCTokenizer,
     # data
     input_ids: List[torch.Tensor],
@@ -250,6 +257,7 @@ def model_loss(
     kl_loss_lambda_scheduler: LambdaScheduler,
     global_step: int,
     vae_no_sample: bool,
+    residual: bool,
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
 
     module = model.module if isinstance(model, DistributedDataParallel) else model
@@ -264,10 +272,14 @@ def model_loss(
     all_programs = []
     all_program_mus = []
     all_program_logvars = []
+    prior_inputs_embeds = prior_embeddings("dummy")[None, ...].expand(batch_size, -1, -1)
     program_inputs_embeds = program_embeddings("dummy")[None, ...].expand(batch_size, -1, -1)
     extra_program_attention_mask = torch.full((batch_size, ntokens), 1, device=device, dtype=dtype)
     extra_program_label_ids = torch.full((batch_size, ntokens), -100, device=device, dtype=dtype)
     pad_embeds = embed_tokens(torch.tensor(tokenizer.pad_token_id, device=device))
+
+    if program_norm is not None:
+        program_inputs_embeds = program_norm(program_inputs_embeds)
 
     # losses
     ce_losses = []
@@ -278,43 +290,39 @@ def model_loss(
         pair_inputs_embeds = embed_tokens(pair_input_ids)
 
         # STEP 1: prepend the last predicted program for all pairs except the first
-        pair_input_ids_lens_with_left_ntokens = pair_input_ids_lens
-        if pair_i > 0:
-            assert len(all_programs) > 0
-            assert tuple(all_programs[-1].shape[:2]) == (batch_size, ntokens)
-            pair_inputs_embeds = insert_based_on_sides(
-                data=pair_inputs_embeds,
-                to_insert=all_programs[-1],
-                lens=pair_input_ids_lens,
-                insert_side="left",
-                pad_side=pad_side,
-                pad_id=pad_embeds,
-            )
-            pair_attention_mask = insert_based_on_sides(
-                data=pair_attention_mask,
-                to_insert=extra_program_attention_mask,
-                lens=pair_input_ids_lens,
-                insert_side="left",
-                pad_side=pad_side,
-                pad_id=0,
-            )
-            pair_label_ids = insert_based_on_sides(
-                data=pair_label_ids,
-                to_insert=extra_program_label_ids,
-                lens=pair_input_ids_lens,
-                insert_side="left",
-                pad_side=pad_side,
-                pad_id=-100,
-            )
-            # update lens to reflect the extra program
-            pair_input_ids_lens_with_left_ntokens = [l + ntokens for l in pair_input_ids_lens]
+        pair_inputs_embeds = insert_based_on_sides(
+            data=pair_inputs_embeds,
+            to_insert=all_programs[-1] if pair_i > 0 else prior_inputs_embeds, # prev program
+            lens=pair_input_ids_lens,
+            insert_side="left",
+            pad_side=pad_side,
+            pad_id=pad_embeds,
+        )
+        pair_attention_mask = insert_based_on_sides(
+            data=pair_attention_mask,
+            to_insert=extra_program_attention_mask,
+            lens=pair_input_ids_lens,
+            insert_side="left",
+            pad_side=pad_side,
+            pad_id=0,
+        )
+        pair_label_ids = insert_based_on_sides(
+            data=pair_label_ids,
+            to_insert=extra_program_label_ids,
+            lens=pair_input_ids_lens,
+            insert_side="left",
+            pad_side=pad_side,
+            pad_id=-100,
+        )
+        # update lens to reflect the extra program
+        pair_input_ids_lens = [l + ntokens for l in pair_input_ids_lens]
 
         # STEP 2: append new program input to the right for all pairs except the last
         if pair_i < max(num_pairs) - 1:
             pair_inputs_embeds = insert_based_on_sides(
                 data=pair_inputs_embeds,
                 to_insert=program_inputs_embeds,
-                lens=pair_input_ids_lens_with_left_ntokens,
+                lens=pair_input_ids_lens,
                 insert_side="right",
                 pad_side=pad_side,
                 pad_id=pad_embeds,
@@ -322,7 +330,7 @@ def model_loss(
             pair_attention_mask = insert_based_on_sides(
                 data=pair_attention_mask,
                 to_insert=extra_program_attention_mask,
-                lens=pair_input_ids_lens_with_left_ntokens,
+                lens=pair_input_ids_lens,
                 insert_side="right",
                 pad_side=pad_side,
                 pad_id=0,
@@ -330,7 +338,7 @@ def model_loss(
             pair_label_ids = insert_based_on_sides(
                 data=pair_label_ids,
                 to_insert=extra_program_label_ids,
-                lens=pair_input_ids_lens_with_left_ntokens,
+                lens=pair_input_ids_lens,
                 insert_side="right",
                 pad_side=pad_side,
                 pad_id=-100,
@@ -357,12 +365,19 @@ def model_loss(
             hidden_states = model_out.hidden_states[-1] # [B, seq_len, hidden_dim]
             new_program = extract_program_from_right_side(
                 data=hidden_states,
-                lens=pair_input_ids_lens_with_left_ntokens,
+                lens=pair_input_ids_lens,
                 ntokens=ntokens,
                 pad_side=pad_side,
             )
             new_program_mu, new_program_logvar = vae_projection(new_program)
             new_program = vae_sample(mu=new_program_mu, logvar=new_program_logvar, no_sample=vae_no_sample)
+            # optionally use residual connection
+            if residual:
+                assert new_program.shape == prior_inputs_embeds.shape
+                new_program += (all_programs[-1] if pair_i > 0 else prior_inputs_embeds)
+            # optionally apply norm
+            if program_norm is not None:
+                new_program = program_norm(new_program)
             # save mu var for kl, save program for next iter
             all_program_mus.append(new_program_mu)
             all_program_logvars.append(new_program_logvar)
@@ -397,13 +412,7 @@ def model_loss(
     # TODO: have an option to return program early?
     final_programs = [torch.tensor(0.0) for _ in range(batch_size)]
     for batch_i, num_pair in enumerate(num_pairs):
-        try:
-            final_programs[batch_i] = all_programs[num_pair - 2][batch_i]
-        except:
-            print('batch_size', batch_size)
-            print('batch_i', batch_i)
-            print('final_programs[batch_i]', final_programs[batch_i].shape)
-            print('num_pair', num_pair)
+        final_programs[batch_i] = all_programs[num_pair - 2][batch_i]
     final_programs = torch.stack(final_programs)
 
     return ce_loss, kl_loss, total_loss, final_programs # type: ignore
@@ -462,14 +471,174 @@ def chunks_uniform_batch(task_ids: List[str], data_idxs: List[int], n: int) -> I
         yield from chunks(data_idxs, n)
 
 
+@torch.enable_grad()
+def gradient_search(
+        batch_idxs: List[int],
+        eval_dataset: EvalDatasetAutoregressive,
+        batch_size: int,
+        optimizer: str,
+        lr_scheduler: str,
+        lr: float,
+        take_best: bool,
+        beta1: float,
+        beta2: float,
+        accelerator: Accelerator,
+        model: nn.Module,
+        iters: int,
+        predicted_program: torch.Tensor,
+        max_grad_norm: float,
+    ) -> Tuple[torch.Tensor, float]:
+    # note gradient checkpointing does not matter because we are freezing the model here
+    # however, if we choose to tune the decoder as well, then gradient checkpointing might be desired
+
+    assert len(batch_idxs) == 1
+    eval_task = eval_dataset.eval_tasks[batch_idxs[0]]
+
+    # gradient search dataset and dataloader
+    gs_dataset = GSDatasetAutoregressive(
+        task=eval_task,
+        tokenizer=eval_dataset.tokenizer,
+        ntokens=eval_dataset.ntokens,
+        debug_random_pad=eval_dataset.debug_random_pad,
+        debug_pad_len=eval_dataset.debug_pad_len,
+        gen_pad_side=eval_dataset.gen_pad_side,
+    )
+    if take_best:
+        assert batch_size >= len(gs_dataset)
+    batch_size = min(batch_size, len(gs_dataset))
+    gs_collate_fn = partial(collate_fn_gs_autoregressive, dataset=gs_dataset)
+    gs_loader = DataLoader(
+        gs_dataset,
+        batch_size=batch_size,
+        shuffle=True,
+        collate_fn=gs_collate_fn,
+        drop_last=False,
+        num_workers=0,
+    )
+
+    # get program parameters
+    program_params = [predicted_program]
+    assert all(not p.requires_grad for p in program_params)
+    for p in program_params:
+        p.requires_grad = True
+
+    # expand to match predicted program with batch size
+    assert predicted_program.shape[0] == 1
+    predicted_program = predicted_program.expand(batch_size, *predicted_program.shape[1:])
+
+    # optimizer
+    if optimizer == 'adamw':
+        optim = torch.optim.AdamW(program_params, weight_decay=0.0, lr=lr, betas=(beta1, beta2)) # type: ignore
+    else:
+        optim = torch.optim.SGD(program_params, lr=lr) # type: ignore
+
+    # lr scheduler
+    if lr_scheduler == "cosine":
+        scheduler = get_cosine_schedule_with_warmup(
+            optim,
+            num_warmup_steps=0,
+            num_training_steps=iters,
+        )
+    else:
+        scheduler = get_constant_schedule(optim)
+    # optim, gs_loader = accelerator.prepare(optim, gs_loader)
+
+    curr_iter = 0
+    best_loss = float("inf")
+    best_program = None
+    model.train()
+
+    device = predicted_program.device
+    module = model.module if isinstance(model, DistributedDataParallel) else model
+    embed_tokens = module.model.embed_tokens if hasattr(module.model, "embed_tokens") else module.model.model.embed_tokens
+    extra_program_attention_mask = torch.full((batch_size, eval_dataset.ntokens), 1, device=device, dtype=torch.int64)
+    extra_program_label_ids = torch.full((batch_size, eval_dataset.ntokens), -100, device=device, dtype=torch.int64)
+    pad_embeds = embed_tokens(torch.tensor(eval_dataset.tokenizer.pad_token_id, device=device))
+
+    # train!
+    while curr_iter < iters:
+        for gs_batch_data in gs_loader:
+            input_ids = gs_batch_data["input_ids"].to(accelerator.device)
+            attention_mask = gs_batch_data["attention_mask"].to(accelerator.device)
+            label_ids = gs_batch_data["label_ids"].to(accelerator.device)
+            input_ids_lens = gs_batch_data["input_ids_lens"]
+
+            with accelerator.autocast():
+                inputs_embeds = embed_tokens(input_ids)
+                # STEP 1: prepend the last predicted program
+                inputs_embeds = insert_based_on_sides(
+                    data=inputs_embeds,
+                    to_insert=predicted_program,
+                    lens=input_ids_lens,
+                    insert_side="left",
+                    pad_side=eval_dataset.train_pad_side,
+                    pad_id=pad_embeds,
+                )
+                attention_mask = insert_based_on_sides(
+                    data=attention_mask,
+                    to_insert=extra_program_attention_mask,
+                    lens=input_ids_lens,
+                    insert_side="left",
+                    pad_side=eval_dataset.train_pad_side,
+                    pad_id=0,
+                )
+                label_ids = insert_based_on_sides(
+                    data=label_ids,
+                    to_insert=extra_program_label_ids,
+                    lens=input_ids_lens,
+                    insert_side="left",
+                    pad_side=eval_dataset.train_pad_side,
+                    pad_id=-100,
+                )
+                gs_loss = model(
+                    inputs_embeds=inputs_embeds,
+                    attention_mask=attention_mask,
+                    labels=label_ids,
+                    output_hidden_states=True,
+                ).loss
+
+            accelerator.backward(gs_loss)
+            accelerator.clip_grad_norm_(program_params, max_grad_norm)
+            optim.step()
+            scheduler.step()
+            optim.zero_grad()
+
+            if take_best and gs_loss.item() < best_loss:
+                best_loss = gs_loss.item()
+                best_program = predicted_program.detach().clone()
+
+            curr_iter += 1
+            if curr_iter >= iters:
+                break
+
+    # set decoder back to eval mode
+    model.eval()
+
+    for p in program_params:
+        p.requires_grad = False
+
+    if take_best:
+        assert best_program is not None
+        predicted_program = best_program
+    else:
+        best_loss = gs_loss.item() # type: ignore
+
+    # shrink to match predicted program with batch size 1
+    predicted_program = predicted_program[:1]
+    # NOTE: we do not apply normalization here
+    return predicted_program, best_loss
+
+
 ################################################
 # Evaluate with cross-entropy + exact-match
 ################################################
 @torch.no_grad()
 def evaluate(
     model: Union[nn.Module, DistributedDataParallel],
+    prior_embeddings: Union[nn.Module, DistributedDataParallel],
     program_embeddings: Union[nn.Module, DistributedDataParallel],
     vae_projection: Union[nn.Module, DistributedDataParallel],
+    program_norm: Optional[Union[nn.Module, DistributedDataParallel]],
     tokenizer: ARCTokenizer,
     dataset: EvalDatasetAutoregressive,
     accelerator: Accelerator,
@@ -481,10 +650,23 @@ def evaluate(
     kl_loss_lambda_scheduler: LambdaScheduler,
     global_step: int,
     dry_eval_run: bool,
+    gs_iters: int,
+    gs_batch_size: int,
+    gs_lr: float,
+    gs_beta1: float,
+    gs_beta2: float,
+    gs_optimizer: str,
+    gs_max_grad_norm: float,
+    gs_lr_scheduler: str,
+    gs_take_best: bool,
+    residual: bool,
 ):
     model.eval()
+    prior_embeddings.eval()
     program_embeddings.eval()
     vae_projection.eval()
+    if program_norm is not None:
+        program_norm.eval()
 
     # get modules in case of DDP
     module = model.module if isinstance(model, DistributedDataParallel) else model
@@ -568,8 +750,10 @@ def evaluate(
                     ce_loss, kl_loss, _, predicted_program = model_loss(
                         # model
                         model=model,
+                        prior_embeddings=prior_embeddings,
                         program_embeddings=program_embeddings,
                         vae_projection=vae_projection,
+                        program_norm=program_norm,
                         tokenizer=tokenizer,
                         # data
                         input_ids=input_ids,
@@ -583,6 +767,7 @@ def evaluate(
                         kl_loss_lambda_scheduler=kl_loss_lambda_scheduler,
                         global_step=global_step,
                         vae_no_sample=vae_no_sample,
+                        residual=residual,
                     )
 
                 # ce loss should be from the original permutation, which is set to the first permuted batch
@@ -628,6 +813,27 @@ def evaluate(
             input_ids_lens = first_batch["input_ids_lens"]
             gen_input_ids_lens = first_batch["gen_input_ids_lens"]
             num_pairs = first_batch["num_pairs"]
+
+            if gs_iters > 0:
+                with accelerator.no_sync(model):
+                    assert isinstance(predicted_program, torch.Tensor)
+                    predicted_program, ce_loss = gradient_search(
+                        batch_idxs=batch_idxs,
+                        eval_dataset=dataset,
+                        batch_size=gs_batch_size,
+                        optimizer=gs_optimizer,
+                        lr_scheduler=gs_lr_scheduler,
+                        lr=gs_lr,
+                        take_best=gs_take_best,
+                        beta1=gs_beta1,
+                        beta2=gs_beta2,
+                        accelerator=accelerator,
+                        model=model,
+                        iters=gs_iters,
+                        predicted_program=predicted_program,
+                        max_grad_norm=gs_max_grad_norm,
+                    )
+                    ce_loss_list[-1] = ce_loss
 
             # compute accuracy
             with accelerator.autocast():
@@ -890,24 +1096,13 @@ def save_train_model(
         vae_projection: Union[nn.Module, DistributedDataParallel],
         output_dir: str,
         epoch: int,
-    ) -> Tuple[str, str, str, str]:
+    ) -> Tuple[str, str]:
 
     # encoder
     save_enc_path = os.path.join(output_dir, f"encoder_lora_epoch_{epoch+1}")
     module = model.module if isinstance(model, DistributedDataParallel) else model
     module.save_pretrained(save_enc_path, save_embedding_layers=True)
     logger.info(f"Saved encoder to {save_enc_path}")
-
-    enc_lmhead_path = os.path.join(output_dir, f"encoder_lmhead_epoch_{epoch+1}.pt")
-    enc_embeds_path = os.path.join(output_dir, f"encoder_embeds_epoch_{epoch+1}.pt")
-    torch.save(module.lm_head.state_dict(), enc_lmhead_path)
-    if hasattr(module.model, "embed_tokens"):
-        embeds = module.model.embed_tokens
-    else:
-        embeds = module.model.model.embed_tokens
-    torch.save(embeds.state_dict(), enc_embeds_path)
-    logger.info(f"Saved encoder lmhead to {enc_lmhead_path}")
-    logger.info(f"Saved encoder embeds to {enc_embeds_path}")
 
     # projection
     save_proj_path = os.path.join(output_dir, f"vae_projection_epoch_{epoch+1}.pt")
@@ -917,7 +1112,7 @@ def save_train_model(
     torch.save(vae_projection_module, save_proj_path)
     logger.info(f"Saved conditioning projection to {save_proj_path}")
 
-    return save_enc_path, enc_lmhead_path, enc_embeds_path, save_proj_path
+    return save_enc_path, save_proj_path
 
 
 def print_trainable_parameters(model):
@@ -945,10 +1140,9 @@ def print_trainable_parameters(model):
 
 
 class ProgramEmbeddings(nn.Module):
-    def __init__(self, embedding: torch.Tensor, ntokens: int):
+    def __init__(self, embedding: torch.Tensor):
         super(ProgramEmbeddings, self).__init__()
         self.embedding = nn.Parameter(embedding)
-        self.ntokens = ntokens
 
     def forward(self, program_i: int) -> torch.Tensor:
         del program_i
@@ -1005,6 +1199,8 @@ def main():
     parser.add_argument("--trainable_nbit", type=int, choices=[16, 32], default=16)
     parser.add_argument("--gradient_checkpointing", action="store_true")
     parser.add_argument("--no_lora", action="store_true")
+    parser.add_argument("--residual", action="store_true")
+    parser.add_argument("--normalize", action="store_true")
 
     # Conditioning projection
     parser.add_argument("--projection_type", type=str, choices=["shared", "full"], default="full")
@@ -1020,25 +1216,26 @@ def main():
     parser.add_argument("--train_batch_size", type=int, default=2)
     parser.add_argument("--eval_batch_size", type=int, default=2)
     parser.add_argument("--lr_embedding", type=float, default=1e-5)
-    parser.add_argument("--lr_program", type=float, default=1e-5)
+    parser.add_argument("--lr_program", type=float, default=1e-4)
+    parser.add_argument("--lr_prior", type=float, default=1e-4)
     parser.add_argument("--lr_other", type=float, default=1e-4)
     parser.add_argument("--weight_decay", type=float, default=0.0)
-    parser.add_argument("--num_epochs", type=int, default=25)
+    parser.add_argument("--num_epochs", type=int, default=40)
     parser.add_argument("--samples_per_epoch", type=int, default=20000)
-    parser.add_argument("--eval_epochs", type=int, default=1)
+    parser.add_argument("--eval_epochs", type=int, default=2)
     parser.add_argument("--max_grad_norm", default=1.0, type=float, help="Max gradient norm.")
     parser.add_argument("--optimizer", type=str, choices=["adamw8bit", "adamw", "sgd"], default="adamw")
     parser.add_argument("--dry_train_run", action="store_true")
     parser.add_argument("--dry_eval_run", action="store_true")
+    parser.add_argument("--warmup_epoch", type=int, default=1)
 
     # scheduled extra losses
-    parser.add_argument("--linear_encoder", action="store_true")
     parser.add_argument("--kl_loss_lambda", type=float, default=0.0)
     parser.add_argument("--linear_kl", action="store_true")
 
     # both data
     parser.add_argument("--num_workers", type=int, default=8)
-    parser.add_argument("--min_num_pair", type=int, default=3) # includes test pair
+    parser.add_argument("--min_num_pair", type=int, default=8) # includes test pair
     parser.add_argument("--max_num_pair", type=int, default=8) # includes test pair
     parser.add_argument("--train_pad_side", type=str, choices=["left", "right"], default="right")
     parser.add_argument("--gen_pad_side", type=str, choices=["left", "right"], default="left")
@@ -1075,6 +1272,28 @@ def main():
     parser.add_argument("--eval_eval_augment_n", type=int, default=0)
     parser.add_argument("--eval_eval_permute_iters", type=int, default=0)
 
+    # gradient search train
+    parser.add_argument("--train_gs_iters", type=int, default=0)
+    parser.add_argument("--train_gs_lr", type=float, default=1.0)
+    parser.add_argument("--train_gs_beta1", type=float, default=0.9)
+    parser.add_argument("--train_gs_beta2", type=float, default=0.9)
+    parser.add_argument("--train_gs_batch_size", type=int, default=2)
+    parser.add_argument("--train_gs_optimizer", type=str, choices=["adamw", "sgd"], default="adamw")
+    parser.add_argument("--train_gs_lr_scheduler", type=str, choices=["cosine", "constant"], default="cosine")
+    parser.add_argument("--train_gs_max_grad_norm", default=1e8, type=float, help="Max gradient norm.")
+    parser.add_argument("--train_gs_take_best", action="store_true")
+
+    # gradient search eval
+    parser.add_argument("--eval_gs_iters", type=int, default=0)
+    parser.add_argument("--eval_gs_lr", type=float, default=1.0)
+    parser.add_argument("--eval_gs_beta1", type=float, default=0.9)
+    parser.add_argument("--eval_gs_beta2", type=float, default=0.9)
+    parser.add_argument("--eval_gs_batch_size", type=int, default=2)
+    parser.add_argument("--eval_gs_optimizer", type=str, choices=["adamw", "sgd"], default="adamw")
+    parser.add_argument("--eval_gs_lr_scheduler", type=str, choices=["cosine", "constant"], default="cosine")
+    parser.add_argument("--eval_gs_max_grad_norm", default=1e8, type=float, help="Max gradient norm.")
+    parser.add_argument("--eval_gs_take_best", action="store_true")
+
     # Lora
     parser.add_argument("--lora_rank", type=int, default=256)
     parser.add_argument("--lora_alpha", type=float, default=24.0)
@@ -1101,6 +1320,8 @@ def main():
         assert args.train_pad_side == args.gen_pad_side == "left"
     assert not (args.no_train_original and args.only_train_original)
     assert args.min_num_pair >= 3
+    if args.gs_iters > 0:
+        assert args.eval_batch_size == 1
 
     if args.no_lora:
         args.untrainable_nbit = args.trainable_nbit # untrainable become trainable
@@ -1113,6 +1334,7 @@ def main():
     init_process_process_kwargs.timeout = timedelta(seconds=28800)
     os.environ["WANDB_API_KEY"]="faf21d9ff65ee150697c7e96f070616f6b662134"
     accelerator = Accelerator(
+        gradient_accumulation_steps=args.grad_accum_steps,
         mixed_precision="bf16",
         project_config=project_config,
         log_with="wandb" if args.wandb else None,
@@ -1190,15 +1412,21 @@ def main():
     logger.info("Base models loaded.")
 
     # initialize program embeddings
+    prior_embeddings = ProgramEmbeddings(
+        embedding=initialize_program_embeddings(
+            base_model.model.embed_tokens.weight.data.detach().clone(),
+            accelerator,
+            ntokens=args.ntokens,
+        ),
+    )
     program_embeddings = ProgramEmbeddings(
         embedding=initialize_program_embeddings(
             base_model.model.embed_tokens.weight.data.detach().clone(),
             accelerator,
             ntokens=args.ntokens,
         ),
-        ntokens=args.ntokens,
     )
-    logger.info("Program embeddings initialized.")
+    logger.info("Prior & Program embeddings initialized.")
 
     # only keep these tokens, resize model embedding (eos == pad)
     # we do not include program tokens here, those are added later during training and inference
@@ -1268,10 +1496,19 @@ def main():
         param.requires_grad = True
     logger.info("conditioning projection initialized")
 
-    # program embeddings
+    # shared norm
+    program_norm = None
+    if args.normalize:
+        program_norm = LlamaRMSNorm(model.config.hidden_size, eps=model.config.rms_norm_eps) # type: ignore
+
+    # prior & prior embeddings
+    for param in prior_embeddings.parameters():
+        param.requires_grad = True
     for param in program_embeddings.parameters():
         param.requires_grad = True
-    logger.info("program embeddings initialized")
+    if program_norm is not None:
+        for param in program_norm.parameters():
+            param.requires_grad = True
 
     # convert model weights
     for name, param in model.named_parameters():
@@ -1280,22 +1517,36 @@ def main():
     for name, param in vae_projection.named_parameters():
         assert param.requires_grad
         param.data = param.data.to(NBIT_TO_DTYPE[args.trainable_nbit])
+    for name, param in prior_embeddings.named_parameters():
+        assert param.requires_grad
+        param.data = param.data.to(NBIT_TO_DTYPE[args.trainable_nbit])
     for name, param in program_embeddings.named_parameters():
         assert param.requires_grad
         param.data = param.data.to(NBIT_TO_DTYPE[args.trainable_nbit])
+    if program_norm is not None:
+        for param in program_norm.parameters():
+            assert param.requires_grad
+            param.data = param.data.to(NBIT_TO_DTYPE[args.trainable_nbit])
     logger.info(f'converted trainable model weights to {NBIT_TO_DTYPE[args.trainable_nbit]}')
 
     # number of parameters
     print_trainable_parameters(model)
     proj_n_params = sum(p.numel() for p in vae_projection.parameters())
-    emb_n_params = sum(p.numel() for p in program_embeddings.parameters())
+    prior_emb_n_params = sum(p.numel() for p in prior_embeddings.parameters())
+    program_emb_n_params = sum(p.numel() for p in program_embeddings.parameters())
     logger.info(f'conditioning projection params {three_commas(proj_n_params)}')
-    logger.info(f'program embedding params {three_commas(emb_n_params)}')
+    logger.info(f'prior embedding params {three_commas(prior_emb_n_params)}')
+    logger.info(f'program embedding params {three_commas(program_emb_n_params)}')
+    if program_norm is not None:
+        program_norm_n_params = sum(p.numel() for p in program_norm.parameters())
+        logger.info(f'program norm params {three_commas(program_norm_n_params)}')
 
     # model size
     logger.info(f'model size {round(model.get_memory_footprint() / 1024 ** 3, 2)}GB')
     logger.info(f'conditioning projection size {round(vae_projection.get_memory_footprint() / 1024 ** 3, 2)}GB')
+    logger.info(f'prior embeddings size {round(prior_embeddings.get_memory_footprint() / 1024 ** 3, 2)}GB')
     logger.info(f'program embeddings size {round(program_embeddings.get_memory_footprint() / 1024 ** 3, 2)}GB')
+    logger.info(f'skipping computing program norm memory space because im lazy')
 
     # Build training dataset
     train_dataset = TrainDatasetAutoregressive(
@@ -1356,14 +1607,19 @@ def main():
                 other_params.append(param)
     for param in vae_projection.parameters():
         other_params.append(param)
+    if program_norm is not None:
+        for param in program_norm.parameters():
+            other_params.append(param)
+    prior_params = [param for param in prior_embeddings.parameters()]
     program_params = [param for param in program_embeddings.parameters()]
 
     optimizer_grouped_params = [
         {"params": embedding_params, "lr": args.lr_embedding},
+        {"params": prior_params, "lr": args.lr_prior},
         {"params": program_params, "lr": args.lr_program},
         {"params": other_params, "lr": args.lr_other},
     ]
-    all_params = embedding_params + program_params + other_params
+    all_params = embedding_params + prior_params + program_params + other_params
     if args.optimizer == 'adamw':
         optimizer = torch.optim.AdamW(optimizer_grouped_params, weight_decay=args.weight_decay) # type: ignore
     elif args.optimizer == 'adamw8bit':
@@ -1372,6 +1628,7 @@ def main():
     else:
         optimizer = torch.optim.SGD(optimizer_grouped_params) # type: ignore
     logger.info(f"Optimizer with {len(embedding_params)} embed-params lr={args.lr_embedding}")
+    logger.info(f"Optimizer with {len(prior_params)} prior-params lr={args.lr_prior}")
     logger.info(f"Optimizer with {len(program_params)} program-params lr={args.lr_program}")
     logger.info(f"Optimizer with {len(other_params)} other-params lr={args.lr_other}")
 
@@ -1380,8 +1637,8 @@ def main():
     num_training_steps = steps_per_epoch * args.num_epochs
     lr_scheduler = get_cosine_schedule_with_warmup(
         optimizer,
-        num_warmup_steps=steps_per_epoch,  # 1 epoch warmup
-        num_training_steps=num_training_steps,
+        num_warmup_steps=steps_per_epoch * args.grad_accum_steps * args.warmup_epoch,
+        num_training_steps=num_training_steps * args.grad_accum_steps,
     )
     logger.info(f'lr scheduler with {steps_per_epoch} warmup steps')
 
@@ -1395,20 +1652,27 @@ def main():
     # Prepare with accelerator
     (
         model,
+        prior_embeddings,
         program_embeddings,
         vae_projection,
+        program_norm,
         optimizer,
         train_loader,
     ) = accelerator.prepare(
         model,
+        prior_embeddings,
         program_embeddings,
         vae_projection,
+        program_norm,
         optimizer,
         train_loader,
     )
     assert isinstance(model, (nn.Module, DistributedDataParallel))
+    assert isinstance(prior_embeddings, (nn.Module, DistributedDataParallel))
     assert isinstance(program_embeddings, (nn.Module, DistributedDataParallel))
     assert isinstance(vae_projection, (nn.Module, DistributedDataParallel))
+    if program_norm is not None:
+        assert isinstance(program_norm, (nn.Module, DistributedDataParallel))
 
     if args.dry_train_run:
         for _ in tqdm(train_loader, total=len(train_loader)):
@@ -1440,66 +1704,66 @@ def main():
     # train!
     for epoch in range(args.num_epochs):
         model.train()
+        prior_embeddings.train()
         program_embeddings.train()
         vae_projection.train()
+        if program_norm is not None:
+            program_norm.train()
 
         ce_loss_accum = 0.0
         kl_loss_accum = 0.0
         total_loss_accum = 0.0
         grad_norm_accum = 0.0
 
-        for batch_idx, batch_data in enumerate(train_loader):
+        for batch_data in train_loader:
             input_ids = [x.to(accelerator.device) for x in batch_data["input_ids"]]
             attention_mask = [x.to(accelerator.device) for x in batch_data["attention_mask"]]
             label_ids = [x.to(accelerator.device) for x in batch_data["label_ids"]]
             input_ids_lens = batch_data["input_ids_lens"]
             num_pairs = batch_data["num_pairs"]
 
-            with accelerator.autocast():
-                ce_loss, kl_loss, total_loss, _ = model_loss(
-                    # model
-                    model=model,
-                    program_embeddings=program_embeddings,
-                    vae_projection=vae_projection,
-                    tokenizer=tokenizer,
-                    # data
-                    input_ids=input_ids,
-                    attention_mask=attention_mask,
-                    label_ids=label_ids,
-                    input_ids_lens=input_ids_lens,
-                    num_pairs=num_pairs,
-                    # others
-                    ntokens=args.ntokens,
-                    pad_side=args.train_pad_side,
-                    kl_loss_lambda_scheduler=kl_loss_lambda_scheduler,
-                    global_step=global_step,
-                    vae_no_sample=args.train_no_sample,
-                )
+            with accelerator.accumulate(model, prior_embeddings, program_embeddings, vae_projection, program_norm):
+                with accelerator.autocast():
+                    ce_loss, kl_loss, total_loss, _ = model_loss(
+                        # model
+                        model=model,
+                        prior_embeddings=prior_embeddings,
+                        program_embeddings=program_embeddings,
+                        vae_projection=vae_projection,
+                        program_norm=program_norm,
+                        tokenizer=tokenizer,
+                        # data
+                        input_ids=input_ids,
+                        attention_mask=attention_mask,
+                        label_ids=label_ids,
+                        input_ids_lens=input_ids_lens,
+                        num_pairs=num_pairs,
+                        # others
+                        ntokens=args.ntokens,
+                        pad_side=args.train_pad_side,
+                        kl_loss_lambda_scheduler=kl_loss_lambda_scheduler,
+                        global_step=global_step,
+                        vae_no_sample=args.train_no_sample,
+                        residual=args.residual,
+                    )
 
-            avg_ce_loss = accelerator.gather(ce_loss.repeat(args.train_batch_size)).mean() # type: ignore
-            avg_kl_loss = accelerator.gather(kl_loss.repeat(args.train_batch_size)).mean() # type: ignore
-            avg_total_loss = accelerator.gather(total_loss.repeat(args.train_batch_size)).mean() # type: ignore
-            ce_loss_accum += avg_ce_loss.item() / args.grad_accum_steps
-            kl_loss_accum += avg_kl_loss.item() / args.grad_accum_steps
-            total_loss_accum += avg_total_loss.item() / args.grad_accum_steps
+                avg_ce_loss = accelerator.gather(ce_loss.repeat(args.train_batch_size)).mean() # type: ignore
+                avg_kl_loss = accelerator.gather(kl_loss.repeat(args.train_batch_size)).mean() # type: ignore
+                avg_total_loss = accelerator.gather(total_loss.repeat(args.train_batch_size)).mean() # type: ignore
+                ce_loss_accum += avg_ce_loss.item() / args.grad_accum_steps
+                kl_loss_accum += avg_kl_loss.item() / args.grad_accum_steps
+                total_loss_accum += avg_total_loss.item() / args.grad_accum_steps
 
-            accelerator.backward(total_loss / args.grad_accum_steps)
+                accelerator.backward(total_loss)
 
-            if ((batch_idx + 1) % args.grad_accum_steps) == 0 or (batch_idx + 1 == len(train_loader)):
-                # sanity check
-                if global_step == 0 and not args.train_no_sample:
-                    for name, param in model.named_parameters():
-                        if param.requires_grad and param.grad is None:
-                            raise RuntimeError(f"Parameter '{name}' requires a gradient but received none!")
-                    for name, param in vae_projection.named_parameters():
-                        if param.requires_grad and param.grad is None:
-                            raise RuntimeError(f"Parameter '{name}' requires a gradient but received none!")
+                if accelerator.sync_gradients:
+                    grad_norm_accum += accelerator.clip_grad_norm_(all_params, args.max_grad_norm).item() / args.grad_accum_steps # type: ignore
 
-                grad_norm_accum += accelerator.clip_grad_norm_(all_params, args.max_grad_norm).item() / args.grad_accum_steps # type: ignore
                 optimizer.step()
                 lr_scheduler.step()
                 optimizer.zero_grad()
 
+            if accelerator.sync_gradients:
                 global_step += 1
                 if global_step % args.log_every == 0:
                     progress_bar.update(args.log_every)
@@ -1510,8 +1774,9 @@ def main():
                             "train/total_loss": total_loss_accum,
                             "train/grad_norm": grad_norm_accum,
                             "train/lr_embedding": lr_scheduler.get_last_lr()[0],
-                            "train/lr_program": lr_scheduler.get_last_lr()[1],
-                            "train/lr_other": lr_scheduler.get_last_lr()[2],
+                            "train/lr_prior": lr_scheduler.get_last_lr()[1],
+                            "train/lr_program": lr_scheduler.get_last_lr()[2],
+                            "train/lr_other": lr_scheduler.get_last_lr()[3],
                         }, step=global_step)
                     except:
                         logger.info(f"wandb failed on process {accelerator.process_index}, skipping the error")
@@ -1566,8 +1831,10 @@ def main():
                 train_exact_acc, train_valid_grid, train_correct_grid_dim, train_token_acc, train_texts, \
                 train_votes, train_competition_sub_acc, train_competition_all_acc = evaluate(
                 model=model,
+                prior_embeddings=prior_embeddings,
                 program_embeddings=program_embeddings,
                 vae_projection=vae_projection,
+                program_norm=program_norm,
                 tokenizer=tokenizer,
                 dataset=eval_train_dataset,
                 accelerator=accelerator,
@@ -1579,13 +1846,25 @@ def main():
                 kl_loss_lambda_scheduler=kl_loss_lambda_scheduler,
                 global_step=global_step,
                 dry_eval_run=args.dry_eval_run,
+                gs_iters=args.train_gs_iters,
+                gs_lr=args.train_gs_lr,
+                gs_beta1=args.train_gs_beta1,
+                gs_beta2=args.train_gs_beta2,
+                gs_batch_size=args.train_gs_batch_size,
+                gs_optimizer=args.train_gs_optimizer,
+                gs_max_grad_norm=args.train_gs_max_grad_norm,
+                gs_lr_scheduler=args.train_gs_lr_scheduler,
+                gs_take_best=args.train_gs_take_best,
+                residual=args.residual,
             )
             eval_ce_loss, eval_kl_loss, \
                 eval_exact_acc, eval_valid_grid, eval_correct_grid_dim, eval_token_acc, eval_texts, \
                 eval_votes, eval_competition_sub_acc, eval_competition_all_acc = evaluate(
                 model=model,
+                prior_embeddings=prior_embeddings,
                 program_embeddings=program_embeddings,
                 vae_projection=vae_projection,
+                program_norm=program_norm,
                 tokenizer=tokenizer,
                 dataset=eval_eval_dataset,
                 accelerator=accelerator,
@@ -1597,6 +1876,16 @@ def main():
                 kl_loss_lambda_scheduler=kl_loss_lambda_scheduler,
                 global_step=global_step,
                 dry_eval_run=args.dry_eval_run,
+                gs_iters=args.eval_gs_iters,
+                gs_lr=args.eval_gs_lr,
+                gs_beta1=args.eval_gs_beta1,
+                gs_beta2=args.eval_gs_beta2,
+                gs_batch_size=args.eval_gs_batch_size,
+                gs_optimizer=args.eval_gs_optimizer,
+                gs_max_grad_norm=args.eval_gs_max_grad_norm,
+                gs_lr_scheduler=args.eval_gs_lr_scheduler,
+                gs_take_best=args.eval_gs_take_best,
+                residual=args.residual,
             )
 
             if accelerator.is_main_process:
@@ -1652,10 +1941,8 @@ def main():
 
                 if do_save_model:
                     if (not args.save_all_models) and (last_save_model_path is not None):
-                        save_enc_path, enc_lmhead_path, enc_embeds_path, save_proj_path = last_save_model_path
-                        rm_cmd = f"rm -rf {save_enc_path} {enc_lmhead_path} {enc_embeds_path}"
-                        if save_proj_path is not None:
-                            rm_cmd += f" {save_proj_path}"
+                        save_enc_path, save_proj_path = last_save_model_path
+                        rm_cmd = f"rm -rf {save_enc_path} {save_proj_path}"
                         os.system(rm_cmd)
                     last_save_model_path = save_train_model(
                         model=model,

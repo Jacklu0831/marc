@@ -2,7 +2,7 @@
 # make sure gs works by applying it to model that works without vae
 
 # single gs50
-accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder_singleprogram/train.py \
+accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder_singleprogram_0205/train.py \
     --tag 0203_single_gs50 \
     --eval_batch_size 1 \
     --gs_batch_size 10000 \
@@ -10,4 +10,4 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
     --gs_iters 50 \
     --wandb
 
-# Submitted batch job 56865817
+# Submitted batch job 56990575

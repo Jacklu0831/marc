@@ -120,7 +120,20 @@ class ARCTokenizer:
         return texts
 
 
-def get_extra_augmenters(
+def get_d8_augmenters() -> List[Augmenter]:
+    return [
+        Rotate(0),
+        Rotate(90),
+        Rotate(180),
+        Rotate(270),
+        Flip(0),
+        Flip(1),
+        Chain([Flip(0), Rotate(90)]), # type: ignore
+        Chain([Flip(1), Rotate(90)]), # type: ignore
+    ]
+
+
+def get_mit_augmenters(
     include_basic: bool = True,
     include_size: bool = True,
     include_chain: bool = True,
@@ -293,7 +306,7 @@ class TTTDataset(Dataset):
     ):
         self.permute_n = permute_n
         # for ttt, only use mit augmenters for now
-        self.augmenters: List[Augmenter] = get_extra_augmenters(include_basic=True, include_size=True, include_chain=True, include_repeat=True)
+        self.augmenters: List[Augmenter] = get_mit_augmenters(include_basic=True, include_size=True, include_chain=True, include_repeat=True)
         self.seed = seed
         self.encoder_tokenizer = encoder_tokenizer
         self.decoder_tokenizer = decoder_tokenizer
@@ -551,7 +564,7 @@ class TrainDataset(Dataset):
         seed: int,
         process_index: int,
         ntokens: int,
-        debug_fixed_train_order: bool,
+        debug_fixed_order: bool,
         debug_random_pad: bool,
         debug_pad_len: int,
         encoder_pad_side: str,
@@ -559,6 +572,8 @@ class TrainDataset(Dataset):
         encoder_loss_type: bool,
         anti_invar_ratio: float,
         num_workers: int,
+        basic_aug: bool,
+        color_equiv: bool,
     ):
         self.encoder_tokenizer = encoder_tokenizer
         self.decoder_tokenizer = decoder_tokenizer
@@ -566,18 +581,22 @@ class TrainDataset(Dataset):
         self.min_prefix = min_prefix
         self.max_prefix = max_prefix
         self.max_seq_len = max_seq_len
-        self.augmenters: List[Augmenter] = get_extra_augmenters(include_basic=True, include_size=True, include_chain=True, include_repeat=True)
         self.augment_ratio = augment_ratio
         self.augment_single_grid = augment_single_grid
         self.ntokens = ntokens
         self.cls_tokens = [f"<CLS{token_i}>" for token_i in range(ntokens)]
-        self.debug_fixed_train_order = debug_fixed_train_order
+        self.debug_fixed_order = debug_fixed_order
         self.debug_random_pad = debug_random_pad
         self.debug_pad_len = debug_pad_len
         self.encoder_pad_side = encoder_pad_side
         self.decoder_pad_side = decoder_pad_side
         self.encoder_loss_type = encoder_loss_type
         self.anti_invar_ratio = anti_invar_ratio
+        self.basic_aug = basic_aug
+        self.color_equiv = color_equiv
+
+        self.d8_augmenters = get_d8_augmenters()
+        self.extra_augmenters: List[Augmenter] = get_mit_augmenters(include_basic=True, include_size=True, include_chain=True, include_repeat=True)
 
         # seed and process_index
         if num_workers == 0:
@@ -614,6 +633,27 @@ class TrainDataset(Dataset):
         return 0
 
 
+def pairs_to_color_equiv_mapping(chosen_pairs: List[Dict[str, List[List[int]]]]) -> Tuple[List[Dict[str, List[List[int]]]], np.ndarray]:
+    flattened = [[p['input'], p['output']] for p in chosen_pairs]
+    flattened = list(itertools.chain.from_iterable(itertools.chain.from_iterable(itertools.chain.from_iterable(flattened))))
+    color_mapping = {val: idx for idx, val in enumerate(dict.fromkeys(flattened))}
+    # some color may not be in task, assume they are in order
+    for c in range(10):
+        if c not in color_mapping:
+            color_mapping[c] = len(color_mapping)
+    assert set(color_mapping.keys()) == set(color_mapping.values()) == set(range(10))
+    color_mapping = np.array([color_mapping[i] for i in range(10)], dtype=np.int64)
+    # apply mapping
+    for pair in chosen_pairs:
+        pair['input'] = color_mapping[np.array(pair['input'])].tolist()
+        pair['output'] = color_mapping[np.array(pair['output'])].tolist()
+    # inverse mapping
+    inverse_mapping = np.zeros(10, dtype=np.int64)
+    for key, value in enumerate(color_mapping):
+        inverse_mapping[value] = key
+    return chosen_pairs, inverse_mapping
+
+
 def collate_fn_train(batch: List[int], dataset: TrainDataset) -> Dict:
     batch_size = len(batch)
     assert batch_size > 0 and batch_size % 2 == 0, f"Batch size must be even, got {batch_size}"
@@ -635,14 +675,21 @@ def collate_fn_train(batch: List[int], dataset: TrainDataset) -> Dict:
                 if dataset.task_id_to_hash[task_ids[0]] != dataset.task_id_to_hash[task_ids[1]]:
                     break
             pairs_for_tasks = [dataset.tasks_dict[task_ids[0]], dataset.tasks_dict[task_ids[1]]]
-            # same or different augmentation
-            augmenters = []
+            # same or different d8 augmentation
+            d8_augmenters = []
+            for _ in range(2):
+                if dataset.basic_aug:
+                    d8_augmenters.append(rng.choice(dataset.d8_augmenters)) # type: ignore
+                else:
+                    d8_augmenters.append(None)
+            # same or different extra augmentation
+            extra_augmenters = []
             io_augmentation_choices = []
             for _ in range(2):
                 if rng.rand() < dataset.augment_ratio:
-                    augmenters.append(rng.choice(dataset.augmenters)) # type: ignore
+                    extra_augmenters.append(rng.choice(dataset.extra_augmenters)) # type: ignore
                 else:
-                    augmenters.append(None)
+                    extra_augmenters.append(None)
                 io_augmentation_choice = rng.choice(["input_only", "output_only", "both"]) if dataset.augment_single_grid else "both"
                 io_augmentation_choices.append(io_augmentation_choice)
         else:
@@ -650,17 +697,22 @@ def collate_fn_train(batch: List[int], dataset: TrainDataset) -> Dict:
             task_id = rng.choice(dataset.all_task_ids)
             task_ids = [task_id, task_id]
             pairs_for_tasks = [dataset.tasks_dict[task_id], dataset.tasks_dict[task_id]]
-            # must be same augmentation
-            augmenters = [None, None]
+            # must be same d8 augmentation
+            d8_augmenters = [None, None]
+            if dataset.basic_aug:
+                d8_augmenters = [rng.choice(dataset.d8_augmenters)] * 2 # type: ignore
+            # must be same extra augmentation
+            extra_augmenters = [None, None]
             io_augmentation_choices = [rng.choice(["input_only", "output_only", "both"]) if dataset.augment_single_grid else "both"] * 2
             if rng.rand() < dataset.augment_ratio:
-                augmenters = [rng.choice(dataset.augmenters)] * 2 # type: ignore
+                extra_augmenters = [rng.choice(dataset.extra_augmenters)] * 2 # type: ignore
 
         # We'll attempt to produce exactly 2 examples from this single task
         two_task_list = []
         for task_i12 in range(2):
             pairs_for_task = pairs_for_tasks[task_i12]
-            augmenter = augmenters[task_i12]
+            d8_augmenter = d8_augmenters[task_i12]
+            extra_augmenter = extra_augmenters[task_i12]
             io_augmentation_choice = io_augmentation_choices[task_i12]
 
             prefix_count = random.randint(dataset.min_prefix, dataset.max_prefix)
@@ -670,22 +722,47 @@ def collate_fn_train(batch: List[int], dataset: TrainDataset) -> Dict:
 
             # sample task
             chosen_pairs = pairs_for_task[:required_count]
-            if not dataset.debug_fixed_train_order:
+            if not dataset.debug_fixed_order:
                 chosen_pairs = rng.choice(pairs_for_task, size=required_count, replace=False) # type: ignore
             chosen_pairs = copy.deepcopy(chosen_pairs)
 
-            # apply augmentation
-            if augmenter is not None:
+            if dataset.basic_aug:
+                # apply d8 augmentation
+                assert d8_augmenter is not None
+                for pair in chosen_pairs:
+                    pair['input'] = d8_augmenter.apply_to_grid(np.array(pair['input']), rng)
+                    pair['output'] = d8_augmenter.apply_to_grid(np.array(pair['output']), rng)
+
+                # apply permute color permute pair (note permuteexamples do not permute test, but its actually the same)
+                task = Task(
+                    name="dummy",
+                    train_examples=[
+                        Example(input=pair["input"], output=pair["output"]) # type: ignore
+                        for pair in chosen_pairs[:-1]
+                    ],
+                    test_example=Example(input=chosen_pairs[-1]["input"], output=chosen_pairs[-1]["output"]),  # type: ignore
+                )
+                task = PermuteExamples().apply_to_task(task, to_input=True, to_output=True, rng=rng)
+                task = PermuteColors().apply_to_task(task, to_input=True, to_output=True, rng=rng)
+                chosen_pairs = [{"input": e.input.tolist(), "output": e.output.tolist()} for e in task.train_examples]
+                chosen_pairs += [{"input": task.test_example.input.tolist(), "output": task.test_example.output.tolist()}]
+
+            # apply extra augmentation
+            if extra_augmenter is not None:
                 for pair in chosen_pairs:
                     if io_augmentation_choice in ['input_only', 'both']:
-                        pair['input'] = augmenter.apply_to_grid(np.array(pair['input']), rng)
+                        pair['input'] = extra_augmenter.apply_to_grid(np.array(pair['input']), rng)
                     if io_augmentation_choice in ['output_only', 'both']:
-                        pair['output'] = augmenter.apply_to_grid(np.array(pair['output']), rng)
+                        pair['output'] = extra_augmenter.apply_to_grid(np.array(pair['output']), rng)
 
             if any(len(pair['input']) > 30 or len(pair['output']) > 30 for pair in chosen_pairs):
                 break
             if any(len(pair['input'][0]) > 30 or len(pair['output'][0]) > 30 for pair in chosen_pairs):
                 break
+
+            # color equivariance AFTER all augmentations
+            if dataset.color_equiv:
+                chosen_pairs, _ = pairs_to_color_equiv_mapping(chosen_pairs)
 
             train_pairs = chosen_pairs[:prefix_count]
             test_pair = chosen_pairs[prefix_count]
@@ -775,7 +852,7 @@ def collate_fn_train(batch: List[int], dataset: TrainDataset) -> Dict:
 
         # Check if we got 2 valid items from this task
         if len(two_task_list) == 2:
-            if dataset.debug_fixed_train_order or not torch.equal(two_task_list[0]['encoder_input_ids'], two_task_list[1]['encoder_input_ids']):
+            if dataset.debug_fixed_order or not torch.equal(two_task_list[0]['encoder_input_ids'], two_task_list[1]['encoder_input_ids']):
                 # Add them to out_list
                 out_list.extend(two_task_list)
 
@@ -889,6 +966,7 @@ class EvalDataset:
         encoder_pad_side: str,
         decoder_pad_side: str,
         decoder_gen_pad_side: str,
+        color_equiv: bool,
     ):
         self.permute_n = permute_n
         self.permute_iters = permute_iters
@@ -906,6 +984,7 @@ class EvalDataset:
         self.encoder_pad_side = encoder_pad_side
         self.decoder_pad_side = decoder_pad_side
         self.decoder_gen_pad_side = decoder_gen_pad_side
+        self.color_equiv = color_equiv
 
         self.encoder_input_token_id = encoder_tokenizer("input")['input_ids'][1]
         self.encoder_output_token_id = encoder_tokenizer("output")['input_ids'][1]
@@ -1071,6 +1150,22 @@ class EvalDataset:
         # even the voting augmentation does not increase resolution
         assert task.max_height() <= 30 and task.max_width() <= 30
 
+        # color equivariance
+        inverse_color_map = np.array(range(10), dtype=np.int64)
+        save_original_test_out = copy.deepcopy(task.test_example.output)
+        if self.color_equiv:
+            chosen_pairs = [{'input': e.input.tolist(), 'output': e.output.tolist()} for e in task.train_examples]
+            chosen_pairs += [{'input': task.test_example.input.tolist(), 'output': task.test_example.output.tolist()}]
+            chosen_pairs, inverse_color_map = pairs_to_color_equiv_mapping(chosen_pairs)
+            task = Task(
+                name=task.name,
+                train_examples=[
+                    Example(input=np.array(pair["input"]), output=np.array(pair["output"])) # type: ignore
+                    for pair in chosen_pairs[:-1]
+                ],
+                test_example=Example(input=np.array(chosen_pairs[-1]["input"]), output=np.array(chosen_pairs[-1]["output"])),  # type: ignore
+            )
+
         # permute if given
         train_examples = task.train_examples
         if permutation is not None:
@@ -1118,7 +1213,10 @@ class EvalDataset:
             dec_out_tokens["attention_mask"].squeeze(0),
         ], dim=0)
 
-        dec_label_texts = dec_out_text[:-len(self.decoder_tokenizer.eos_token)]
+        # decoder label text has to be non-color-mapped
+        dec_label_texts = grid_to_text(save_original_test_out.tolist(), False)
+        assert dec_label_texts.startswith("output:\n")
+        dec_label_texts = dec_label_texts[len("output:\n"):]
 
         # Check length
         if enc_tokens["input_ids"].shape[1] - self.ntokens > self.max_seq_len or decoder_input_ids.shape[0] > self.max_seq_len // 2: # dec_len should be short
@@ -1166,6 +1264,7 @@ class EvalDataset:
             "decoder_gen_attention_mask": dec_in_tokens["attention_mask"].squeeze(0),
             "decoder_out_token_length": dec_out_tokens["input_ids"].shape[1] - 1, # remove eos token
             "decoder_label_texts": dec_label_texts,  # used for exact match
+            "inverse_color_map": inverse_color_map,
         }
 
     def __len__(self):
@@ -1219,6 +1318,7 @@ def collate_fn_eval(batch: List[Dict], dataset: EvalDataset) -> Dict:
     dec_labs = [x["decoder_labels"] for x in batch]
     decoder_out_token_length = [x["decoder_out_token_length"] for x in batch]
     decoder_label_texts = [x["decoder_label_texts"] for x in batch]
+    inverse_color_maps = [x["inverse_color_map"] for x in batch]
 
     enc_ids_lens = [len(x) for x in enc_ids]
     dec_ids_lens = [len(x) for x in dec_ids]
@@ -1281,6 +1381,7 @@ def collate_fn_eval(batch: List[Dict], dataset: EvalDataset) -> Dict:
         "encoder_input_ids_lens": enc_ids_lens,
         "decoder_input_ids_lens": dec_ids_lens,
         "decoder_gen_input_ids_lens": dec_gen_ids_lens,
+        "inverse_color_maps": inverse_color_maps,
     }
     return batch_dict
 
@@ -1332,7 +1433,9 @@ class GSDataset(Dataset):
         debug_random_pad: bool,
         debug_pad_len: int,
         decoder_pad_side: str,
+        color_equiv: bool,
     ):
+        del task.test_example # do not leak data
         self.task = task
         self.encoder_tokenizer = encoder_tokenizer
         self.decoder_tokenizer = decoder_tokenizer
@@ -1341,6 +1444,7 @@ class GSDataset(Dataset):
         self.debug_random_pad = debug_random_pad
         self.debug_pad_len = debug_pad_len
         self.decoder_pad_side = decoder_pad_side
+        self.color_equiv = color_equiv
 
         # format and filter data
         self.parsed_examples = []

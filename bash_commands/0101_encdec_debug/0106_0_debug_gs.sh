@@ -1,0 +1,54 @@
+# single program
+accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder_singleprogram_0208/train.py \
+    --tag test \
+    --train_data_dir /scratch/yl11330/re-arc/train_data_debug_overfit/tasks \
+    --eval_train_dir /scratch/yl11330/re-arc/arc_original_debug_overfit/training \
+    --eval_eval_dir /scratch/yl11330/re-arc/arc_original_debug_overfit/training \
+    --min_prefix 4 \
+    --max_prefix 4 \
+    --num_epochs 100 \
+    --samples_per_epoch 10 \
+    --lr_embedding 3e-3 \
+    --lr_other 3e-2 \
+    --debug_fixed_order \
+    --grad_accum_steps 1 \
+    --max_grad_norm 1e8 \
+    --num_workers 0 \
+    --optimizer sgd \
+    --debug_random_pad \
+    --eval_batch_size 1 \
+    --train_gs_batch_size 10000 \
+    --train_gs_take_best \
+    --train_gs_iters 50
+
+# ar
+accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder1031_autoregressive_0209/train.py \
+    --tag test \
+    --train_data_dir /scratch/yl11330/re-arc/train_data_debug_overfit/tasks \
+    --eval_train_dir /scratch/yl11330/re-arc/arc_original_debug_overfit/training \
+    --eval_eval_dir /scratch/yl11330/re-arc/arc_original_debug_overfit/training \
+    --eval_epochs 1 \
+    --num_epochs 100 \
+    --samples_per_epoch 500 \
+    --lr_embedding 1e-2 \
+    --lr_program 1e-2 \
+    --lr_other 1e-1 \
+    --debug_fixed_order \
+    --max_grad_norm 1e2 \
+    --num_workers 0 \
+    --optimizer sgd \
+    --min_num_pair 5 \
+    --max_num_pair 5 \
+    --no_color_permute \
+    --no_pair_permute \
+    --no_d8 \
+    --no_train_original \
+    --log_every 1 \
+    --grad_accum_steps 1 \
+    --train_no_sample \
+    --eval_no_sample \
+    --debug_random_pad \
+    --eval_batch_Size 1 \
+    --train_gs_batch_size 10000 \
+    --train_gs_take_best \
+    --train_gs_iters 50

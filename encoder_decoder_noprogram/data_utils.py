@@ -61,47 +61,6 @@ class ARCTokenizer:
         self.pad_token_id = self.token_to_id[pad_token]
         self.special_token_ids = set([self.bos_token_id, self.eos_token_id, self.pad_token_id])
 
-    # def __call__(self, text: str, add_bos: bool, add_eos: bool) -> List[int]:
-    #     input_ids = [self.bos_token_id] if add_bos else []
-
-    #     while text:
-    #         # special tokens
-    #         if text.startswith(self.eos_token):
-    #             input_ids.append(self.eos_token_id)
-    #             text = text[len(self.eos_token):]
-    #         elif text.startswith(self.bos_token):
-    #             input_ids.append(self.bos_token_id)
-    #             text = text[len(self.bos_token):]
-    #         elif text.startswith(self.pad_token):
-    #             input_ids.append(self.pad_token_id)
-    #             text = text[len(self.pad_token):]
-    #         # input output
-    #         elif text.startswith("input"):
-    #             input_ids.append(self.token_to_id["input"])
-    #             text = text[5:]
-    #         elif text.startswith("output"):
-    #             input_ids.append(self.token_to_id["output"])
-    #             text = text[6:]
-    #         # double digit
-    #         elif text[:2] in self.token_to_id:
-    #             input_ids.append(self.token_to_id[text[:2]])
-    #             text = text[2:]
-    #         # single digit
-    #         elif text[0] in self.token_to_id:
-    #             input_ids.append(self.token_to_id[text[0]])
-    #             text = text[1:]
-    #         else:
-    #             raise ValueError(f"cannot tokenize: {text}")
-
-    #     if add_eos:
-    #         input_ids.append(self.eos_token_id)
-
-    #     return input_ids
-
-    # def encode_to_tensor(self, text: str, add_bos: bool, add_eos: bool) -> torch.Tensor:
-    #     input_ids = self(text, add_bos, add_eos)
-    #     return torch.tensor(input_ids, dtype=torch.int64)
-
     def encode_dimensions_to_tensor(self, height: int, width: int) -> torch.Tensor:
         return torch.tensor(
             [self.token_to_id[str(height)],
@@ -499,10 +458,10 @@ def plot_histogram_with_frequencies(data: List[int], save_path: str, bins: int =
 
 
 ########################################
-# Training Dataset Autoregressive
+# Training Dataset
 ########################################
 
-class TrainDatasetAutoregressive(Dataset):
+class TrainDataset(Dataset):
     def __init__(
         self,
         train_data_dir: str,
@@ -521,7 +480,6 @@ class TrainDatasetAutoregressive(Dataset):
         debug_random_pad: bool,
         debug_pad_len: int,
         train_pad_side: str,
-        debug_train_data: bool,
         no_color_permute: bool,
         no_pair_permute: bool,
         no_d8: bool,
@@ -531,6 +489,7 @@ class TrainDatasetAutoregressive(Dataset):
         only_train_original: bool,
         debug_len: int,
         num_workers: int,
+        max_seq_len: int,
     ):
         self.re_arc_ratio = re_arc_ratio
         self.concept_arc_ratio = concept_arc_ratio
@@ -545,18 +504,19 @@ class TrainDatasetAutoregressive(Dataset):
         self.debug_random_pad = debug_random_pad
         self.debug_pad_len = debug_pad_len
         self.train_pad_side = train_pad_side
-        self.debug_train_data = debug_train_data
         self.no_color_permute = no_color_permute
         self.no_pair_permute = no_pair_permute
         self.no_d8 = no_d8
         self.min_num_pair = min_num_pair
         self.max_num_pair = max_num_pair
         self.debug_len = debug_len
+        self.max_seq_len = max_seq_len
 
         # setup args
         self.normalized_ratio = np.array([self.re_arc_ratio, self.concept_arc_ratio, self.arc_heavy_ratio])
         self.normalized_ratio /= np.sum(self.normalized_ratio)
         self.d8_augmenters = get_d8_augmenters()
+        self.extra_augmenters = get_mit_augmenters(include_basic=True, include_size=True, include_chain=True, include_repeat=True)
 
         # seed and process_index
         if num_workers == 0:
@@ -605,7 +565,7 @@ class TrainDatasetAutoregressive(Dataset):
         return 0
 
 
-def collate_fn_train_autoregressive(batch: List[int], dataset: TrainDatasetAutoregressive) -> Dict:
+def collate_fn_train(batch: List[int], dataset: TrainDataset) -> Dict:
     batch_size = len(batch)
     del batch  # we don't use it directly
 
@@ -615,14 +575,13 @@ def collate_fn_train_autoregressive(batch: List[int], dataset: TrainDatasetAutor
     num_pair_rng = dataset.num_pair_rngs[int(worker_id)]
 
     # the restriction here is to enforce all list of pairs in batch are equal length
-    all_task_ids = []
-    all_np_chosen_pairs = []
+    out_list = []
 
     # must sample this number of pairs to avoid GPU synchronization issues
     required_num_pair = num_pair_rng.choice(list(range(dataset.min_num_pair, dataset.max_num_pair + 1)))
 
     # sample random task from random dataset, if grid size >30 or does not have enough for required_num_pair, retry
-    while len(all_task_ids) < batch_size:
+    while len(out_list) < batch_size:
         dataset_name = rng.choice(["re-arc", "concept-arc", "arc-heavy"], p=dataset.normalized_ratio)
 
         # STEP 1: get task id and pairs, sample task id until reaching num chosen pair
@@ -686,39 +645,30 @@ def collate_fn_train_autoregressive(batch: List[int], dataset: TrainDatasetAutor
         if any(max(*pair["input"].shape, *pair["output"].shape) > 30 for pair in np_chosen_pairs):
             continue
 
-        # STEP 4: found a valid task!
-        all_task_ids.append(task_id) # type: ignore
-        all_np_chosen_pairs.append(np_chosen_pairs)
+        # apply color and pair permutation
+        task = Task(
+            name=task_id,
+            train_examples=[
+                Example(input=pair["input"], output=pair["output"])
+                for pair in np_chosen_pairs[:-1]
+            ],
+            test_example=Example(input=np_chosen_pairs[-1]["input"], output=np_chosen_pairs[-1]["output"]),
+        )
 
-    # apply color and pair permutation
-    tasks = [Task(
-        name=task_id,
-        train_examples=[
-            Example(input=pair["input"], output=pair["output"])
-            for pair in pairs[:-1]
-        ],
-        test_example=Example(input=pairs[-1]["input"], output=pairs[-1]["output"]),
-    ) for task_id, pairs in zip(all_task_ids, all_np_chosen_pairs)]
+        if not dataset.no_pair_permute:
+            task = PermuteExamples().apply_to_task(task, to_input=True, to_output=True, rng=rng)
 
-    if not dataset.no_pair_permute:
-        tasks = [PermuteExamples().apply_to_task(task, to_input=True, to_output=True, rng=rng) for task in tasks]
+        if not dataset.no_color_permute:
+            task = PermuteColors().apply_to_task(task, to_input=True, to_output=True, rng=rng)
 
-    if not dataset.no_color_permute:
-        tasks = [PermuteColors().apply_to_task(task, to_input=True, to_output=True, rng=rng) for task in tasks]
-
-    # we do a lil parsing
-    pair_idx_to_input_ids = []
-    pair_idx_to_attention_mask = []
-    pair_idx_to_label_ids = []
-
-    for pair_i in range(required_num_pair):
-        # get inputids, attention, labelids for batch of pairs at pair_i
-        batch_input_ids = []
-        batch_attention_mask = []
-        batch_label_ids = []
-        for task in tasks:
+        # we do a lil parsing
+        pair_idx_to_input_ids = []
+        pair_idx_to_attention_mask = []
+        pair_idx_to_label_ids = []
+        for pair_i in range(required_num_pair):
+            # get inputids, attention, labelids for batch of pairs at pair_i
             example = (task.train_examples + [task.test_example])[pair_i]
-            input_grid_ids, output_grid_ids = dataset.tokenizer.get_input_and_output_grid_ids(example=example, add_bos=True)
+            input_grid_ids, output_grid_ids = dataset.tokenizer.get_input_and_output_grid_ids(example=example, add_bos=(pair_i == 0))
             input_ids = torch.cat([input_grid_ids, output_grid_ids])
             attention_mask = torch.full(input_ids.shape, 1, dtype=torch.int64)
             # label id for all except first pair
@@ -727,99 +677,72 @@ def collate_fn_train_autoregressive(batch: List[int], dataset: TrainDatasetAutor
                 label_ids = torch.cat([label_ids, torch.full(output_grid_ids.shape, -100, dtype=torch.int64)])
             else:
                 label_ids = torch.cat([label_ids, output_grid_ids])
-            # append
-            batch_input_ids.append(input_ids)
-            batch_attention_mask.append(attention_mask)
-            batch_label_ids.append(label_ids)
+            pair_idx_to_input_ids.append(input_ids)
+            pair_idx_to_attention_mask.append(attention_mask)
+            pair_idx_to_label_ids.append(label_ids)
 
-        pair_idx_to_input_ids.append(batch_input_ids)
-        pair_idx_to_attention_mask.append(batch_attention_mask)
-        pair_idx_to_label_ids.append(batch_label_ids)
+        input_ids = torch.cat(pair_idx_to_input_ids)
+        attention_mask = torch.cat(pair_idx_to_attention_mask)
+        label_ids = torch.cat(pair_idx_to_label_ids)
+        assert input_ids.shape == attention_mask.shape == label_ids.shape
 
-    # visualize some training data
-    if dataset.debug_train_data:
-        img_idx = max([int(Path(p).stem.split('_')[0]) for p in glob.glob(f"debug_train_data/*.jpg")], default=-1) + 1
-        for batch_i in range(batch_size):
-            input_ids = [pair_idx_to_input_ids[pair_i][batch_i] for pair_i in range(required_num_pair)]
-            texts = [dataset.tokenizer.decode(ids, skip_special_tokens=True) for ids in input_ids]
-            dimensions = [dataset.tokenizer.get_grid_dimensions(pair_idx_to_input_ids[pair_i][batch_i]) for pair_i in range(required_num_pair)]
-            assert all(len(d) == 2 for d in dimensions)
-            grids = [parse_input_output_grids(t, d) for t, d in zip(texts, dimensions)]
-            grids = [item for sublist in grids for item in sublist]
-            visualize_task(
-                task=grids,
-                name=f"{dataset_name}_{all_task_ids[batch_i]}", # type: ignore
-                out_path=f"debug_train_data/{img_idx}_{batch_i}.jpg",
-            )
+        if len(input_ids) > dataset.max_seq_len:
+            continue
 
-    # get input ids lens
-    input_ids_lens = []
-    for pair_i in range(required_num_pair):
-        input_ids_lens.append([len(ids) for ids in pair_idx_to_input_ids[pair_i]])
+        out_list.append({
+            "input_ids": input_ids,
+            "attention_mask": attention_mask,
+            "label_ids": label_ids,
+        })
+
+    input_ids = [x['input_ids'] for x in out_list]
+    attention_mask = [x['attention_mask'] for x in out_list]
+    label_ids = [x['label_ids'] for x in out_list]
+
+    input_ids_lens = [len(i) for i in input_ids]
 
     # pad
-    padded_input_ids = []
-    padded_attention_mask = []
-    padded_label_ids = []
-    for input_ids, attention_mask, label_ids in zip(pair_idx_to_input_ids, pair_idx_to_attention_mask, pair_idx_to_label_ids):
-        input_ids = pad_sequence_with_side(input_ids, padding_value=dataset.tokenizer.pad_token_id, side=dataset.train_pad_side)
-        attention_mask = pad_sequence_with_side(attention_mask, padding_value=0, side=dataset.train_pad_side)
-        label_ids = pad_sequence_with_side(label_ids, padding_value=-100, side=dataset.train_pad_side)
-        padded_input_ids.append(input_ids)
-        padded_attention_mask.append(attention_mask)
-        padded_label_ids.append(label_ids)
+    input_ids = pad_sequence_with_side(input_ids, padding_value=dataset.tokenizer.pad_token_id, side=dataset.train_pad_side)
+    attention_mask = pad_sequence_with_side(attention_mask, padding_value=0, side=dataset.train_pad_side)
+    label_ids = pad_sequence_with_side(label_ids, padding_value=-100, side=dataset.train_pad_side)
 
-    extra_padded_input_ids = []
-    extra_padded_attention_mask = []
-    extra_padded_label_ids = []
     if dataset.debug_random_pad or dataset.debug_pad_len > -1:
-        for input_ids, attention_mask, label_ids in zip(padded_input_ids, padded_attention_mask, padded_label_ids):
-            input_ids, attention_mask, label_ids = debug_extra_pad_tensors(
-                [input_ids, attention_mask, label_ids],
-                padding_values=[dataset.tokenizer.pad_token_id, 0, -100],
-                pad_len=dataset.debug_pad_len,
-                side=dataset.train_pad_side,
-            )
-            extra_padded_input_ids.append(input_ids)
-            extra_padded_attention_mask.append(attention_mask)
-            extra_padded_label_ids.append(label_ids)
-    else:
-        extra_padded_input_ids = padded_input_ids
-        extra_padded_attention_mask = padded_attention_mask
-        extra_padded_label_ids = padded_label_ids
+        input_ids, attention_mask, label_ids = debug_extra_pad_tensors(
+            [input_ids, attention_mask, label_ids],
+            padding_values=[dataset.tokenizer.pad_token_id, 0, -100],
+            pad_len=dataset.debug_pad_len,
+            side=dataset.train_pad_side,
+        )
 
     batch_dict = {
-        "input_ids": extra_padded_input_ids,
-        "attention_mask": extra_padded_attention_mask,
-        "label_ids": extra_padded_label_ids,
+        "input_ids": input_ids,
+        "attention_mask": label_ids,
+        "label_ids": label_ids,
         "input_ids_lens": input_ids_lens,
-        "num_pairs": [required_num_pair] * batch_size,
     }
     return batch_dict
 
 
-def collate_fn_train_dummy_autoregressive(batch: List[int], dataset: TrainDatasetAutoregressive) -> Dict:
+def collate_fn_train_dummy(batch: List[int], dataset: TrainDataset) -> Dict:
     batch_size = len(batch)
     del batch  # we don't use it directly
 
-    input_ids = [torch.randint(0, 30, (batch_size, dataset.debug_len), dtype=torch.int64, device='cpu') for _ in range(dataset.max_num_pair)]
-    # input_ids = [torch.randint(5, 6, (batch_size, dataset.debug_len), dtype=torch.int64, device='cpu') for _ in range(dataset.max_num_pair)]
-    attention_mask = [torch.full((batch_size, dataset.debug_len), 1, dtype=torch.int64, device='cpu') for _ in range(dataset.max_num_pair)]
-    input_ids_lens = [[dataset.debug_len] * batch_size for _ in range(dataset.max_num_pair)]
+    input_ids = torch.randint(0, 30, (batch_size, dataset.debug_len), dtype=torch.int64, device='cpu')
+    attention_mask = torch.full((batch_size, dataset.debug_len), 1, dtype=torch.int64, device='cpu')
+    input_ids_lens = [dataset.debug_len] * batch_size
 
     return {
         "input_ids": input_ids,
         "attention_mask": attention_mask,
         "label_ids": input_ids,
         "input_ids_lens": input_ids_lens,
-        "num_pairs": [dataset.max_num_pair] * batch_size,
     }
 
 
 ########################################
 # Evaluation Dataset
 ########################################
-class EvalDatasetAutoregressive:
+class EvalDataset:
     def __init__(
         self,
         eval_dir: str,
@@ -837,6 +760,7 @@ class EvalDatasetAutoregressive:
         train_pad_side: str,
         gen_pad_side: str,
         debug_len: int,
+        max_seq_len: int,
     ):
         self.permute_n = permute_n
         self.augment_n = augment_n
@@ -849,6 +773,7 @@ class EvalDatasetAutoregressive:
         self.train_pad_side = train_pad_side
         self.gen_pad_side = gen_pad_side
         self.debug_len = debug_len
+        self.max_seq_len = max_seq_len
 
         self.augmenters = [Transpose(), Flip(0), Flip(1), Rotate(90), Rotate(180)]
 
@@ -908,9 +833,9 @@ class EvalDatasetAutoregressive:
         # since this function has to do filtering, might as well parse data as well
         self.eval_tasks = []
         for task in tasks:
-            new_tasks = self.get_task_augmentations_leave_ns(task, leave_ns=leave_ns)
+            new_tasks = self.get_task_augmentations_leave_ns_filtered(task, leave_ns=leave_ns)
             if len(new_tasks) == 0 and leave_ns_inc:
-                new_tasks = self.get_task_augmentations_leave_ns(task, leave_ns=leave_ns + [leave_ns[-1] + 1])
+                new_tasks = self.get_task_augmentations_leave_ns_filtered(task, leave_ns=leave_ns + [leave_ns[-1] + 1])
             self.eval_tasks += new_tasks
         logger.info(f'augmented data from {len(tasks)} to {len(self.eval_tasks)}')
 
@@ -927,12 +852,12 @@ class EvalDatasetAutoregressive:
         # min and max sequence length
         min_len, max_len = 1e6, 0
         for d in parsed_data:
-            min_len = min(min_len, sum(len(i) for i in d['input_ids'])) # type: ignore
-            max_len = min(max_len, sum(len(i) for i in d['input_ids'])) # type: ignore
+            min_len = min(min_len, len(d['input_ids'])) # type: ignore
+            max_len = max(max_len, len(d['input_ids'])) # type: ignore
         logger.info(f"encoder sequence length range from {min_len} to {max_len}]")
         del parsed_data
 
-    def get_task_augmentations_leave_ns(
+    def get_task_augmentations_leave_ns_filtered(
             self,
             task: Task,
             leave_ns: list[int],
@@ -941,7 +866,12 @@ class EvalDatasetAutoregressive:
         augmented_tasks = []
         for leave_n in leave_ns:
             augmented_tasks += self.get_task_augmentations_leave_n(task, leave_n=leave_n)
-        return augmented_tasks
+        # filter augmented queries
+        filtered_tasks = []
+        for task in augmented_tasks:
+            if self.format_and_filter(task) is not None:
+                filtered_tasks.append(task)
+        return filtered_tasks
 
     def get_task_augmentations_leave_n(
             self,
@@ -993,17 +923,11 @@ class EvalDatasetAutoregressive:
         # logger.info(f"{task.name} has {len(test_tasks)} after permute set augment set")
         return test_tasks
 
-    def format(self, task: Task, permutation: Optional[List[int]] = None) -> Dict:
+    def format_and_filter(self, task: Task) -> Optional[Dict]:
         # do not add any randomness to this function!
         # this function only filters by token length, not by grid dimension
         # even the voting augmentation does not increase resolution
         assert task.max_height() <= 30 and task.max_width() <= 30
-
-        # permute if given
-        train_examples = task.train_examples
-        if permutation is not None:
-            assert set(permutation) == set(range(len(train_examples)))
-            task.train_examples = [train_examples[permute_i] for permute_i in permutation]
 
         # Build encoder text
         task = copy.deepcopy(task)
@@ -1013,15 +937,20 @@ class EvalDatasetAutoregressive:
         pair_idx_to_input_ids = []
         pair_idx_to_attention_mask = []
         pair_idx_to_label_ids = []
-        gen_input_ids = None # collect the last input grid
-        gen_output_ids = None # collect the last output grid
-        out_token_length = -1
+        gen_input_ids = []
+        gen_output_ids = None
 
         for pair_i in range(num_pair):
             example = (task.train_examples + [task.test_example])[pair_i]
-            input_grid_ids, output_grid_ids = self.tokenizer.get_input_and_output_grid_ids(example=example, add_bos=True)
+            input_grid_ids, output_grid_ids = self.tokenizer.get_input_and_output_grid_ids(example=example, add_bos=(pair_i == 0))
             input_ids = torch.cat([input_grid_ids, output_grid_ids])
             attention_mask = torch.full(input_ids.shape, 1, dtype=torch.int64)
+            # gen ids
+            gen_input_ids.append(input_grid_ids)
+            if pair_i < num_pair - 1:
+                gen_input_ids.append(output_grid_ids)
+            else:
+                gen_output_ids = output_grid_ids
             # label id for all except first pair
             label_ids = torch.full(input_grid_ids.shape, -100, dtype=torch.int64)
             if pair_i == 0:
@@ -1032,21 +961,26 @@ class EvalDatasetAutoregressive:
             pair_idx_to_attention_mask.append(attention_mask)
             pair_idx_to_label_ids.append(label_ids)
 
-            if pair_i == num_pair - 1:
-                gen_input_ids = input_grid_ids
-                gen_output_ids = output_grid_ids
-                out_token_length = len(output_grid_ids) - 1 # remove eos token
+        input_ids = torch.cat(pair_idx_to_input_ids)
+        attention_mask = torch.cat(pair_idx_to_attention_mask)
+        label_ids = torch.cat(pair_idx_to_label_ids)
+        assert input_ids.shape == attention_mask.shape == label_ids.shape
 
-        assert isinstance(gen_input_ids, torch.Tensor) and isinstance(gen_output_ids, torch.Tensor)
+        if len(input_ids) > self.max_seq_len:
+            return None
+
+        gen_input_ids = torch.cat(gen_input_ids)
+        assert isinstance(gen_output_ids, torch.Tensor)
+        out_token_length = len(gen_output_ids) - 1 # remove eos token
         gen_attention_mask = torch.full(gen_input_ids.shape, 1, dtype=torch.int64)
         label_texts = self.tokenizer.decode(gen_output_ids)[:-len(self.tokenizer.eos_token)]
 
         return {
             "task_id": task.name,
             "inverter": task.inverter if hasattr(task, "inverter") else "", # type: ignore
-            "input_ids": pair_idx_to_input_ids,
-            "attention_mask": pair_idx_to_attention_mask,
-            "label_ids": pair_idx_to_label_ids,
+            "input_ids": input_ids,
+            "attention_mask": attention_mask,
+            "label_ids": label_ids,
             "gen_input_ids": gen_input_ids,
             "gen_attention_mask": gen_attention_mask,
             "out_token_length": out_token_length,
@@ -1057,33 +991,10 @@ class EvalDatasetAutoregressive:
         return len(self.eval_tasks)
 
     def __getitem__(self, idx):
-        return self.format(self.eval_tasks[idx])
-
-    def get_io_permuted_batches(self, batch_idxs: List[int]) -> Iterator[Tuple[List[Dict], List[bool]]]:
-        # TODO: optionally can leave1, but might mess with underlying program
-        batch_size = len(batch_idxs)
-        eval_tasks = [self.eval_tasks[idx] for idx in batch_idxs]
-
-        rng = np.random.RandomState(self.seed)
-        permutations_of_tasks = []
-        for task in eval_tasks:
-            num_train_examples = len(task.train_examples)
-            # first permutation is always default
-            permutations = list(itertools.permutations(range(num_train_examples)))
-            permutations = [permutations[0]] + rng.permutation(permutations[1:]).tolist()[:self.permute_iters]
-            permutations_of_tasks.append(permutations)
-
-        max_num_permutation = max(len(p) for p in permutations_of_tasks)
-        assert max_num_permutation > 0
-        for permute_i in range(max_num_permutation):
-            avail = [len(permutations) > permute_i for permutations in permutations_of_tasks]
-            permutations = [permutations_of_tasks[idx][permute_i] for idx in range(batch_size) if avail[idx]]
-            avail_eval_tasks = [eval_tasks[idx] for idx in range(batch_size) if avail[idx]]
-            permuted_tasks = [self.format(task, permutation) for task, permutation in zip(avail_eval_tasks, permutations)]
-            yield (permuted_tasks, avail)
+        return self.format_and_filter(self.eval_tasks[idx])
 
 
-def collate_fn_eval_autoregressive(batch: List[Dict], dataset: EvalDatasetAutoregressive) -> Dict:
+def collate_fn_eval(batch: List[Dict], dataset: EvalDataset) -> Dict:
     task_ids = [x['task_id'] for x in batch]
     inverters = [x['inverter'] for x in batch]
     input_ids = [x["input_ids"] for x in batch]
@@ -1094,71 +1005,22 @@ def collate_fn_eval_autoregressive(batch: List[Dict], dataset: EvalDatasetAutore
     out_token_length = [x["out_token_length"] for x in batch]
     label_texts = [x["label_texts"] for x in batch]
 
-    batch_size = len(task_ids)
+    input_ids_lens = [len(x) for x in input_ids]
+    input_ids = pad_sequence_with_side(input_ids, padding_value=dataset.tokenizer.pad_token_id, side=dataset.train_pad_side)
+    attention_mask = pad_sequence_with_side(attention_mask, padding_value=0, side=dataset.train_pad_side)
+    label_ids = pad_sequence_with_side(label_ids, padding_value=-100, side=dataset.train_pad_side)
 
-    # save number of pairs before padding
-    num_pairs = [len(i) for i in input_ids]
-    max_num_pairs = max(num_pairs)
-
-    # for now, we just pad so that all samples in batch have the same number of pairs]
-    # also format then to [pair_idx, batch_size, seq_len]
-    pair_idx_to_input_ids = [[torch.tensor(0.0) for _ in range(batch_size)] for _ in range(max_num_pairs)]
-    pair_idx_to_attention_mask = [[torch.tensor(0.0) for _ in range(batch_size)] for _ in range(max_num_pairs)]
-    pair_idx_to_label_ids = [[torch.tensor(0.0) for _ in range(batch_size)] for _ in range(max_num_pairs)]
-    for batch_i, (ids, mask, label) in enumerate(zip(input_ids, attention_mask, label_ids)): # iterate over batch here
-        min_idx, pad_ids = min(enumerate(ids), key=lambda x: len(x[1]))
-        pad_mask = mask[min_idx]
-        pad_label = label[min_idx]
-        ids += [pad_ids] * (max_num_pairs - len(ids))
-        mask += [pad_mask] * (max_num_pairs - len(mask))
-        label += [pad_label] * (max_num_pairs - len(label))
-        for pair_i, (ids_, mask_, label_) in enumerate(zip(ids, mask, label)):
-            pair_idx_to_input_ids[pair_i][batch_i] = ids_
-            pair_idx_to_attention_mask[pair_i][batch_i] = mask_
-            pair_idx_to_label_ids[pair_i][batch_i] = label_
-
-    # get lengths of ids
-    input_ids_lens = []
-    for pair_i in range(max_num_pairs):
-        input_ids_lens.append([len(ids) for ids in pair_idx_to_input_ids[pair_i]])
-    gen_input_ids_lens = [len(ids) for ids in gen_input_ids]
-
-    # actual padding of sequences
-    padded_input_ids = []
-    padded_attention_mask = []
-    padded_label_ids = []
-    for input_ids, attention_mask, label_ids in zip(pair_idx_to_input_ids, pair_idx_to_attention_mask, pair_idx_to_label_ids):
-        input_ids = pad_sequence_with_side(input_ids, padding_value=dataset.tokenizer.pad_token_id, side=dataset.train_pad_side)
-        attention_mask = pad_sequence_with_side(attention_mask, padding_value=0, side=dataset.train_pad_side)
-        label_ids = pad_sequence_with_side(label_ids, padding_value=-100, side=dataset.train_pad_side)
-        padded_input_ids.append(input_ids)
-        padded_attention_mask.append(attention_mask)
-        padded_label_ids.append(label_ids)
-
-    # debug extra padding
-    extra_padded_input_ids = []
-    extra_padded_attention_mask = []
-    extra_padded_label_ids = []
-    if dataset.debug_random_pad or dataset.debug_pad_len > -1:
-        for input_ids, attention_mask, label_ids in zip(padded_input_ids, padded_attention_mask, padded_label_ids):
-            input_ids, attention_mask, label_ids = debug_extra_pad_tensors(
-                [input_ids, attention_mask, label_ids],
-                padding_values=[dataset.tokenizer.pad_token_id, 0, -100],
-                pad_len=dataset.debug_pad_len,
-                side=dataset.train_pad_side,
-            )
-            extra_padded_input_ids.append(input_ids)
-            extra_padded_attention_mask.append(attention_mask)
-            extra_padded_label_ids.append(label_ids)
-    else:
-        extra_padded_input_ids = padded_input_ids
-        extra_padded_attention_mask = padded_attention_mask
-        extra_padded_label_ids = padded_label_ids
-
-    # pad the gen arguments (and debug padding again)
+    gen_input_ids_lens = [len(x) for x in gen_input_ids]
     gen_input_ids = pad_sequence_with_side(gen_input_ids, padding_value=dataset.tokenizer.pad_token_id, side=dataset.gen_pad_side)
     gen_attention_mask = pad_sequence_with_side(gen_attention_mask, padding_value=0, side=dataset.gen_pad_side)
+
     if dataset.debug_random_pad or dataset.debug_pad_len > -1:
+        input_ids, attention_mask, label_ids = debug_extra_pad_tensors(
+            [input_ids, attention_mask, label_ids],
+            padding_values=[dataset.tokenizer.pad_token_id, 0, -100],
+            pad_len=dataset.debug_pad_len,
+            side=dataset.train_pad_side,
+        )
         gen_input_ids, gen_attention_mask = debug_extra_pad_tensors(
             [gen_input_ids, gen_attention_mask],
             padding_values=[dataset.tokenizer.pad_token_id, 0],
@@ -1169,37 +1031,34 @@ def collate_fn_eval_autoregressive(batch: List[Dict], dataset: EvalDatasetAutore
     batch_dict = {
         "task_ids": task_ids,
         "inverters": inverters,
-        "input_ids": extra_padded_input_ids,
-        "attention_mask": extra_padded_attention_mask,
-        "label_ids": extra_padded_label_ids,
+        "input_ids": input_ids,
+        "attention_mask": attention_mask,
+        "label_ids": label_ids,
         "gen_input_ids": gen_input_ids,
         "gen_attention_mask": gen_attention_mask,
         "out_token_length": out_token_length,
         "label_texts": label_texts,
         "input_ids_lens": input_ids_lens,
         "gen_input_ids_lens": gen_input_ids_lens,
-        "num_pairs": num_pairs,
     }
     return batch_dict
 
 
-def collate_fn_eval_dummy_autoregressive(batch: List[Dict], dataset: EvalDatasetAutoregressive) -> Dict:
+def collate_fn_eval_dummy(batch: List[Dict], dataset: EvalDataset) -> Dict:
     batch_size = len(batch)
     del batch  # we don't use it directly
-    max_num_pair = 10
 
-    input_ids = [torch.randint(0, 30, (batch_size, dataset.debug_len), dtype=torch.int64, device='cpu') for _ in range(max_num_pair)]
-    attention_mask = [torch.full((batch_size, dataset.debug_len), 1, dtype=torch.int64, device='cpu') for _ in range(max_num_pair)]
-    input_ids_lens = [[dataset.debug_len] * batch_size for _ in range(max_num_pair)]
+    input_ids = torch.randint(0, 30, (batch_size, dataset.debug_len), dtype=torch.int64, device='cpu')
+    attention_mask = torch.full((batch_size, dataset.debug_len), 1, dtype=torch.int64, device='cpu')
+    input_ids_lens = [dataset.debug_len] * batch_size
 
-    gen_input_ids = torch.randint(0, 30, (batch_size, dataset.debug_len // 2 + 1), dtype=torch.int64, device='cpu')
-    gen_attention_mask = torch.full((batch_size, dataset.debug_len // 2 + 1), 1, dtype=torch.int64, device='cpu')
-    gen_input_ids_lens = [dataset.debug_len // 2 + 1] * batch_size
+    gen_input_ids = torch.randint(0, 30, (batch_size, dataset.debug_len * 9 // 10 + 1), dtype=torch.int64, device='cpu')
+    gen_attention_mask = torch.full((batch_size, dataset.debug_len * 9 // 10 + 1), 1, dtype=torch.int64, device='cpu')
+    gen_input_ids_lens = [dataset.debug_len // 10 + 1] * batch_size
 
     task_ids = [str(x) for x in range(100000, 100000 + batch_size)]
-    out_token_length = [dataset.debug_len // 2 + 1] * batch_size
+    out_token_length = [dataset.debug_len // 10 + 1] * batch_size
     label_texts = ['1\n1\n1'] * batch_size
-    num_pairs = [max_num_pair] * batch_size
 
     batch_dict = {
         "task_ids": task_ids,
@@ -1213,60 +1072,9 @@ def collate_fn_eval_dummy_autoregressive(batch: List[Dict], dataset: EvalDataset
         "label_texts": label_texts,
         "input_ids_lens": input_ids_lens,
         "gen_input_ids_lens": gen_input_ids_lens,
-        "num_pairs": num_pairs,
     }
     return batch_dict
 
-
-########################################
-# Gradient Search Dataset
-########################################
-class GSDatasetAutoregressive(Dataset):
-    def __init__(
-        self,
-        task: Task,
-        tokenizer: ARCTokenizer,
-        ntokens: int,
-        debug_random_pad: bool,
-        debug_pad_len: int,
-        gen_pad_side: str,
-    ):
-        self.task = task
-        self.tokenizer = tokenizer
-        self.ntokens = ntokens
-        self.debug_random_pad = debug_random_pad
-        self.debug_pad_len = debug_pad_len
-        self.gen_pad_side = gen_pad_side
-
-        # format data (only use demonstration pairs)
-        self.parsed_examples = [self.format(example) for example in task.train_examples]
-
-    def __len__(self):
-        return len(self.parsed_examples)
-
-    def __getitem__(self, idx):
-        return self.parsed_examples[idx]
-
-    def format(self, example: Example) -> Optional[Dict]:
-        # tasks are filtered by EvalDataset already, shouldn't have grids too big
-        assert max(example.input.shape) <= 30 and max(example.output.shape) <= 30
-
-        input_grid_ids, output_grid_ids = self.tokenizer.get_input_and_output_grid_ids(example=example, add_bos=True)
-        input_ids = torch.cat([input_grid_ids, output_grid_ids])
-        attention_mask = torch.full(input_ids.shape, 1, dtype=torch.int64)
-        label_ids = torch.cat([
-            torch.full(input_grid_ids.shape, -100, dtype=torch.int64),
-            output_grid_ids,
-        ])
-
-        return {
-            "input_ids": input_ids,
-            "attention_mask": attention_mask,
-            "label_ids": label_ids,
-        }
-
-
-def collate_fn_gs_autoregressive(batch: List[Dict], dataset: GSDatasetAutoregressive) -> Dict:
     input_ids = [x["input_ids"] for x in batch]
     attention_mask = [x["attention_mask"] for x in batch]
     label_ids = [x["label_ids"] for x in batch]
