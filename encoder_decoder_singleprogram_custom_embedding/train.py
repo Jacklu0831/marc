@@ -2137,6 +2137,8 @@ def main():
             dec_ids_lens = batch_data["decoder_input_ids_lens"]
             anti_invars = batch_data["anti_invars"]
             prefix_counts = batch_data["prefix_counts "]
+            input_token_positions = batch_data['input_token_positions']
+            output_token_positions = batch_data['output_token_positions']
 
             with accelerator.accumulate(encoder_model, decoder_model, conditioning_projection):
                 with accelerator.autocast():
@@ -2154,7 +2156,9 @@ def main():
                         enc_ids_lens=enc_ids_lens,
                         dec_ids_lens=dec_ids_lens,
                         anti_invars=anti_invars,
-                        prefix_counts=prefix_counts  ,
+                        prefix_counts=prefix_counts,
+                        input_token_positions = input_token_positions,
+                        output_token_positions = output_token_positions,
                         ntokens=args.ntokens,
                         decoder_ce_loss=True, # HARDCODE
                         encoder_pad_side=args.encoder_pad_side,

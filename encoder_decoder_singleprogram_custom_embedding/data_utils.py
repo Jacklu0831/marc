@@ -771,6 +771,8 @@ def collate_fn_train(batch: List[int], dataset: TrainDataset) -> Dict:
                 "decoder_attention_mask": decoder_attention_mask,
                 "decoder_labels": decoder_labels,
                 "anti_invar": anti_invar,
+                "input_token_positions": input_token_positions,
+                "output_token_positions": output_token_positions,
             })
 
         # Check if we got 2 valid items from this task
@@ -790,6 +792,8 @@ def collate_fn_train(batch: List[int], dataset: TrainDataset) -> Dict:
     dec_labs = [x["decoder_labels"] for x in out_list]
     anti_invars = [x["anti_invar"] for x in out_list]
     prefix_counts = [x["prefix_counts"] for x in out_list]
+    input_token_positions = [x['input_token_positions'] for x in out_list]
+    output_token_positions = [x['output_token_positions'] for x in out_list]
 
     enc_ids_lens = [len(x) for x in enc_ids]
     dec_ids_lens = [len(x) for x in dec_ids]
@@ -826,7 +830,7 @@ def collate_fn_train(batch: List[int], dataset: TrainDataset) -> Dict:
     #     "num_pairs": prefix_counts,
     #     "trainable_pair_indices": [c - 1 for c in prefix_counts],
     # }, open(f'lots_debug_data/debug_old_train_dicts/{idx}.pkl', 'wb'))
-
+    # print(input_token_positions.shape)
     return {
         "encoder_input_ids": enc_ids,
         "encoder_attention_mask": enc_mask,
@@ -838,6 +842,8 @@ def collate_fn_train(batch: List[int], dataset: TrainDataset) -> Dict:
         "decoder_input_ids_lens": dec_ids_lens,
         "anti_invars": anti_invars,
         "prefix_counts": prefix_counts,
+        "input_token_positions": input_token_positions,
+        "output_token_positions": output_token_positions,
     }
 
 
