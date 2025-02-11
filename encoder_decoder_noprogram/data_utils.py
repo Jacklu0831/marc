@@ -1,6 +1,4 @@
 from datasets import load_dataset
-import matplotlib.pyplot as plt
-from matplotlib.colors import ListedColormap
 import glob
 from collections import Counter
 import itertools
@@ -12,7 +10,7 @@ import random
 import torch
 from torch.utils.data import Dataset, get_worker_info
 from torch.nn.utils.rnn import pad_sequence
-from typing import Dict, List, Tuple, Iterator, Union
+from typing import Dict, List, Tuple, Union
 from pathlib import Path
 from typing import List, Optional
 import numpy as np
@@ -139,9 +137,8 @@ class ARCTokenizer:
         return texts
 
 
-def get_d8_augmenters() -> List[Augmenter]:
-    return [
-        Rotate(0),
+def get_d8_augmenters(include_identity: bool) -> List[Augmenter]:
+    augmenters = [
         Rotate(90),
         Rotate(180),
         Rotate(270),
@@ -150,6 +147,9 @@ def get_d8_augmenters() -> List[Augmenter]:
         Chain([Flip(0), Rotate(90)]), # type: ignore
         Chain([Flip(1), Rotate(90)]), # type: ignore
     ]
+    if include_identity:
+        augmenters = [Rotate(0)] + augmenters
+    return augmenters # type: ignore
 
 
 def get_mit_augmenters(
@@ -227,154 +227,6 @@ def get_mit_augmenters(
         + repeat_augmenters_to_apply
     )
     return augmenters_to_apply
-
-
-def parse_input_output_grids(s: str, dimensions: List[Tuple[int, int]]) -> List[Dict[str, List[List[int]]]]:
-    lines = [line.strip() for line in s.splitlines() if line.strip()]
-    result = []
-    i = 0
-    n = len(lines)
-    dim_i = 0
-
-    while i < n:
-        # get input grid
-        assert lines[i].startswith("input")
-        lines[i] = lines[i][len("input"):]
-        input_height_width = lines[i]; i += 1
-        input_height, input_width = dimensions[dim_i]
-        dim_i += 1
-        assert f"{input_height}{input_width}" == input_height_width, (f"{input_height}{input_width}", input_height_width)
-        input_height, input_width = int(input_height), int(input_width)
-        # read input grid rows
-        input_grid = []
-        for row_i in range(input_height):
-            if row_i < input_height - 1:
-                row = [int(x) for x in lines[i]]
-                i += 1
-            else:
-                row = [int(x) for x in lines[i][:lines[i].find("output")]]
-                lines[i] = lines[i][lines[i].find("output"):]
-            input_grid.append(row)
-        # verify input dimensions
-        assert len(input_grid) == input_height
-        assert all(len(row) == input_width for row in input_grid)
-
-        # get output grid
-        assert lines[i].startswith("output")
-        lines[i] = lines[i][len("output"):]
-        output_height_width = lines[i]; i += 1
-        output_height, output_width = dimensions[dim_i]
-        dim_i += 1
-        assert f"{output_height}{output_width}" == output_height_width, (f"{output_height}{output_width}", output_height_width)
-        output_height, output_width = int(output_height), int(output_width)
-        # read output grid rows
-        output_grid = []
-        for row_i in range(output_height):
-            if row_i < output_height - 1 or "input" not in lines[i]:
-                row = [int(x) for x in lines[i]]
-                i += 1
-            else:
-                row = [int(x) for x in lines[i][:lines[i].find("input")]]
-                lines[i] = lines[i][lines[i].find("input"):]
-            output_grid.append(row)
-        # verify output dimensions
-        assert len(output_grid) == output_height
-        assert all(len(row) == output_width for row in output_grid)
-
-        # add the pair to the result
-        result.append({"input": input_grid, "output": output_grid})
-
-    assert dim_i == len(dimensions)
-    return result
-
-
-def pad_grid_to_30x30(grid: List[List[int]], padding_value: int = 10) -> List[List[int]]:
-    grid_array = np.array(grid)
-    rows, cols = grid_array.shape
-    assert rows <= 30 and cols <= 30
-    # Calculate padding needed on each side
-    pad_top = (30 - rows) // 2
-    pad_bottom = 30 - rows - pad_top
-    pad_left = (30 - cols) // 2
-    pad_right = 30 - cols - pad_left
-    # Pad the grid with the specified value
-    padded_grid = np.pad(
-        grid_array,
-        pad_width=((pad_top, pad_bottom), (pad_left, pad_right)),
-        mode='constant',
-        constant_values=padding_value,
-    )
-    return padded_grid.tolist()
-
-
-def visualize_task(
-        task: Union[Task, List[Dict[str, List]]],
-        name: str = "",
-        out_path: str = "temp.jpg",
-    ) -> None:
-    # do some parsing
-    grids_row1 = None
-    grids_row2 = None
-    if isinstance(task, Task):
-        assert task.name == name
-        grids_row1 = []
-        for e in task.train_examples:
-            grids_row1.append(e.input)
-            grids_row1.append(e.output)
-        grids_row2 = [task.test_example.input, task.test_example.output]
-    elif isinstance(task, list):
-        grids_row1 = []
-        for t in task[:-1]:
-            grids_row1.append(t["input"])
-            grids_row1.append(t["output"])
-        grids_row2 = [task[-1]["input"], task[-1]["output"]]
-    else:
-        raise ValueError(f"unrecognized task type")
-
-    grids_row1 = [pad_grid_to_30x30(grid) for grid in grids_row1]
-    grids_row2 = [pad_grid_to_30x30(grid) for grid in grids_row2]
-
-    color_map_list = [
-        "#000000", # black
-        "#0074D9", # blue
-        "#FF4136", # red
-        "#2ECC40", # green
-        "#FFDC00", # yellow
-        "#AAAAAA", # grey
-        "#F012BE", # fuschia
-        "#FF851B", # orange
-        "#7FDBFF", # teal
-        "#870C25", # brown
-        "#ffffff", # white (background)
-    ]
-    cmap = ListedColormap(color_map_list)
-    n_cols = max(len(grids_row1), len(grids_row2))
-    n_rows = 2
-    fig, axes = plt.subplots(n_rows, n_cols, figsize=(4*n_cols, 8))
-    if n_cols == 1:
-        axes = np.array([[axes[0]], [axes[1]]])
-    # Plot each grid in the first row
-    for i, grid in enumerate(grids_row1):
-        ax = axes[0, i]
-        ax.imshow(np.array(grid), cmap=cmap, vmin=0, vmax=10)
-        ax.axis("off")
-    if len(grids_row1) < n_cols:
-        for j in range(len(grids_row1), n_cols):
-            axes[0, j].axis("off")
-    # Plot each grid in the second row
-    for i, grid in enumerate(grids_row2):
-        ax = axes[1, i]
-        ax.imshow(np.array(grid), cmap=cmap, vmin=0, vmax=10)
-        ax.axis("off")
-    if len(grids_row2) < n_cols:
-        for j in range(len(grids_row2), n_cols):
-            axes[1, j].axis("off")
-    # format
-    fig.suptitle(name, fontsize=16)
-    plt.tight_layout()
-    plt.subplots_adjust(top=0.88)
-    plt.savefig(out_path, dpi=300, bbox_inches="tight")
-    plt.close(fig)
 
 
 def pad_sequence_with_side(sequences: List[torch.Tensor], padding_value: int, side: str) -> torch.Tensor:
@@ -475,7 +327,6 @@ class TrainDataset(Dataset):
         extra_augment_single_grid: bool,
         seed: int,
         process_index: int,
-        ntokens: int,
         debug_fixed_order: bool,
         debug_random_pad: bool,
         debug_pad_len: int,
@@ -499,7 +350,6 @@ class TrainDataset(Dataset):
         self._length = total_steps
         self.extra_augment_ratio = extra_augment_ratio
         self.extra_augment_single_grid = extra_augment_single_grid
-        self.ntokens = ntokens
         self.debug_fixed_order = debug_fixed_order
         self.debug_random_pad = debug_random_pad
         self.debug_pad_len = debug_pad_len
@@ -515,7 +365,7 @@ class TrainDataset(Dataset):
         # setup args
         self.normalized_ratio = np.array([self.re_arc_ratio, self.concept_arc_ratio, self.arc_heavy_ratio])
         self.normalized_ratio /= np.sum(self.normalized_ratio)
-        self.d8_augmenters = get_d8_augmenters()
+        self.d8_augmenters = get_d8_augmenters(include_identity=True)
         self.extra_augmenters = get_mit_augmenters(include_basic=True, include_size=True, include_chain=True, include_repeat=True)
 
         # seed and process_index
@@ -665,6 +515,7 @@ def collate_fn_train(batch: List[int], dataset: TrainDataset) -> Dict:
         pair_idx_to_input_ids = []
         pair_idx_to_attention_mask = []
         pair_idx_to_label_ids = []
+
         for pair_i in range(required_num_pair):
             # get inputids, attention, labelids for batch of pairs at pair_i
             example = (task.train_examples + [task.test_example])[pair_i]
@@ -677,6 +528,7 @@ def collate_fn_train(batch: List[int], dataset: TrainDataset) -> Dict:
                 label_ids = torch.cat([label_ids, torch.full(output_grid_ids.shape, -100, dtype=torch.int64)])
             else:
                 label_ids = torch.cat([label_ids, output_grid_ids])
+            # aggregate
             pair_idx_to_input_ids.append(input_ids)
             pair_idx_to_attention_mask.append(attention_mask)
             pair_idx_to_label_ids.append(label_ids)
@@ -754,7 +606,6 @@ class EvalDataset:
         permute_iters: int,
         seed: int,
         tokenizer: ARCTokenizer,
-        ntokens: int,
         debug_random_pad: bool,
         debug_pad_len: int,
         train_pad_side: str,
@@ -767,7 +618,6 @@ class EvalDataset:
         self.permute_iters = permute_iters
         self.seed = seed
         self.tokenizer = tokenizer
-        self.ntokens = ntokens
         self.debug_random_pad = debug_random_pad
         self.debug_pad_len = debug_pad_len
         self.train_pad_side = train_pad_side
@@ -1075,27 +925,187 @@ def collate_fn_eval_dummy(batch: List[Dict], dataset: EvalDataset) -> Dict:
     }
     return batch_dict
 
+
+########################################
+# Test-Time-Training Dataset
+########################################
+class TTTDataset(Dataset):
+    def __init__(
+        self,
+        data_path: str,
+        max_samples_per_task: int,
+        permute_n: int,
+        tokenizer: ARCTokenizer,
+        max_seq_len: int,
+        seed: int,
+        pad_side: str,
+        debug_no_aug: bool,
+        aug_type: str,
+    ):
+        self.permute_n = permute_n
+        self.tokenizer = tokenizer
+        self.max_seq_len = max_seq_len
+        self.seed = seed
+        self.pad_side = pad_side
+        self.debug_no_aug = debug_no_aug
+
+        # get all augmenters
+        d8_augmenters = get_d8_augmenters(include_identity=False)
+        extra_augmenters = get_mit_augmenters(include_basic=True, include_size=True, include_chain=True, include_repeat=True)
+        if aug_type == "none":
+            augmenters = []
+        elif aug_type == "both":
+            augmenters = d8_augmenters + extra_augmenters
+        elif aug_type == "d8":
+            augmenters = d8_augmenters
+        else:
+            augmenters = extra_augmenters
+
+        # keep unique augmenters
+        self.augmenters = []
+        for aug in augmenters:
+            if str(aug) not in [str(x) for x in self.augmenters]:
+                self.augmenters.append(aug)
+
+        # load data
+        self.task_id = Path(data_path).stem
+        with open(data_path, "r") as f:
+            task_data = json.load(f)
+
+        # create task
+        train_examples = [Example(input=np.array(x["input"]), output=np.array(x["output"])) for x in task_data['train']]
+        self.task = Task(
+            name=f'{self.task_id}',
+            train_examples=train_examples,
+            test_example=None, # type: ignore
+        )
+
+        # get data
+        rng = np.random.RandomState(seed)
+        self.ttt_tasks = self.task_to_ttt_filtered_data(max_gen=max_samples_per_task)
+        rng.shuffle(self.ttt_tasks) # type: ignore
+
+    def task_to_ttt_filtered_data(self, max_gen: int) -> List[Task]:
+        # if leave 1 is enough, return it
+        leave_1_train_tasks = self.task_to_ttt_filtered_data_leave_n(leave_n=1, max_gen=max_gen)
+        if len(leave_1_train_tasks) >= max_gen:
+            return leave_1_train_tasks
+        # else generate leave 2 and append to leave 1
+        max_gen_leave_2 = max_gen - len(leave_1_train_tasks)
+        leave_1_train_tasks += self.task_to_ttt_filtered_data_leave_n(leave_n=2, max_gen=max_gen_leave_2)
+        return leave_1_train_tasks
+
+    def task_to_ttt_filtered_data_leave_n(self, leave_n: int, max_gen: int) -> List[Task]:
+        rng = np.random.RandomState(self.seed)
+
+        # get leave_n tasks
+        initial_tasks = []
+        n_train_examples = len(self.task.train_examples)
+        for test_idx in range(n_train_examples):
+            potential_train_idxs = set(range(n_train_examples)) - {test_idx}
+            # we already remove i, so we need to remove n-1 more
+            for leave_idxs in itertools.combinations(potential_train_idxs, leave_n - 1):
+                train_idxs = potential_train_idxs - set(leave_idxs)
+                examples = self.task.train_examples.copy()
+                initial_tasks.append(
+                    Task(name="", train_examples=[examples[i] for i in train_idxs], test_example=examples[test_idx])
+                )
+
+        if self.debug_no_aug:
+            augmented_tasks = initial_tasks
+        else:
+            # get augmented tasks
+            augmented_tasks = []
+            for augmenter in self.augmenters:
+                for task in initial_tasks:
+                    task = augmenter.apply_to_task(task, to_input=True, to_output=True, rng=rng)
+                    if task.max_height() <= 30 and task.max_width() <= 30:
+                        augmented_tasks.append(task)
+            augmented_tasks = list(dict.fromkeys(augmented_tasks + initial_tasks))
+
+            # get permute-color then i/o-permuted tasks
+            color_and_permute_augmented_tasks = []
+            for _ in range(self.permute_n):
+                for task in augmented_tasks:
+                    new_task = task
+                    if len(self.augmenters) > 0:
+                        new_task = PermuteColors().apply_to_task(task, to_input=True, to_output=True, rng=rng)
+                    new_task = PermuteExamples().apply_to_task(new_task, rng=rng, to_input=True, to_output=True)
+                    color_and_permute_augmented_tasks.append(new_task)
+            augmented_tasks = list(dict.fromkeys(color_and_permute_augmented_tasks + augmented_tasks))
+
+        # format
+        rng.shuffle(augmented_tasks)
+        filtered_tasks = []
+        for task in augmented_tasks:
+            if len(filtered_tasks) >= max_gen:
+                break
+            if self.format_and_filter(task) is not None:
+                filtered_tasks.append(task)
+        return filtered_tasks
+
+    def format_and_filter(self, task: Task) -> Optional[Dict]:
+        # big grids are filtered out during augmentation already
+        assert task.max_height() <= 30 and task.max_width() <= 30
+
+        # Build encoder text
+        task = copy.deepcopy(task)
+        num_pair = len(task.train_examples) + 1
+
+        # parse task
+        pair_idx_to_input_ids = []
+        pair_idx_to_attention_mask = []
+        pair_idx_to_label_ids = []
+
+        for pair_i in range(num_pair):
+            example = (task.train_examples + [task.test_example])[pair_i]
+            input_grid_ids, output_grid_ids = self.tokenizer.get_input_and_output_grid_ids(example=example, add_bos=(pair_i == 0))
+            input_ids = torch.cat([input_grid_ids, output_grid_ids])
+            attention_mask = torch.full(input_ids.shape, 1, dtype=torch.int64)
+            # label id for all except first pair
+            label_ids = torch.full(input_grid_ids.shape, -100, dtype=torch.int64)
+            if pair_i == 0:
+                label_ids = torch.cat([label_ids, torch.full(output_grid_ids.shape, -100, dtype=torch.int64)])
+            else:
+                label_ids = torch.cat([label_ids, output_grid_ids])
+            pair_idx_to_input_ids.append(input_ids)
+            pair_idx_to_attention_mask.append(attention_mask)
+            pair_idx_to_label_ids.append(label_ids)
+
+        input_ids = torch.cat(pair_idx_to_input_ids)
+        attention_mask = torch.cat(pair_idx_to_attention_mask)
+        label_ids = torch.cat(pair_idx_to_label_ids)
+        assert input_ids.shape == attention_mask.shape == label_ids.shape
+
+        if len(input_ids) > self.max_seq_len:
+            return None
+
+        return {
+            "input_ids": input_ids,
+            "attention_mask": attention_mask,
+            "label_ids": label_ids,
+        }
+
+    def __len__(self):
+        return len(self.ttt_tasks)
+
+    def __getitem__(self, idx):
+        return self.format_and_filter(self.ttt_tasks[idx])
+
+
+def collate_fn_ttt(batch: List[Dict], dataset: TTTDataset) -> Dict:
     input_ids = [x["input_ids"] for x in batch]
     attention_mask = [x["attention_mask"] for x in batch]
     label_ids = [x["label_ids"] for x in batch]
 
     input_ids_lens = [len(x) for x in input_ids]
-    input_ids = pad_sequence_with_side(input_ids, padding_value=dataset.tokenizer.pad_token_id, side=dataset.gen_pad_side)
-    attention_mask = pad_sequence_with_side(attention_mask, padding_value=0, side=dataset.gen_pad_side)
-    label_ids = pad_sequence_with_side(label_ids, padding_value=-100, side=dataset.gen_pad_side)
+    input_ids = pad_sequence_with_side(input_ids, padding_value=dataset.tokenizer.pad_token_id, side=dataset.pad_side)
+    attention_mask = pad_sequence_with_side(attention_mask, padding_value=0, side=dataset.pad_side)
+    label_ids = pad_sequence_with_side(label_ids, padding_value=-100, side=dataset.pad_side)
 
-    if dataset.debug_random_pad and dataset.debug_pad_len > -1:
-        input_ids, attention_mask, label_ids = debug_extra_pad_tensors(
-            [input_ids, attention_mask, label_ids],
-            padding_values=[dataset.tokenizer.pad_token_id, 0, -100],
-            pad_len=dataset.debug_pad_len,
-            side=dataset.gen_pad_side,
-        )
-
-    batch_dict = {
+    return {
         "input_ids": input_ids,
         "attention_mask": attention_mask,
         "label_ids": label_ids,
         "input_ids_lens": input_ids_lens,
     }
-    return batch_dict

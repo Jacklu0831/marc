@@ -1,5 +1,5 @@
 # overfit1 novae (weird, when debug_random_pad, need max_grad_norm to lower to fit properly and not nan)
-accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder_autoregressive/train.py \
+accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder_autoregressive_longcontext/train.py \
     --tag test \
     --train_data_dir /scratch/yl11330/re-arc/train_data_debug_overfit/tasks \
     --eval_train_dir /scratch/yl11330/re-arc/arc_original_debug_overfit/training \
@@ -25,10 +25,12 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
     --grad_accum_steps 1 \
     --train_no_sample \
     --eval_no_sample \
-    --debug_random_pad
+    --debug_random_pad \
+    --seed 2 \
+    --repeat_demonstration
 
 
-accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder_autoregressive/train.py \
+accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder_autoregressive_longcontext/train.py \
     --tag test \
     --train_data_dir /scratch/yl11330/re-arc/train_data_debug_overfit/tasks \
     --eval_train_dir /scratch/yl11330/re-arc/arc_original_debug_overfit/training \

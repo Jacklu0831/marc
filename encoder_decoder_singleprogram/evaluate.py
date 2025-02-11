@@ -40,9 +40,6 @@ os.environ["NCCL_BLOCKING_WAIT"] = "1"
 os.environ["TORCH_NCCL_ASYNC_ERROR_HANDLING"] = "1"
 os.environ["TORCH_NCCL_BLOCKING_WAIT"] = "1"
 
-import wandb
-wandb.login(key='faf21d9ff65ee150697c7e96f070616f6b662134', relogin=True)
-
 logger = get_logger(__name__, log_level="INFO")
 
 
@@ -62,9 +59,7 @@ NBIT_TO_DTYPE = {
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--tag", type=str, required=True)
-    parser.add_argument("--wandb", action="store_true")
     parser.add_argument("--output_dir", type=str, default="./encoder_decoder/outputs_eval")
-    parser.add_argument("--tracker_project_name", type=str, default="arc")
 
     # Model
     parser.add_argument("--encoder_name", type=str, default="llama1b")
@@ -73,38 +68,34 @@ def main():
     parser.add_argument("--no_flash_attn", action="store_true")
     parser.add_argument("--untrainable_nbit", type=float, choices=[3.6, 4, 8, 16, 32], default=16)
     parser.add_argument("--trainable_nbit", type=float, choices=[16, 32], default=16)
-    parser.add_argument("--no_lora", action="store_true")
 
     # vae
-    parser.add_argument("--vae_no_sample", action="store_true") # applies to inference only
+    parser.add_argument("--no_sample", action="store_true")
 
     # Weights
     parser.add_argument("--weight_root_dir", type=str, default="./encoder_decoder/outputs")
-    parser.add_argument("--weight_dir", type=str, default="test_evaluation")
-    parser.add_argument("--weight_epoch", type=int, default=1)
+    parser.add_argument("--weight_dir", type=str, required=True)
+    parser.add_argument("--weight_epoch", type=int, required=True)
     parser.add_argument("--ttt_weight_root_dir", type=str, default="./encoder_decoder/outputs_ttt")
     parser.add_argument("--ttt_weight_dir", type=str, default=None)
     parser.add_argument("--ttt_weight_epoch", type=int, default=-1)
 
     # Conditioning projection
     parser.add_argument("--conditioning_method", type=str, choices=["prefix2prefix", "hidden2prompt"], default="hidden2prompt")
-    parser.add_argument("--projection_type", type=str, choices=["none", "shared", "full"], default="shared")
-    parser.add_argument("--identity_init", action="store_true")
 
     # Evaluation
     parser.add_argument("--batch_size", type=int, default=2)
-    parser.add_argument("--max_seq_len", type=int, default=5120)
-    parser.add_argument("--decoder_ce_loss", action="store_true")
+    parser.add_argument("--max_seq_len", type=int, default=8192)
     parser.add_argument("--encoder_loss_type", type=str, choices=["last", "rest", "all"], default="rest")
 
     # data
-    parser.add_argument("--num_workers", type=int, default=8)
     parser.add_argument("--encoder_pad_side", type=str, choices=["left", "right"], default="right")
     parser.add_argument("--decoder_pad_side", type=str, choices=["left", "right"], default="right")
     parser.add_argument("--decoder_gen_pad_side", type=str, choices=["left", "right"], default="left")
+    parser.add_argument("--color_equiv", action='store_true')
 
     # eval data
-    parser.add_argument("--data_dir", type=str, default="/scratch/yl11330/re-arc/arc_original/training")
+    parser.add_argument("--data_dir", type=str, default="/scratch/yl11330/re-arc/arc_original/evaluation")
     parser.add_argument("--select_tasks_path", type=str, default=None)
     parser.add_argument("--leave_ns", type=int, nargs="+", default=[0])
     parser.add_argument("--leave_ns_inc", action="store_true")
@@ -124,30 +115,23 @@ def main():
     parser.add_argument("--gs_take_best", action="store_true")
 
     # Virtual tokens approach
-    parser.add_argument("--ntokens", type=int, default=8)
+    parser.add_argument("--ntokens", type=int, default=64)
     parser.add_argument("--seed", type=int, default=0)
     args = parser.parse_args()
 
-    assert not args.no_lora # TODO, implement no lora
     assert args.trainable_nbit == 16 # TODO, test this
 
     # check args
     if args.conditioning_method == "prefix2prefix":
-        assert not args.encoder_gradient_checkpointing
-        assert not args.decoder_gradient_checkpointing
-    if args.identity_init:
-        assert args.encoder_name == args.decoder_name
-    if args.projection_type == "none":
-        assert args.encoder_name == args.decoder_name
+        assert args.decoder_pad_side == "right" # right for no middle padding
     if args.tie_models:
         assert args.encoder_name == args.decoder_name
-    if args.no_lora:
-        args.untrainable_nbit = args.trainable_nbit # untrainable become trainable
+        assert args.encoder_pad_side == args.decoder_pad_side
     if args.gs_iters > 0:
         assert args.batch_size == 1
     assert (args.encoder_name == "nemo8b") == (args.decoder_name == "nemo8b")
     if args.encoder_name == "nemo8b":
-        assert args.encoder_pad_side == args.decoder_gen_pad_side == "left"
+        assert args.encoder_pad_side == args.decoder_pad_side == args.decoder_gen_pad_side == "left"
 
     args.tag = f"eval_{args.tag}_{args.weight_dir}"
     args.output_dir = os.path.join(args.output_dir, args.tag)
@@ -159,19 +143,12 @@ def main():
     accelerator = Accelerator(
         mixed_precision="bf16",
         project_config=project_config,
-        log_with="wandb" if args.wandb else None,
         kwargs_handlers=[init_process_process_kwargs],
     )
     set_up_main_process_logger(accelerator, logger)
     set_seed(args.seed + accelerator.process_index)
     if accelerator.is_main_process:
         os.makedirs(args.output_dir, exist_ok=True)
-        tracker_config = dict(vars(args))
-        accelerator.init_trackers(
-            args.tracker_project_name,
-            tracker_config,
-            init_kwargs={"wandb": {"name": args.tag}}
-        )
     torch.backends.cuda.matmul.allow_tf32 = True
     logger.info("Accelerator and seed set up.")
 
@@ -217,25 +194,27 @@ def main():
             bnb_4bit_compute_dtype=NBIT_TO_DTYPE[args.trainable_nbit],
         )
     elif args.untrainable_nbit == 8:
+        # wtf why this more memory
         from_pretrained_kwargs["quantization_config"] = BitsAndBytesConfig(load_in_8bit=True)
     else:
         raise ValueError(f"unrecognized untrainable_nbit {args.untrainable_nbit}")
 
     base_encoder = AutoModelForCausalLM.from_pretrained(
         pretrained_model_name_or_path=MODEL_NAME_TO_PATH[args.encoder_name],
-        **from_pretrained_kwargs
+        **from_pretrained_kwargs,
     )
     if args.tie_models:
         base_decoder = base_encoder
     else:
         base_decoder = AutoModelForCausalLM.from_pretrained(
             pretrained_model_name_or_path=MODEL_NAME_TO_PATH[args.decoder_name],
-            **from_pretrained_kwargs
+            **from_pretrained_kwargs,
         )
 
     if args.untrainable_nbit in ['4bit', '8bit']:
         base_encoder = prepare_model_for_kbit_training(base_encoder, use_gradient_checkpointing=False)
-        base_decoder = prepare_model_for_kbit_training(base_decoder, use_gradient_checkpointing=False)
+        if not args.tie_models:
+            base_decoder = prepare_model_for_kbit_training(base_decoder, use_gradient_checkpointing=False)
 
     logger.info("Base models loaded.")
 
@@ -245,33 +224,34 @@ def main():
     base_encoder.resize_token_embeddings(len(encoder_tokenizer))
     logger.info("CLS tokens added.")
 
-    # only keep these tokens, resize model embedding
+    # only keep these tokens, resize model embedding (eos == pad)
+    encoder_keep_tokens = [str(i) for i in range(10)] + \
+        [encoder_tokenizer.bos_token, encoder_tokenizer.eos_token, "\n", ":\n", "input", "output"] + \
+        cls_tokens
     decoder_keep_tokens = [str(i) for i in range(10)] + \
-        [decoder_tokenizer.bos_token, decoder_tokenizer.eos_token, "\n", "input", "output"] # eos == pad
-    encoder_keep_tokens = decoder_keep_tokens + cls_tokens
-    assert len(set(encoder_keep_tokens)) == len(encoder_keep_tokens)
-    assert len(set(decoder_keep_tokens)) == len(decoder_keep_tokens)
+        [decoder_tokenizer.bos_token, decoder_tokenizer.eos_token, "\n", ":\n", "input", "output"]
     if args.tie_models:
         decoder_keep_tokens = encoder_keep_tokens
+    assert len(set(encoder_keep_tokens)) == len(encoder_keep_tokens)
+    assert len(set(decoder_keep_tokens)) == len(decoder_keep_tokens)
 
     # this breaks embedding tying, but whatever
     with torch.no_grad():
         encoder_keep_token_ids = []
         for token in encoder_keep_tokens:
             token_id = encoder_tokenizer(token)["input_ids"] # type: ignore
-            assert isinstance(token_id, list)
-            assert len(token_id) == 2 # with start token
+            assert isinstance(token_id, list) and len(token_id) == 2 # with start token
             encoder_keep_token_ids.append(token_id[1])
         decoder_keep_token_ids = []
         for token in decoder_keep_tokens:
             token_id = decoder_tokenizer(token)["input_ids"] # type: ignore
-            assert isinstance(token_id, list)
-            assert len(token_id) == 2 # with start token
+            assert isinstance(token_id, list) and len(token_id) == 2 # with start token
             decoder_keep_token_ids.append(token_id[1])
         assert len(set(encoder_keep_token_ids)) == len(encoder_keep_token_ids)
         assert len(set(decoder_keep_token_ids)) == len(decoder_keep_token_ids)
 
         # subset embeddings and lmheads
+        assert base_encoder.model.embed_tokens.weight.shape == base_encoder.lm_head.weight.shape
         base_encoder.model.embed_tokens.weight = nn.Parameter(base_encoder.model.embed_tokens.weight[encoder_keep_token_ids])
         base_encoder.model.embed_tokens.num_embeddings = len(encoder_keep_token_ids)
         assert base_encoder.lm_head.bias is None
@@ -281,6 +261,7 @@ def main():
 
         # subset embeddings and lmheads
         if not args.tie_models:
+            assert base_decoder.model.embed_tokens.weight.shape == base_decoder.lm_head.weight.shape
             base_decoder.model.embed_tokens.weight = nn.Parameter(base_decoder.model.embed_tokens.weight[decoder_keep_token_ids])
             base_decoder.model.embed_tokens.num_embeddings = len(decoder_keep_token_ids)
             assert base_decoder.lm_head.bias is None
@@ -289,21 +270,21 @@ def main():
             base_decoder.config.tie_word_embeddings = False
 
     # update configs
-    # TODO: check if nemo uses these
     assert base_encoder.config.vocab_size and base_encoder.config.bos_token_id and base_encoder.config.eos_token_id
     base_encoder.config.vocab_size = len(encoder_keep_token_ids)
     base_encoder.config.bos_token_id = encoder_keep_tokens.index(encoder_tokenizer.bos_token)
     base_encoder.config.eos_token_id = encoder_keep_tokens.index(encoder_tokenizer.eos_token)
-    assert base_decoder.config.vocab_size and base_decoder.config.bos_token_id and base_decoder.config.eos_token_id
-    base_decoder.config.vocab_size = len(decoder_keep_token_ids)
-    base_decoder.config.bos_token_id = decoder_keep_tokens.index(decoder_tokenizer.bos_token)
-    base_decoder.config.eos_token_id = decoder_keep_tokens.index(decoder_tokenizer.eos_token)
+    if not args.tie_models:
+        assert base_decoder.config.vocab_size and base_decoder.config.bos_token_id and base_decoder.config.eos_token_id
+        base_decoder.config.vocab_size = len(decoder_keep_token_ids)
+        base_decoder.config.bos_token_id = decoder_keep_tokens.index(decoder_tokenizer.bos_token)
+        base_decoder.config.eos_token_id = decoder_keep_tokens.index(decoder_tokenizer.eos_token)
 
     # create custom tokenizer
     arc_encoder_tokenizer = ARCTokenizer(
         tokens=encoder_keep_tokens,
         bos_token=encoder_tokenizer.bos_token,
-        eos_token=decoder_tokenizer.eos_token,
+        eos_token=encoder_tokenizer.eos_token,
     )
     arc_decoder_tokenizer = arc_encoder_tokenizer
     if not args.tie_models:
@@ -318,65 +299,61 @@ def main():
     # load encoder decoder projection weights
     weight_dir = os.path.join(args.weight_root_dir, args.weight_dir)
     enc_weight_path = os.path.join(weight_dir, f"encoder_lora_epoch_{args.weight_epoch}")
-    enc_lmhead_path = os.path.join(weight_dir, f"encoder_lmhead_epoch_{args.weight_epoch}.pt")
-    enc_embeds_path = os.path.join(weight_dir, f"encoder_embeds_epoch_{args.weight_epoch}.pt")
     dec_weight_path = os.path.join(weight_dir, f"decoder_lora_epoch_{args.weight_epoch}")
-    dec_lmhead_path = os.path.join(weight_dir, f"decoder_lmhead_epoch_{args.weight_epoch}.pt")
-    dec_embeds_path = os.path.join(weight_dir, f"decoder_embeds_epoch_{args.weight_epoch}.pt")
     proj_weight_path = os.path.join(weight_dir, f"conditioning_projection_epoch_{args.weight_epoch}.pt")
 
-    if args.no_lora:
-        encoder_model = base_encoder.from_pretrained(enc_weight_path)
-        decoder_model = base_decoder.from_pretrained(dec_weight_path) if not args.tie_models else encoder_model
-    else:
-        # encoder
-        encoder_model = PeftModel.from_pretrained(base_encoder, enc_weight_path)
-        encoder_model.lm_head.load_state_dict(torch.load(enc_lmhead_path, weights_only=True))
-        if hasattr(encoder_model.model, "embed_tokens"):
-            encoder_model.model.embed_tokens.load_state_dict(torch.load(enc_embeds_path, weights_only=True))
-        else:
-            encoder_model.model.model.embed_tokens.load_state_dict(torch.load(enc_embeds_path, weights_only=True))
-        # decoder
-        decoder_model = encoder_model
-        if not args.tie_models:
-            decoder_model = PeftModel.from_pretrained(base_decoder, dec_weight_path)
-            decoder_model.lm_head.load_state_dict(torch.load(dec_lmhead_path, weights_only=True))
-            if hasattr(decoder_model.model, "embed_tokens"):
-                decoder_model.model.embed_tokens.load_state_dict(torch.load(dec_embeds_path, weights_only=True))
-            else:
-                decoder_model.model.model.embed_tokens.load_state_dict(torch.load(dec_embeds_path, weights_only=True))
-    logger.info("loaded encoder and decoder model weights")
+    # load weights
+    encoder_model = PeftModel.from_pretrained(base_encoder, enc_weight_path)
+    decoder_model = encoder_model
+    if not args.tie_models:
+        decoder_model = PeftModel.from_pretrained(base_decoder, dec_weight_path)
+    conditioning_projection: Union[Hidden2PromptProjection, Prefix2PrefixProjection] = torch.load(
+        proj_weight_path,
+        weights_only=False,
+        map_location=accelerator.device
+    )
+    logger.info("loaded model weights")
 
-    conditioning_projection: Union[Hidden2PromptProjection, Prefix2PrefixProjection] = torch.load(proj_weight_path, weights_only=False, map_location=accelerator.device)
-    logger.info("loaded conditioning projection weights")
-
-    # set requires grad for model weight conversion
-    if args.no_lora:
-        # TODO: fix this, not all model params are trainable
-        for name, param in encoder_model.named_parameters():
-            param.requires_grad = True
-    else:
-        for name, param in encoder_model.named_parameters():
-            param.requires_grad = ("lora" in name) or ("lm_head" in name) or ("embed" in name)
-        if not args.tie_models:
-            for name, param in decoder_model.named_parameters():
-                param.requires_grad = ("lora" in name) or ("lm_head" in name) or ("embed" in name)
-        for param in conditioning_projection.parameters():
-            param.requires_grad = True
-
-    # convert model weights
-    for _, param in encoder_model.named_parameters():
-        if param.requires_grad:
+    # convert lora weights to trainable nbit
+    for name, param in encoder_model.named_parameters():
+        if "lora" in name:
             param.data = param.data.to(NBIT_TO_DTYPE[args.trainable_nbit])
     if not args.tie_models:
-        for _, param in decoder_model.named_parameters():
-            if param.requires_grad:
+        for name, param in decoder_model.named_parameters():
+            if "lora" in name:
                 param.data = param.data.to(NBIT_TO_DTYPE[args.trainable_nbit])
-    for _, param in conditioning_projection.named_parameters():
-        if param.requires_grad:
-            param.data = param.data.to(NBIT_TO_DTYPE[args.trainable_nbit])
+    for param in conditioning_projection.parameters():
+        param.requires_grad = True
     logger.info(f'converted model weights to {NBIT_TO_DTYPE[args.trainable_nbit]}')
-    # we do not log model weight and model memory size because they are inaccurate
+
+    # get ttt model paths
+    task_to_ttt_paths = None
+    encoder_ttt_param_names, decoder_ttt_param_names = None, None
+    if args.ttt_weight_dir != None and args.ttt_weight_epoch > -1:
+        ttt_weight_dir = os.path.join(args.ttt_weight_root_dir, args.ttt_weight_dir)
+        task_to_ttt_paths = {}
+        for task_weight_dir in glob.glob(f"{ttt_weight_dir}/*"):
+            task_name = Path(task_weight_dir).stem
+            if os.path.isdir(task_weight_dir) and len(task_name) == 8:
+                encoder_ttt_path = os.path.join(task_weight_dir, f"encoder_lora_epoch_{args.ttt_weight_epoch}.pt")
+                assert os.path.exists(encoder_ttt_path), encoder_ttt_path
+                decoder_ttt_path = None
+                if not args.tie_models:
+                    decoder_ttt_path = os.path.join(task_weight_dir, f"decoder_lora_epoch_{args.ttt_weight_epoch}.pt")
+                    assert os.path.exists(decoder_ttt_path), decoder_ttt_path
+                projection_ttt_path = os.path.join(task_weight_dir, f"conditioning_projection_epoch_{args.ttt_weight_epoch}.pt")
+                assert os.path.exists(projection_ttt_path), projection_ttt_path
+                task_to_ttt_paths[task_name] = (encoder_ttt_path, decoder_ttt_path, projection_ttt_path)
+        logger.info(f"found {len(task_to_ttt_paths)} ttt task loras")
+        assert len(task_to_ttt_paths) > 0, ttt_weight_dir
+
+        # hacky way to get param names
+        encoder_ttt_path, decoder_ttt_path, _ = list(task_to_ttt_paths.values())[0]
+        encoder_ttt_param_names = set(torch.load(encoder_ttt_path, weights_only=True, map_location=accelerator.device).keys())
+        logger.info(f"found {len(encoder_ttt_param_names)} encoder ttt params")
+        if not args.tie_models:
+            decoder_ttt_param_names = set(torch.load(decoder_ttt_path, weights_only=True, map_location=accelerator.device).keys())
+            logger.info(f"found {len(decoder_ttt_param_names)} decoder ttt params")
 
     # Prepare with accelerator
     (
@@ -388,36 +365,6 @@ def main():
         decoder_model,
         conditioning_projection,
     )
-
-    # get ttt model paths
-    task_to_ttt_model_paths = None
-    encoder_ttt_param_names, decoder_ttt_param_names = None, None
-    if args.ttt_weight_dir != None and args.ttt_weight_epoch > -1:
-        ttt_weight_dir = os.path.join(args.ttt_weight_root_dir, args.ttt_weight_dir)
-        task_to_ttt_model_paths = {}
-        for task_weight_dir in glob.glob(f"{ttt_weight_dir}/*"):
-            task_name = Path(task_weight_dir).stem
-            if os.path.isdir(task_weight_dir) and len(task_name) == 8:
-                enc_ttt_path = os.path.join(task_weight_dir, f"encoder_lora_epoch_{args.ttt_weight_epoch}.pt")
-                assert os.path.exists(enc_ttt_path), enc_ttt_path
-                dec_ttt_path = None
-                proj_ttt_path = None
-                if not args.tie_models:
-                    dec_ttt_path = os.path.join(task_weight_dir, f"decoder_lora_epoch_{args.ttt_weight_epoch}.pt")
-                    assert os.path.exists(dec_ttt_path), dec_ttt_path
-                proj_ttt_path = os.path.join(task_weight_dir, f"conditioning_projection_epoch_{args.ttt_weight_epoch}.pt")
-                assert os.path.exists(proj_ttt_path), proj_ttt_path
-                task_to_ttt_model_paths[task_name] = (enc_ttt_path, dec_ttt_path, proj_ttt_path)
-        logger.info(f"found {len(task_to_ttt_model_paths)} ttt task loras")
-        assert len(task_to_ttt_model_paths) > 0, ttt_weight_dir
-
-        # hacky way to get param names
-        enc_ttt_path, dec_ttt_path, proj_ttt_path = list(task_to_ttt_model_paths.values())[0]
-        encoder_ttt_param_names = set(torch.load(enc_ttt_path, weights_only=True, map_location=accelerator.device).keys())
-        logger.info(f"found {len(encoder_ttt_param_names)} encoder ttt params")
-        if not args.tie_models:
-            decoder_ttt_param_names = set(torch.load(dec_ttt_path, weights_only=True, map_location=accelerator.device).keys())
-            logger.info(f"found {len(decoder_ttt_param_names)} decoder ttt params")
 
     # Build evaluation dataset
     eval_dataset = EvalDataset(
@@ -434,24 +381,25 @@ def main():
         max_seq_len=args.max_seq_len,
         ntokens=args.ntokens,
         encoder_loss_type=args.encoder_loss_type,
-        debug_random_pad=False, # HARDCODE
-        debug_pad_len=-1, # HARDCODE
+        debug_random_pad=False,
+        debug_pad_len=-1,
         encoder_pad_side=args.encoder_pad_side,
         decoder_pad_side=args.decoder_pad_side,
         decoder_gen_pad_side=args.decoder_gen_pad_side,
+        color_equiv=args.color_equiv,
     )
-    eval_collate_fn = partial(collate_fn_eval, dataset=eval_dataset) # only use tokenizer, debug_random_pad
+    collate_fn = partial(collate_fn_eval, dataset=eval_dataset)
 
     # lambda schedulers
-    encoder_loss_lambda_scheduler = LambdaScheduler(loss_lambda=0.0, linear=False, total_steps=0) # HARDCODE
-    invar_loss_lambda_scheduler = LambdaScheduler(loss_lambda=0.0, linear=False, total_steps=0) # HARDCODE
-    kl_loss_lambda_scheduler = LambdaScheduler(loss_lambda=0.0, linear=False, total_steps=0) # HARDCODE
+    encoder_loss_lambda_scheduler = LambdaScheduler(loss_lambda=1.0, linear=False, total_steps=0)
+    invar_loss_lambda_scheduler = LambdaScheduler(loss_lambda=0.0, linear=False, total_steps=0)
+    kl_loss_lambda_scheduler = LambdaScheduler(loss_lambda=0.0, linear=False, total_steps=0)
 
     # evaluate
     ce_loss, encoder_loss, kl_loss, \
         exact_acc, valid_grid, correct_grid_dim, token_acc, texts, \
         votes, competition_sub_acc, competition_all_acc, ttt_provided = evaluate(
-        task_to_ttt_model_paths=task_to_ttt_model_paths,
+        task_to_ttt_paths=task_to_ttt_paths,
         encoder_ttt_param_names=encoder_ttt_param_names,
         decoder_ttt_param_names=decoder_ttt_param_names,
         encoder_model=encoder_model,
@@ -461,8 +409,7 @@ def main():
         dataset=eval_dataset,
         accelerator=accelerator,
         batch_size=args.batch_size,
-        collate_fn=eval_collate_fn,
-        decoder_ce_loss=args.decoder_ce_loss,
+        collate_fn=collate_fn,
         trainable_nbit=args.trainable_nbit,
         no_flash_attn=args.no_flash_attn,
         tie_models=args.tie_models,
@@ -476,11 +423,13 @@ def main():
         gs_max_grad_norm=args.gs_max_grad_norm,
         gs_lr_scheduler=args.gs_lr_scheduler,
         gs_take_best=args.gs_take_best,
-        vae_no_sample=args.vae_no_sample,
+        vae_no_sample=args.no_sample,
         encoder_loss_lambda_scheduler=encoder_loss_lambda_scheduler,
         invar_loss_lambda_scheduler=invar_loss_lambda_scheduler,
         kl_loss_lambda_scheduler=kl_loss_lambda_scheduler,
-        global_step=0, # HARDCODE
+        global_step=0,
+        dry_eval_run=False,
+        anti_invar_margin=0,
     )
 
     if accelerator.is_main_process:
@@ -499,12 +448,7 @@ def main():
         }
         logger.info(f'Evaluation results:\n{pprint.pformat(metric_dict, indent=4)}')
 
-        try:
-            accelerator.log(metric_dict, step=1)
-        except:
-            logger.info(f"wandb failed on process {accelerator.process_index}, skipping the error")
-
-        # Save outputs
+        # save outputs
         save_pred_gt_path = os.path.join(args.output_dir, f"eval_pred_gt.json")
         with open(save_pred_gt_path, 'w') as f:
             json.dump(texts, f)

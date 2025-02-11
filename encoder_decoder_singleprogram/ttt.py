@@ -1,3 +1,4 @@
+import time
 from transformers.tokenization_utils_fast import PreTrainedTokenizerFast
 from datetime import timedelta
 import gc
@@ -5,7 +6,7 @@ from multiprocessing import Pool
 from pathlib import Path
 import csv
 from peft import PeftModel # type: ignore
-from typing import Union, Optional, Tuple, Dict, List
+from typing import Union, Dict, List
 from tqdm import tqdm
 from functools import partial
 import argparse
@@ -26,7 +27,7 @@ from peft import prepare_model_for_kbit_training  # type: ignore
 from transformers import BitsAndBytesConfig
 import bitsandbytes as bnb
 
-from data_utils import TTTDataset, collate_fn_ttt, collate_fn_ttt_dummy, ARCTokenizer
+from data_utils import TTTDataset, collate_fn_ttt, ARCTokenizer
 from train import (
     three_commas,
     encoder_decoder_loss,
@@ -34,7 +35,6 @@ from train import (
     LambdaScheduler,
 )
 from train import Prefix2PrefixProjection, Hidden2PromptProjection
-
 
 import os
 os.environ["TOKENIZERS_PARALLELISM"] = "false" # weird tokenizer issue
@@ -44,9 +44,6 @@ os.environ["NCCL_ASYNC_ERROR_HANDLING"] = "1"
 os.environ["NCCL_BLOCKING_WAIT"] = "1"
 os.environ["TORCH_NCCL_ASYNC_ERROR_HANDLING"] = "1"
 os.environ["TORCH_NCCL_BLOCKING_WAIT"] = "1"
-
-import wandb
-wandb.login(key='faf21d9ff65ee150697c7e96f070616f6b662134', relogin=True)
 
 logger = get_logger(__name__, log_level="INFO")
 
@@ -73,43 +70,39 @@ def save_model_ttt(
         epoch: int,
         tie_models: bool,
         lora_target_modules: List[str],
-        trainable_nbit: int,
-    ) -> Tuple[str, Optional[str], Optional[str]]:
+    ) -> None:
 
     # save to output_dir/task_id and only save lora
     os.makedirs(os.path.join(output_dir, task_id), exist_ok=True)
 
     # encoder
-    save_enc_path = os.path.join(output_dir, task_id, f"encoder_lora_epoch_{epoch+1}.pt")
-    enc_lora_weights = get_lora_data(encoder_model, lora_target_modules, trainable_nbit)
-    torch.save(enc_lora_weights, save_enc_path)
-    logger.info(f"Saved encoder to {save_enc_path}")
+    save_encoder_path = os.path.join(output_dir, task_id, f"encoder_lora_epoch_{epoch+1}.pt")
+    encoder_old_lora_weights = get_lora_data(encoder_model, lora_target_modules)
+    torch.save(encoder_old_lora_weights, save_encoder_path)
+    logger.info(f"Saved encoder to {save_encoder_path}")
 
     # decoder
-    save_dec_path = None
+    save_decoder_path = None
     if not tie_models:
-        save_dec_path = os.path.join(output_dir, task_id, f"decoder_lora_epoch_{epoch+1}.pt")
-        dec_lora_weights = get_lora_data(decoder_model, lora_target_modules, trainable_nbit)
-        torch.save(dec_lora_weights, save_dec_path)
-        logger.info(f"Saved decoder to {save_dec_path}")
+        save_decoder_path = os.path.join(output_dir, task_id, f"decoder_lora_epoch_{epoch+1}.pt")
+        decoder_lora_weights = get_lora_data(decoder_model, lora_target_modules)
+        torch.save(decoder_lora_weights, save_decoder_path)
+        logger.info(f"Saved decoder to {save_decoder_path}")
 
     # projection
-    save_proj_path = os.path.join(output_dir, task_id, f"conditioning_projection_epoch_{epoch+1}.pt")
+    save_projection_path = os.path.join(output_dir, task_id, f"conditioning_projection_epoch_{epoch+1}.pt")
     conditioning_projection_module = conditioning_projection
     if isinstance(conditioning_projection, DistributedDataParallel):
         conditioning_projection_module = conditioning_projection.module
-    torch.save(conditioning_projection_module, save_proj_path)
-    logger.info(f"Saved conditioning projection to {save_proj_path}")
-
-    return save_enc_path, save_dec_path, save_proj_path
+    torch.save(conditioning_projection_module, save_projection_path)
+    logger.info(f"Saved conditioning projection to {save_projection_path}")
 
 
-def get_lora_data(model: nn.Module, lora_target_modules: List[str], trainable_nbit: int) -> Dict[str, torch.Tensor]:
+def get_lora_data(model: nn.Module, lora_target_modules: List[str]) -> Dict[str, torch.Tensor]:
     model = model.module if isinstance(model, DistributedDataParallel) else model
     name_to_weight = {}
     for name, param in model.named_parameters():
         if "lora" in name and any(t in name for t in lora_target_modules):
-            assert param.data.dtype == NBIT_TO_DTYPE[trainable_nbit]
             name_to_weight[name] = param.data
     return name_to_weight
 
@@ -117,15 +110,11 @@ def get_lora_data(model: nn.Module, lora_target_modules: List[str], trainable_nb
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--tag", type=str, required=True)
-    parser.add_argument("--wandb", action="store_true")
     parser.add_argument("--output_dir", type=str, default="./encoder_decoder/outputs_ttt")
     parser.add_argument("--log_every", type=int, default=10)
-    parser.add_argument("--tracker_project_name", type=str, default="arc")
 
     # Debug
     parser.add_argument("--debug_no_aug", action="store_true")
-    parser.add_argument("--debug_enc_len", type=int, default=-1)
-    parser.add_argument("--debug_dec_len", type=int, default=-1)
 
     # Model
     parser.add_argument("--encoder_name", type=str, default="llama1b")
@@ -136,37 +125,41 @@ def main():
     parser.add_argument("--trainable_nbit", type=float, choices=[16, 32], default=16)
     parser.add_argument("--encoder_gradient_checkpointing", action="store_true")
     parser.add_argument("--decoder_gradient_checkpointing", action="store_true")
+    parser.add_argument("--full_lora", action="store_true")
 
     # Weights
     parser.add_argument("--weight_root_dir", type=str, default="./encoder_decoder/outputs")
-    parser.add_argument("--weight_dir", type=str, default="test_evaluation")
-    parser.add_argument("--weight_epoch", type=int, default=1)
+    parser.add_argument("--weight_dir", type=str, required=True)
+    parser.add_argument("--weight_epoch", type=int, required=True)
 
     # Conditioning projection
     parser.add_argument("--conditioning_method", type=str, choices=["prefix2prefix", "hidden2prompt"], default="hidden2prompt")
 
+    # vae
+    parser.add_argument("--no_sample", action="store_true")
+
     # Training
-    parser.add_argument("--warmup_epochs", type=int, default=1)
-    parser.add_argument("--save_epochs", type=int, default=1)
+    parser.add_argument("--warmup_epochs", type=int, default=0)
+    parser.add_argument("--num_epochs", type=int, default=5)
+    parser.add_argument("--save_epochs", type=int, default=-1)
+    parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--batch_size", type=int, default=2)
     parser.add_argument("--grad_accum_steps", type=int, default=4)
-    parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--weight_decay", type=float, default=0.0)
-    parser.add_argument("--num_epochs", type=int, default=10)
-    parser.add_argument("--max_samples_per_task", type=int, default=250)
-    parser.add_argument("--max_seq_len", type=int, default=5120)
+    parser.add_argument("--max_seq_len", type=int, default=8192)
     parser.add_argument("--encoder_loss_type", type=str, choices=["last", "rest", "all"], default="rest")
     parser.add_argument("--max_grad_norm", default=1.0, type=float, help="Max gradient norm.")
     parser.add_argument("--optimizer", type=str, choices=["adamw8bit", "adamw", "sgd"], default="adamw")
 
     # both data
-    parser.add_argument("--data_dir", type=str, default="/scratch/yl11330/re-arc/train_data/tasks")
+    parser.add_argument("--aug_type", type=str, choices=['none', 'd8', 'extra', 'both'], default='extra')
+    parser.add_argument("--max_samples_per_task", type=int, default=250)
+    parser.add_argument("--permute_n", type=int, default=1)
+    parser.add_argument("--data_dir", type=str, default="/scratch/yl11330/re-arc/arc_original/evaluation")
     parser.add_argument("--select_tasks_path", type=str, default=None)
     parser.add_argument("--num_workers", type=int, default=8)
     parser.add_argument("--encoder_pad_side", type=str, choices=["left", "right"], default="right")
     parser.add_argument("--decoder_pad_side", type=str, choices=["left", "right"], default="right")
-    parser.add_argument("--decoder_gen_pad_side", type=str, choices=["left", "right"], default="left")
-    parser.add_argument("--permute_n", type=int, default=1)
 
     # scheduled extra losses
     parser.add_argument("--encoder_loss_lambda", type=float, default=1.0)
@@ -174,11 +167,8 @@ def main():
     parser.add_argument("--kl_loss_lambda", type=float, default=1.0)
     parser.add_argument("--linear_kl", action="store_true")
 
-    # lora
-    parser.add_argument("--full_lora", action="store_true")
-
     # Virtual tokens approach
-    parser.add_argument("--ntokens", type=int, default=8)
+    parser.add_argument("--ntokens", type=int, default=64)
     parser.add_argument("--seed", type=int, default=0)
     args = parser.parse_args()
 
@@ -190,14 +180,15 @@ def main():
     if args.tie_models:
         assert args.encoder_name == args.decoder_name
         assert args.encoder_gradient_checkpointing == args.decoder_gradient_checkpointing
-    if args.debug_enc_len > -1 and args.debug_dec_len == -1:
-        args.debug_dec_len = args.debug_enc_len // 2
     assert (args.encoder_name == "nemo8b") == (args.decoder_name == "nemo8b")
     if args.encoder_name == "nemo8b":
-        assert args.encoder_pad_side == args.decoder_pad_side == args.decoder_gen_pad_side == "left"
+        assert args.encoder_pad_side == args.decoder_pad_side == "left"
 
-    assert args.trainable_nbit == 16 # TODO: test 32
-    assert not args.wandb # TODO: support this without crashing wandb
+    assert args.trainable_nbit == 16 # TODO, test otherwise
+
+    # default to saving the last epoch
+    if args.save_epochs == -1:
+        args.save_epochs = args.num_epochs
 
     args.tag = f"ttt_{args.tag}_{args.weight_dir}"
     args.output_dir = os.path.join(args.output_dir, args.tag)
@@ -214,22 +205,12 @@ def main():
         gradient_accumulation_steps=args.grad_accum_steps,
         mixed_precision="bf16",
         project_config=project_config,
-        log_with="wandb" if args.wandb else None,
         kwargs_handlers=[init_process_process_kwargs],
     )
     set_up_main_process_logger(accelerator, logger)
     set_seed(args.seed + accelerator.process_index)
     if accelerator.is_main_process:
         os.makedirs(args.output_dir, exist_ok=True)
-        tracker_config = dict(vars(args))
-        accelerator.init_trackers(
-            args.tracker_project_name,
-            tracker_config,
-            init_kwargs={"wandb": {"name": args.tag}}
-        )
-        if args.wandb:
-            wandb.define_metric('Steps')
-            wandb.define_metric("*", step_metric="Steps")
     torch.backends.cuda.matmul.allow_tf32 = True
     logger.info("Accelerator and seed set up.")
 
@@ -255,7 +236,7 @@ def main():
     # Build base models
     from_pretrained_kwargs = {
         "cache_dir": "./encoder_decoder_cache",
-        "low_cpu_mem_usage": True
+        "low_cpu_mem_usage": True,
     }
     if not args.no_flash_attn:
         from_pretrained_kwargs["attn_implementation"] = "flash_attention_2"
@@ -275,37 +256,40 @@ def main():
             bnb_4bit_compute_dtype=NBIT_TO_DTYPE[args.trainable_nbit],
         )
     elif args.untrainable_nbit == 8:
+        # wtf why this more memory
         from_pretrained_kwargs["quantization_config"] = BitsAndBytesConfig(load_in_8bit=True)
     else:
         raise ValueError(f"unrecognized untrainable_nbit {args.untrainable_nbit}")
 
     base_encoder = AutoModelForCausalLM.from_pretrained(
         pretrained_model_name_or_path=MODEL_NAME_TO_PATH[args.encoder_name],
-        **from_pretrained_kwargs
+        **from_pretrained_kwargs,
     )
     if args.tie_models:
         base_decoder = base_encoder
     else:
         base_decoder = AutoModelForCausalLM.from_pretrained(
             pretrained_model_name_or_path=MODEL_NAME_TO_PATH[args.decoder_name],
-            **from_pretrained_kwargs
+            **from_pretrained_kwargs,
         )
 
-    if args.untrainable_nbit in ['4bit', '8bit']:
+    if args.untrainable_nbit in [4, 8]:
         base_encoder = prepare_model_for_kbit_training(
             base_encoder,
-            use_gradient_checkpointing=args.encoder_gradient_checkpointing
+            use_gradient_checkpointing=args.encoder_gradient_checkpointing,
+            gradient_checkpointing_kwargs={"use_reentrant": False},
         )
         if not args.tie_models:
             base_decoder = prepare_model_for_kbit_training(
                 base_decoder,
-                use_gradient_checkpointing=args.decoder_gradient_checkpointing
+                use_gradient_checkpointing=args.decoder_gradient_checkpointing,
+                gradient_checkpointing_kwargs={"use_reentrant": False},
             )
     else:
         if args.encoder_gradient_checkpointing:
-            base_encoder.gradient_checkpointing_enable()
+            base_encoder.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
         if args.decoder_gradient_checkpointing and not args.tie_models:
-            base_decoder.gradient_checkpointing_enable()
+            base_decoder.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
 
     logger.info("Base models loaded.")
 
@@ -315,33 +299,34 @@ def main():
     base_encoder.resize_token_embeddings(len(encoder_tokenizer))
     logger.info("CLS tokens added.")
 
-    # only keep these tokens, resize model embedding
+    # only keep these tokens, resize model embedding (eos == pad)
+    encoder_keep_tokens = [str(i) for i in range(10)] + \
+        [encoder_tokenizer.bos_token, encoder_tokenizer.eos_token, "\n", ":\n", "input", "output"] + \
+        cls_tokens
     decoder_keep_tokens = [str(i) for i in range(10)] + \
-        [decoder_tokenizer.bos_token, decoder_tokenizer.eos_token, "\n", "input", "output"] # eos == pad
-    encoder_keep_tokens = decoder_keep_tokens + cls_tokens
-    assert len(set(encoder_keep_tokens)) == len(encoder_keep_tokens)
-    assert len(set(decoder_keep_tokens)) == len(decoder_keep_tokens)
+        [decoder_tokenizer.bos_token, decoder_tokenizer.eos_token, "\n", ":\n", "input", "output"]
     if args.tie_models:
         decoder_keep_tokens = encoder_keep_tokens
+    assert len(set(encoder_keep_tokens)) == len(encoder_keep_tokens)
+    assert len(set(decoder_keep_tokens)) == len(decoder_keep_tokens)
 
     # this breaks embedding tying, but whatever
     with torch.no_grad():
         encoder_keep_token_ids = []
         for token in encoder_keep_tokens:
             token_id = encoder_tokenizer(token)["input_ids"] # type: ignore
-            assert isinstance(token_id, list)
-            assert len(token_id) == 2 # with start token
+            assert isinstance(token_id, list) and len(token_id) == 2 # with start token
             encoder_keep_token_ids.append(token_id[1])
         decoder_keep_token_ids = []
         for token in decoder_keep_tokens:
             token_id = decoder_tokenizer(token)["input_ids"] # type: ignore
-            assert isinstance(token_id, list)
-            assert len(token_id) == 2 # with start token
+            assert isinstance(token_id, list) and len(token_id) == 2 # with start token
             decoder_keep_token_ids.append(token_id[1])
         assert len(set(encoder_keep_token_ids)) == len(encoder_keep_token_ids)
         assert len(set(decoder_keep_token_ids)) == len(decoder_keep_token_ids)
 
         # subset embeddings and lmheads
+        assert base_encoder.model.embed_tokens.weight.shape == base_encoder.lm_head.weight.shape
         base_encoder.model.embed_tokens.weight = nn.Parameter(base_encoder.model.embed_tokens.weight[encoder_keep_token_ids])
         base_encoder.model.embed_tokens.num_embeddings = len(encoder_keep_token_ids)
         assert base_encoder.lm_head.bias is None
@@ -351,6 +336,7 @@ def main():
 
         # subset embeddings and lmheads
         if not args.tie_models:
+            assert base_decoder.model.embed_tokens.weight.shape == base_decoder.lm_head.weight.shape
             base_decoder.model.embed_tokens.weight = nn.Parameter(base_decoder.model.embed_tokens.weight[decoder_keep_token_ids])
             base_decoder.model.embed_tokens.num_embeddings = len(decoder_keep_token_ids)
             assert base_decoder.lm_head.bias is None
@@ -373,7 +359,7 @@ def main():
     arc_encoder_tokenizer = ARCTokenizer(
         tokens=encoder_keep_tokens,
         bos_token=encoder_tokenizer.bos_token,
-        eos_token=decoder_tokenizer.eos_token,
+        eos_token=encoder_tokenizer.eos_token,
     )
     arc_decoder_tokenizer = arc_encoder_tokenizer
     if not args.tie_models:
@@ -385,85 +371,53 @@ def main():
     del encoder_tokenizer, decoder_tokenizer
     encoder_tokenizer, decoder_tokenizer = arc_encoder_tokenizer, arc_decoder_tokenizer
 
-    # load encoder decoder weights, projection later
+    # load encoder decoder projection weights
     weight_dir = os.path.join(args.weight_root_dir, args.weight_dir)
     enc_weight_path = os.path.join(weight_dir, f"encoder_lora_epoch_{args.weight_epoch}")
-    enc_lmhead_path = os.path.join(weight_dir, f"encoder_lmhead_epoch_{args.weight_epoch}.pt")
-    enc_embeds_path = os.path.join(weight_dir, f"encoder_embeds_epoch_{args.weight_epoch}.pt")
     dec_weight_path = os.path.join(weight_dir, f"decoder_lora_epoch_{args.weight_epoch}")
-    dec_lmhead_path = os.path.join(weight_dir, f"decoder_lmhead_epoch_{args.weight_epoch}.pt")
-    dec_embeds_path = os.path.join(weight_dir, f"decoder_embeds_epoch_{args.weight_epoch}.pt")
     proj_weight_path = os.path.join(weight_dir, f"conditioning_projection_epoch_{args.weight_epoch}.pt")
 
-    # load encoder decoder FT lora weights
+    # load weights
     encoder_model = PeftModel.from_pretrained(base_encoder, enc_weight_path)
-    encoder_model.lm_head.load_state_dict(torch.load(enc_lmhead_path, weights_only=True))
-    if hasattr(encoder_model.model, "embed_tokens"):
-        encoder_model.model.embed_tokens.load_state_dict(torch.load(enc_embeds_path, weights_only=True))
-    else:
-        encoder_model.model.model.embed_tokens.load_state_dict(torch.load(enc_embeds_path, weights_only=True))
-    # decoder
     decoder_model = encoder_model
     if not args.tie_models:
         decoder_model = PeftModel.from_pretrained(base_decoder, dec_weight_path)
-        decoder_model.lm_head.load_state_dict(torch.load(dec_lmhead_path, weights_only=True))
-        if hasattr(decoder_model.model, "embed_tokens"):
-            decoder_model.model.embed_tokens.load_state_dict(torch.load(dec_embeds_path, weights_only=True))
-        else:
-            decoder_model.model.model.embed_tokens.load_state_dict(torch.load(dec_embeds_path, weights_only=True))
-    logger.info("loaded encoder and decoder model weights (not for nolora runs)")
+    logger.info("loaded model weights")
 
-    # set requires grad for model weight conversion
+    # convert lora weights to trainable nbit
     for name, param in encoder_model.named_parameters():
-        param.requires_grad = ("lora" in name) or ("lm_head" in name) or ("embed" in name)
-    if not args.tie_models:
-        for name, param in decoder_model.named_parameters():
-            param.requires_grad = ("lora" in name) or ("lm_head" in name) or ("embed" in name)
-
-    # convert model weights
-    for _, param in encoder_model.named_parameters():
-        if param.requires_grad:
+        if "lora" in name:
             param.data = param.data.to(NBIT_TO_DTYPE[args.trainable_nbit])
     if not args.tie_models:
-        for _, param in decoder_model.named_parameters():
-            if param.requires_grad:
+        for name, param in decoder_model.named_parameters():
+            if "lora" in name:
                 param.data = param.data.to(NBIT_TO_DTYPE[args.trainable_nbit])
     logger.info(f'converted model weights to {NBIT_TO_DTYPE[args.trainable_nbit]}')
-    # we do not log model weight and model memory size because they are inaccurate
 
-    # set encoder decoder require grad (either partial lora or all lora)
+    # set requires_grad
     for name, param in encoder_model.named_parameters():
         param.requires_grad = ("lora" in name) and any(t in name for t in lora_target_modules)
-    for name, param in decoder_model.named_parameters():
-        param.requires_grad = ("lora" in name) and any(t in name for t in lora_target_modules)
-
-    # convert nbits
-    for name, param in encoder_model.named_parameters():
-        if param.requires_grad:
-            param.data = param.data.to(NBIT_TO_DTYPE[args.trainable_nbit])
     if not args.tie_models:
         for name, param in decoder_model.named_parameters():
-            if param.requires_grad:
-                param.data = param.data.to(NBIT_TO_DTYPE[args.trainable_nbit])
-    logger.info(f'converted trainable model weights to {NBIT_TO_DTYPE[args.trainable_nbit]}')
+            param.requires_grad = ("lora" in name) and any(t in name for t in lora_target_modules)
+    logger.info(f'set grad')
 
     # save encoder decoder original lora weights
     # when not training full lora, this saves some redundant weights
-    enc_lora_weights_path = os.path.join(args.output_dir, "ft_lora_encoder_cache.pt")
-    dec_lora_weights_path = os.path.join(args.output_dir, "ft_lora_decoder_cache.pt")
-    enc_lora_weights = get_lora_data(encoder_model, lora_target_modules, args.trainable_nbit)
-    torch.save(enc_lora_weights, enc_lora_weights_path)
-    logger.info(f"cached {len(enc_lora_weights)} lora encoder weights to {enc_lora_weights_path}")
-    del enc_lora_weights
+    encoder_old_lora_weights_path = os.path.join(args.output_dir, "encoder_lora_cache.pt")
+    encoder_old_lora_weights = get_lora_data(encoder_model, lora_target_modules)
+    torch.save(encoder_old_lora_weights, encoder_old_lora_weights_path)
+    logger.info(f"cached {len(encoder_old_lora_weights)} lora encoder weights to {encoder_old_lora_weights_path}")
+    del encoder_old_lora_weights
+
+    decoder_old_lora_weights_path = os.path.join(args.output_dir, "decoder_lora_cache.pt")
     if not args.tie_models:
-        dec_lora_weights = get_lora_data(decoder_model, lora_target_modules, args.trainable_nbit)
-        torch.save(dec_lora_weights, dec_lora_weights_path)
-        logger.info(f"cached {len(dec_lora_weights)} lora decoder weights to {dec_lora_weights_path}")
-        del dec_lora_weights
+        decoder_lora_weights = get_lora_data(decoder_model, lora_target_modules)
+        torch.save(decoder_lora_weights, decoder_old_lora_weights_path)
+        logger.info(f"cached {len(decoder_lora_weights)} lora decoder weights to {decoder_old_lora_weights_path}")
+        del decoder_lora_weights
 
     # get file_paths
-    if not os.path.isdir(args.data_dir):
-        raise FileNotFoundError(f"Eval directory '{args.data_dir}' not found.")
     file_paths = []
     for filename in os.listdir(args.data_dir):
         if filename.endswith(".json"):
@@ -499,6 +453,7 @@ def main():
         decoder_pad_side=args.decoder_pad_side,
         encoder_loss_type=args.encoder_loss_type,
         debug_no_aug=args.debug_no_aug,
+        aug_type=args.aug_type,
     )
 
     # save memory by making datasets on the fly
@@ -511,6 +466,10 @@ def main():
     # Prepare with accelerator
     encoder_model, decoder_model = accelerator.prepare(encoder_model, decoder_model)
 
+    start_time = time.time()
+    num_task_done = 0
+    num_task = len(ttt_datasets)
+
     # train!
     while len(ttt_datasets) > 0:
         ttt_dataset = ttt_datasets[0]
@@ -521,19 +480,11 @@ def main():
         logger.info(f'=====================')
 
         # set up ttt dataloader
-        ttt_collate_fn = partial(collate_fn_ttt, dataset=ttt_dataset)
-        if args.debug_enc_len > 0:
-            ttt_collate_fn = partial(
-                collate_fn_ttt_dummy,
-                ntokens=args.ntokens,
-                debug_enc_len=args.debug_enc_len,
-                debug_dec_len=args.debug_dec_len,
-            )
         ttt_dataloader = DataLoader(
             ttt_dataset,
             batch_size=args.batch_size,
             shuffle=True,
-            collate_fn=ttt_collate_fn,
+            collate_fn=partial(collate_fn_ttt, dataset=ttt_dataset),
             drop_last=True,
             num_workers=args.num_workers,
         )
@@ -542,13 +493,13 @@ def main():
 
         # reset encoder and decoder
         encoder_model.load_state_dict(
-            torch.load(enc_lora_weights_path, weights_only=True, map_location=accelerator.device),
-            strict=False
+            torch.load(encoder_old_lora_weights_path, weights_only=True, map_location=accelerator.device),
+            strict=False,
         )
         if not args.tie_models:
             decoder_model.load_state_dict(
-                torch.load(dec_lora_weights_path, weights_only=True, map_location=accelerator.device),
-                strict=False
+                torch.load(decoder_old_lora_weights_path, weights_only=True, map_location=accelerator.device),
+                strict=False,
             )
 
         # load and set conditioning projection grads and nbit
@@ -561,13 +512,15 @@ def main():
         all_params = [p for p in encoder_model.parameters() if p.requires_grad]
         if not args.tie_models:
             all_params += [p for p in decoder_model.parameters() if p.requires_grad]
-        logger.info(f"Optimizer with {len(all_params)} params (should be no emb tuning)")
+        all_params += [p for p in conditioning_projection.parameters() if p.requires_grad]
+        logger.info(f"Optimizer with {len(all_params)} params")
 
         # optimizer
         if args.optimizer == 'adamw':
             optimizer = torch.optim.AdamW(all_params, lr=args.lr, weight_decay=args.weight_decay) # type: ignore
         elif args.optimizer == 'adamw8bit':
             optimizer = bnb.optim.Adam8bit(all_params, lr=args.lr, weight_decay=args.weight_decay)
+            # optimizer = bnb.optim.PagedAdamW(optimizer_grouped_params, weight_decay=args.weight_decay)
         else:
             optimizer = torch.optim.SGD(all_params, lr=args.lr) # type: ignore
 
@@ -576,8 +529,8 @@ def main():
         num_training_steps = steps_per_epoch * args.num_epochs
         lr_scheduler = get_cosine_schedule_with_warmup(
             optimizer,
-            num_warmup_steps=steps_per_epoch * args.grad_accum_steps,  # 1 epoch warmup
-            num_training_steps=num_training_steps * args.grad_accum_steps
+            num_warmup_steps=steps_per_epoch * args.grad_accum_steps * args.warmup_epochs,
+            num_training_steps=num_training_steps * args.grad_accum_steps * args.warmup_epochs
         )
         logger.info(f'lr scheduler with {num_training_steps} warmup steps')
 
@@ -607,7 +560,7 @@ def main():
 
         logger.info(f'\n======= TRAINING INFO START ======')
         logger.info(f'num_epochs={args.num_epochs}')
-        logger.info(f'train_batch_size={args.batch_size}')
+        logger.info(f'batch_size={args.batch_size}')
         logger.info(f'grad_accum_steps={args.grad_accum_steps}')
         logger.info(f'accelerator.num_processes={accelerator.num_processes}')
         logger.info(f'steps_per_epoch={steps_per_epoch}')
@@ -627,54 +580,8 @@ def main():
         decoder_model.train()
         conditioning_projection.train()
 
-        # when these conditions are met, DDP requires setting static graph due to reusing parameters
-        if args.tie_models and args.encoder_gradient_checkpointing and accelerator.num_processes > 1 and args.full_lora:
-            # set static graph
-            encoder_model._set_static_graph()
-            decoder_model._set_static_graph()
-            conditioning_projection._set_static_graph()
-            # get any data, single forward and backward pass
-            batch_data = next(iter(ttt_dataloader))
-            with accelerator.autocast():
-                _, _, _, _, total_loss, _ = encoder_decoder_loss(
-                    encoder_model=encoder_model,
-                    decoder_model=decoder_model,
-                    conditioning_method=args.conditioning_method,
-                    conditioning_projection=conditioning_projection,
-                    encoder_input_ids=batch_data["encoder_input_ids"].to(accelerator.device),
-                    encoder_attention_mask=batch_data["encoder_attention_mask"].to(accelerator.device),
-                    encoder_labels=batch_data["encoder_labels"].to(accelerator.device),
-                    decoder_input_ids=batch_data["decoder_input_ids"].to(accelerator.device),
-                    decoder_attention_mask=batch_data["decoder_attention_mask"].to(accelerator.device),
-                    decoder_labels=batch_data["decoder_labels"].to(accelerator.device),
-                    enc_ids_lens=batch_data["encoder_input_ids_lens"],
-                    dec_ids_lens=batch_data["decoder_input_ids_lens"],
-                    anti_invars=batch_data["anti_invars"],
-                    ntokens=args.ntokens,
-                    decoder_ce_loss=True, # HARDCODE
-                    encoder_pad_side=args.encoder_pad_side,
-                    decoder_pad_side=args.decoder_pad_side,
-                    trainable_nbit=args.trainable_nbit,
-                    no_flash_attn=args.no_flash_attn,
-                    vae_no_sample=False, # HARDCODE
-                    encoder_loss_lambda_scheduler=encoder_loss_lambda_scheduler,
-                    invar_loss_lambda_scheduler=invar_loss_lambda_scheduler,
-                    kl_loss_lambda_scheduler=kl_loss_lambda_scheduler,
-                    global_step=global_step,
-                )
-            accelerator.backward(total_loss)
-            optimizer.zero_grad()
-            logger.info(f'To avoid DDP error, static graph is applied after doing one iteration of forward backward')
-
         # start training
         for epoch in range(args.num_epochs):
-            ce_loss_accum = 0.0
-            invar_loss_accum = 0.0
-            encoder_loss_accum = 0.0
-            kl_loss_accum = 0.0
-            total_loss_accum = 0.0
-            grad_norm_accum = 0.0
-
             for batch_data in ttt_dataloader:
                 enc_ids = batch_data["encoder_input_ids"].to(accelerator.device)
                 enc_mask = batch_data["encoder_attention_mask"].to(accelerator.device)
@@ -688,7 +595,7 @@ def main():
 
                 with accelerator.accumulate(encoder_model, decoder_model, conditioning_projection):
                     with accelerator.autocast():
-                        ce_loss, invar_loss, encoder_loss, kl_loss, total_loss, _ = encoder_decoder_loss(
+                        _, _, _, _, total_loss, _ = encoder_decoder_loss(
                             encoder_model=encoder_model,
                             decoder_model=decoder_model,
                             conditioning_method=args.conditioning_method,
@@ -703,67 +610,33 @@ def main():
                             dec_ids_lens=dec_ids_lens,
                             anti_invars=anti_invars,
                             ntokens=args.ntokens,
-                            decoder_ce_loss=True, # HARDCODE
                             encoder_pad_side=args.encoder_pad_side,
                             decoder_pad_side=args.decoder_pad_side,
                             trainable_nbit=args.trainable_nbit,
                             no_flash_attn=args.no_flash_attn,
-                            vae_no_sample=False, # HARDCODE
+                            vae_no_sample=args.no_sample,
                             encoder_loss_lambda_scheduler=encoder_loss_lambda_scheduler,
                             invar_loss_lambda_scheduler=invar_loss_lambda_scheduler,
                             kl_loss_lambda_scheduler=kl_loss_lambda_scheduler,
                             global_step=global_step,
+                            anti_invar_margin=0,
                         )
-
-                    # just accumulate for logging
-                    avg_ce_loss = accelerator.gather(ce_loss.repeat(args.batch_size)).mean() # type: ignore
-                    avg_invar_loss = accelerator.gather(invar_loss.repeat(args.batch_size)).mean() # type: ignore
-                    avg_encoder_loss = accelerator.gather(encoder_loss.repeat(args.batch_size)).mean() # type: ignore
-                    avg_kl_loss = accelerator.gather(kl_loss.repeat(args.batch_size)).mean() # type: ignore
-                    avg_total_loss = accelerator.gather(total_loss.repeat(args.batch_size)).mean() # type: ignore
-                    ce_loss_accum += avg_ce_loss.item() / args.grad_accum_steps
-                    invar_loss_accum += avg_invar_loss.item() / args.grad_accum_steps
-                    encoder_loss_accum += avg_encoder_loss.item() / args.grad_accum_steps
-                    kl_loss_accum += avg_kl_loss.item() / args.grad_accum_steps
-                    total_loss_accum += avg_total_loss.item() / args.grad_accum_steps
 
                     accelerator.backward(total_loss)
                     if accelerator.sync_gradients:
-                        grad_norm_accum += accelerator.clip_grad_norm_(all_params, args.max_grad_norm).item() # type: ignore
+                        accelerator.clip_grad_norm_(all_params, args.max_grad_norm).item() # type: ignore
                     optimizer.step()
                     lr_scheduler.step()
-
                     optimizer.zero_grad()
 
                 if accelerator.sync_gradients:
                     global_step += 1
                     if global_step % args.log_every == 0:
                         progress_bar.update(args.log_every)
-                        try:
-                            accelerator.log({
-                                f"train/{task_id}_ce_loss": ce_loss_accum,
-                                f"train/{task_id}_invar_loss": invar_loss_accum,
-                                f"train/{task_id}_encoder_loss": encoder_loss_accum,
-                                f"train/{task_id}_kl_loss": kl_loss_accum,
-                                f"train/{task_id}_total_loss": total_loss_accum,
-                                f"train/{task_id}_grad_norm_accum": grad_norm_accum,
-                                f"train/{task_id}_lr_embedding": lr_scheduler.get_last_lr()[0],
-                                f"train/{task_id}_lr_other": lr_scheduler.get_last_lr()[1],
-                                'Steps': global_step,
-                            })
-                        except:
-                            logger.info(f"wandb failed on process {accelerator.process_index}, skipping the error")
-
-                    ce_loss_accum = 0.0
-                    invar_loss_accum = 0.0
-                    encoder_loss_accum = 0.0
-                    kl_loss_accum = 0.0
-                    total_loss_accum = 0.0
-                    grad_norm_accum = 0.0
 
             if accelerator.is_main_process and (epoch + 1) % args.save_epochs == 0:
                 # done training for task, save model for evaluation
-                _, _, _ = save_model_ttt(
+                save_model_ttt(
                     encoder_model=encoder_model,
                     decoder_model=decoder_model,
                     conditioning_projection=conditioning_projection,
@@ -772,7 +645,6 @@ def main():
                     epoch=epoch,
                     tie_models=args.tie_models,
                     lora_target_modules=lora_target_modules,
-                    trainable_nbit=args.trainable_nbit,
                 )
 
         # zero grads
@@ -783,7 +655,7 @@ def main():
         conditioning_projection.zero_grad(set_to_none=True)
 
         # delete stuff
-        del ttt_datasets[0], ttt_collate_fn, ttt_dataloader
+        del ttt_datasets[0], ttt_dataloader
         del optimizer, lr_scheduler, progress_bar
         del conditioning_projection
 
@@ -791,10 +663,16 @@ def main():
         gc.collect()
         torch.cuda.empty_cache()
 
+        # log time
+        num_task_done += 1
+        elapsed_time = (time.time() - start_time) / 3600
+        estimated_total_time = elapsed_time / num_task_done * num_task
+        print(f'estimated total time {round(elapsed_time, 1)}/{round(estimated_total_time, 1)}hr')
+
     if accelerator.is_main_process:
-        os.remove(enc_lora_weights_path)
+        os.remove(encoder_old_lora_weights_path)
         if not args.tie_models:
-            os.remove(dec_lora_weights_path)
+            os.remove(decoder_old_lora_weights_path)
 
     accelerator.end_training()
     logger.info("All done training.")

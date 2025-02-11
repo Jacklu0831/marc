@@ -1,10 +1,9 @@
 from transformers.tokenization_utils_fast import PreTrainedTokenizerFast
 from datetime import timedelta
-import copy
 import arclib # required
 import numpy as np
 from collections import defaultdict
-from typing import Union, Callable, List, Tuple, Optional, Iterator
+from typing import Union, Callable, List, Tuple, Optional, Iterator, Dict, Set
 import pprint
 import math
 import json
@@ -19,6 +18,7 @@ from transformers import (
     AutoTokenizer,
     AutoModelForCausalLM,
     get_cosine_schedule_with_warmup,
+    get_constant_schedule_with_warmup,
 )
 from accelerate import Accelerator, PartialState, InitProcessGroupKwargs
 from accelerate.logging import get_logger
@@ -88,43 +88,6 @@ def set_up_main_process_logger(accelerator, logger):
         transformers.utils.logging.set_verbosity_error()
 
 
-def insert_based_on_sides(
-        data: torch.Tensor,
-        to_insert: torch.Tensor,
-        lens: List[int],
-        insert_side: str,
-        pad_side: str,
-        pad_id: Union[int, torch.Tensor],
-    ) -> torch.Tensor:
-
-    if pad_side == "right":
-        if insert_side == "left":
-            return torch.cat([to_insert, data], dim=1)
-        else:
-            data_new = []
-            for x, m, l in zip(data, to_insert, lens):
-                if isinstance(pad_id, int):
-                    assert torch.equal(x[l:], torch.full(x[l:].shape, pad_id, device=x[l:].device)), x[l:]
-                else:
-                    assert torch.equal(x[l:], pad_id.unsqueeze(0).expand(x[l:].shape[0], -1)), x[l:]
-                x = torch.cat([x[:l], m, x[l:]])
-                data_new.append(x)
-            return torch.stack(data_new)
-    else:
-        if insert_side == "left":
-            data_new = []
-            for x, m, l in zip(data, to_insert, lens):
-                if isinstance(pad_id, int):
-                    assert torch.equal(x[:-l], torch.full(x[:-l].shape, pad_id, device=x[:-l].device)), x[:-l]
-                else:
-                    assert torch.equal(x[:-l], pad_id.unsqueeze(0).expand(x[:-l].shape[0], -1)), x[:-l]
-                x = torch.cat([x[:-l], m, x[-l:]])
-                data_new.append(x)
-            return torch.stack(data_new)
-        else:
-            return torch.cat([data, to_insert], dim=1)
-
-
 def chunks(lst: List[int], n: int) -> Iterator[List[int]]:
     for i in range(0, len(lst), n):
         yield lst[i:i + n]
@@ -146,18 +109,36 @@ def chunks_uniform_batch(task_ids: List[str], data_idxs: List[int], n: int) -> I
 ################################################
 @torch.no_grad()
 def evaluate(
+    task_to_ttt_path: Optional[Dict[str, str]],
+    ttt_param_names: Optional[Set[str]],
     model: Union[nn.Module, DistributedDataParallel],
     dataset: EvalDataset,
     accelerator: Accelerator,
     batch_size: int,
     collate_fn: Callable,
     dry_eval_run: bool,
+    output_dir: str,
 ):
     model.eval()
 
     # get modules in case of DDP
     module = model.module if isinstance(model, DistributedDataParallel) else model
-    embed_tokens = module.model.embed_tokens if hasattr(module.model, "embed_tokens") else module.model.model.embed_tokens
+
+    # if ttt provided, same model weights for the missing ttt task weights
+    cached_weights_path = None
+    curr_ttt_task_name = None
+    if task_to_ttt_path is not None: # run on both processes
+        # save model for default when ttt is missing
+        cached_weights_path = os.path.join(output_dir, f"process{accelerator.process_index}_cache.pt")
+        assert isinstance(ttt_param_names, set)
+        names = set(name for name, _ in module.named_parameters())
+        assert all(name in names for name in ttt_param_names), f"process{accelerator.process_index}\n\n{ttt_param_names}\n\n{names}"
+        cache_weights = {name: param for name, param in module.named_parameters() if name in ttt_param_names}
+        torch.save(cache_weights, cached_weights_path)
+        logger.info(f"ttt provided, cached {len(cache_weights)} weights to {cached_weights_path}")
+        # save default to model paths and set current ttt weights to default
+        task_to_ttt_path["default"] = cached_weights_path
+        curr_ttt_task_name = "default"
 
     # setup terminators and suppress warning
     module.generation_config.pad_token_id = dataset.tokenizer.pad_token_id
@@ -170,6 +151,7 @@ def evaluate(
     valid_grid_list = []
     correct_grid_dim_list = []
     token_acc_list = []
+    ttt_provided_list = []
 
     data_idxs = list(range(len(dataset)))
     assert len(data_idxs) >= accelerator.num_processes # avoid padding issue
@@ -177,10 +159,46 @@ def evaluate(
     with distributed_state.split_between_processes(data_idxs) as process_data_idxs:
         assert isinstance(process_data_idxs, list)
         n_batches = math.ceil(len(process_data_idxs) / batch_size)
-        data_idx_iterator = tqdm(chunks(process_data_idxs, batch_size), total=n_batches)  # type: ignore
+
+        # if ttt provided, make sure all batches are of the same task name
+        if task_to_ttt_path is not None:
+            # tackle tasks in orderly fashion
+            task_names = [dataset.eval_tasks[idx].name for idx in process_data_idxs] # type: ignore
+            task_ids = [task_name.split('-')[0] for task_name in task_names]
+            n_batches = len(list(chunks_uniform_batch(task_ids, process_data_idxs, batch_size)))
+            data_idx_iterator = tqdm(chunks_uniform_batch(task_ids, process_data_idxs, batch_size), total=n_batches) # type: ignore
+        else:
+            data_idx_iterator = tqdm(chunks(process_data_idxs, batch_size), total=n_batches)  # type: ignore
 
         for batch_idxs in data_idx_iterator:
             bs = len(batch_idxs)
+
+            # optionally load ttt lora
+            ttt_provided = [0] * bs
+            if task_to_ttt_path is not None:
+                # make sure task name is unique and set to default is missing
+                task_names = [dataset.eval_tasks[idx].name.split('-')[0] for idx in batch_idxs]
+                assert len(set(task_names)) == 1 # have to be the same task
+                task_name = task_names[0]
+                if task_name not in task_to_ttt_path:
+                    task_name = "default"
+                ttt_provided = [int(task_name != "default")] * bs
+                # load ttt if necessary
+                if task_name != curr_ttt_task_name:
+                    # load model
+                    ttt_path = task_to_ttt_path[task_name]
+                    ttt_state_dict = torch.load(
+                        ttt_path,
+                        weights_only=True,
+                        map_location=accelerator.device
+                    )
+                    assert set(ttt_state_dict.keys()) == ttt_param_names
+                    module.load_state_dict(ttt_state_dict, strict=False)
+                    del ttt_state_dict
+                    curr_ttt_task_name = task_name # set current task name
+                    model.eval() # another eval after loading weight just in case
+            ttt_provided_list += ttt_provided
+
             batch_data = [dataset[i] for i in batch_idxs]
             batch = collate_fn(batch_data)
 
@@ -200,7 +218,6 @@ def evaluate(
 
             # compute ce loss
             with accelerator.autocast():
-                # encoder only evaluates decoder ce on the last program for efficiency
                 ce_loss = model(
                     input_ids=input_ids,
                     attention_mask=attention_mask,
@@ -269,6 +286,8 @@ def evaluate(
     valid_grid_list = gather_object(valid_grid_list)
     correct_grid_dim_list = gather_object(correct_grid_dim_list)
     token_acc_list = gather_object(token_acc_list)
+    # ttt
+    ttt_provided_list = gather_object(ttt_provided_list)
 
     assert len(task_id_and_text_list) == len(dataset), (len(task_id_and_text_list), len(dataset))
     assert len(ce_loss_list) == len(dataset), (len(ce_loss_list), len(dataset))
@@ -276,6 +295,7 @@ def evaluate(
     assert len(valid_grid_list) == len(dataset), (len(valid_grid_list), len(dataset))
     assert len(correct_grid_dim_list) == len(dataset), (len(correct_grid_dim_list), len(dataset))
     assert len(token_acc_list) == len(dataset), (len(token_acc_list), len(dataset))
+    assert len(ttt_provided_list) == len(dataset), (len(ttt_provided_list), len(dataset))
 
     # average metrics
     # note these are all computed without accounting for skipped eval grids
@@ -284,6 +304,7 @@ def evaluate(
     valid_grid = sum(valid_grid_list) / len(dataset)
     correct_grid_dim = sum(correct_grid_dim_list) / len(dataset)
     token_acc = sum(token_acc_list) / len(dataset)
+    ttt_provided = sum(ttt_provided_list) / len(dataset)
 
     # grab all results
     task_id_to_texts = defaultdict(list)
@@ -317,9 +338,12 @@ def evaluate(
     competition_sub_acc = competition_sub_correct / sum(len(corrects) for corrects in task_name_to_corrects.values())
     competition_all_acc = competition_all_correct / len(task_name_to_corrects)
 
+    if cached_weights_path is not None:
+        os.remove(cached_weights_path)
+
     return avg_ce_loss, \
         exact_acc, valid_grid, correct_grid_dim, token_acc, task_id_to_texts, \
-        votes, competition_sub_acc, competition_all_acc
+        votes, competition_sub_acc, competition_all_acc, ttt_provided
 
 
 def list2d_to_tuple(l: List[List[int]]) -> Tuple[Tuple[int]]:
@@ -426,40 +450,17 @@ def text_to_2d_grid(text: str) -> Tuple[Optional[List[List[int]]], bool]:
         return None, False
 
 
-def compute_grad_norm2(parameters) -> float:
-    total_norm = 0.0
-    for p in parameters:
-        if p.grad is not None:
-            param_norm = p.grad.detach().norm(2).item() ** 2
-            total_norm += param_norm
-    return total_norm ** 0.5
-
-
 @torch.no_grad()
 def save_train_model(
         model: Union[nn.Module, DistributedDataParallel],
         output_dir: str,
         epoch: int,
-    ) -> Tuple[str, str, str]:
-
-    # encoder
-    save_enc_path = os.path.join(output_dir, f"encoder_lora_epoch_{epoch+1}")
+    ) -> str:
+    save_enc_path = os.path.join(output_dir, f"lora_epoch_{epoch+1}")
     module = model.module if isinstance(model, DistributedDataParallel) else model
     module.save_pretrained(save_enc_path, save_embedding_layers=True)
-    logger.info(f"Saved encoder to {save_enc_path}")
-
-    enc_lmhead_path = os.path.join(output_dir, f"encoder_lmhead_epoch_{epoch+1}.pt")
-    enc_embeds_path = os.path.join(output_dir, f"encoder_embeds_epoch_{epoch+1}.pt")
-    torch.save(module.lm_head.state_dict(), enc_lmhead_path)
-    if hasattr(module.model, "embed_tokens"):
-        embeds = module.model.embed_tokens
-    else:
-        embeds = module.model.model.embed_tokens
-    torch.save(embeds.state_dict(), enc_embeds_path)
-    logger.info(f"Saved encoder lmhead to {enc_lmhead_path}")
-    logger.info(f"Saved encoder embeds to {enc_embeds_path}")
-
-    return save_enc_path, enc_lmhead_path, enc_embeds_path
+    logger.info(f"Saved model to {save_enc_path}")
+    return save_enc_path
 
 
 def print_trainable_parameters(model):
@@ -486,39 +487,6 @@ def print_trainable_parameters(model):
         )
 
 
-class ProgramEmbeddings(nn.Module):
-    def __init__(self, embedding: torch.Tensor):
-        super(ProgramEmbeddings, self).__init__()
-        self.embedding = nn.Parameter(embedding)
-
-    def forward(self, program_i: int) -> torch.Tensor:
-        del program_i
-        return self.embedding
-
-    def get_memory_footprint(self):
-        return sum(p.nelement() * p.element_size() for p in self.parameters()) + \
-            sum(p.nelement() * p.element_size() for p in self.buffers())
-
-
-def initialize_program_embeddings(
-        embeddings: torch.Tensor,
-        accelerator: Accelerator,
-        ntokens: int,
-    ) -> torch.Tensor:
-
-    dtype = embeddings.dtype
-    device = embeddings.device
-    n_embeds = embeddings.shape[0]
-    embeddings = embeddings.to(torch.float32).to(device=accelerator.device)
-    mean_embeddings = torch.mean(embeddings, axis=0) # type: ignore
-    centered_embeddings = embeddings - mean_embeddings
-    covariance = centered_embeddings.T @ centered_embeddings / n_embeds
-    eigenvalues = torch.linalg.eigvals(covariance)
-    assert not ((covariance == covariance.T).all() and not torch.is_complex(eigenvalues) and (eigenvalues > 0).all())
-    distribution = torch.distributions.multivariate_normal.MultivariateNormal(mean_embeddings, covariance_matrix=1e-9 * covariance)
-    return distribution.sample(sample_shape=(ntokens,)).to(device).to(dtype) # type: ignore
-
-
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--tag", type=str, required=True)
@@ -537,6 +505,7 @@ def main():
     parser.add_argument("--no_color_permute", action="store_true")
     parser.add_argument("--no_pair_permute", action="store_true")
     parser.add_argument("--no_d8", action="store_true")
+    parser.add_argument("--lr_scheduler", type=str, choices=["cosine", "constant"], default="cosine")
 
     # Model
     parser.add_argument("--model_name", type=str, default="llama1b")
@@ -549,13 +518,13 @@ def main():
     # Training
     parser.add_argument("--grad_accum_steps", type=int, default=4)
     parser.add_argument("--train_batch_size", type=int, default=2)
-    parser.add_argument("--eval_batch_size", type=int, default=2)
+    parser.add_argument("--eval_batch_size", type=int, default=4)
     parser.add_argument("--lr_embedding", type=float, default=1e-5)
     parser.add_argument("--lr_other", type=float, default=1e-4)
     parser.add_argument("--weight_decay", type=float, default=0.0)
-    parser.add_argument("--num_epochs", type=int, default=25)
+    parser.add_argument("--num_epochs", type=int, default=30)
     parser.add_argument("--samples_per_epoch", type=int, default=20000)
-    parser.add_argument("--eval_epochs", type=int, default=1)
+    parser.add_argument("--eval_epochs", type=int, default=2)
     parser.add_argument("--max_grad_norm", default=1.0, type=float, help="Max gradient norm.")
     parser.add_argument("--optimizer", type=str, choices=["adamw8bit", "adamw", "sgd"], default="adamw")
     parser.add_argument("--dry_train_run", action="store_true")
@@ -611,8 +580,6 @@ def main():
     ])
     parser.add_argument("--no_rslora", action='store_true')
 
-    # Virtual tokens approach
-    parser.add_argument("--ntokens", type=int, default=64)
     parser.add_argument("--seed", type=int, default=0)
     args = parser.parse_args()
 
@@ -795,7 +762,6 @@ def main():
         extra_augment_single_grid=args.extra_augment_single_grid,
         seed=args.seed,
         process_index=accelerator.process_index,
-        ntokens=args.ntokens,
         debug_fixed_order=args.debug_fixed_order,
         debug_random_pad=args.debug_random_pad,
         debug_pad_len=args.debug_pad_len,
@@ -853,11 +819,17 @@ def main():
     # LR schedule
     steps_per_epoch = args.samples_per_epoch // (args.train_batch_size * args.grad_accum_steps * accelerator.num_processes)
     num_training_steps = steps_per_epoch * args.num_epochs
-    lr_scheduler = get_cosine_schedule_with_warmup(
-        optimizer,
-        num_warmup_steps=steps_per_epoch * args.grad_accum_steps * args.warmup_epoch,
-        num_training_steps=num_training_steps * args.grad_accum_steps,
-    )
+    if args.lr_scheduler == 'cosine':
+        lr_scheduler = get_cosine_schedule_with_warmup(
+            optimizer,
+            num_warmup_steps=steps_per_epoch * args.grad_accum_steps * args.warmup_epoch,
+            num_training_steps=num_training_steps * args.grad_accum_steps,
+        )
+    else:
+        lr_scheduler = get_constant_schedule_with_warmup(
+            optimizer=optimizer,
+            num_warmup_steps=steps_per_epoch * args.grad_accum_steps * args.warmup_epoch,
+        )
     logger.info(f'lr scheduler with {steps_per_epoch} warmup steps')
 
     # Prepare with accelerator
@@ -959,7 +931,6 @@ def main():
                 permute_iters=args.eval_train_permute_iters,
                 seed=args.seed,
                 tokenizer=tokenizer,
-                ntokens=args.ntokens,
                 debug_random_pad=args.debug_random_pad,
                 debug_pad_len=args.debug_pad_len,
                 train_pad_side=args.train_pad_side,
@@ -977,7 +948,6 @@ def main():
                 permute_iters=args.eval_eval_permute_iters,
                 seed=args.seed,
                 tokenizer=tokenizer,
-                ntokens=args.ntokens,
                 debug_random_pad=args.debug_random_pad,
                 debug_pad_len=args.debug_pad_len,
                 train_pad_side=args.train_pad_side,
@@ -985,29 +955,35 @@ def main():
                 debug_len=args.debug_len,
                 max_seq_len=args.max_seq_len,
             )
-            eval_collate_fn = partial(collate_fn_eval, dataset=eval_train_dataset) # only use tokenizer, padding info
+            eval_collate_fn = partial(collate_fn_eval, dataset=eval_train_dataset)
             if args.debug_len > 0:
                 eval_collate_fn = partial(collate_fn_eval_dummy, dataset=eval_train_dataset)
 
             train_ce_loss, \
                 train_exact_acc, train_valid_grid, train_correct_grid_dim, train_token_acc, train_texts, \
-                train_votes, train_competition_sub_acc, train_competition_all_acc = evaluate(
+                train_votes, train_competition_sub_acc, train_competition_all_acc, _ = evaluate(
+                task_to_ttt_path=None,
+                ttt_param_names=None,
                 model=model,
                 dataset=eval_train_dataset,
                 accelerator=accelerator,
                 batch_size=args.eval_batch_size,
                 collate_fn=eval_collate_fn,
                 dry_eval_run=args.dry_eval_run,
+                output_dir=args.output_dir,
             )
             eval_ce_loss, \
                 eval_exact_acc, eval_valid_grid, eval_correct_grid_dim, eval_token_acc, eval_texts, \
-                eval_votes, eval_competition_sub_acc, eval_competition_all_acc = evaluate(
+                eval_votes, eval_competition_sub_acc, eval_competition_all_acc, _ = evaluate(
+                task_to_ttt_path=None,
+                ttt_param_names=None,
                 model=model,
                 dataset=eval_eval_dataset,
                 accelerator=accelerator,
                 batch_size=args.eval_batch_size,
                 collate_fn=eval_collate_fn,
                 dry_eval_run=args.dry_eval_run,
+                output_dir=args.output_dir,
             )
 
             if accelerator.is_main_process:
@@ -1061,8 +1037,8 @@ def main():
 
                 if do_save_model:
                     if (not args.save_all_models) and (last_save_model_path is not None):
-                        save_enc_path, enc_lmhead_path, enc_embeds_path = last_save_model_path
-                        rm_cmd = f"rm -rf {save_enc_path} {enc_lmhead_path} {enc_embeds_path}"
+                        save_enc_path = last_save_model_path
+                        rm_cmd = f"rm -rf {save_enc_path}"
                         os.system(rm_cmd)
                     last_save_model_path = save_train_model(
                         model=model,

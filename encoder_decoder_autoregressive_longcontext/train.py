@@ -3,7 +3,7 @@ import copy
 import arclib # required
 import numpy as np
 from collections import defaultdict
-from typing import Union, Callable, List, Tuple, Optional, Iterator, Dict, Set
+from typing import Union, Callable, List, Tuple, Optional, Iterator
 import pprint
 import math
 import json
@@ -638,8 +638,6 @@ def gradient_search(
 ################################################
 @torch.no_grad()
 def evaluate(
-    task_to_ttt_path: Optional[Dict[str, Tuple[str, str, str, str, Optional[str]]]],
-    ttt_param_names: Optional[Set[str]],
     model: Union[nn.Module, DistributedDataParallel],
     prior_embeddings: Union[nn.Module, DistributedDataParallel],
     program_embeddings: Union[nn.Module, DistributedDataParallel],
@@ -666,7 +664,6 @@ def evaluate(
     gs_lr_scheduler: str,
     gs_take_best: bool,
     residual: bool,
-    output_dir: str,
 ):
     model.eval()
     prior_embeddings.eval()
@@ -678,49 +675,6 @@ def evaluate(
     # get modules in case of DDP
     module = model.module if isinstance(model, DistributedDataParallel) else model
     embed_tokens = module.model.embed_tokens if hasattr(module.model, "embed_tokens") else module.model.model.embed_tokens
-
-    # if ttt provided, same model weights for the missing ttt task weights
-    cached_model_weights_path = None
-    cached_prior_embeddings_weights_path = None
-    cached_program_embeddings_weights_path = None
-    cached_vae_projection_weights_path = None
-    cached_program_norm_weights_path = None
-    curr_ttt_task_name = None
-    if task_to_ttt_path is not None: # run on both processes
-        # save model for default when ttt is missing
-        cached_model_weights_path = os.path.join(output_dir, f"process{accelerator.process_index}_cache.pt")
-        assert isinstance(ttt_param_names, set)
-        names = set(name for name, _ in module.named_parameters())
-        assert all(name in names for name in ttt_param_names), f"process{accelerator.process_index}\n\n{ttt_param_names}\n\n{names}"
-        cache_weights = {name: param for name, param in module.named_parameters() if name in ttt_param_names}
-        torch.save(cache_weights, cached_model_weights_path)
-        logger.info(f"ttt provided, cached {len(cache_weights)} model weights to {cached_model_weights_path}")
-        # save prior embeddings
-        cached_prior_embeddings_weights_path = os.path.join(output_dir, f"process{accelerator.process_index}_prior_embeddings_cache.pt")
-        torch.save(prior_embeddings, cached_prior_embeddings_weights_path)
-        logger.info(f"ttt provided, cached prior embeddings weights to {cached_prior_embeddings_weights_path}")
-        # save program embeddings
-        cached_program_embeddings_weights_path = os.path.join(output_dir, f"process{accelerator.process_index}_program_embeddings_cache.pt")
-        torch.save(program_embeddings, cached_program_embeddings_weights_path)
-        logger.info(f"ttt provided, cached program embeddings weights to {cached_program_embeddings_weights_path}")
-        # save vae projection
-        cached_vae_projection_weights_path = os.path.join(output_dir, f"process{accelerator.process_index}_vae_projection_cache.pt")
-        torch.save(vae_projection, cached_vae_projection_weights_path)
-        logger.info(f"ttt provided, cached vae projection weights to {cached_vae_projection_weights_path}")
-        # save program norm
-        if program_norm is not None:
-            cached_program_norm_weights_path = os.path.join(output_dir, f"process{accelerator.process_index}_program_norm_cache.pt")
-            torch.save(program_norm, cached_program_norm_weights_path)
-            logger.info(f"ttt provided, cached program norm weights to {cached_program_norm_weights_path}")
-        # save default to model paths and set current ttt weights to default
-        task_to_ttt_path["default"] = (
-            cached_model_weights_path,
-            cached_prior_embeddings_weights_path,
-            cached_program_embeddings_weights_path,
-            cached_vae_projection_weights_path,
-            cached_program_norm_weights_path,
-        )
-        curr_ttt_task_name = "default"
 
     # setup terminators and suppress warning
     module.generation_config.pad_token_id = dataset.tokenizer.pad_token_id
@@ -734,7 +688,6 @@ def evaluate(
     valid_grid_list = []
     correct_grid_dim_list = []
     token_acc_list = []
-    ttt_provided_list = []
 
     data_idxs = list(range(len(dataset)))
     assert len(data_idxs) >= accelerator.num_processes # avoid padding issue
@@ -742,65 +695,10 @@ def evaluate(
     with distributed_state.split_between_processes(data_idxs) as process_data_idxs:
         assert isinstance(process_data_idxs, list)
         n_batches = math.ceil(len(process_data_idxs) / batch_size)
-
-        # if ttt provided, make sure all batches are of the same task name
-        if task_to_ttt_path is not None:
-            # tackle tasks in orderly fashion
-            task_names = [dataset.eval_tasks[idx].name for idx in process_data_idxs] # type: ignore
-            task_ids = [task_name.split('-')[0] for task_name in task_names]
-            n_batches = len(list(chunks_uniform_batch(task_ids, process_data_idxs, batch_size)))
-            data_idx_iterator = tqdm(chunks_uniform_batch(task_ids, process_data_idxs, batch_size), total=n_batches) # type: ignore
-        else:
-            data_idx_iterator = tqdm(chunks(process_data_idxs, batch_size), total=n_batches)  # type: ignore
+        data_idx_iterator = tqdm(chunks(process_data_idxs, batch_size), total=n_batches)  # type: ignore
 
         for batch_idxs in data_idx_iterator:
             bs = len(batch_idxs)
-
-            # optionally load ttt lora
-            ttt_provided = [0] * bs
-            if task_to_ttt_path is not None:
-                # make sure task name is unique and set to default is missing
-                task_names = [dataset.eval_tasks[idx].name.split('-')[0] for idx in batch_idxs]
-                assert len(set(task_names)) == 1 # have to be the same task
-                task_name = task_names[0]
-                if task_name not in task_to_ttt_path:
-                    task_name = "default"
-                ttt_provided = [int(task_name != "default")] * bs
-                # load ttt if necessary
-                if task_name != curr_ttt_task_name:
-                    (
-                        ttt_model_weights_path,
-                        ttt_prior_embeddings_weights_path,
-                        ttt_program_embeddings_weights_path,
-                        ttt_vae_projection_weights_path,
-                        ttt_program_norm_weights_path,
-                    ) = task_to_ttt_path[task_name]
-                    # load model
-                    model_ttt_state_dict = torch.load(
-                        ttt_model_weights_path,
-                        weights_only=True,
-                        map_location=accelerator.device
-                    )
-                    assert set(model_ttt_state_dict.keys()) == ttt_param_names
-                    module.load_state_dict(model_ttt_state_dict, strict=False)
-                    del model_ttt_state_dict
-                    # load prior embeddings
-                    prior_embeddings = torch.load(ttt_prior_embeddings_weights_path, weights_only=False, map_location=accelerator.device)
-                    # load program embeddings
-                    program_embeddings = torch.load(ttt_program_embeddings_weights_path, weights_only=False, map_location=accelerator.device)
-                    # load vae projection
-                    vae_projection = torch.load(ttt_vae_projection_weights_path, weights_only=False, map_location=accelerator.device)
-                    # load program norm
-                    if ttt_program_norm_weights_path is not None:
-                        program_norm = torch.load(ttt_program_norm_weights_path, weights_only=False, map_location=accelerator.device)
-                    curr_ttt_task_name = task_name # set current task name
-                    model.eval() # another eval after loading weight just in case
-                    prior_embeddings.eval()
-                    program_embeddings.eval()
-                    vae_projection.eval()
-                    if program_norm is not None:
-                        program_norm.eval()
-            ttt_provided_list += ttt_provided
 
             # predict multiple programs from i/o permutations
             predicted_program_accum = None
@@ -996,8 +894,14 @@ def evaluate(
 
             for task_id, inverter, gen_text, label_text, inverse_color_map in zip(task_ids, inverters, gen_texts, label_texts, inverse_color_maps):
                 # is valid grid
-                gen_grid, gen_is_grid = text_to_2d_grid(text=gen_text, no_dim=dataset.no_dim)
-                label_grid, label_is_grid = text_to_2d_grid(text=label_text, no_dim=dataset.no_dim)
+                gen_grid, gen_is_grid = text_to_2d_grid(
+                    text=gen_text,
+                    no_dim=dataset.no_dim,
+                )
+                label_grid, label_is_grid = text_to_2d_grid(
+                    text=label_text,
+                    no_dim=dataset.no_dim,
+                )
                 assert label_is_grid
                 valid_grid_list.append(int(gen_is_grid))
                 if not gen_is_grid:
@@ -1044,8 +948,6 @@ def evaluate(
     valid_grid_list = gather_object(valid_grid_list)
     correct_grid_dim_list = gather_object(correct_grid_dim_list)
     token_acc_list = gather_object(token_acc_list)
-    # ttt
-    ttt_provided_list = gather_object(ttt_provided_list)
 
     assert len(task_id_and_text_list) == len(dataset), (len(task_id_and_text_list), len(dataset))
     assert len(ce_loss_list) == len(dataset), (len(ce_loss_list), len(dataset))
@@ -1054,7 +956,6 @@ def evaluate(
     assert len(valid_grid_list) == len(dataset), (len(valid_grid_list), len(dataset))
     assert len(correct_grid_dim_list) == len(dataset), (len(correct_grid_dim_list), len(dataset))
     assert len(token_acc_list) == len(dataset), (len(token_acc_list), len(dataset))
-    assert len(ttt_provided_list) == len(dataset), (len(ttt_provided_list), len(dataset))
 
     # average metrics
     # note these are all computed without accounting for skipped eval grids
@@ -1064,7 +965,6 @@ def evaluate(
     valid_grid = sum(valid_grid_list) / len(dataset)
     correct_grid_dim = sum(correct_grid_dim_list) / len(dataset)
     token_acc = sum(token_acc_list) / len(dataset)
-    ttt_provided = sum(ttt_provided_list) / len(dataset)
 
     # grab all results
     task_id_to_texts = defaultdict(list)
@@ -1098,20 +998,9 @@ def evaluate(
     competition_sub_acc = competition_sub_correct / sum(len(corrects) for corrects in task_name_to_corrects.values())
     competition_all_acc = competition_all_correct / len(task_name_to_corrects)
 
-    if cached_model_weights_path is not None:
-        os.remove(cached_model_weights_path)
-    if cached_prior_embeddings_weights_path is not None:
-        os.remove(cached_prior_embeddings_weights_path)
-    if cached_program_embeddings_weights_path is not None:
-        os.remove(cached_program_embeddings_weights_path)
-    if cached_vae_projection_weights_path is not None:
-        os.remove(cached_vae_projection_weights_path)
-    if cached_program_norm_weights_path is not None:
-        os.remove(cached_program_norm_weights_path)
-
     return avg_ce_loss, avg_kl_loss, \
         exact_acc, valid_grid, correct_grid_dim, token_acc, task_id_to_texts, \
-        votes, competition_sub_acc, competition_all_acc, ttt_provided
+        votes, competition_sub_acc, competition_all_acc
 
 
 def list2d_to_tuple(l: List[List[int]]) -> Tuple[Tuple[int]]:
@@ -1241,56 +1130,26 @@ def compute_grad_norm2(parameters) -> float:
 @torch.no_grad()
 def save_train_model(
         model: Union[nn.Module, DistributedDataParallel],
-        prior_embeddings: Union[nn.Module, DistributedDataParallel],
-        program_embeddings: Union[nn.Module, DistributedDataParallel],
         vae_projection: Union[nn.Module, DistributedDataParallel],
-        program_norm: Optional[Union[nn.Module, DistributedDataParallel]],
         output_dir: str,
         epoch: int,
-    ) -> Tuple[str, str, str, str, Optional[str]]:
+    ) -> Tuple[str, str]:
 
     # encoder
-    save_encoder_path = os.path.join(output_dir, f"lora_epoch_{epoch+1}")
+    save_enc_path = os.path.join(output_dir, f"encoder_lora_epoch_{epoch+1}")
     module = model.module if isinstance(model, DistributedDataParallel) else model
-    module.save_pretrained(save_encoder_path, save_embedding_layers=True)
-    logger.info(f"Saved encoder to {save_encoder_path}")
-
-    # prior embeddings
-    save_prior_embeddings_path = os.path.join(output_dir, f"prior_embeddings_epoch_{epoch+1}.pt")
-    prior_embeddings_module = prior_embeddings
-    if isinstance(prior_embeddings, DistributedDataParallel):
-        prior_embeddings_module = prior_embeddings.module
-    torch.save(prior_embeddings_module, save_prior_embeddings_path)
-    logger.info(f"Saved prior embeddings to {save_prior_embeddings_path}")
-
-    # program embeddings
-    save_program_embeddings_path = os.path.join(output_dir, f"program_embeddings_epoch_{epoch+1}.pt")
-    program_embeddings_module = program_embeddings
-    if isinstance(program_embeddings, DistributedDataParallel):
-        program_embeddings_module = program_embeddings.module
-    torch.save(program_embeddings_module, save_program_embeddings_path)
-    logger.info(f"Saved program embeddings to {save_program_embeddings_path}")
+    module.save_pretrained(save_enc_path, save_embedding_layers=True)
+    logger.info(f"Saved encoder to {save_enc_path}")
 
     # projection
-    save_vae_projection_path = os.path.join(output_dir, f"vae_projection_epoch_{epoch+1}.pt")
+    save_proj_path = os.path.join(output_dir, f"vae_projection_epoch_{epoch+1}.pt")
     vae_projection_module = vae_projection
     if isinstance(vae_projection, DistributedDataParallel):
         vae_projection_module = vae_projection.module
-    torch.save(vae_projection_module, save_vae_projection_path)
-    logger.info(f"Saved conditioning projection to {save_vae_projection_path}")
+    torch.save(vae_projection_module, save_proj_path)
+    logger.info(f"Saved conditioning projection to {save_proj_path}")
 
-    # program norm
-    save_program_norm_path = None
-    if program_norm is not None:
-        save_program_norm_path = os.path.join(output_dir, f"program_norm_epoch_{epoch+1}.pt")
-        program_norm_module = program_norm
-        if isinstance(program_norm, DistributedDataParallel):
-            program_norm_module = program_norm.module
-        torch.save(program_norm_module, save_program_norm_path)
-        logger.info(f"Saved program norm to {save_program_norm_path}")
-
-    return save_encoder_path, save_prior_embeddings_path, save_program_embeddings_path, \
-        save_vae_projection_path, save_program_norm_path
+    return save_enc_path, save_proj_path
 
 
 def print_trainable_parameters(model):
@@ -1361,11 +1220,14 @@ def main():
 
     # Debug
     parser.add_argument("--debug", action='store_true')
-    parser.add_argument("--debug_len", type=int, default=-1) # two grid -> 1867
+    parser.add_argument("--debug_len", type=int, default=-1)
     parser.add_argument("--debug_fixed_order", action="store_true")
     parser.add_argument("--debug_random_pad", action="store_true")
     parser.add_argument("--debug_pad_len", type=int, default=-1)
-    parser.add_argument("--debug_train_data", action="store_true")
+    parser.add_argument("--no_color_permute", action="store_true")
+    parser.add_argument("--no_pair_permute", action="store_true")
+    parser.add_argument("--no_d8", action="store_true")
+    parser.add_argument("--lr_scheduler", type=str, choices=["cosine", "constant"], default="cosine")
 
     # Model
     parser.add_argument("--model_name", type=str, default="llama1b")
@@ -1376,6 +1238,7 @@ def main():
     parser.add_argument("--no_lora", action="store_true")
     parser.add_argument("--residual", action="store_true")
     parser.add_argument("--normalize", action="store_true")
+    parser.add_argument("--repeat_demonstration", action="store_true")
 
     # Conditioning projection
     parser.add_argument("--projection_type", type=str, choices=["shared", "full"], default="full")
@@ -1389,7 +1252,7 @@ def main():
     parser.add_argument("--grad_accum_steps", type=int, default=4)
     parser.add_argument("--train_batch_size", type=int, default=2)
     parser.add_argument("--eval_batch_size", type=int, default=2)
-    parser.add_argument("--lr_embedding", type=float, default=1e-5)
+    parser.add_argument("--lr_embedding", type=float, default=1e-4)
     parser.add_argument("--lr_program", type=float, default=1e-4)
     parser.add_argument("--lr_prior", type=float, default=1e-4)
     parser.add_argument("--lr_other", type=float, default=1e-4)
@@ -1402,6 +1265,7 @@ def main():
     parser.add_argument("--dry_train_run", action="store_true")
     parser.add_argument("--dry_eval_run", action="store_true")
     parser.add_argument("--warmup_epoch", type=int, default=1)
+    parser.add_argument("--max_seq_len", type=int, default=8192)
 
     # scheduled extra losses
     parser.add_argument("--kl_loss_lambda", type=float, default=0.0)
@@ -1417,10 +1281,6 @@ def main():
     parser.add_argument("--curriculum_iters", type=int, default=-1) # grow from min_num_pair to max_num_pair
     parser.add_argument("--no_dim", action='store_true')
     parser.add_argument("--separate_color_tokens", action='store_true')
-    parser.add_argument("--no_color_permute", action="store_true")
-    parser.add_argument("--no_pair_permute", action="store_true")
-    parser.add_argument("--no_d8", action="store_true")
-    parser.add_argument("--lr_scheduler", type=str, choices=["cosine", "constant"], default="cosine")
 
     # re-arc train data
     parser.add_argument("--train_data_dir", type=str, default="/scratch/yl11330/re-arc/train_data/tasks")
@@ -1486,7 +1346,7 @@ def main():
     parser.add_argument("--no_rslora", action='store_true')
 
     # Virtual tokens approach
-    parser.add_argument("--ntokens", type=int, default=32)
+    parser.add_argument("--ntokens", type=int, default=64)
     parser.add_argument("--seed", type=int, default=0)
     args = parser.parse_args()
 
@@ -1504,6 +1364,7 @@ def main():
     assert args.min_num_pair >= 3
     if args.train_gs_iters > 0 or args.eval_gs_iters > 0:
         assert args.eval_batch_size == 1
+    assert not args.color_equiv # not implemented cant be bothered
 
     if args.no_lora:
         args.untrainable_nbit = args.trainable_nbit # untrainable become trainable
@@ -1733,7 +1594,7 @@ def main():
     if program_norm is not None:
         for param in program_norm.parameters():
             assert param.requires_grad
-            param.data = param.data.to(torch.float32) # keep norm at float32
+            param.data = param.data.to(NBIT_TO_DTYPE[args.trainable_nbit])
     logger.info(f'converted trainable model weights to {NBIT_TO_DTYPE[args.trainable_nbit]}')
 
     # number of parameters
@@ -1756,7 +1617,6 @@ def main():
     logger.info(f'skipping computing program norm memory space because im lazy')
 
     # Build training dataset
-    global_batch_size = args.train_batch_size * args.grad_accum_steps * accelerator.num_processes
     train_dataset = TrainDataset(
         train_data_dir=args.train_data_dir,
         eval_train_dir=args.eval_train_dir,
@@ -1774,7 +1634,6 @@ def main():
         debug_random_pad=args.debug_random_pad,
         debug_pad_len=args.debug_pad_len,
         train_pad_side=args.train_pad_side,
-        debug_train_data=args.debug_train_data,
         no_color_permute=args.no_color_permute,
         no_pair_permute=args.no_pair_permute,
         no_d8=args.no_d8,
@@ -1786,9 +1645,10 @@ def main():
         num_workers=args.num_workers,
         color_equiv=args.color_equiv,
         curriculum_iters=args.curriculum_iters,
-        global_batch_size=global_batch_size,
         no_dim=args.no_dim,
         separate_color_tokens=args.separate_color_tokens,
+        max_seq_len=args.max_seq_len,
+        repeat_demonstration=args.repeat_demonstration,
     )
     train_collate_fn = partial(collate_fn_train, dataset=train_dataset)
     if args.debug_len > 0:
@@ -1803,11 +1663,6 @@ def main():
     )
     logger.info(f"len(train_dataset) = {len(train_dataset)}")
     logger.info(f"len(train_loader) = {len(train_loader)}")
-
-    if args.debug_train_data:
-        os.system("rm -rf ./debug_train_data")
-        os.makedirs("./debug_train_data")
-        os.system("chmod -R 777 ./debug_train_data")
 
     # Param groups for LoRA
     embedding_params = []
@@ -1846,7 +1701,7 @@ def main():
     logger.info(f"Optimizer with {len(other_params)} other-params lr={args.lr_other}")
 
     # LR schedule
-    steps_per_epoch = args.samples_per_epoch // global_batch_size
+    steps_per_epoch = args.samples_per_epoch // (args.train_batch_size * args.grad_accum_steps * accelerator.num_processes)
     num_training_steps = steps_per_epoch * args.num_epochs
     if args.lr_scheduler == 'cosine':
         lr_scheduler = get_cosine_schedule_with_warmup(
@@ -1984,7 +1839,6 @@ def main():
 
             if accelerator.sync_gradients:
                 global_step += 1
-                print(lr_scheduler.get_last_lr()[0])
                 if global_step % args.log_every == 0:
                     progress_bar.update(args.log_every)
                     try:
@@ -2028,6 +1882,8 @@ def main():
                 color_equiv=args.color_equiv,
                 no_dim=args.no_dim,
                 separate_color_tokens=args.separate_color_tokens,
+                max_seq_len=args.max_seq_len,
+                repeat_demonstration=args.repeat_demonstration,
             )
             eval_eval_dataset = EvalDataset(
                 eval_dir=args.eval_eval_dir,
@@ -2048,6 +1904,8 @@ def main():
                 color_equiv=args.color_equiv,
                 no_dim=args.no_dim,
                 separate_color_tokens=args.separate_color_tokens,
+                max_seq_len=args.max_seq_len,
+                repeat_demonstration=args.repeat_demonstration,
             )
             eval_collate_fn = partial(collate_fn_eval, dataset=eval_train_dataset) # only use tokenizer, padding info
             if args.debug_len > 0:
@@ -2055,9 +1913,7 @@ def main():
 
             train_ce_loss, train_kl_loss, \
                 train_exact_acc, train_valid_grid, train_correct_grid_dim, train_token_acc, train_texts, \
-                train_votes, train_competition_sub_acc, train_competition_all_acc, _ = evaluate(
-                task_to_ttt_path=None,
-                ttt_param_names=None,
+                train_votes, train_competition_sub_acc, train_competition_all_acc = evaluate(
                 model=model,
                 prior_embeddings=prior_embeddings,
                 program_embeddings=program_embeddings,
@@ -2084,13 +1940,10 @@ def main():
                 gs_lr_scheduler=args.train_gs_lr_scheduler,
                 gs_take_best=args.train_gs_take_best,
                 residual=args.residual,
-                output_dir=args.output_dir,
             )
             eval_ce_loss, eval_kl_loss, \
                 eval_exact_acc, eval_valid_grid, eval_correct_grid_dim, eval_token_acc, eval_texts, \
-                eval_votes, eval_competition_sub_acc, eval_competition_all_acc, _ = evaluate(
-                task_to_ttt_path=None,
-                ttt_param_names=None,
+                eval_votes, eval_competition_sub_acc, eval_competition_all_acc = evaluate(
                 model=model,
                 prior_embeddings=prior_embeddings,
                 program_embeddings=program_embeddings,
@@ -2117,7 +1970,6 @@ def main():
                 gs_lr_scheduler=args.eval_gs_lr_scheduler,
                 gs_take_best=args.eval_gs_take_best,
                 residual=args.residual,
-                output_dir=args.output_dir,
             )
 
             if accelerator.is_main_process:
@@ -2173,19 +2025,12 @@ def main():
 
                 if do_save_model:
                     if (not args.save_all_models) and (last_save_model_path is not None):
-                        save_encoder_path, save_prior_embeddings_path, save_program_embeddings_path, \
-                            save_vae_projection_path, save_program_norm_path = last_save_model_path
-                        rm_cmd = f"rm -rf {save_encoder_path} {save_prior_embeddings_path}"
-                        rm_cmd += f" {save_program_embeddings_path} {save_vae_projection_path}"
-                        if save_program_norm_path is not None:
-                            rm_cmd += f" {save_program_norm_path}"
+                        save_enc_path, save_proj_path = last_save_model_path
+                        rm_cmd = f"rm -rf {save_enc_path} {save_proj_path}"
                         os.system(rm_cmd)
                     last_save_model_path = save_train_model(
                         model=model,
-                        prior_embeddings=prior_embeddings,
-                        program_embeddings=program_embeddings,
                         vae_projection=vae_projection,
-                        program_norm=program_norm,
                         output_dir=args.output_dir,
                         epoch=epoch,
                     )

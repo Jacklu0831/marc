@@ -11,7 +11,7 @@ import random
 import torch
 from torch.utils.data import Dataset, get_worker_info
 from torch.nn.utils.rnn import pad_sequence
-from typing import Dict, Any, List, Tuple, Iterator, Union
+from typing import Dict, List, Tuple, Iterator, Union
 from pathlib import Path
 from typing import List, Optional
 import numpy as np
@@ -120,9 +120,8 @@ class ARCTokenizer:
         return texts
 
 
-def get_d8_augmenters() -> List[Augmenter]:
-    return [
-        Rotate(0),
+def get_d8_augmenters(include_identity: bool) -> List[Augmenter]:
+    augmenters = [
         Rotate(90),
         Rotate(180),
         Rotate(270),
@@ -131,6 +130,9 @@ def get_d8_augmenters() -> List[Augmenter]:
         Chain([Flip(0), Rotate(90)]), # type: ignore
         Chain([Flip(1), Rotate(90)]), # type: ignore
     ]
+    if include_identity:
+        augmenters = [Rotate(0)] + augmenters
+    return augmenters # type: ignore
 
 
 def get_mit_augmenters(
@@ -303,23 +305,40 @@ class TTTDataset(Dataset):
         decoder_pad_side: str,
         encoder_loss_type: bool,
         debug_no_aug: bool,
+        aug_type: str,
     ):
         self.permute_n = permute_n
-        # for ttt, only use mit augmenters for now
-        self.augmenters: List[Augmenter] = get_mit_augmenters(include_basic=True, include_size=True, include_chain=True, include_repeat=True)
-        self.seed = seed
         self.encoder_tokenizer = encoder_tokenizer
         self.decoder_tokenizer = decoder_tokenizer
         self.max_seq_len = max_seq_len
+        self.seed = seed
         self.ntokens = ntokens
-        self.cls_tokens = [f"<CLS{token_i}>" for token_i in range(ntokens)]
         self.encoder_pad_side = encoder_pad_side
         self.decoder_pad_side = decoder_pad_side
         self.encoder_loss_type = encoder_loss_type
         self.debug_no_aug = debug_no_aug
 
+        self.cls_tokens = [f"<CLS{token_i}>" for token_i in range(ntokens)]
         self.encoder_input_token_id = encoder_tokenizer("input")['input_ids'][1]
         self.encoder_output_token_id = encoder_tokenizer("output")['input_ids'][1]
+
+        # get all augmenters
+        d8_augmenters = get_d8_augmenters(include_identity=False)
+        extra_augmenters = get_mit_augmenters(include_basic=True, include_size=True, include_chain=True, include_repeat=True)
+        if aug_type == "none":
+            augmenters = []
+        elif aug_type == "both":
+            augmenters = d8_augmenters + extra_augmenters
+        elif aug_type == "d8":
+            augmenters = d8_augmenters
+        else:
+            augmenters = extra_augmenters
+
+        # keep unique augmenters
+        self.augmenters = []
+        for aug in augmenters:
+            if str(aug) not in [str(x) for x in self.augmenters]:
+                self.augmenters.append(aug)
 
         # load data
         self.task_id = Path(data_path).stem
@@ -336,8 +355,8 @@ class TTTDataset(Dataset):
 
         # get data
         rng = np.random.RandomState(seed)
-        self.ttt_tasks: List[Any] = self.task_to_ttt_filtered_data(max_gen=max_samples_per_task)
-        rng.shuffle(self.ttt_tasks)
+        self.ttt_tasks = self.task_to_ttt_filtered_data(max_gen=max_samples_per_task)
+        rng.shuffle(self.ttt_tasks) # type: ignore
 
     def task_to_ttt_filtered_data(self, max_gen: int) -> List[Task]:
         # if leave 1 is enough, return it
@@ -402,9 +421,11 @@ class TTTDataset(Dataset):
         # big grids are filtered out during augmentation already
         assert task.max_height() <= 30 and task.max_width() <= 30
 
+        train_examples = task.train_examples
+
         # Build encoder text
         prefix_texts = []
-        for p in task.train_examples:
+        for p in train_examples:
             prefix_texts.append(grid_to_text(p.input.tolist(), True))
             prefix_texts.append(grid_to_text(p.output.tolist(), False))
         encoder_text = "\n".join(prefix_texts) + "".join(self.cls_tokens)
@@ -444,11 +465,11 @@ class TTTDataset(Dataset):
         ], dim=0)
 
         # Check length
-        if enc_tokens["input_ids"].shape[1] - self.ntokens > self.max_seq_len or decoder_input_ids.shape[0] > self.max_seq_len // 2: # dec_len should be short
+        if enc_tokens["input_ids"].shape[1] - self.ntokens + decoder_input_ids.shape[0] > self.max_seq_len:
             return None
 
         # construct encoder label
-        prefix_count = len(task.train_examples)
+        prefix_count = len(train_examples)
         encoder_input_ids = enc_tokens["input_ids"].squeeze(0)
         input_token_positions = [enc_i for enc_i, enc_token_id in enumerate(encoder_input_ids) if enc_token_id == self.encoder_input_token_id]
         output_token_positions = [enc_i for enc_i, enc_token_id in enumerate(encoder_input_ids) if enc_token_id == self.encoder_output_token_id]
@@ -482,6 +503,7 @@ class TTTDataset(Dataset):
             "decoder_input_ids": decoder_input_ids,
             "decoder_attention_mask": decoder_attention_mask,
             "decoder_labels": decoder_labels,
+            "anti_invar": 0, # NOTE: dummy
         }
 
     def __len__(self):
@@ -498,6 +520,7 @@ def collate_fn_ttt(batch: List[Dict], dataset: TTTDataset) -> Dict:
     dec_ids = [x["decoder_input_ids"] for x in batch]
     dec_mask = [x["decoder_attention_mask"] for x in batch]
     dec_labs = [x["decoder_labels"] for x in batch]
+    anti_invars = [x["anti_invar"] for x in batch]
 
     enc_ids_lens = [len(x) for x in enc_ids]
     dec_ids_lens = [len(x) for x in dec_ids]
@@ -517,30 +540,7 @@ def collate_fn_ttt(batch: List[Dict], dataset: TTTDataset) -> Dict:
         "decoder_labels": dec_labs,
         "encoder_input_ids_lens": enc_ids_lens,
         "decoder_input_ids_lens": dec_ids_lens,
-    }
-
-
-def collate_fn_ttt_dummy(batch: List[Dict], ntokens: int, debug_enc_len: int, debug_dec_len: int) -> Dict:
-    batch_size = len(batch)
-    assert batch_size > 0 and batch_size % 2 == 0, f"Batch size must be even, got {batch_size}"
-    del batch  # we don't use it directly
-
-    enc_ids = torch.randint(1, 101, (batch_size, debug_enc_len + ntokens), dtype=torch.int64, device='cpu')
-    enc_mask = torch.full((batch_size, debug_enc_len + ntokens), 1, dtype=torch.int64, device='cpu')
-    dec_ids = torch.randint(1, 101, (batch_size, debug_dec_len), dtype=torch.int64, device='cpu')
-    dec_mask = torch.full((batch_size, debug_dec_len), 1, dtype=torch.int64, device='cpu')
-    enc_ids_lens = [len(x) for x in enc_ids]
-    dec_ids_lens = [len(x) for x in dec_ids]
-
-    return {
-        "encoder_input_ids": enc_ids,
-        "encoder_attention_mask": enc_mask,
-        "encoder_labels": enc_ids,
-        "decoder_input_ids": dec_ids,
-        "decoder_attention_mask": dec_mask,
-        "decoder_labels": dec_ids,
-        "encoder_input_ids_lens": enc_ids_lens,
-        "decoder_input_ids_lens": dec_ids_lens,
+        "anti_invars": anti_invars,
     }
 
 
@@ -572,7 +572,9 @@ class TrainDataset(Dataset):
         encoder_loss_type: bool,
         anti_invar_ratio: float,
         num_workers: int,
-        basic_aug: bool,
+        no_color_permute: bool,
+        no_pair_permute: bool,
+        no_d8: bool,
         color_equiv: bool,
     ):
         self.encoder_tokenizer = encoder_tokenizer
@@ -592,10 +594,12 @@ class TrainDataset(Dataset):
         self.decoder_pad_side = decoder_pad_side
         self.encoder_loss_type = encoder_loss_type
         self.anti_invar_ratio = anti_invar_ratio
-        self.basic_aug = basic_aug
+        self.no_color_permute = no_color_permute
+        self.no_pair_permute = no_pair_permute
+        self.no_d8 = no_d8
         self.color_equiv = color_equiv
 
-        self.d8_augmenters = get_d8_augmenters()
+        self.d8_augmenters = get_d8_augmenters(include_identity=True)
         self.extra_augmenters: List[Augmenter] = get_mit_augmenters(include_basic=True, include_size=True, include_chain=True, include_repeat=True)
 
         # seed and process_index
@@ -678,10 +682,10 @@ def collate_fn_train(batch: List[int], dataset: TrainDataset) -> Dict:
             # same or different d8 augmentation
             d8_augmenters = []
             for _ in range(2):
-                if dataset.basic_aug:
-                    d8_augmenters.append(rng.choice(dataset.d8_augmenters)) # type: ignore
-                else:
+                if dataset.no_d8:
                     d8_augmenters.append(None)
+                else:
+                    d8_augmenters.append(rng.choice(dataset.d8_augmenters)) # type: ignore
             # same or different extra augmentation
             extra_augmenters = []
             io_augmentation_choices = []
@@ -698,8 +702,9 @@ def collate_fn_train(batch: List[int], dataset: TrainDataset) -> Dict:
             task_ids = [task_id, task_id]
             pairs_for_tasks = [dataset.tasks_dict[task_id], dataset.tasks_dict[task_id]]
             # must be same d8 augmentation
-            d8_augmenters = [None, None]
-            if dataset.basic_aug:
+            if dataset.no_d8:
+                d8_augmenters = [None, None]
+            else:
                 d8_augmenters = [rng.choice(dataset.d8_augmenters)] * 2 # type: ignore
             # must be same extra augmentation
             extra_augmenters = [None, None]
@@ -726,26 +731,31 @@ def collate_fn_train(batch: List[int], dataset: TrainDataset) -> Dict:
                 chosen_pairs = rng.choice(pairs_for_task, size=required_count, replace=False) # type: ignore
             chosen_pairs = copy.deepcopy(chosen_pairs)
 
-            if dataset.basic_aug:
+            if not dataset.no_d8:
                 # apply d8 augmentation
                 assert d8_augmenter is not None
                 for pair in chosen_pairs:
                     pair['input'] = d8_augmenter.apply_to_grid(np.array(pair['input']), rng)
                     pair['output'] = d8_augmenter.apply_to_grid(np.array(pair['output']), rng)
 
-                # apply permute color permute pair (note permuteexamples do not permute test, but its actually the same)
-                task = Task(
-                    name="dummy",
-                    train_examples=[
-                        Example(input=pair["input"], output=pair["output"]) # type: ignore
-                        for pair in chosen_pairs[:-1]
-                    ],
-                    test_example=Example(input=chosen_pairs[-1]["input"], output=chosen_pairs[-1]["output"]),  # type: ignore
-                )
+            # apply permute color permute pair (note permuteexamples do not permute test, but its actually the same)
+            task = Task(
+                name="dummy",
+                train_examples=[
+                    Example(input=np.array(pair["input"]), output=np.array(pair["output"])) # type: ignore
+                    for pair in chosen_pairs[:-1]
+                ],
+                test_example=Example(input=np.array(chosen_pairs[-1]["input"]), output=np.array(chosen_pairs[-1]["output"])),  # type: ignore
+            )
+
+            if not dataset.no_pair_permute:
                 task = PermuteExamples().apply_to_task(task, to_input=True, to_output=True, rng=rng)
+
+            if not dataset.no_color_permute:
                 task = PermuteColors().apply_to_task(task, to_input=True, to_output=True, rng=rng)
-                chosen_pairs = [{"input": e.input.tolist(), "output": e.output.tolist()} for e in task.train_examples]
-                chosen_pairs += [{"input": task.test_example.input.tolist(), "output": task.test_example.output.tolist()}]
+
+            chosen_pairs = [{"input": e.input.tolist(), "output": e.output.tolist()} for e in task.train_examples]
+            chosen_pairs += [{"input": task.test_example.input.tolist(), "output": task.test_example.output.tolist()}]
 
             # apply extra augmentation
             if extra_augmenter is not None:
@@ -808,7 +818,7 @@ def collate_fn_train(batch: List[int], dataset: TrainDataset) -> Dict:
             ], dim=0)
 
             # Check length
-            if enc_tokens["input_ids"].shape[1] - dataset.ntokens > dataset.max_seq_len or decoder_input_ids.shape[0] > dataset.max_seq_len // 2: # dec_len should be short
+            if enc_tokens["input_ids"].shape[1] - dataset.ntokens + decoder_input_ids.shape[0] > dataset.max_seq_len:
                 break
 
             # construct encoder label
@@ -916,14 +926,16 @@ def collate_fn_train(batch: List[int], dataset: TrainDataset) -> Dict:
     }
 
 
-def collate_fn_train_dummy(batch: List[int], ntokens: int, debug_enc_len: int, debug_dec_len: int) -> Dict:
+def collate_fn_train_dummy(batch: List[int], ntokens: int, debug_len: int) -> Dict:
     batch_size = len(batch)
     assert batch_size > 0 and batch_size % 2 == 0, f"Batch size must be even, got {batch_size}"
     del batch  # we don't use it directly
 
-    enc_ids = torch.randint(1, 101, (batch_size, debug_enc_len + ntokens), dtype=torch.int64, device='cpu')
+    debug_enc_len = (debug_len // 7 + 1) * 6
+    debug_dec_len = (debug_len // 7 + 1)
+    enc_ids = torch.randint(0, 30, (batch_size, debug_enc_len + ntokens), dtype=torch.int64, device='cpu')
     enc_mask = torch.full((batch_size, debug_enc_len + ntokens), 1, dtype=torch.int64, device='cpu')
-    dec_ids = torch.randint(1, 101, (batch_size, debug_dec_len), dtype=torch.int64, device='cpu')
+    dec_ids = torch.randint(0, 30, (batch_size, debug_dec_len), dtype=torch.int64, device='cpu')
     dec_mask = torch.full((batch_size, debug_dec_len), 1, dtype=torch.int64, device='cpu')
     enc_ids_lens = [len(x) for x in enc_ids]
     dec_ids_lens = [len(x) for x in dec_ids]
@@ -1219,7 +1231,7 @@ class EvalDataset:
         dec_label_texts = dec_label_texts[len("output:\n"):]
 
         # Check length
-        if enc_tokens["input_ids"].shape[1] - self.ntokens > self.max_seq_len or decoder_input_ids.shape[0] > self.max_seq_len // 2: # dec_len should be short
+        if enc_tokens["input_ids"].shape[1] - self.ntokens + decoder_input_ids.shape[0] > self.max_seq_len:
             return None
 
         # construct encoder label
@@ -1386,14 +1398,17 @@ def collate_fn_eval(batch: List[Dict], dataset: EvalDataset) -> Dict:
     return batch_dict
 
 
-def collate_fn_eval_dummy(batch: List[Dict], ntokens: int, debug_enc_len: int, debug_dec_len: int) -> Dict:
+def collate_fn_eval_dummy(batch: List[Dict], ntokens: int, debug_len: int) -> Dict:
     batch_size = len(batch)
     task_ids = [str(x) for x in range(100000, 100000 + batch_size)]
-    enc_ids = torch.randint(1, 101, (batch_size, debug_enc_len + ntokens), dtype=torch.int64, device='cpu')
+
+    debug_enc_len = (debug_len // 7 + 1) * 6
+    debug_dec_len = (debug_len // 7 + 1)
+    enc_ids = torch.randint(0, 30, (batch_size, debug_enc_len + ntokens), dtype=torch.int64, device='cpu')
     enc_mask = torch.full((batch_size, debug_enc_len + ntokens), 1, dtype=torch.int64, device='cpu')
-    dec_ids = torch.randint(1, 101, (batch_size, debug_dec_len), dtype=torch.int64, device='cpu')
+    dec_ids = torch.randint(0, 30, (batch_size, debug_dec_len), dtype=torch.int64, device='cpu')
     dec_mask = torch.full((batch_size, debug_dec_len), 1, dtype=torch.int64, device='cpu')
-    dec_gen_ids = torch.randint(1, 101, (batch_size, int(debug_dec_len * 0.4)), dtype=torch.int64, device='cpu')
+    dec_gen_ids = torch.randint(0, 30, (batch_size, int(debug_dec_len * 0.4)), dtype=torch.int64, device='cpu')
     dec_gen_mask = torch.full((batch_size, int(debug_dec_len * 0.4)), 1, dtype=torch.int64, device='cpu')
     enc_ids_lens = [len(x) for x in enc_ids]
     dec_ids_lens = [len(x) for x in dec_ids]
@@ -1428,7 +1443,6 @@ class GSDataset(Dataset):
         task: Task,
         encoder_tokenizer: ARCTokenizer,
         decoder_tokenizer: ARCTokenizer,
-        max_seq_len: int,
         ntokens: int,
         debug_random_pad: bool,
         debug_pad_len: int,
@@ -1439,7 +1453,6 @@ class GSDataset(Dataset):
         self.task = task
         self.encoder_tokenizer = encoder_tokenizer
         self.decoder_tokenizer = decoder_tokenizer
-        self.max_seq_len = max_seq_len
         self.ntokens = ntokens
         self.debug_random_pad = debug_random_pad
         self.debug_pad_len = debug_pad_len
@@ -1496,11 +1509,6 @@ class GSDataset(Dataset):
             dec_out_tokens["attention_mask"].squeeze(0),
         ], dim=0)
 
-        # Check length
-        # should never be evoked in practice
-        if decoder_input_ids.shape[0] > self.max_seq_len // 2: # dec_len should be short
-            return None
-
         return {
             "decoder_input_ids": decoder_input_ids,
             "decoder_attention_mask": decoder_attention_mask,
@@ -1531,39 +1539,5 @@ def collate_fn_gs(batch: List[Dict], dataset: GSDataset) -> Dict:
         "decoder_attention_mask": dec_mask,
         "decoder_labels": dec_labs,
         "decoder_input_ids_lens": dec_ids_lens,
-    }
-    return batch_dict
-
-
-# not used yet
-def collate_fn_gs_dummy(batch: List[Dict], ntokens: int, debug_enc_len: int, debug_dec_len: int) -> Dict:
-    batch_size = len(batch)
-    task_ids = [str(x) for x in range(100000, 100000 + batch_size)]
-    enc_ids = torch.randint(1, 101, (batch_size, debug_enc_len + ntokens), dtype=torch.int64, device='cpu')
-    enc_mask = torch.full((batch_size, debug_enc_len + ntokens), 1, dtype=torch.int64, device='cpu')
-    dec_ids = torch.randint(1, 101, (batch_size, debug_dec_len), dtype=torch.int64, device='cpu')
-    dec_mask = torch.full((batch_size, debug_dec_len), 1, dtype=torch.int64, device='cpu')
-    dec_gen_ids = torch.randint(1, 101, (batch_size, int(debug_dec_len * 0.4)), dtype=torch.int64, device='cpu')
-    dec_gen_mask = torch.full((batch_size, int(debug_dec_len * 0.4)), 1, dtype=torch.int64, device='cpu')
-    enc_ids_lens = [len(x) for x in enc_ids]
-    dec_ids_lens = [len(x) for x in dec_ids]
-    dec_gen_ids_lens = [len(x) for x in dec_gen_ids]
-
-    batch_dict = {
-        "task_ids": task_ids,
-        "inverters": [""] * batch_size,
-        "encoder_input_ids": enc_ids,
-        "encoder_attention_mask": enc_mask,
-        "encoder_labels": enc_ids,
-        "decoder_input_ids": dec_ids,
-        "decoder_attention_mask": dec_mask,
-        "decoder_labels": dec_ids,
-        "decoder_gen_input_ids": dec_gen_ids,
-        "decoder_gen_attention_mask": dec_gen_mask,
-        "decoder_out_token_length": [math.ceil(debug_dec_len * 0.6)] * batch_size,
-        "decoder_label_texts": ['1\n1\n1'] * batch_size,
-        "encoder_input_ids_lens": enc_ids_lens,
-        "decoder_input_ids_lens": dec_ids_lens,
-        "decoder_gen_input_ids_lens": dec_gen_ids_lens,
     }
     return batch_dict
