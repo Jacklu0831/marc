@@ -10,7 +10,7 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
     --train_batch_size 1 \
     --eval_batch_size 1 \
     --grad_accum_steps 8 \
-    --max_seq_len 7168 \
+    --max_seq_len 6144 \
     --wandb
 
 # arlong repeat demonstration
@@ -23,9 +23,9 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
     --train_batch_size 1 \
     --eval_batch_size 1 \
     --grad_accum_steps 8 \
-    --max_seq_len 7168 \
+    --max_seq_len 6144 \
     --repeat_demonstration \
     --wandb
 
-# Submitted batch job 57149440
-# Submitted batch job 57149441
+# Submitted batch job 57179117
+# Submitted batch job 57179118

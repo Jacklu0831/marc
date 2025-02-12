@@ -9,16 +9,6 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
     --tag 0211_ar_base \
     --wandb
 
-# ar seqlen7168
-accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder_autoregressive/train.py \
-    --train_no_sample \
-    --eval_no_sample \
-    --residual \
-    --lr_scheduler constant \
-    --tag 0211_ar_seqlen7168 \
-    --max_seq_len 7168 \
-    --wandb
-
 # ar ntokens128
 accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder_autoregressive/train.py \
     --train_no_sample \
@@ -74,16 +64,6 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
     --no_dim \
     --wandb
 
-# ar norm
-accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder_autoregressive/train.py \
-    --train_no_sample \
-    --eval_no_sample \
-    --residual \
-    --lr_scheduler constant \
-    --tag 0211_ar_norm \
-    --normalize \
-    --wandb
-
 # ar separate color tokens
 accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder_autoregressive/train.py \
     --train_no_sample \
@@ -95,11 +75,9 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
     --wandb
 
 # Submitted batch job 57149131
-# Submitted batch job 57149132
 # Submitted batch job 57149133
 # Submitted batch job 57149134
 # Submitted batch job 57149135
 # Submitted batch job 57149136
 # Submitted batch job 57149137
-# Submitted batch job 57149138
 # Submitted batch job 57149139
