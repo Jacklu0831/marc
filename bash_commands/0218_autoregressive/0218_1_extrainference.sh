@@ -21,6 +21,6 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
     --extra_inference_pairs 10 \
     --wandb
 
-# Submitted batch job 57364484
-# Submitted batch job 57364485
-# Submitted batch job 57364486
+# Submitted batch job 57364999
+# Submitted batch job 57365000
+# Submitted batch job 57365001

@@ -56,8 +56,8 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
     --warmup_epoch 2 \
     --wandb
 
-# Submitted batch job 57364455
-# Submitted batch job 57364456
-# Submitted batch job 57364457
-# Submitted batch job 57364458
-# Submitted batch job 57364459
+# Submitted batch job 57365053
+# Submitted batch job 57365054
+# Submitted batch job 57365055
+# Submitted batch job 57365056
+# Submitted batch job 57365057

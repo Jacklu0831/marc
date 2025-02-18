@@ -120,10 +120,144 @@ def get_memory_footprint(module: nn.Module):
         sum(p.nelement() * p.element_size() for p in module.buffers())
 
 
-################################################
-# A shared forward pass for training & evaluation
-################################################
+def get_predicted_program(
+    # model
+    model: Union[nn.Module, DistributedDataParallel],
+    prior_embeddings: Union[ProgramEmbeddings, DistributedDataParallel],
+    program_embeddings: Union[ProgramEmbeddings, DistributedDataParallel],
+    program_norm: Optional[Union[LlamaRMSNorm, DistributedDataParallel]],
+    tokenizer: ARCTokenizer,
+    # data
+    input_ids: List[torch.Tensor],
+    attention_mask: List[torch.Tensor],
+    input_ids_lens: List[List[int]],
+    num_pairs: List[int],
+    # others
+    ntokens: int,
+    pad_side: str,
+    no_residual: bool,
+    concat_programs: bool,
+) -> torch.Tensor:
+
+    module = model.module if isinstance(model, DistributedDataParallel) else model
+    embed_tokens = module.model.embed_tokens if hasattr(module.model, "embed_tokens") else module.model.model.embed_tokens
+
+    # samples do not have to be the same number of pairs in evaluation, but try to parallelize it anyway
+    assert min(num_pairs) >= 2 # at least 2 train
+    assert max(num_pairs) == len(input_ids)
+
+    assert len(set(len(ids) for ids in input_ids)) == 1 # batch size uniform across pair_idx
+    batch_size = len(input_ids[0])
+    dtype, device = input_ids[0].dtype, input_ids[0].device
+
+    # reused tensors
+    pad_embeds = embed_tokens(torch.tensor(tokenizer.pad_token_id, device=device))
+    inputs_embeds = [embed_tokens(pair_input_ids) for pair_input_ids in input_ids]
+
+    # apply program norm to prior
+    prior_inputs_embeds = prior_embeddings("dummy")[None, ...].expand(batch_size, -1, -1)
+    if program_norm is not None:
+        prior_inputs_embeds = program_norm(prior_inputs_embeds)
+
+    # previous program of each sample in batch
+    all_prev_programs = [p for p in prior_inputs_embeds]
+
+    for pair_i, (pair_inputs_embeds, pair_attention_mask, pair_input_ids_lens) in enumerate(zip(inputs_embeds, attention_mask, input_ids_lens)):
+
+        # STEP 0: filter out samples that are not this long (for eval)
+        avail_mask = torch.tensor([int(pair_i < n) for n in num_pairs], dtype=torch.bool)
+        pair_inputs_embeds = pair_inputs_embeds[avail_mask]
+        pair_attention_mask = pair_attention_mask[avail_mask]
+        pair_input_ids_lens = [l for l, m in zip(pair_input_ids_lens, avail_mask) if m]
+        n_avail = int(avail_mask.sum().item())
+
+        # stack available programs that have to be the same length
+        prev_programs = [p for p, m in zip(all_prev_programs, avail_mask) if m]
+        assert len(set(p.shape[0] for p in prev_programs)) == 1
+        prev_programs = torch.stack(prev_programs)
+        program_len = prev_programs.shape[1]
+
+        # STEP 1: prepend the last predicted program for all pairs except the first
+        pair_inputs_embeds = insert_based_on_sides(
+            data=pair_inputs_embeds,
+            to_insert=prev_programs,
+            lens=pair_input_ids_lens,
+            insert_side="left",
+            pad_side=pad_side,
+            pad_id=pad_embeds,
+        )
+        pair_attention_mask = insert_based_on_sides(
+            data=pair_attention_mask,
+            to_insert=torch.full((n_avail, program_len), 1, device=device, dtype=dtype),
+            lens=pair_input_ids_lens,
+            insert_side="left",
+            pad_side=pad_side,
+            pad_id=0,
+        )
+
+        # update lens to reflect the extra program
+        pair_input_ids_lens = [l + program_len for l in pair_input_ids_lens]
+
+        # STEP 2: append new program input to the right for all pairs except the last
+        pair_inputs_embeds = insert_based_on_sides(
+            data=pair_inputs_embeds,
+            to_insert=program_embeddings("dummy")[None, ...].expand(n_avail, -1, -1),
+            lens=pair_input_ids_lens,
+            insert_side="right",
+            pad_side=pad_side,
+            pad_id=pad_embeds,
+        )
+        pair_attention_mask = insert_based_on_sides(
+            data=pair_attention_mask,
+            to_insert=torch.full((n_avail, ntokens), 1, device=device, dtype=dtype),
+            lens=pair_input_ids_lens,
+            insert_side="right",
+            pad_side=pad_side,
+            pad_id=0,
+        )
+
+        # refine program
+        model_out = model(
+            inputs_embeds=pair_inputs_embeds,
+            attention_mask=pair_attention_mask,
+            output_hidden_states=True,
+        )
+
+        # projection then sample new program prediction for all pairs except the last
+        hidden_states = model_out.hidden_states[-1] # (batch_size, seq_len, hidden_dim)
+        new_programs = extract_program_from_right_side(
+            data=hidden_states,
+            lens=pair_input_ids_lens,
+            ntokens=ntokens,
+            pad_side=pad_side,
+        )
+        # optionally use residual connection
+        if not no_residual:
+            new_programs += prev_programs
+        # optionally apply norm
+        if program_norm is not None:
+            new_programs = program_norm(new_programs)
+        # optionally concat program
+        if concat_programs:
+            new_programs = torch.cat([prev_programs, new_programs], dim=1)
+        # update new program
+        assert len(avail_mask) == len(all_prev_programs)
+        assert sum(avail_mask) == len(new_programs)
+        new_programs_idx = 0
+        for i, m in enumerate(avail_mask):
+            if m:
+                all_prev_programs[i] = new_programs[new_programs_idx]
+                new_programs_idx += 1
+
+    assert len(all_prev_programs) == batch_size
+    assert len(set(p.shape[0] for p in all_prev_programs)) == 1
+    return torch.stack(all_prev_programs)
+
+
 def model_loss(
+    # truncation
+    accelerator: Accelerator,
+    truncation_steps: int,
     # model
     model: Union[nn.Module, DistributedDataParallel],
     prior_embeddings: Union[ProgramEmbeddings, DistributedDataParallel],
@@ -140,39 +274,48 @@ def model_loss(
     ntokens: int,
     pad_side: str,
     no_residual: bool,
-) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    concat_programs: bool,
+) -> torch.Tensor:
 
     module = model.module if isinstance(model, DistributedDataParallel) else model
     embed_tokens = module.model.embed_tokens if hasattr(module.model, "embed_tokens") else module.model.model.embed_tokens
-    assert min(num_pairs) >= 3 # at LEAST 2 train and 1 test
-    assert max(num_pairs) == len(input_ids)
+
+    # all samples should have same number of pairs
+    assert len(set(num_pairs)) == 1
+    n_pairs = num_pairs[0]
+    assert n_pairs >= 3 # at least 2 train and 1 test
+    assert n_pairs == len(input_ids) # input_ids
+
     assert len(set(len(ids) for ids in input_ids)) == 1 # batch size uniform across pair_idx
     batch_size = len(input_ids[0])
     dtype, device = input_ids[0].dtype, input_ids[0].device
 
-    # forward
-    prior_inputs_embeds = prior_embeddings("dummy")[None, ...].expand(batch_size, -1, -1)
-    program_inputs_embeds = program_embeddings("dummy")[None, ...].expand(batch_size, -1, -1)
-    extra_program_attention_mask = torch.full((batch_size, ntokens), 1, device=device, dtype=dtype)
-    extra_program_label_ids = torch.full((batch_size, ntokens), -100, device=device, dtype=dtype)
+    # reused tensors
     pad_embeds = embed_tokens(torch.tensor(tokenizer.pad_token_id, device=device))
+    inputs_embeds = [embed_tokens(pair_input_ids) for pair_input_ids in input_ids]
 
     # losses
-    ce_losses = []
+    ce_loss = 0.0
+    segment_ce_losses = []
+    curr_segment_len = 0
+    n_total_ce_losses = n_pairs - 1
 
     # apply program norm to prior
-    if program_norm is not None:
-        prior_inputs_embeds = program_norm(prior_inputs_embeds)
+    prior_inputs_embeds = prior_embeddings("dummy")[None, ...].expand(batch_size, -1, -1)
+    with accelerator.autocast():
+        if program_norm is not None:
+            prior_inputs_embeds = program_norm(prior_inputs_embeds)
 
-    all_programs = [prior_inputs_embeds]
+    # previous program of each sample in batch
+    prev_programs = prior_inputs_embeds
 
-    for pair_i, (pair_input_ids, pair_attention_mask, pair_label_ids, pair_input_ids_lens) in enumerate(zip(input_ids, attention_mask, label_ids, input_ids_lens)):
-        pair_inputs_embeds = embed_tokens(pair_input_ids)
+    for pair_i, (pair_inputs_embeds, pair_attention_mask, pair_label_ids, pair_input_ids_lens) in enumerate(zip(inputs_embeds, attention_mask, label_ids, input_ids_lens)):
 
         # STEP 1: prepend the last predicted program for all pairs except the first
+        program_len = prev_programs.shape[1]
         pair_inputs_embeds = insert_based_on_sides(
             data=pair_inputs_embeds,
-            to_insert=all_programs[-1],
+            to_insert=prev_programs,
             lens=pair_input_ids_lens,
             insert_side="left",
             pad_side=pad_side,
@@ -180,7 +323,7 @@ def model_loss(
         )
         pair_attention_mask = insert_based_on_sides(
             data=pair_attention_mask,
-            to_insert=extra_program_attention_mask,
+            to_insert=torch.full((batch_size, program_len), 1, device=device, dtype=dtype),
             lens=pair_input_ids_lens,
             insert_side="left",
             pad_side=pad_side,
@@ -189,20 +332,21 @@ def model_loss(
         if pair_i > 0:
             pair_label_ids = insert_based_on_sides(
                 data=pair_label_ids,
-                to_insert=extra_program_label_ids,
+                to_insert=torch.full((batch_size, program_len), -100, device=device, dtype=dtype),
                 lens=pair_input_ids_lens,
                 insert_side="left",
                 pad_side=pad_side,
                 pad_id=-100,
             )
+
         # update lens to reflect the extra program
-        pair_input_ids_lens = [l + ntokens for l in pair_input_ids_lens]
+        pair_input_ids_lens = [l + program_len for l in pair_input_ids_lens]
 
         # STEP 2: append new program input to the right for all pairs except the last
-        if pair_i < max(num_pairs) - 1:
+        if pair_i < n_pairs - 1:
             pair_inputs_embeds = insert_based_on_sides(
                 data=pair_inputs_embeds,
-                to_insert=program_inputs_embeds,
+                to_insert=program_embeddings("dummy")[None, ...].expand(batch_size, -1, -1),
                 lens=pair_input_ids_lens,
                 insert_side="right",
                 pad_side=pad_side,
@@ -210,7 +354,7 @@ def model_loss(
             )
             pair_attention_mask = insert_based_on_sides(
                 data=pair_attention_mask,
-                to_insert=extra_program_attention_mask,
+                to_insert=torch.full((batch_size, ntokens), 1, device=device, dtype=dtype),
                 lens=pair_input_ids_lens,
                 insert_side="right",
                 pad_side=pad_side,
@@ -219,33 +363,36 @@ def model_loss(
             if pair_i > 0:
                 pair_label_ids = insert_based_on_sides(
                     data=pair_label_ids,
-                    to_insert=extra_program_label_ids,
+                    to_insert=torch.full((batch_size, ntokens), -100, device=device, dtype=dtype),
                     lens=pair_input_ids_lens,
                     insert_side="right",
                     pad_side=pad_side,
                     pad_id=-100,
                 )
 
-        # refine program (no output grid label for first pair)
+        # STEP 4: refine program (no output grid label for first pair)
         if pair_i == 0:
-            model_out = model(
-                inputs_embeds=pair_inputs_embeds,
-                attention_mask=pair_attention_mask,
-                output_hidden_states=True,
-            )
+            with accelerator.autocast():
+                model_out = model(
+                    inputs_embeds=pair_inputs_embeds,
+                    attention_mask=pair_attention_mask,
+                    output_hidden_states=True,
+                )
         else:
-            model_out = model(
-                inputs_embeds=pair_inputs_embeds,
-                attention_mask=pair_attention_mask,
-                labels=pair_label_ids,
-                output_hidden_states=True,
-            )
-            ce_losses.append(model_out.loss)
+            with accelerator.autocast():
+                model_out = model(
+                    inputs_embeds=pair_inputs_embeds,
+                    attention_mask=pair_attention_mask,
+                    labels=pair_label_ids,
+                    output_hidden_states=True,
+                )
+            segment_ce_losses.append(model_out.loss)
 
-        # projection then sample new program prediction for all pairs except the last
-        if pair_i < max(num_pairs) - 1:
-            hidden_states = model_out.hidden_states[-1] # [B, seq_len, hidden_dim]
-            new_program = extract_program_from_right_side(
+        # STEP 5: projection then get new program prediction for all pairs except the last
+        if pair_i < n_pairs - 1:
+            # extract program
+            hidden_states = model_out.hidden_states[-1] # (batch_size, seq_len, hidden_dim)
+            new_programs = extract_program_from_right_side(
                 data=hidden_states,
                 lens=pair_input_ids_lens,
                 ntokens=ntokens,
@@ -253,26 +400,29 @@ def model_loss(
             )
             # optionally use residual connection
             if not no_residual:
-                new_program += all_programs[-1]
+                new_programs += prev_programs
             # optionally apply norm
             if program_norm is not None:
-                new_program = program_norm(new_program)
-            all_programs.append(new_program)
+                with accelerator.autocast():
+                    new_programs = program_norm(new_programs)
+            # optionally concat program
+            if concat_programs:
+                new_programs = torch.cat([prev_programs, new_programs], dim=1)
+            # update new program
+            prev_programs = new_programs
 
-    assert len(all_programs) == max(num_pairs)
+        curr_segment_len += 1
+        if curr_segment_len % truncation_steps == 0 or pair_i == len(input_ids) - 1:
+            loss_to_backprop = sum(segment_ce_losses) / n_total_ce_losses
+            accelerator.backward(loss_to_backprop)
+            # detach, add together ce_loss over segments, reset segments
+            prev_programs = prev_programs.detach()
+            ce_loss += loss_to_backprop
+            segment_ce_losses = []
+            curr_segment_len = 0
 
-    # get the final programs to return for evaluation
-    # TODO: have an option to return program early to reduce compute
-    final_programs = [torch.tensor(0.0) for _ in range(batch_size)]
-    for batch_i, num_pair in enumerate(num_pairs):
-        final_programs[batch_i] = all_programs[num_pair - 1][batch_i]
-    final_programs = torch.stack(final_programs)
-
-    # TODO: this is not the correct loss estimate in evaluation due to extra pairs
-    # TODO: try not normalizing to bias more pairs more
-    ce_loss = sum(ce_losses) / len(ce_losses) # normalize over number of pairs to not bias
-    total_loss = ce_loss
-    return ce_loss, total_loss, final_programs # type: ignore
+    assert isinstance(ce_loss, torch.Tensor)
+    return ce_loss
 
 
 def insert_based_on_sides(
@@ -344,7 +494,7 @@ def gradient_search(
         iters: int,
         predicted_program: torch.Tensor,
         max_grad_norm: float,
-    ) -> Tuple[torch.Tensor, float]:
+    ) -> torch.Tensor:
     # note gradient checkpointing does not matter because we are freezing the model here
     # however, if we choose to tune the decoder as well, then gradient checkpointing might be desired
 
@@ -360,7 +510,7 @@ def gradient_search(
         debug_pad_len=eval_dataset.debug_pad_len,
         gen_pad_side=eval_dataset.gen_pad_side,
         no_dim=eval_dataset.no_dim,
-        separate_color_tokens=eval_dataset.separate_color_tokens,
+        no_separate_color_tokens=eval_dataset.no_separate_color_tokens,
     )
     if take_best:
         assert batch_size >= len(gs_dataset)
@@ -479,13 +629,11 @@ def gradient_search(
     if take_best:
         assert best_program is not None
         predicted_program = best_program
-    else:
-        best_loss = gs_loss.item() # type: ignore
 
     # shrink to match predicted program with batch size 1
     predicted_program = predicted_program[:1]
     # NOTE: we do not apply normalization here
-    return predicted_program, best_loss
+    return predicted_program
 
 
 ################################################
@@ -493,6 +641,7 @@ def gradient_search(
 ################################################
 @torch.no_grad()
 def evaluate(
+    desc: str,
     task_to_ttt_path: Optional[Dict[str, Tuple[str, str, str, Optional[str]]]],
     ttt_param_names: Optional[Set[str]],
     model: Union[nn.Module, DistributedDataParallel],
@@ -518,6 +667,7 @@ def evaluate(
     gs_take_best: bool,
     no_residual: bool,
     output_dir: str,
+    concat_programs: bool,
 ):
     model.eval()
     prior_embeddings.eval()
@@ -572,7 +722,6 @@ def evaluate(
     distributed_state = PartialState()
     task_id_and_text_list = []
     task_id_and_inverter_grids = []
-    ce_loss_list = []
     exact_acc_list = []
     valid_grid_list = []
     correct_grid_dim_list = []
@@ -592,9 +741,9 @@ def evaluate(
             task_names = [dataset.eval_tasks[idx].name for idx in process_data_idxs] # type: ignore
             task_ids = [task_name.split('-')[0] for task_name in task_names]
             n_batches = len(list(chunks_uniform_batch(task_ids, process_data_idxs, batch_size)))
-            data_idx_iterator = tqdm(chunks_uniform_batch(task_ids, process_data_idxs, batch_size), total=n_batches) # type: ignore
+            data_idx_iterator = tqdm(chunks_uniform_batch(task_ids, process_data_idxs, batch_size), total=n_batches, desc=desc) # type: ignore
         else:
-            data_idx_iterator = tqdm(chunks(process_data_idxs, batch_size), total=n_batches)  # type: ignore
+            data_idx_iterator = tqdm(chunks(process_data_idxs, batch_size), total=n_batches, desc=desc)  # type: ignore
 
         for batch_idxs in data_idx_iterator:
             bs = len(batch_idxs)
@@ -663,7 +812,6 @@ def evaluate(
                 inverters = batch["inverters"]
                 input_ids = [x.to(accelerator.device) for x in batch["input_ids"]]
                 attention_mask = [x.to(accelerator.device) for x in batch["attention_mask"]]
-                label_ids = [x.to(accelerator.device) for x in batch["label_ids"]]
                 gen_input_ids = batch["gen_input_ids"].to(accelerator.device)
                 gen_attention_mask = batch["gen_attention_mask"].to(accelerator.device)
                 out_token_length = batch["out_token_length"]
@@ -671,7 +819,6 @@ def evaluate(
                 input_ids_lens = batch["input_ids_lens"]
                 gen_input_ids_lens = batch["gen_input_ids_lens"]
                 num_pairs = batch["num_pairs"]
-                inverse_color_maps = batch["inverse_color_maps"]
 
                 # save first batch with complete tasks, rest might be incomplete
                 if batch_permute_i == 0:
@@ -680,7 +827,6 @@ def evaluate(
                         "inverters": copy.deepcopy(inverters),
                         "input_ids": copy.deepcopy(input_ids),
                         "attention_mask": copy.deepcopy(attention_mask),
-                        "label_ids": copy.deepcopy(label_ids),
                         "gen_input_ids": copy.deepcopy(gen_input_ids),
                         "gen_attention_mask": copy.deepcopy(gen_attention_mask),
                         "out_token_length": copy.deepcopy(out_token_length),
@@ -688,13 +834,10 @@ def evaluate(
                         "input_ids_lens": copy.deepcopy(input_ids_lens),
                         "gen_input_ids_lens": copy.deepcopy(gen_input_ids_lens),
                         "num_pairs": copy.deepcopy(num_pairs),
-                        "inverse_color_maps": copy.deepcopy(inverse_color_maps),
                     }
 
-                # compute ce loss
                 with accelerator.autocast():
-                    # encoder only evaluates decoder ce on the last program for efficiency
-                    ce_loss, _, predicted_program = model_loss(
+                    predicted_program = get_predicted_program(
                         # model
                         model=model,
                         prior_embeddings=prior_embeddings,
@@ -704,27 +847,24 @@ def evaluate(
                         # data
                         input_ids=input_ids,
                         attention_mask=attention_mask,
-                        label_ids=label_ids,
                         input_ids_lens=input_ids_lens,
                         num_pairs=num_pairs,
                         # others
                         ntokens=dataset.ntokens,
                         pad_side=dataset.train_pad_side,
                         no_residual=no_residual,
+                        concat_programs=concat_programs,
                     )
-
-                # ce loss should be from the original permutation, which is set to the first permuted batch
-                if batch_permute_i == 0:
-                    ce_loss_list += [ce_loss.item()] * bs
 
                 # accumulate program
                 if batch_permute_i == 0:
                     predicted_program_accum = predicted_program
                 else:
-                    assert isinstance(predicted_program, torch.Tensor)
-                    assert predicted_program.shape[1:] == predicted_program_accum.shape[1:] # type: ignore
+                    assert predicted_program_accum is not None
+                    assert len(batch_avail) == predicted_program_accum.shape[0]
+                    assert sum(batch_avail) == predicted_program.shape[0]
+                    avail_count = 0
                     for batch_i, avail in enumerate(batch_avail):
-                        avail_count = 0
                         if avail:
                             predicted_program_accum[batch_i] += predicted_program[avail_count] # type: ignore
                             avail_count += 1
@@ -736,7 +876,7 @@ def evaluate(
 
             # average program
             assert all(avail > 0 for avail in avail_accum)
-            assert len(predicted_program_accum) == len(avail_accum) == bs # type: ignore
+            assert predicted_program_accum.shape[0] == len(avail_accum) == bs # type: ignore
             for i, avail in enumerate(avail_accum):
                 predicted_program_accum[i] /= avail # type: ignore
             predicted_program = predicted_program_accum
@@ -747,7 +887,6 @@ def evaluate(
             inverters = first_batch["inverters"]
             input_ids = first_batch["input_ids"]
             attention_mask = first_batch["attention_mask"]
-            label_ids = first_batch["label_ids"]
             gen_input_ids = first_batch["gen_input_ids"]
             gen_attention_mask = first_batch["gen_attention_mask"]
             out_token_length = first_batch["out_token_length"]
@@ -755,12 +894,12 @@ def evaluate(
             input_ids_lens = first_batch["input_ids_lens"]
             gen_input_ids_lens = first_batch["gen_input_ids_lens"]
             num_pairs = first_batch["num_pairs"]
-            inverse_color_maps = first_batch["inverse_color_maps"]
 
             if gs_iters > 0:
                 with accelerator.no_sync(model):
                     assert isinstance(predicted_program, torch.Tensor)
-                    predicted_program, ce_loss = gradient_search(
+                    assert predicted_program.shape[0] == 1 # only support batch size 1
+                    predicted_program = gradient_search(
                         batch_idxs=batch_idxs,
                         eval_dataset=dataset,
                         batch_size=gs_batch_size,
@@ -776,12 +915,11 @@ def evaluate(
                         predicted_program=predicted_program,
                         max_grad_norm=gs_max_grad_norm,
                     )
-                    for i in range(1, bs + 1):
-                        ce_loss_list[-i] = ce_loss
 
             # compute accuracy
             with accelerator.autocast():
                 assert isinstance(predicted_program, torch.Tensor)
+                program_len = predicted_program.shape[1]
                 device = gen_input_ids.device
                 pad_embeds = embed_tokens(torch.tensor(tokenizer.pad_token_id, device=device))
                 gen_inputs_embeds = embed_tokens(gen_input_ids)
@@ -797,7 +935,7 @@ def evaluate(
                 if not no_flash_attn:
                     gen_inputs_embeds = gen_inputs_embeds.to(NBIT_TO_DTYPE[trainable_nbit])
                 # pad decoder attention masks
-                extra_program_attention_mask = torch.full((bs, dataset.ntokens), 1, device=device, dtype=gen_input_ids.dtype)
+                extra_program_attention_mask = torch.full((bs, program_len), 1, device=device, dtype=gen_input_ids.dtype)
                 gen_attention_mask = insert_based_on_sides(
                     data=gen_attention_mask,
                     to_insert=extra_program_attention_mask,
@@ -806,36 +944,38 @@ def evaluate(
                     pad_side=dataset.gen_pad_side,
                     pad_id=0,
                 )
-                # generate
+                # generate (limit generation length but also prevent information leak)
+                arbitrary_increase = 5
                 gen_tokens = module.generate(
                     inputs_embeds=gen_inputs_embeds,
                     attention_mask=gen_attention_mask,
-                    max_new_tokens=max(out_token_length), # arbitrary increase
+                    max_new_tokens=max(out_token_length) + arbitrary_increase,
                     num_return_sequences=1,
                     temperature=1.0,
                     top_p=1.0,
                     do_sample=False,
                     eos_token_id=[dataset.tokenizer.eos_token_id],
                 )
+                assert len(gen_tokens) == len(out_token_length)
+                for t, l in zip(gen_tokens, out_token_length):
+                    t[l + arbitrary_increase:] = dataset.tokenizer.pad_token_id
                 gen_texts = dataset.tokenizer.batch_decode(
                     gen_tokens,
                     skip_special_tokens=True,
-                    separate_color_tokens=dataset.separate_color_tokens
+                    no_separate_color_tokens=dataset.no_separate_color_tokens
                 )
 
             # Compare each gen_text with label_texts
             assert len(task_ids) == len(inverters) == bs, (len(task_ids), len(inverters), bs)
             assert len(gen_texts) == len(label_texts) == bs, (len(gen_texts), len(label_texts), bs)
-            assert len(inverse_color_maps) == bs
 
-            for task_id, inverter, gen_text, label_text, inverse_color_map in zip(task_ids, inverters, gen_texts, label_texts, inverse_color_maps):
+            for task_id, inverter, gen_text, label_text in zip(task_ids, inverters, gen_texts, label_texts):
                 # is valid grid
                 gen_grid, gen_is_grid = text_to_2d_grid(text=gen_text, no_dim=dataset.no_dim)
                 label_grid, label_is_grid = text_to_2d_grid(text=label_text, no_dim=dataset.no_dim)
                 assert label_is_grid
                 valid_grid_list.append(int(gen_is_grid))
                 if not gen_is_grid:
-                    # note gen text cannot be inverse color mapped in this case
                     task_id_and_text_list.append((task_id, gen_text, label_text))
                     exact_acc_list.append(0)
                     correct_grid_dim_list.append(0)
@@ -843,8 +983,7 @@ def evaluate(
                     continue
                 assert isinstance(gen_grid, list)
                 assert isinstance(label_grid, list)
-                # now we know it's a valid grid, apply inverse color mapping
-                gen_grid = inverse_color_map[np.array(gen_grid)].tolist()
+                # now we know it's a valid grid
                 gen_text = grid_2d_to_text(gen_grid, no_dim=dataset.no_dim)
                 task_id_and_text_list.append((task_id, gen_text, label_text))
                 gen_grid, label_grid = list2d_to_tuple(gen_grid), list2d_to_tuple(label_grid)
@@ -870,8 +1009,6 @@ def evaluate(
     # results
     task_id_and_text_list = gather_object(task_id_and_text_list)
     task_id_and_inverter_grids = gather_object(task_id_and_inverter_grids) # likely diff len from dataset
-    # losses
-    ce_loss_list = gather_object(ce_loss_list)
     # accuracies
     exact_acc_list = gather_object(exact_acc_list)
     valid_grid_list = gather_object(valid_grid_list)
@@ -881,7 +1018,6 @@ def evaluate(
     ttt_provided_list = gather_object(ttt_provided_list)
 
     assert len(task_id_and_text_list) == len(dataset), (len(task_id_and_text_list), len(dataset))
-    assert len(ce_loss_list) == len(dataset), (len(ce_loss_list), len(dataset))
     assert len(exact_acc_list) == len(dataset), (len(exact_acc_list), len(dataset))
     assert len(valid_grid_list) == len(dataset), (len(valid_grid_list), len(dataset))
     assert len(correct_grid_dim_list) == len(dataset), (len(correct_grid_dim_list), len(dataset))
@@ -890,7 +1026,6 @@ def evaluate(
 
     # average metrics
     # note these are all computed without accounting for skipped eval grids
-    avg_ce_loss = sum(ce_loss_list) / len(dataset)
     exact_acc = sum(exact_acc_list) / len(dataset)
     valid_grid = sum(valid_grid_list) / len(dataset)
     correct_grid_dim = sum(correct_grid_dim_list) / len(dataset)
@@ -938,9 +1073,7 @@ def evaluate(
     if cached_program_norm_weights_path is not None:
         os.remove(cached_program_norm_weights_path)
 
-    return avg_ce_loss, \
-        exact_acc, valid_grid, correct_grid_dim, token_acc, task_id_to_texts, \
-        votes, competition_sub_acc, competition_all_acc, ttt_provided
+    return exact_acc, valid_grid, correct_grid_dim, token_acc, task_id_to_texts, votes, competition_sub_acc, competition_all_acc, ttt_provided
 
 
 def list2d_to_tuple(l: List[List[int]]) -> Tuple[Tuple[int]]:
@@ -1058,15 +1191,6 @@ def text_to_2d_grid(text: str, no_dim: bool) -> Tuple[Optional[List[List[int]]],
         return None, False
 
 
-def compute_grad_norm2(parameters) -> float:
-    total_norm = 0.0
-    for p in parameters:
-        if p.grad is not None:
-            param_norm = p.grad.detach().norm(2).item() ** 2
-            total_norm += param_norm
-    return total_norm ** 0.5
-
-
 @torch.no_grad()
 def save_train_model(
         model: Union[nn.Module, DistributedDataParallel],
@@ -1075,7 +1199,7 @@ def save_train_model(
         program_norm: Optional[Union[LlamaRMSNorm, DistributedDataParallel]],
         output_dir: str,
         epoch: int,
-    ) -> Tuple[str, str, str, Optional[str]]:
+    ) -> Tuple[str, str, Optional[str], Optional[str]]:
 
     # model
     save_model_path = os.path.join(output_dir, f"lora_epoch_{epoch+1}")
@@ -1109,7 +1233,8 @@ def save_train_model(
         torch.save(program_norm_module, save_program_norm_path)
         logger.info(f"Saved program norm to {save_program_norm_path}")
 
-    return save_model_path, save_prior_embeddings_path, save_program_embeddings_path, save_program_norm_path
+    return save_model_path, save_prior_embeddings_path, save_program_embeddings_path, \
+        save_program_norm_path
 
 
 def print_trainable_parameters(model):
@@ -1140,6 +1265,7 @@ def initialize_program_embeddings(
         embeddings: torch.Tensor,
         accelerator: Accelerator,
         ntokens: int,
+        cov_scale: float,
     ) -> torch.Tensor:
 
     dtype = embeddings.dtype
@@ -1151,7 +1277,7 @@ def initialize_program_embeddings(
     covariance = centered_embeddings.T @ centered_embeddings / n_embeds
     eigenvalues = torch.linalg.eigvals(covariance)
     assert not ((covariance == covariance.T).all() and not torch.is_complex(eigenvalues) and (eigenvalues > 0).all())
-    distribution = torch.distributions.multivariate_normal.MultivariateNormal(mean_embeddings, covariance_matrix=1e-9 * covariance)
+    distribution = torch.distributions.multivariate_normal.MultivariateNormal(mean_embeddings, covariance_matrix=cov_scale * covariance)
     return distribution.sample(sample_shape=(ntokens,)).to(device).to(dtype) # type: ignore
 
 
@@ -1181,10 +1307,7 @@ def main():
     parser.add_argument("--no_lora", action="store_true")
     parser.add_argument("--no_residual", action="store_true")
     parser.add_argument("--no_normalize", action="store_true")
-
-    # Conditioning projection
-    parser.add_argument("--projection_type", type=str, choices=["none", "shared", "full"], default="none")
-    parser.add_argument("--identity_init", action="store_true")
+    parser.add_argument("--concat_programs", action="store_true")
 
     # Training
     parser.add_argument("--grad_accum_steps", type=int, default=8)
@@ -1194,8 +1317,8 @@ def main():
     parser.add_argument("--lr_program", type=float, default=2e-4)
     parser.add_argument("--lr_prior", type=float, default=2e-4)
     parser.add_argument("--lr_other", type=float, default=2e-4)
-    parser.add_argument("--weight_decay", type=float, default=0.0)
-    parser.add_argument("--num_epochs", type=int, default=30)
+    parser.add_argument("--weight_decay", type=float, default=0.01)
+    parser.add_argument("--num_epochs", type=int, default=40)
     parser.add_argument("--samples_per_epoch", type=int, default=20000)
     parser.add_argument("--eval_epochs", type=int, default=2)
     parser.add_argument("--max_grad_norm", default=1.0, type=float, help="Max gradient norm.")
@@ -1203,7 +1326,10 @@ def main():
     parser.add_argument("--dry_train_run", action="store_true")
     parser.add_argument("--dry_eval_run", action="store_true")
     parser.add_argument("--warmup_epoch", type=int, default=1)
-    parser.add_argument("--max_seq_len", type=int, default=100000000000)
+    parser.add_argument("--max_seq_len", type=int, default=8192)
+
+    # Evaluation
+    parser.add_argument("--extra_inference_pairs", type=int, default=0)
 
     # truncation
     parser.add_argument("--truncation_steps", type=int, default=100)
@@ -1214,9 +1340,9 @@ def main():
     parser.add_argument("--max_num_pair", type=int, default=8) # includes test pair
     parser.add_argument("--train_pad_side", type=str, choices=["left", "right"], default="right")
     parser.add_argument("--gen_pad_side", type=str, choices=["left", "right"], default="left")
-    parser.add_argument("--color_equiv", action='store_true')
+    parser.add_argument("--curriculum_iters", type=int, default=-1) # grow from min_num_pair to max_num_pair
     parser.add_argument("--no_dim", action='store_true')
-    parser.add_argument("--separate_color_tokens", action='store_true')
+    parser.add_argument("--no_separate_color_tokens", action='store_true')
     parser.add_argument("--no_color_permute", action="store_true")
     parser.add_argument("--no_pair_permute", action="store_true")
     parser.add_argument("--no_d8", action="store_true")
@@ -1286,7 +1412,7 @@ def main():
     parser.add_argument("--no_rslora", action='store_true')
 
     # Virtual tokens approach
-    parser.add_argument("--ntokens", type=int, default=32)
+    parser.add_argument("--ntokens", type=int, default=16)
     parser.add_argument("--seed", type=int, default=0)
     args = parser.parse_args()
 
@@ -1304,6 +1430,9 @@ def main():
     assert args.min_num_pair >= 3
     if args.train_gs_iters > 0 or args.eval_gs_iters > 0:
         assert args.eval_batch_size == 1
+    if args.concat_programs:
+        assert args.no_residual # cannot add programs
+        assert args.eval_batch_size == 1
 
     if args.no_lora:
         args.untrainable_nbit = args.trainable_nbit # untrainable become trainable
@@ -1316,6 +1445,7 @@ def main():
     init_process_process_kwargs.timeout = timedelta(seconds=28800)
     os.environ["WANDB_API_KEY"]="faf21d9ff65ee150697c7e96f070616f6b662134"
     accelerator = Accelerator(
+        gradient_accumulation_steps=args.grad_accum_steps,
         mixed_precision="bf16",
         project_config=project_config,
         log_with="wandb" if args.wandb else None,
@@ -1398,6 +1528,7 @@ def main():
             base_model.model.embed_tokens.weight.data.detach().clone(),
             accelerator,
             ntokens=args.ntokens,
+            cov_scale=1e-9,
         ),
     )
     program_embeddings = ProgramEmbeddings(
@@ -1405,13 +1536,14 @@ def main():
             base_model.model.embed_tokens.weight.data.detach().clone(),
             accelerator,
             ntokens=args.ntokens,
+            cov_scale=1e-9,
         ),
     )
     logger.info("Prior & Program embeddings initialized.")
 
     # only keep these tokens, resize model embedding (eos == pad)
     # we do not include program tokens here, those are added later during training and inference
-    if args.separate_color_tokens:
+    if not args.no_separate_color_tokens:
         keep_tokens = [str(i) for i in range(31)]
         if args.no_dim:
             keep_tokens = []
@@ -1430,11 +1562,12 @@ def main():
     assert len(set(keep_token_ids)) == len(keep_token_ids)
 
     color_embeddings = None
-    if args.separate_color_tokens:
+    if not args.no_separate_color_tokens:
         color_embeddings = initialize_program_embeddings(
             base_model.model.embed_tokens.weight.data.detach().clone(),
             accelerator,
             ntokens=10,
+            cov_scale=1.0,
         )
 
     # this breaks embedding tying, but whatever
@@ -1448,19 +1581,19 @@ def main():
         base_model.lm_head.out_features = len(keep_token_ids)
         base_model.config.tie_word_embeddings = False
 
-        if args.separate_color_tokens:
+        if not args.no_separate_color_tokens:
             assert isinstance(color_embeddings, torch.Tensor)
             base_model.model.embed_tokens.weight = nn.Parameter(torch.cat([color_embeddings, base_model.model.embed_tokens.weight]))
             base_model.model.embed_tokens.num_embeddings += 10
             base_model.lm_head.weight = nn.Parameter(torch.cat([color_embeddings, base_model.lm_head.weight]))
             base_model.lm_head.out_features += 10
 
-    if args.separate_color_tokens:
+    if not args.no_separate_color_tokens:
         keep_tokens = [f"c{c}" for c in range(10)] + keep_tokens
 
     # update configs
     assert base_model.config.vocab_size and base_model.config.bos_token_id and base_model.config.eos_token_id
-    base_model.config.vocab_size = len(keep_token_ids) + (10 if args.separate_color_tokens else 0)
+    base_model.config.vocab_size = len(keep_token_ids) + (0 if args.no_separate_color_tokens else 10)
     base_model.config.bos_token_id = keep_tokens.index(tokenizer.bos_token) # type: ignore
     base_model.config.eos_token_id = keep_tokens.index(tokenizer.eos_token) # type: ignore
 
@@ -1538,6 +1671,7 @@ def main():
         logger.info(f'program norm size {round(get_memory_footprint(program_norm) / 1024 ** 3, 2)}GB')
 
     # Build training dataset
+    global_batch_size = args.train_batch_size * args.grad_accum_steps * accelerator.num_processes
     train_dataset = TrainDataset(
         train_data_dir=args.train_data_dir,
         eval_train_dir=args.eval_train_dir,
@@ -1565,9 +1699,10 @@ def main():
         only_train_original=args.only_train_original,
         debug_len=args.debug_len,
         num_workers=args.num_workers,
-        color_equiv=args.color_equiv,
+        curriculum_iters=args.curriculum_iters,
+        global_batch_size=global_batch_size,
         no_dim=args.no_dim,
-        separate_color_tokens=args.separate_color_tokens,
+        no_separate_color_tokens=args.no_separate_color_tokens,
         max_seq_len=args.max_seq_len,
     )
     train_collate_fn = partial(collate_fn_train, dataset=train_dataset)
@@ -1624,7 +1759,7 @@ def main():
     logger.info(f"Optimizer with {len(other_params)} other-params lr={args.lr_other}")
 
     # LR schedule
-    steps_per_epoch = args.samples_per_epoch // (args.train_batch_size * args.grad_accum_steps * accelerator.num_processes)
+    steps_per_epoch = args.samples_per_epoch // global_batch_size
     num_training_steps = steps_per_epoch * args.num_epochs
     if args.lr_scheduler == 'cosine':
         lr_scheduler = get_cosine_schedule_with_warmup(
@@ -1683,9 +1818,9 @@ def main():
         train_pad_side=args.train_pad_side,
         gen_pad_side=args.gen_pad_side,
         debug_len=args.debug_len,
-        color_equiv=args.color_equiv,
         no_dim=args.no_dim,
-        separate_color_tokens=args.separate_color_tokens,
+        no_separate_color_tokens=args.no_separate_color_tokens,
+        extra_inference_pairs=args.extra_inference_pairs,
     )
     eval_eval_dataset = EvalDataset(
         eval_dir=args.eval_eval_dir,
@@ -1703,9 +1838,9 @@ def main():
         train_pad_side=args.train_pad_side,
         gen_pad_side=args.gen_pad_side,
         debug_len=args.debug_len,
-        color_equiv=args.color_equiv,
         no_dim=args.no_dim,
-        separate_color_tokens=args.separate_color_tokens,
+        no_separate_color_tokens=args.no_separate_color_tokens,
+        extra_inference_pairs=args.extra_inference_pairs,
     )
     eval_collate_fn = partial(collate_fn_eval, dataset=eval_train_dataset) # only use tokenizer, padding info
     if args.debug_len > 0:
@@ -1723,7 +1858,7 @@ def main():
     global_step = 0
     progress_bar = tqdm(
         range(num_training_steps),
-        desc="Steps",
+        desc="train",
         # Only show the progress bar once on each machine.
         disable=not accelerator.is_local_main_process,
     )
@@ -1741,170 +1876,55 @@ def main():
         if program_norm is not None:
             program_norm.train()
 
-        ce_loss_accum = 0.0
+        total_loss_accum = 0.0
         grad_norm_accum = 0.0
 
-        for batch_i, batch_data in enumerate(train_loader):
-            # MODEL FOWARD START
+        for batch_data in train_loader:
             input_ids = [x.to(accelerator.device) for x in batch_data["input_ids"]]
             attention_mask = [x.to(accelerator.device) for x in batch_data["attention_mask"]]
             label_ids = [x.to(accelerator.device) for x in batch_data["label_ids"]]
             input_ids_lens = batch_data["input_ids_lens"]
             num_pairs = batch_data["num_pairs"]
-            assert len(set(num_pairs)) == 1
-            num_pairs = max(num_pairs)
 
-            with accelerator.autocast():
+            with accelerator.accumulate(model, prior_embeddings, program_embeddings, program_norm):
+                total_loss = model_loss(
+                    accelerator=accelerator,
+                    truncation_steps=args.truncation_steps,
+                    # model
+                    model=model,
+                    prior_embeddings=prior_embeddings,
+                    program_embeddings=program_embeddings,
+                    program_norm=program_norm,
+                    tokenizer=tokenizer,
+                    # data
+                    input_ids=input_ids,
+                    attention_mask=attention_mask,
+                    label_ids=label_ids,
+                    input_ids_lens=input_ids_lens,
+                    num_pairs=num_pairs,
+                    # others
+                    ntokens=args.ntokens,
+                    pad_side=args.train_pad_side,
+                    no_residual=args.no_residual,
+                    concat_programs=args.concat_programs,
+                )
 
-                module = model.module if isinstance(model, DistributedDataParallel) else model
-                embed_tokens = module.model.embed_tokens if hasattr(module.model, "embed_tokens") else module.model.model.embed_tokens
-                assert num_pairs >= 3 # at LEAST 2 train and 1 test
-                assert num_pairs == len(input_ids)
-                assert len(set(len(ids) for ids in input_ids)) == 1 # batch size uniform across pair_idx
-                batch_size = len(input_ids[0])
-                dtype, device = input_ids[0].dtype, input_ids[0].device
+                total_loss_accum += total_loss.item() / args.grad_accum_steps
 
-                # forward
-                program_inputs_embeds = program_embeddings("dummy")[None, ...].expand(batch_size, -1, -1)
-                extra_program_attention_mask = torch.full((batch_size, args.ntokens), 1, device=device, dtype=dtype)
-                extra_program_label_ids = torch.full((batch_size, args.ntokens), -100, device=device, dtype=dtype)
-                pad_embeds = embed_tokens(torch.tensor(tokenizer.pad_token_id, device=device))
-
-                ce_loss = 0.0
-                segment_ce_losses = []
-                curr_segment_len = 0
-                n_total_ce_losses = num_pairs - 1
-
-                # apply program norm to prior and set as previous program
-                prior_inputs_embeds = prior_embeddings("dummy")[None, ...].expand(batch_size, -1, -1)
-                if program_norm is not None:
-                    prior_inputs_embeds = program_norm(prior_inputs_embeds)
-                prev_program = prior_inputs_embeds
-
-                for pair_i, (pair_input_ids, pair_attention_mask, pair_label_ids, pair_input_ids_lens) in enumerate(zip(input_ids, attention_mask, label_ids, input_ids_lens)):
-                    pair_inputs_embeds = embed_tokens(pair_input_ids)
-
-                    # STEP 1: prepend the last predicted program for all pairs except the first
-                    pair_inputs_embeds = insert_based_on_sides(
-                        data=pair_inputs_embeds,
-                        to_insert=prev_program,
-                        lens=pair_input_ids_lens,
-                        insert_side="left",
-                        pad_side=args.train_pad_side,
-                        pad_id=pad_embeds,
-                    )
-                    pair_attention_mask = insert_based_on_sides(
-                        data=pair_attention_mask,
-                        to_insert=extra_program_attention_mask,
-                        lens=pair_input_ids_lens,
-                        insert_side="left",
-                        pad_side=args.train_pad_side,
-                        pad_id=0,
-                    )
-                    if pair_i > 0:
-                        pair_label_ids = insert_based_on_sides(
-                            data=pair_label_ids,
-                            to_insert=extra_program_label_ids,
-                            lens=pair_input_ids_lens,
-                            insert_side="left",
-                            pad_side=args.train_pad_side,
-                            pad_id=-100,
-                        )
-                    # update lens to reflect the extra program
-                    pair_input_ids_lens = [l + args.ntokens for l in pair_input_ids_lens]
-
-                    # STEP 2: append new program input to the right for all pairs except the last
-                    if pair_i < num_pairs - 1:
-                        pair_inputs_embeds = insert_based_on_sides(
-                            data=pair_inputs_embeds,
-                            to_insert=program_inputs_embeds,
-                            lens=pair_input_ids_lens,
-                            insert_side="right",
-                            pad_side=args.train_pad_side,
-                            pad_id=pad_embeds,
-                        )
-                        pair_attention_mask = insert_based_on_sides(
-                            data=pair_attention_mask,
-                            to_insert=extra_program_attention_mask,
-                            lens=pair_input_ids_lens,
-                            insert_side="right",
-                            pad_side=args.train_pad_side,
-                            pad_id=0,
-                        )
-                        if pair_i > 0:
-                            pair_label_ids = insert_based_on_sides(
-                                data=pair_label_ids,
-                                to_insert=extra_program_label_ids,
-                                lens=pair_input_ids_lens,
-                                insert_side="right",
-                                pad_side=args.train_pad_side,
-                                pad_id=-100,
-                            )
-
-                    # refine program (no output grid label for first pair)
-                    if pair_i == 0:
-                        model_out = model(
-                            inputs_embeds=pair_inputs_embeds,
-                            attention_mask=pair_attention_mask,
-                            output_hidden_states=True,
-                        )
-                    else:
-                        model_out = model(
-                            inputs_embeds=pair_inputs_embeds,
-                            attention_mask=pair_attention_mask,
-                            labels=pair_label_ids,
-                            output_hidden_states=True,
-                        )
-                        segment_ce_losses.append(model_out.loss)
-
-                    # projection then sample new program prediction for all pairs except the last
-                    if pair_i < num_pairs - 1:
-                        hidden_states = model_out.hidden_states[-1] # [B, seq_len, hidden_dim]
-                        new_program = extract_program_from_right_side(
-                            data=hidden_states,
-                            lens=pair_input_ids_lens,
-                            ntokens=args.ntokens,
-                            pad_side=args.train_pad_side,
-                        )
-                        # optionally use residual connection
-                        if not args.no_residual:
-                            new_program += prev_program
-                        # optionally apply norm
-                        if program_norm is not None:
-                            new_program = program_norm(new_program)
-                        # update previous program
-                        prev_program = new_program
-
-                    curr_segment_len += 1
-                    if curr_segment_len % args.truncation_steps == 0 or pair_i == len(input_ids) - 1:
-                        loss_to_backprop = sum(segment_ce_losses) / n_total_ce_losses / args.grad_accum_steps
-                        loss_to_backprop.backward()
-                        # detach, add together ce_loss over segments, reset segments
-                        prev_program = prev_program.detach()
-                        ce_loss += loss_to_backprop
-                        segment_ce_losses = []
-                        curr_segment_len = 0
-
-            # MODEL FOWARD END
-
-            avg_ce_loss = accelerator.gather(ce_loss.repeat(args.train_batch_size)).mean() # type: ignore
-            ce_loss_accum += avg_ce_loss.item()
-
-            if (batch_i + 1) % args.grad_accum_steps != 0:
-                lr_scheduler.step()
-            else:
-                grad_norm_accum += accelerator.clip_grad_norm_(all_params, args.max_grad_norm).item() # type: ignore
+                if accelerator.sync_gradients:
+                    grad_norm_accum += accelerator.clip_grad_norm_(all_params, args.max_grad_norm).item() # type: ignore
 
                 optimizer.step()
                 lr_scheduler.step()
                 optimizer.zero_grad()
 
+            if accelerator.sync_gradients:
                 global_step += 1
                 if global_step % args.log_every == 0:
                     progress_bar.update(args.log_every)
                     try:
                         accelerator.log({
-                            "train/ce_loss": ce_loss_accum,
+                            "train/total_loss": total_loss_accum,
                             "train/grad_norm": grad_norm_accum,
                             "train/lr_embedding": lr_scheduler.get_last_lr()[0],
                             "train/lr_prior": lr_scheduler.get_last_lr()[1],
@@ -1914,14 +1934,14 @@ def main():
                     except:
                         logger.info(f"wandb failed on process {accelerator.process_index}, skipping the error")
 
-                ce_loss_accum = 0.0
+                total_loss_accum = 0.0
                 grad_norm_accum = 0.0
 
         # Evaluate every N epochs
         if (epoch + 1) % args.eval_epochs == 0:
-            train_ce_loss, \
-                train_exact_acc, train_valid_grid, train_correct_grid_dim, train_token_acc, train_texts, \
+            train_exact_acc, train_valid_grid, train_correct_grid_dim, train_token_acc, train_texts, \
                 train_votes, train_competition_sub_acc, train_competition_all_acc, _ = evaluate(
+                desc="eval_train",
                 task_to_ttt_path=None,
                 ttt_param_names=None,
                 model=model,
@@ -1947,10 +1967,11 @@ def main():
                 gs_take_best=args.train_gs_take_best,
                 no_residual=args.no_residual,
                 output_dir=args.output_dir,
+                concat_programs=args.concat_programs,
             )
-            eval_ce_loss, \
-                eval_exact_acc, eval_valid_grid, eval_correct_grid_dim, eval_token_acc, eval_texts, \
+            eval_exact_acc, eval_valid_grid, eval_correct_grid_dim, eval_token_acc, eval_texts, \
                 eval_votes, eval_competition_sub_acc, eval_competition_all_acc, _ = evaluate(
+                desc="eval_eval",
                 task_to_ttt_path=None,
                 ttt_param_names=None,
                 model=model,
@@ -1976,18 +1997,17 @@ def main():
                 gs_take_best=args.eval_gs_take_best,
                 no_residual=args.no_residual,
                 output_dir=args.output_dir,
+                concat_programs=args.concat_programs,
             )
 
             if accelerator.is_main_process:
                 eval_metric_dict = {
-                    "eval/train_ce_loss": train_ce_loss,
                     "eval/train_exact_acc": train_exact_acc,
                     "eval/train_valid_grid": train_valid_grid,
                     "eval/train_correct_grid_dim": train_correct_grid_dim,
                     "eval/train_token_acc": train_token_acc,
                     "eval/train_competition_sub_acc": train_competition_sub_acc,
                     "eval/train_competition_all_acc": train_competition_all_acc,
-                    "eval/eval_ce_loss": eval_ce_loss,
                     "eval/eval_exact_acc": eval_exact_acc,
                     "eval/eval_valid_grid": eval_valid_grid,
                     "eval/eval_correct_grid_dim": eval_correct_grid_dim,
@@ -2029,8 +2049,10 @@ def main():
 
                 if do_save_model:
                     if (not args.save_all_models) and (last_save_model_path is not None):
-                        save_model_path, save_prior_embeddings_path, save_program_embeddings_path, save_program_norm_path = last_save_model_path
-                        rm_cmd = f"rm -rf {save_model_path} {save_prior_embeddings_path} {save_program_embeddings_path}"
+                        save_model_path, save_prior_embeddings_path, save_program_embeddings_path, \
+                            save_program_norm_path = last_save_model_path
+                        rm_cmd = f"rm -rf {save_model_path} {save_prior_embeddings_path}"
+                        rm_cmd += f" {save_program_embeddings_path}"
                         if save_program_norm_path is not None:
                             rm_cmd += f" {save_program_norm_path}"
                         os.system(rm_cmd)

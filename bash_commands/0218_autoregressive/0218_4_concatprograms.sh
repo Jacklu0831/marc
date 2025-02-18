@@ -3,7 +3,7 @@
 # ar concatprogram
 accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder_autoregressive/train.py \
     --lr_scheduler constant \
-    --tag 0213_ar_concatprogram \
+    --tag 0218_ar_concatprogram \
     --concat_programs \
     --no_residual \
     --eval_batch_size 1 \
@@ -12,12 +12,12 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
 # ar concatprogram nonorm
 accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder_autoregressive/train.py \
     --lr_scheduler constant \
-    --tag 0213_ar_concatprogram_nonorm \
+    --tag 0218_ar_concatprogram_nonorm \
     --concat_programs \
     --no_residual \
     --eval_batch_size 1 \
     --no_normalize \
     --wandb
 
-# Submitted batch job 57364479
-# Submitted batch job 57364480
+# Submitted batch job 57364994
+# Submitted batch job 57364995

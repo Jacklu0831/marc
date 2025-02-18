@@ -41,9 +41,9 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
     --no_separate_color_tokens \
     --wandb
 
-# Submitted batch job 57364427
-# Submitted batch job 57364428
-# Submitted batch job 57364429
-# Submitted batch job 57364430
-# Submitted batch job 57364431
-# Submitted batch job 57364432
+# Submitted batch job 57365018
+# Submitted batch job 57365019
+# Submitted batch job 57365020
+# Submitted batch job 57365021
+# Submitted batch job 57365022
+# Submitted batch job 57365023

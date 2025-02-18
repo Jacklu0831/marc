@@ -6,4 +6,4 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
     --tag 0218_noprogram_base \
     --wandb
 
-# Submitted batch job 57364395
+# Submitted batch job 57365016

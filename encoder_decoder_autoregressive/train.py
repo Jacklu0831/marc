@@ -2435,31 +2435,20 @@ def main():
                         train_codebook_only=train_codebook_only,
                     )
 
-                avg_ce_loss = accelerator.gather(ce_loss.repeat(args.train_batch_size)).mean() # type: ignore
-                avg_kl_loss = accelerator.gather(kl_loss.repeat(args.train_batch_size)).mean() # type: ignore
-                avg_codebook_loss = accelerator.gather(codebook_loss.repeat(args.train_batch_size)).mean() # type: ignore
-                avg_commitment_loss = accelerator.gather(commitment_loss.repeat(args.train_batch_size)).mean() # type: ignore
-                avg_perplexity = accelerator.gather(perplexity.repeat(args.train_batch_size)).mean() # type: ignore
-                avg_consistency_loss = accelerator.gather(consistency_loss.repeat(args.train_batch_size)).mean() # type: ignore
-                avg_total_loss = accelerator.gather(total_loss.repeat(args.train_batch_size)).mean() # type: ignore
-
-                ce_loss_accum += avg_ce_loss.item() / args.grad_accum_steps
-                kl_loss_accum += avg_kl_loss.item() / args.grad_accum_steps
-                codebook_loss_accum += avg_codebook_loss.item() / args.grad_accum_steps
-                commitment_loss_accum += avg_commitment_loss.item() / args.grad_accum_steps
-                perplexity_accum += avg_perplexity.item() / args.grad_accum_steps
-                consistency_loss_accum += avg_consistency_loss.item() / args.grad_accum_steps
-                total_loss_accum += avg_total_loss.item() / args.grad_accum_steps
-
+                # only log one process
+                ce_loss_accum += ce_loss.item() / args.grad_accum_steps
+                kl_loss_accum += kl_loss.item() / args.grad_accum_steps
+                codebook_loss_accum += codebook_loss.item() / args.grad_accum_steps
+                commitment_loss_accum += commitment_loss.item() / args.grad_accum_steps
+                perplexity_accum += perplexity.item() / args.grad_accum_steps
+                consistency_loss_accum += consistency_loss.item() / args.grad_accum_steps
+                total_loss_accum += total_loss.item() / args.grad_accum_steps
                 for pair_i, pair_ce_loss in enumerate(log_ce_losses):
-                    avg_pair_ce_loss = accelerator.gather(pair_ce_loss.repeat(args.train_batch_size)).mean() # type: ignore
-                    ce_losses_accum[pair_i] += avg_pair_ce_loss.item() / args.grad_accum_steps
+                    ce_losses_accum[pair_i] += pair_ce_loss.item() / args.grad_accum_steps
 
                 accelerator.backward(total_loss)
-
                 if accelerator.sync_gradients:
                     grad_norm_accum += accelerator.clip_grad_norm_(all_params, args.max_grad_norm).item() # type: ignore
-
                 optimizer.step()
                 lr_scheduler.step()
                 optimizer.zero_grad()

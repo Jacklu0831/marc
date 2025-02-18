@@ -6,7 +6,7 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
     --train_batch_size 1 \
     --samples_per_epoch 1
 
-# overfit 1
+# overfit1
 accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder_autoregressive_0217_temp/train.py \
     --tag test \
     --train_data_dir /scratch/yl11330/re-arc/train_data_debug_overfit/tasks \
