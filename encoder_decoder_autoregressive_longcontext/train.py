@@ -1252,7 +1252,7 @@ def main():
     parser.add_argument("--grad_accum_steps", type=int, default=4)
     parser.add_argument("--train_batch_size", type=int, default=2)
     parser.add_argument("--eval_batch_size", type=int, default=2)
-    parser.add_argument("--lr_embedding", type=float, default=1e-4)
+    parser.add_argument("--lr_embedding", type=float, default=1e-5)
     parser.add_argument("--lr_program", type=float, default=1e-4)
     parser.add_argument("--lr_prior", type=float, default=1e-4)
     parser.add_argument("--lr_other", type=float, default=1e-4)

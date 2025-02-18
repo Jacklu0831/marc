@@ -25,6 +25,7 @@ from peft import PeftModel # type: ignore
 from data_utils import EvalDataset, collate_fn_eval, ARCTokenizer
 from train import (
     ProgramEmbeddings,
+    Quantizer,
     VaeProjection,
     LambdaScheduler,
     set_up_main_process_logger,
@@ -70,6 +71,13 @@ def main():
     parser.add_argument("--trainable_nbit", type=float, choices=[16, 32], default=16)
     parser.add_argument("--residual", action="store_true")
     parser.add_argument("--normalize", action="store_true")
+
+    # Self-consistency
+    parser.add_argument("--consistency_type", type=str, choices=["none", "all", "only_first", "include_last"], default="none")
+
+    # vqvae
+    parser.add_argument("--codebook_size", type=int, default=-1)
+    parser.add_argument("--discrete_prior", action="store_true")
 
     # vae
     parser.add_argument("--no_sample", action="store_true")
@@ -270,6 +278,7 @@ def main():
     prior_embeddings_weight_path = os.path.join(weight_dir, f"prior_embeddings_epoch_{args.weight_epoch}.pt")
     program_embeddings_weight_path = os.path.join(weight_dir, f"program_embeddings_epoch_{args.weight_epoch}.pt")
     vae_projection_weight_path = os.path.join(weight_dir, f"vae_projection_epoch_{args.weight_epoch}.pt")
+    quantizer_weight_path = os.path.join(weight_dir, f"quantizer_epoch_{args.weight_epoch}.pt")
     program_norm_weight_path = os.path.join(weight_dir, f"program_norm_epoch_{args.weight_epoch}.pt")
 
     model = PeftModel.from_pretrained(base_model, model_weight_path)
@@ -288,6 +297,13 @@ def main():
         weights_only=False,
         map_location=accelerator.device
     )
+    quantizer: Optional[Quantizer] = None
+    if args.codebook_size > 0:
+        quantizer = torch.load(
+            quantizer_weight_path,
+            weights_only=False,
+            map_location=accelerator.device
+        )
     program_norm: Optional[LlamaRMSNorm] = None
     if args.normalize:
         program_norm = torch.load(
@@ -307,6 +323,9 @@ def main():
         param.data = param.data.to(NBIT_TO_DTYPE[args.trainable_nbit])
     for param in vae_projection.parameters():
         param.data = param.data.to(NBIT_TO_DTYPE[args.trainable_nbit])
+    if quantizer is not None:
+        for param in quantizer.parameters():
+            param.data = param.data.to(NBIT_TO_DTYPE[args.trainable_nbit])
     if program_norm is not None:
         for param in program_norm.parameters():
             param.data = param.data.to(torch.float32)
@@ -318,6 +337,7 @@ def main():
     prior_embeddings_ttt_path = None
     program_embeddings_ttt_path = None
     vae_projection_ttt_path = None
+    quantizer_ttt_path = None
     program_norm_ttt_path = None
     if args.ttt_weight_dir != None:
         ttt_weight_dir = os.path.join(args.ttt_weight_root_dir, args.ttt_weight_dir)
@@ -333,6 +353,9 @@ def main():
                 assert os.path.exists(program_embeddings_ttt_path), program_embeddings_ttt_path
                 vae_projection_ttt_path = os.path.join(task_weight_dir, f"vae_projection_epoch_{args.ttt_weight_epoch}.pt")
                 assert os.path.exists(vae_projection_ttt_path), vae_projection_ttt_path
+                if args.codebook_size > 0:
+                    quantizer_ttt_path = os.path.join(task_weight_dir, f"quantizer_epoch_{args.ttt_weight_epoch}.pt")
+                    assert os.path.exists(quantizer_ttt_path), quantizer_ttt_path
                 if args.normalize:
                     program_norm_ttt_path = os.path.join(task_weight_dir, f"program_norm_epoch_{args.ttt_weight_epoch}.pt")
                     assert os.path.exists(program_norm_ttt_path), program_norm_ttt_path
@@ -341,6 +364,7 @@ def main():
                     prior_embeddings_ttt_path,
                     program_embeddings_ttt_path,
                     vae_projection_ttt_path,
+                    quantizer_ttt_path,
                     program_norm_ttt_path,
                 )
         logger.info(f"found {len(task_to_ttt_path)} ttt task loras")
@@ -357,12 +381,14 @@ def main():
         prior_embeddings,
         program_embeddings,
         vae_projection,
+        quantizer,
         program_norm,
     ) = accelerator.prepare(
         model,
         prior_embeddings,
         program_embeddings,
         vae_projection,
+        quantizer,
         program_norm,
     )
 
@@ -391,9 +417,11 @@ def main():
 
     # lambda schedulers
     kl_loss_lambda_scheduler = LambdaScheduler(loss_lambda=0.0, linear=False, total_steps=0)
+    commitment_loss_lambda_scheduler = LambdaScheduler(loss_lambda=0.0, linear=False, total_steps=0)
+    consistency_loss_lambda_scheduler = LambdaScheduler(loss_lambda=0.0, linear=False, total_steps=0)
 
     # evaluate
-    ce_loss, kl_loss, \
+    ce_loss, kl_loss, codebook_loss, commitment_loss, perplexity, consistency_loss, \
         exact_acc, valid_grid, correct_grid_dim, token_acc, texts, \
         votes, competition_sub_acc, competition_all_acc, ttt_provided = evaluate(
         task_to_ttt_path=task_to_ttt_path,
@@ -402,6 +430,7 @@ def main():
         prior_embeddings=prior_embeddings,
         program_embeddings=program_embeddings,
         vae_projection=vae_projection,
+        quantizer=quantizer,
         program_norm=program_norm,
         tokenizer=tokenizer,
         dataset=dataset,
@@ -412,6 +441,8 @@ def main():
         no_flash_attn=args.no_flash_attn,
         vae_no_sample=args.no_sample,
         kl_loss_lambda_scheduler=kl_loss_lambda_scheduler,
+        commitment_loss_lambda_scheduler=commitment_loss_lambda_scheduler,
+        consistency_loss_lambda_scheduler=consistency_loss_lambda_scheduler,
         global_step=0,
         dry_eval_run=False,
         gs_iters=args.gs_iters,
@@ -424,7 +455,9 @@ def main():
         gs_lr_scheduler=args.gs_lr_scheduler,
         gs_take_best=args.gs_take_best,
         residual=args.residual,
+        discrete_prior=args.discrete_prior,
         output_dir=args.output_dir,
+        consistency_type=args.consistency_type,
     )
 
     if accelerator.is_main_process:
@@ -432,6 +465,10 @@ def main():
         metric_dict = {
             "eval/ce_loss": ce_loss,
             "eval/kl_loss": kl_loss,
+            "eval/codebook_loss": codebook_loss,
+            "eval/commitment_loss": commitment_loss,
+            "eval/perplexity": perplexity,
+            "eval/consistency_loss": consistency_loss,
             "eval/exact_acc": exact_acc,
             "eval/valid_grid": valid_grid,
             "eval/correct_grid_dim": correct_grid_dim,

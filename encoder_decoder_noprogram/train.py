@@ -226,12 +226,13 @@ def evaluate(
                 ce_loss_list += [ce_loss.item()] * bs
 
             # compute accuracy
+            arbitrary_increase = 5
             with accelerator.autocast():
                 # generate
                 gen_tokens = module.generate(
                     input_ids=gen_input_ids,
                     attention_mask=gen_attention_mask,
-                    max_new_tokens=max(out_token_length), # arbitrary increase
+                    max_new_tokens=max(out_token_length) + arbitrary_increase, # arbitrary increase
                     num_return_sequences=1,
                     temperature=1.0,
                     top_p=1.0,
@@ -522,7 +523,7 @@ def main():
     parser.add_argument("--lr_embedding", type=float, default=1e-5)
     parser.add_argument("--lr_other", type=float, default=1e-4)
     parser.add_argument("--weight_decay", type=float, default=0.0)
-    parser.add_argument("--num_epochs", type=int, default=30)
+    parser.add_argument("--num_epochs", type=int, default=40)
     parser.add_argument("--samples_per_epoch", type=int, default=20000)
     parser.add_argument("--eval_epochs", type=int, default=2)
     parser.add_argument("--max_grad_norm", default=1.0, type=float, help="Max gradient norm.")

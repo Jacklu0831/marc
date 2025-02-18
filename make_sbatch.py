@@ -79,7 +79,7 @@ for bash_file in args.bash_files:
     assert len(job_lines) == len(set(job_lines)), 'duplicate jobs'
     if '--tag' in job_lines[0]:
         tags = [l.split()[l.split().index('--tag') + 1] for l in job_lines]
-        assert len(tags) == len(set(tags)), 'duplicate tags'
+        assert len(tags) == len(set(tags)), f'duplicate tags {tags}'
     # collect clusters
     job_cluster_names = []
     job_clusters = []

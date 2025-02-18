@@ -1,3 +1,4 @@
+from transformers.models.llama.modeling_llama import LlamaRMSNorm
 import time
 from transformers.tokenization_utils_fast import PreTrainedTokenizerFast
 from datetime import timedelta
@@ -32,6 +33,7 @@ from train import (
     ProgramEmbeddings,
     VaeProjection,
     LambdaScheduler,
+    Quantizer,
     three_commas,
     set_up_main_process_logger,
     model_loss,
@@ -64,10 +66,11 @@ NBIT_TO_DTYPE = {
 
 def save_model_ttt(
         model: nn.Module,
-        prior_embeddings: Union[nn.Module, DistributedDataParallel],
-        program_embeddings: Union[nn.Module, DistributedDataParallel],
-        vae_projection: Union[nn.Module, DistributedDataParallel],
-        program_norm: Optional[Union[nn.Module, DistributedDataParallel]],
+        prior_embeddings: Union[ProgramEmbeddings, DistributedDataParallel],
+        program_embeddings: Union[ProgramEmbeddings, DistributedDataParallel],
+        vae_projection: Union[VaeProjection, DistributedDataParallel],
+        quantizer: Optional[Union[Quantizer, DistributedDataParallel]],
+        program_norm: Optional[Union[LlamaRMSNorm, DistributedDataParallel]],
         output_dir: str,
         task_id: str,
         epoch: int,
@@ -107,6 +110,16 @@ def save_model_ttt(
     torch.save(vae_projection_module, save_vae_projection_path)
     logger.info(f"Saved vae projection to {save_vae_projection_path}")
 
+    # quantizer
+    save_quantizer_path = None
+    if quantizer is not None:
+        save_quantizer_path = os.path.join(output_dir, task_id, f"quantizer_epoch_{epoch+1}.pt")
+        quantizer_module = quantizer
+        if isinstance(quantizer, DistributedDataParallel):
+            quantizer_module = quantizer.module
+        torch.save(quantizer_module, save_quantizer_path)
+        logger.info(f"Saved quantizer to {save_quantizer_path}")
+
     # program norm
     save_program_norm_path = None
     if program_norm is not None:
@@ -145,6 +158,17 @@ def main():
     parser.add_argument("--full_lora", action="store_true")
     parser.add_argument("--residual", action="store_true")
     parser.add_argument("--normalize", action="store_true")
+
+    # Self-consistency
+    parser.add_argument("--consistency_type", type=str, choices=["none", "all", "only_first", "include_last"], default="none")
+    parser.add_argument("--consistency_loss_lambda", type=float, default=0.5)
+    parser.add_argument("--linear_consistency", action="store_true")
+
+    # vqvae
+    parser.add_argument("--codebook_size", type=int, default=-1)
+    parser.add_argument("--commitment_loss_lambda", type=float, default=0.0)
+    parser.add_argument("--linear_commitment", action="store_true")
+    parser.add_argument("--discrete_prior", action="store_true")
 
     # vae
     parser.add_argument("--no_sample", action="store_true")
@@ -321,6 +345,9 @@ def main():
     prior_embeddings_weight_path = os.path.join(weight_dir, f"prior_embeddings_epoch_{args.weight_epoch}.pt")
     program_embeddings_weight_path = os.path.join(weight_dir, f"program_embeddings_epoch_{args.weight_epoch}.pt")
     vae_projection_weight_path = os.path.join(weight_dir, f"vae_projection_epoch_{args.weight_epoch}.pt")
+    quantizer_weight_path = None
+    if args.codebook_size > 0:
+        quantizer_weight_path = os.path.join(weight_dir, f"quantizer_epoch_{args.weight_epoch}.pt")
     program_norm_weight_path = None
     if args.normalize:
         program_norm_weight_path = os.path.join(weight_dir, f"program_norm_epoch_{args.weight_epoch}.pt")
@@ -428,7 +455,10 @@ def main():
         prior_embeddings: ProgramEmbeddings = torch.load(prior_embeddings_weight_path, weights_only=False, map_location=accelerator.device)
         program_embeddings: ProgramEmbeddings = torch.load(program_embeddings_weight_path, weights_only=False, map_location=accelerator.device)
         vae_projection: VaeProjection = torch.load(vae_projection_weight_path, weights_only=False, map_location=accelerator.device)
-        program_norm: Optional[ProgramEmbeddings] = None
+        quantizer: Optional[Quantizer] = None
+        if quantizer_weight_path is not None:
+            quantizer = torch.load(quantizer_weight_path, weights_only=False, map_location=accelerator.device)
+        program_norm: Optional[LlamaRMSNorm] = None
         if program_norm_weight_path is not None:
             program_norm = torch.load(program_norm_weight_path, weights_only=False, map_location=accelerator.device)
 
@@ -441,6 +471,10 @@ def main():
         for param in vae_projection.parameters():
             param.requires_grad = True
             param.data = param.data.to(NBIT_TO_DTYPE[args.trainable_nbit])
+        if quantizer is not None:
+            for param in quantizer.parameters():
+                param.requires_grad = True
+                param.data = param.data.to(NBIT_TO_DTYPE[args.trainable_nbit])
         if program_norm is not None:
             for param in program_norm.parameters():
                 param.requires_grad = True
@@ -451,6 +485,8 @@ def main():
         all_params += [p for p in prior_embeddings.parameters() if p.requires_grad]
         all_params += [p for p in program_embeddings.parameters() if p.requires_grad]
         all_params += [p for p in vae_projection.parameters() if p.requires_grad]
+        if quantizer is not None:
+            all_params += [p for p in quantizer.parameters() if p.requires_grad]
         if program_norm is not None:
             all_params += [p for p in program_norm.parameters() if p.requires_grad]
         logger.info(f"Optimizer with {len(all_params)} params")
@@ -480,12 +516,23 @@ def main():
             linear=args.linear_kl,
             total_steps=num_training_steps,
         )
+        commitment_loss_lambda_scheduler = LambdaScheduler(
+            loss_lambda=args.commitment_loss_lambda,
+            linear=args.linear_commitment,
+            total_steps=num_training_steps,
+        )
+        consistency_loss_lambda_scheduler = LambdaScheduler(
+            loss_lambda=args.consistency_loss_lambda,
+            linear=args.linear_consistency,
+            total_steps=num_training_steps,
+        )
 
         # Prepare with accelerator
         (
             prior_embeddings,
             program_embeddings,
             vae_projection,
+            quantizer,
             program_norm,
             optimizer,
             ttt_dataloader
@@ -493,6 +540,7 @@ def main():
             prior_embeddings,
             program_embeddings,
             vae_projection,
+            quantizer,
             program_norm,
             optimizer,
             ttt_dataloader
@@ -520,6 +568,8 @@ def main():
         prior_embeddings.train()
         program_embeddings.train()
         vae_projection.train()
+        if quantizer is not None:
+            quantizer.train()
         if program_norm is not None:
             program_norm.train()
 
@@ -532,14 +582,15 @@ def main():
                 input_ids_lens = batch_data["input_ids_lens"]
                 num_pairs = batch_data["num_pairs"]
 
-                with accelerator.accumulate(model, prior_embeddings, program_embeddings, vae_projection, program_norm):
+                with accelerator.accumulate(model, prior_embeddings, program_embeddings, vae_projection, quantizer, program_norm):
                     with accelerator.autocast():
-                        _, _, total_loss, _ = model_loss(
+                        _, _, _, _, _, _, total_loss, _ = model_loss(
                             # model
                             model=model,
                             prior_embeddings=prior_embeddings,
                             program_embeddings=program_embeddings,
                             vae_projection=vae_projection,
+                            quantizer=quantizer,
                             program_norm=program_norm,
                             tokenizer=tokenizer,
                             # data
@@ -552,9 +603,13 @@ def main():
                             ntokens=args.ntokens,
                             pad_side=args.pad_side,
                             kl_loss_lambda_scheduler=kl_loss_lambda_scheduler,
+                            commitment_loss_lambda_scheduler=commitment_loss_lambda_scheduler,
+                            consistency_loss_lambda_scheduler=consistency_loss_lambda_scheduler,
                             global_step=global_step,
                             vae_no_sample=args.no_sample,
                             residual=args.residual,
+                            discrete_prior=args.discrete_prior,
+                            consistency_type=args.consistency_type,
                         )
 
                     accelerator.backward(total_loss)
@@ -576,6 +631,7 @@ def main():
                     prior_embeddings=prior_embeddings,
                     program_embeddings=program_embeddings,
                     vae_projection=vae_projection,
+                    quantizer=quantizer,
                     program_norm=program_norm,
                     output_dir=args.output_dir,
                     task_id=task_id,
@@ -589,6 +645,8 @@ def main():
         prior_embeddings.zero_grad(set_to_none=True)
         program_embeddings.zero_grad(set_to_none=True)
         vae_projection.zero_grad(set_to_none=True)
+        if quantizer is not None:
+            quantizer.zero_grad(set_to_none=True)
         if program_norm is not None:
             program_norm.zero_grad(set_to_none=True)
 
