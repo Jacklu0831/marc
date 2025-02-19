@@ -26,3 +26,7 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
     --grad_accum_steps 8 \
     --truncation_steps 100 \
     --wandb
+
+# Submitted batch job 57365278
+# Submitted batch job 57365279
+# Submitted batch job 57365280

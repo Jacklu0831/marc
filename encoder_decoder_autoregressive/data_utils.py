@@ -1031,6 +1031,9 @@ class EvalDataset:
         # even the voting augmentation does not increase resolution
         assert task.max_height() <= 30 and task.max_width() <= 30
 
+        # Build encoder text
+        task = copy.deepcopy(task)
+
         # permute if given
         if permutation is not None:
             assert set(permutation) == set(range(len(task.train_examples)))
@@ -1043,9 +1046,6 @@ class EvalDataset:
                 size=extra_inference_pairs,
                 replace=True,
             ).tolist() # type: ignore
-
-        # Build encoder text
-        task = copy.deepcopy(task)
 
         # parse task
         pair_idx_to_input_ids = []

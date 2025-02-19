@@ -1,4 +1,4 @@
-# python make_sbatch.py --ngpu 2 --time 48 --bash_files bash_commands/0217_autoregressive_longcontext/0217_0_base.sh
+# python make_sbatch.py --ngpu 2 --time 96 --bash_files bash_commands/0217_autoregressive_longcontext/0217_0_base.sh
 
 # arlong batchsize4
 accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder_autoregressive_longcontext/train.py \
@@ -13,4 +13,4 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
     --gradient_checkpointing \
     --wandb
 
-# Submitted batch job 57358892
+# Submitted batch job 57378529
