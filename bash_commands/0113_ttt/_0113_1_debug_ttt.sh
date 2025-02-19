@@ -5,7 +5,7 @@ python ttt_old/test_time_train.py \
     --lora_config configs/ttt/1B_lora_single_device.yaml \
     --base_checkpoint_dir downloaded_models/meta-llama/Llama-3.2-1B-Instruct \
     --experiment_folder train_outputs/test \
-    --data_file kaggle_dataset/arc-agi_evaluation_challenges_selected_easy.json \
+    --data_file kaggle_dataset/arc-agi_evaluation_challenges_selected.json \
     --batch_size 2 \
     --epochs 1 \
     --lora_rank 128 \
@@ -147,7 +147,6 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
     --encoder_gradient_checkpointing \
     --decoder_gradient_checkpointing \
     --full_lora
-
 
 
 # train2 ttt fulllora

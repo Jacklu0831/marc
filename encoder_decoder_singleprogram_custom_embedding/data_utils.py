@@ -774,6 +774,26 @@ def collate_fn_train(batch: List[int], dataset: TrainDataset) -> Dict:
                 "input_token_positions": input_token_positions,
                 "output_token_positions": output_token_positions,
             })
+            # # show task data
+            # print("////////////////////////////////////////////")
+            # print(f"Encode text:{encoder_text}")
+            # print(f"Task ID: {task_ids[task_i12]}")
+            # print(f"Prefix Counts: {prefix_count}")
+            # print("input_len",len(encoder_input_ids))
+
+            # print(f"Encoder Input IDs: {encoder_input_ids}")
+            # print(f"Encoder Attention Mask: {enc_tokens['attention_mask'].squeeze(0)}")
+            # print(f"Encoder Labels: {encoder_labels}")
+
+            # print(f"Decoder Input IDs: {decoder_input_ids}")
+            # print(f"Decoder Attention Mask: {decoder_attention_mask}")
+            # print(f"Decoder Labels: {decoder_labels}")
+
+            # print(f"Anti Invariance: {anti_invar}")
+            # print(f"Input Token Positions: {input_token_positions}")
+            # print(f"Output Token Positions: {output_token_positions}")
+
+            # print("////////////////////////////////////////////")
 
         # Check if we got 2 valid items from this task
         if len(two_task_list) == 2:
@@ -1174,6 +1194,8 @@ class EvalDataset:
             "decoder_gen_attention_mask": dec_in_tokens["attention_mask"].squeeze(0),
             "decoder_out_token_length": dec_out_tokens["input_ids"].shape[1] - 1, # remove eos token
             "decoder_label_texts": dec_label_texts,  # used for exact match
+            "input_token_positions": input_token_positions,
+            "output_token_positions": output_token_positions,
         }
 
     def __len__(self):
@@ -1227,6 +1249,8 @@ def collate_fn_eval(batch: List[Dict], dataset: EvalDataset) -> Dict:
     dec_labs = [x["decoder_labels"] for x in batch]
     decoder_out_token_length = [x["decoder_out_token_length"] for x in batch]
     decoder_label_texts = [x["decoder_label_texts"] for x in batch]
+    input_token_positions = [x["input_token_positions"] for x in batch]
+    output_token_positions = [x["output_token_positions"] for x in batch]
 
     enc_ids_lens = [len(x) for x in enc_ids]
     dec_ids_lens = [len(x) for x in dec_ids]
@@ -1289,7 +1313,12 @@ def collate_fn_eval(batch: List[Dict], dataset: EvalDataset) -> Dict:
         "encoder_input_ids_lens": enc_ids_lens,
         "decoder_input_ids_lens": dec_ids_lens,
         "decoder_gen_input_ids_lens": dec_gen_ids_lens,
+        "input_token_positions": input_token_positions,
+        "output_token_positions": output_token_positions,
     }
+
+    
+
     return batch_dict
 
 

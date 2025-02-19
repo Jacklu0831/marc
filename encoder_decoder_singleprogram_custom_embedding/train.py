@@ -43,6 +43,7 @@ from data_utils import (
     collate_fn_eval_dummy,
     ARCTokenizer,
 )
+from models.llama import CustomLlamaModel
 
 import os
 os.environ["TOKENIZERS_PARALLELISM"] = "false" # weird tokenizer issue
@@ -430,7 +431,8 @@ def encoder_decoder_loss(
     enc_ids_lens: List[int],
     dec_ids_lens: List[int],
     anti_invars: List[bool],
-    prefix_counts: List[int],
+    input_token_positions: List[int],
+    output_token_positions: List[int],
     ntokens: int,
     decoder_ce_loss: bool,
     encoder_pad_side: str,
@@ -451,7 +453,9 @@ def encoder_decoder_loss(
         attention_mask=encoder_attention_mask,
         labels=encoder_labels,
         output_hidden_states=True,
-        prefix_counts = prefix_counts,
+        input_token_positions=input_token_positions,
+        output_token_positions=output_token_positions,
+        
     )
     encoder_loss = enc_out.loss
 
@@ -922,7 +926,7 @@ def evaluate(
                     encoder_model_ttt_state_dict = torch.load(
                         enc_ttt_path,
                         weights_only=True,
-                        map_location=accelerator.device
+                        map_location=accelerator.device,
                     )
                     assert set(encoder_model_ttt_state_dict.keys()) == encoder_ttt_param_names
                     encoder_module.load_state_dict(encoder_model_ttt_state_dict, strict=False)
@@ -986,6 +990,8 @@ def evaluate(
                 enc_ids_lens = batch["encoder_input_ids_lens"]
                 dec_ids_lens = batch["decoder_input_ids_lens"]
                 dec_gen_ids_lens = batch["decoder_gen_input_ids_lens"]
+                input_token_positions = batch["input_token_positions"]
+                output_token_positions = batch["output_token_positions"]
 
                 # save first batch with complete tasks, rest might be incomplete
                 if batch_permute_i == 0:
@@ -1001,6 +1007,8 @@ def evaluate(
                         "decoder_out_token_length": copy.deepcopy(out_token_length),
                         "decoder_input_ids_lens": copy.deepcopy(dec_ids_lens),
                         "decoder_gen_input_ids_lens": copy.deepcopy(dec_gen_ids_lens),
+                        "input_token_positions": copy.deepcopy(input_token_positions),
+                        "output_token_positions": copy.deepcopy(output_token_positions),
                     }
 
                 # compute ce loss
@@ -1019,6 +1027,8 @@ def evaluate(
                         decoder_labels=dec_labels,
                         enc_ids_lens=enc_ids_lens,
                         dec_ids_lens=dec_ids_lens,
+                        input_token_positions = input_token_positions,
+                        output_token_positions = output_token_positions,
                         anti_invars=[True] * len(dec_ids_lens), # HARDCODE
                         ntokens=dataset.ntokens,
                         decoder_ce_loss=decoder_ce_loss,
@@ -1094,6 +1104,8 @@ def evaluate(
             out_token_length = first_batch["decoder_out_token_length"]
             dec_ids_lens = first_batch["decoder_input_ids_lens"]
             dec_gen_ids_lens = first_batch["decoder_gen_input_ids_lens"]
+            input_token_positions = first_batch["input_token_positions"]
+            output_token_positions = first_batch["output_token_positions"]
 
             if gs_iters > 0:
                 predicted_program = gradient_search(
@@ -1141,6 +1153,8 @@ def evaluate(
             label_texts = first_batch["decoder_label_texts"]
             out_token_length = first_batch["decoder_out_token_length"]
             dec_gen_ids_lens = first_batch["decoder_gen_input_ids_lens"]
+            input_token_positions = first_batch["input_token_positions"]
+            output_token_positions = first_batch["output_token_positions"]
 
             # compute accuracy
             with accelerator.autocast():
@@ -1688,7 +1702,7 @@ def main():
     init_process_process_kwargs = InitProcessGroupKwargs()
     init_process_process_kwargs.timeout = timedelta(seconds=28800)
     os.environ["WANDB_API_KEY"]='8f75801720d1540f03dd3a73e52f11d8ec74f395'
-    # os.environ["WANDB_API_KEY"]="faf21d9ff65ee150697c7e96f070616f6b662134"
+    # os.environ["WANDB_API_KEY"]="8f75801720d1540f03dd3a73e52f11d8ec74f395"
     accelerator = Accelerator(
         gradient_accumulation_steps=args.grad_accum_steps,
         mixed_precision="bf16",
@@ -1773,10 +1787,19 @@ def main():
     else:
         raise ValueError(f"unrecognized untrainable_nbit {args.untrainable_nbit}")
 
-    base_encoder = AutoModelForCausalLM.from_pretrained(
+    base_encoder =  CustomLlamaModel.from_pretrained(
         pretrained_model_name_or_path=MODEL_NAME_TO_PATH[args.encoder_name],
         **from_pretrained_kwargs,
     )
+    
+    base_encoder = base_encoder.to_empty(device=accelerator.device)
+
+    # pretrained_model = AutoModelForCausalLM.from_pretrained(
+    #     pretrained_model_name_or_path=MODEL_NAME_TO_PATH[args.encoder_name],
+    #     **from_pretrained_kwargs,
+    # )
+    # base_encoder.load_state_dict(pretrained_model.state_dict(), strict=False)
+
     if args.tie_models:
         base_decoder = base_encoder
     else:
@@ -1882,6 +1905,7 @@ def main():
         )
     del encoder_tokenizer, decoder_tokenizer
     encoder_tokenizer, decoder_tokenizer = arc_encoder_tokenizer, arc_decoder_tokenizer
+   
 
     # LoRA
     encoder_model = None
@@ -2136,7 +2160,6 @@ def main():
             enc_ids_lens = batch_data["encoder_input_ids_lens"]
             dec_ids_lens = batch_data["decoder_input_ids_lens"]
             anti_invars = batch_data["anti_invars"]
-            prefix_counts = batch_data["prefix_counts "]
             input_token_positions = batch_data['input_token_positions']
             output_token_positions = batch_data['output_token_positions']
 
@@ -2156,7 +2179,6 @@ def main():
                         enc_ids_lens=enc_ids_lens,
                         dec_ids_lens=dec_ids_lens,
                         anti_invars=anti_invars,
-                        prefix_counts=prefix_counts,
                         input_token_positions = input_token_positions,
                         output_token_positions = output_token_positions,
                         ntokens=args.ntokens,

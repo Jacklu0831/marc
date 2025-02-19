@@ -15,7 +15,7 @@ from functools import partial
 
 class GridEmbedding(nn.Module):
 
-    def __init__(self, config,tokenizer,scaled_position_embedding=True):
+    def __init__(self, config,tokenizer=None,scaled_position_embedding=True):
         super().__init__()
         self.config = config
         self.tokenizer = tokenizer
@@ -28,6 +28,25 @@ class GridEmbedding(nn.Module):
             self.row_embedding = nn.Embedding(config.max_rows, config.hidden_size)
             self.col_embedding = nn.Embedding(config.max_cols, config.hidden_size)
         self.dropout = nn.Dropout(config.hidden_dropout_prob)
+
+    def set_tokenizer(tokenizer):
+        self.tokenizer = tokenizer
+
+    @property
+    def weight(self):
+        return self.origin_embedding.weight
+
+    @weight.setter
+    def weight(self, new_weight):
+        self.origin_embedding.weight = new_weight
+
+    @property
+    def num_embeddings(self):
+        return self.origin_embedding.num_embeddings
+
+    @num_embeddings.setter
+    def num_embeddings(self, new_value):
+        self.origin_embedding.num_embeddings = new_value
 
     def _grid_embed(self, width,height):
     
@@ -90,8 +109,8 @@ class GridEmbedding(nn.Module):
 
         for b in range(batch_size):
             sample_ids = input_ids[b]
-            tokens = self.tokenizer.convert_ids_to_tokens(sample_ids.tolist())
-            grid_starts_ptrs, heights, widths = self._get_grid_info(tokens, input_token_positions, output_token_positions)
+            # tokens = self.tokenizer.convert_ids_to_tokens(sample_ids.tolist())
+            grid_starts_ptrs, heights, widths = self._get_grid_info(input_ids, input_token_positions, output_token_positions)
             
             for p, idx in enumerate(grid_starts_ptrs):
                 grid_pos_embed = self._grid_embed(widths[idx],heights[idx])
@@ -119,9 +138,8 @@ class GridEmbedding(nn.Module):
     #     output_hidden_states=True,
     #     prefix_counts = prefix_counts,     
 class CustomLlamaModel(LlamaModel):
-    def __init__(self, config, extra_size):
-        super().__init__(config)
-        self.set_input_embeddings = GridEmbedding(config.vocab_size, config.hidden_size, extra_size)
+    def __init__(self):
+        self.set_input_embeddings = GridEmbedding(self.config, self.config.hidden_size)
 
     def forward(self, input_ids, labels, input_token_positions, output_token_positions,attention_mask=None, output_hidden_states=True):
        
@@ -134,66 +152,3 @@ class CustomLlamaModel(LlamaModel):
 
 
 
-
-
-
-import torch
-
-def validate_grid_embedding(grid_embedding_fn, input_ids, prefix_counts, input_token_positions, output_token_positions):
-    batch_size, seq_len = input_ids.shape
-    device = input_ids.device
-
-    print("===== Grid Embedding Validation =====")
-    
-    for batch_idx in range(batch_size):
-        print(f"\nBatch {batch_idx}:")
-        input_positions = input_token_positions[batch_idx]
-        output_positions = output_token_positions[batch_idx]
-
-        # 获取 input grid 的信息
-        num_input_tokens = prefix_counts[batch_idx][0]
-        height = input_ids[batch_idx, num_input_tokens].item()
-        width = input_ids[batch_idx, num_input_tokens + 1].item()
-        start_idx = num_input_tokens + 2
-
-        row_index = (input_positions - start_idx) // width
-        col_index = (input_positions - start_idx) % width
-
-        print(f"  Input Grid: height={height}, width={width}")
-        print(f"  Input Positions: {input_positions.tolist()}")
-        print(f"  Computed Row Index: {row_index.tolist()}")
-        print(f"  Computed Col Index: {col_index.tolist()}")
-
-        # 获取 output grid 的信息
-        num_output_tokens = prefix_counts[batch_idx][1]
-        height_out = input_ids[batch_idx, num_output_tokens].item()
-        width_out = input_ids[batch_idx, num_output_tokens + 1].item()
-        start_idx_out = num_output_tokens + 2
-
-        row_index_out = (output_positions - start_idx_out) // width_out
-        col_index_out = (output_positions - start_idx_out) % width_out
-
-        print(f"  Output Grid: height={height_out}, width={width_out}")
-        print(f"  Output Positions: {output_positions.tolist()}")
-        print(f"  Computed Row Index (Output): {row_index_out.tolist()}")
-        print(f"  Computed Col Index (Output): {col_index_out.tolist()}")
-
-    print("===== Validation Complete =====\n")
-
-# 伪造测试数据
-batch_size = 2
-seq_len = 30
-device = torch.device("cpu")
-
-# 假设的 input_ids（用索引填充模拟）
-input_ids = torch.randint(1, 10, (batch_size, seq_len), dtype=torch.long, device=device)
-
-# 假设 prefix_counts
-prefix_counts = torch.tensor([[3, 15], [4, 20]], dtype=torch.long, device=device)
-
-# 假设 input 和 output 的 token 位置
-input_token_positions = torch.tensor([[5, 6, 7, 8, 9], [10, 11, 12, 13, 14]], dtype=torch.long, device=device)
-output_token_positions = torch.tensor([[20, 21, 22], [25, 26, 27]], dtype=torch.long, device=device)
-
-# 运行验证
-validate_grid_embedding(None, input_ids, prefix_counts, input_token_positions, output_token_positions)

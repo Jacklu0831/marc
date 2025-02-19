@@ -41,7 +41,7 @@ os.environ["TORCH_NCCL_ASYNC_ERROR_HANDLING"] = "1"
 os.environ["TORCH_NCCL_BLOCKING_WAIT"] = "1"
 
 import wandb
-wandb.login(key='faf21d9ff65ee150697c7e96f070616f6b662134', relogin=True)
+wandb.login(key='8f75801720d1540f03dd3a73e52f11d8ec74f395', relogin=True)
 
 logger = get_logger(__name__, log_level="INFO")
 
