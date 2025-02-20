@@ -182,7 +182,3 @@ ttt_old/
 bash_commands_old/
 penv.tar
 is_greene.txt
-
-# ignore local data dirs
-re-arc
-ConceptARC
