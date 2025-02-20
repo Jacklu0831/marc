@@ -5,7 +5,7 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
     --tag 400task_original \
     --weight_dir manual_copy_0111_encoderloss1.0_demonloss \
     --weight_epoch 13 \
-    --data_dir /scratch/yl11330/re-arc/arc_original/evaluation \
+    --data_dir ./data/re-arc/arc_original/evaluation \
     --compact_grids \
     --max_seq_len 5120
 
@@ -14,7 +14,7 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
     --tag 80task_leavens0 \
     --weight_dir manual_copy_0111_encoderloss1.0_demonloss \
     --weight_epoch 13 \
-    --data_dir /scratch/yl11330/re-arc/arc_original/evaluation \
+    --data_dir ./data/re-arc/arc_original/evaluation \
     --select_tasks_path task_info_selected.csv \
     --compact_grids \
     --max_seq_len 5120 \
@@ -28,7 +28,7 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
     --tag 80task_leavens1 \
     --weight_dir manual_copy_0111_encoderloss1.0_demonloss \
     --weight_epoch 13 \
-    --data_dir /scratch/yl11330/re-arc/arc_original/evaluation \
+    --data_dir ./data/re-arc/arc_original/evaluation \
     --select_tasks_path task_info_selected.csv \
     --compact_grids \
     --max_seq_len 5120 \
@@ -42,7 +42,7 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
     --tag 80task_leavens01 \
     --weight_dir manual_copy_0111_encoderloss1.0_demonloss \
     --weight_epoch 13 \
-    --data_dir /scratch/yl11330/re-arc/arc_original/evaluation \
+    --data_dir ./data/re-arc/arc_original/evaluation \
     --select_tasks_path task_info_selected.csv \
     --compact_grids \
     --max_seq_len 5120 \

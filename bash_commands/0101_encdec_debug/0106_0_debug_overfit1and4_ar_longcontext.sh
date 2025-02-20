@@ -1,9 +1,9 @@
 # overfit1 novae (weird, when debug_random_pad, need max_grad_norm to lower to fit properly and not nan)
 accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder_autoregressive_longcontext/train.py \
     --tag test \
-    --train_data_dir /scratch/yl11330/re-arc/train_data_debug_overfit/tasks \
-    --eval_train_dir /scratch/yl11330/re-arc/arc_original_debug_overfit/training \
-    --eval_eval_dir /scratch/yl11330/re-arc/arc_original_debug_overfit/training \
+    --train_data_dir ./data/re-arc/train_data_debug_overfit/tasks \
+    --eval_train_dir ./data/re-arc/arc_original_debug_overfit/training \
+    --eval_eval_dir ./data/re-arc/arc_original_debug_overfit/training \
     --eval_epochs 1 \
     --num_epochs 100 \
     --samples_per_epoch 500 \
@@ -32,9 +32,9 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
 
 accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder_autoregressive_longcontext/train.py \
     --tag test \
-    --train_data_dir /scratch/yl11330/re-arc/train_data_debug_overfit/tasks \
-    --eval_train_dir /scratch/yl11330/re-arc/arc_original_debug_overfit/training \
-    --eval_eval_dir /scratch/yl11330/re-arc/arc_original_debug_overfit/training \
+    --train_data_dir ./data/re-arc/train_data_debug_overfit/tasks \
+    --eval_train_dir ./data/re-arc/arc_original_debug_overfit/training \
+    --eval_eval_dir ./data/re-arc/arc_original_debug_overfit/training \
     --eval_epochs 1 \
     --num_epochs 100 \
     --samples_per_epoch 500 \
@@ -61,9 +61,9 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
 # overfit4 novae (harder to fit, but gradaccum and maxgradnorm and smaller lr help)
 accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder_autoregressive/train.py \
     --tag test \
-    --train_data_dir /scratch/yl11330/re-arc/train_data_debug_overfit4/tasks \
-    --eval_train_dir /scratch/yl11330/re-arc/arc_original_debug_overfit4/training \
-    --eval_eval_dir /scratch/yl11330/re-arc/arc_original_debug_overfit4/training \
+    --train_data_dir ./data/re-arc/train_data_debug_overfit4/tasks \
+    --eval_train_dir ./data/re-arc/arc_original_debug_overfit4/training \
+    --eval_eval_dir ./data/re-arc/arc_original_debug_overfit4/training \
     --eval_epochs 1 \
     --num_epochs 100 \
     --samples_per_epoch 500 \
@@ -90,9 +90,9 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
 # overfit1 vae (tried different kl_loss_lambda, does not fit...)
 accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder_autoregressive/train.py \
     --tag test \
-    --train_data_dir /scratch/yl11330/re-arc/train_data_debug_overfit/tasks \
-    --eval_train_dir /scratch/yl11330/re-arc/arc_original_debug_overfit/training \
-    --eval_eval_dir /scratch/yl11330/re-arc/arc_original_debug_overfit/training \
+    --train_data_dir ./data/re-arc/train_data_debug_overfit/tasks \
+    --eval_train_dir ./data/re-arc/arc_original_debug_overfit/training \
+    --eval_eval_dir ./data/re-arc/arc_original_debug_overfit/training \
     --eval_epochs 1 \
     --num_epochs 100 \
     --samples_per_epoch 500 \
@@ -118,9 +118,9 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
 # test if it runs on multigpu
 accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder1031_autoregressive/train.py \
     --tag test \
-    --train_data_dir /scratch/yl11330/re-arc/train_data_debug_overfit4/tasks \
-    --eval_train_dir /scratch/yl11330/re-arc/arc_original_debug_overfit4/training \
-    --eval_eval_dir /scratch/yl11330/re-arc/arc_original_debug_overfit4/training \
+    --train_data_dir ./data/re-arc/train_data_debug_overfit4/tasks \
+    --eval_train_dir ./data/re-arc/arc_original_debug_overfit4/training \
+    --eval_eval_dir ./data/re-arc/arc_original_debug_overfit4/training \
     --eval_epochs 1 \
     --num_epochs 100 \
     --samples_per_epoch 500 \

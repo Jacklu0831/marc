@@ -1809,7 +1809,7 @@ def main():
     parser.add_argument("--lr_scheduler", type=str, choices=["cosine", "constant"], default="cosine")
 
     # re-arc train data
-    parser.add_argument("--train_data_dir", type=str, default="/scratch/yl11330/re-arc/train_data/tasks")
+    parser.add_argument("--train_data_dir", type=str, default="./data/re-arc/train_data/tasks")
     parser.add_argument("--no_train_original", action="store_true")
     parser.add_argument("--only_train_original", action="store_true")
 
@@ -1823,7 +1823,7 @@ def main():
     parser.add_argument("--extra_augment_single_grid", action="store_true")
 
     # eval train data
-    parser.add_argument("--eval_train_dir", type=str, default="/scratch/yl11330/re-arc/arc_original/training")
+    parser.add_argument("--eval_train_dir", type=str, default="./data/re-arc/arc_original/training")
     parser.add_argument("--eval_train_select_tasks_path", type=str, default=None)
     parser.add_argument("--eval_train_leave_ns", type=int, nargs="+", default=[0])
     parser.add_argument("--eval_train_leave_ns_inc", action="store_true")
@@ -1832,7 +1832,7 @@ def main():
     parser.add_argument("--eval_train_permute_iters", type=int, default=0)
 
     # eval eval data (mirror eval train data)
-    parser.add_argument("--eval_eval_dir", type=str, default="/scratch/yl11330/re-arc/arc_original/evaluation")
+    parser.add_argument("--eval_eval_dir", type=str, default="./data/re-arc/arc_original/evaluation")
     parser.add_argument("--eval_eval_select_tasks_path", type=str, default=None)
     parser.add_argument("--eval_eval_leave_ns", type=int, nargs="+", default=[0])
     parser.add_argument("--eval_eval_leave_ns_inc", action="store_true")

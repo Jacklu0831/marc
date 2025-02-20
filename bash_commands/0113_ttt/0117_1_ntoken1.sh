@@ -7,7 +7,7 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
     --tag lr1e-4_flashattn \
     --weight_dir manual_copy_0113_ntoken1 \
     --weight_epoch 14 \
-    --data_dir /scratch/yl11330/re-arc/arc_original/evaluation \
+    --data_dir ./data/re-arc/arc_original/evaluation \
     --select_tasks_path task_info_selected.csv \
     --num_epochs 5 \
     --compact_grids \
@@ -24,7 +24,7 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
     --tag lr1e-4_noflashattn \
     --weight_dir manual_copy_0113_ntoken1 \
     --weight_epoch 14 \
-    --data_dir /scratch/yl11330/re-arc/arc_original/evaluation \
+    --data_dir ./data/re-arc/arc_original/evaluation \
     --select_tasks_path task_info_selected.csv \
     --num_epochs 5 \
     --compact_grids \
@@ -40,7 +40,7 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
     --tag lr5e-5_flashattn \
     --weight_dir manual_copy_0113_ntoken1 \
     --weight_epoch 14 \
-    --data_dir /scratch/yl11330/re-arc/arc_original/evaluation \
+    --data_dir ./data/re-arc/arc_original/evaluation \
     --select_tasks_path task_info_selected.csv \
     --num_epochs 5 \
     --compact_grids \

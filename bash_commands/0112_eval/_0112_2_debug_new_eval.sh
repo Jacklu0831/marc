@@ -17,9 +17,9 @@ python predict.py \
 # no change from before
 accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder/train.py \
     --tag test \
-    --train_data_dir /scratch/yl11330/re-arc/train_data/tasks \
-    --eval_train_dir /scratch/yl11330/re-arc/arc_original/evaluation \
-    --eval_eval_dir /scratch/yl11330/re-arc/arc_original/evaluation \
+    --train_data_dir ./data/re-arc/train_data/tasks \
+    --eval_train_dir ./data/re-arc/arc_original/evaluation \
+    --eval_eval_dir ./data/re-arc/arc_original/evaluation \
     --eval_epochs 1 \
     --num_epochs 100 \
     --samples_per_epoch 2 \
@@ -37,9 +37,9 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
 # mimick predict.py
 accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder/train.py \
     --tag test \
-    --train_data_dir /scratch/yl11330/re-arc/train_data/tasks \
-    --eval_train_dir /scratch/yl11330/re-arc/arc_original/evaluation \
-    --eval_eval_dir /scratch/yl11330/re-arc/arc_original/evaluation \
+    --train_data_dir ./data/re-arc/train_data/tasks \
+    --eval_train_dir ./data/re-arc/arc_original/evaluation \
+    --eval_eval_dir ./data/re-arc/arc_original/evaluation \
     --eval_epochs 1 \
     --num_epochs 100 \
     --samples_per_epoch 2 \
@@ -59,9 +59,9 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
 # try it overfit1
 accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder/train.py \
     --tag test \
-    --train_data_dir /scratch/yl11330/re-arc/train_data_debug_overfit/tasks \
-    --eval_train_dir /scratch/yl11330/re-arc/arc_original_debug_overfit/training \
-    --eval_eval_dir /scratch/yl11330/re-arc/arc_original_debug_overfit/training \
+    --train_data_dir ./data/re-arc/train_data_debug_overfit/tasks \
+    --eval_train_dir ./data/re-arc/arc_original_debug_overfit/training \
+    --eval_eval_dir ./data/re-arc/arc_original_debug_overfit/training \
     --eval_epochs 1 \
     --min_prefix 4 \
     --max_prefix 4 \
@@ -85,9 +85,9 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
 # try it overfit4
 accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder/train.py \
     --tag test \
-    --train_data_dir /scratch/yl11330/re-arc/train_data_debug_overfit4/tasks \
-    --eval_train_dir /scratch/yl11330/re-arc/arc_original_debug_overfit4/training \
-    --eval_eval_dir /scratch/yl11330/re-arc/arc_original_debug_overfit4/training \
+    --train_data_dir ./data/re-arc/train_data_debug_overfit4/tasks \
+    --eval_train_dir ./data/re-arc/arc_original_debug_overfit4/training \
+    --eval_eval_dir ./data/re-arc/arc_original_debug_overfit4/training \
     --eval_epochs 1 \
     --min_prefix 4 \
     --max_prefix 4 \
@@ -112,7 +112,7 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
 accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder/evaluate.py \
     --tag test \
     --weight_dir test_hidden2prefix_shared \
-    --eval_dir /scratch/yl11330/re-arc/arc_original_debug_overfit4/training \
+    --eval_dir ./data/re-arc/arc_original_debug_overfit4/training \
     --batch_size 2 \
     --conditioning_method hidden2prefix_shared \
     --epoch 2 \

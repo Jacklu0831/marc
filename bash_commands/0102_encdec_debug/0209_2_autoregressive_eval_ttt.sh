@@ -3,9 +3,9 @@
 # overfit1
 accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder_autoregressive_0210/train.py \
     --tag test_autoregressive \
-    --train_data_dir /scratch/yl11330/re-arc/train_data_debug_overfit/tasks \
-    --eval_train_dir /scratch/yl11330/re-arc/arc_original_debug_overfit/training \
-    --eval_eval_dir /scratch/yl11330/re-arc/arc_original_debug_overfit/training \
+    --train_data_dir ./data/re-arc/train_data_debug_overfit/tasks \
+    --eval_train_dir ./data/re-arc/arc_original_debug_overfit/training \
+    --eval_eval_dir ./data/re-arc/arc_original_debug_overfit/training \
     --eval_epochs 1 \
     --num_epochs 100 \
     --samples_per_epoch 500 \
@@ -50,7 +50,7 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
     --tag test \
     --weight_dir test_autoregressive \
     --weight_epoch 3 \
-    --data_dir /scratch/yl11330/re-arc/arc_original_debug_overfit/training \
+    --data_dir ./data/re-arc/arc_original_debug_overfit/training \
     --batch_size 2 \
     --no_sample
 
@@ -69,7 +69,7 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
     --tag test \
     --weight_dir test_autoregressive \
     --weight_epoch 3 \
-    --data_dir /scratch/yl11330/re-arc/arc_original_debug_overfit2_ttt/training \
+    --data_dir ./data/re-arc/arc_original_debug_overfit2_ttt/training \
     --max_samples_per_task 4 \
     --grad_accum_steps 1 \
     --optimizer sgd \
@@ -88,7 +88,7 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
     --weight_epoch 3 \
     --ttt_weight_dir ttt_test_test_autoregressive \
     --ttt_weight_epoch 100 \
-    --data_dir /scratch/yl11330/re-arc/arc_original_debug_overfit2_ttt/training \
+    --data_dir ./data/re-arc/arc_original_debug_overfit2_ttt/training \
     --batch_size 2 \
     --no_sample
 

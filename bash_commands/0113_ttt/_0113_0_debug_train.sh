@@ -14,9 +14,9 @@ python test_time_train.py \
 # train hidden2prompt_full on debugoverfit2_1
 accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder/train.py \
     --tag test_hidden2prompt_debugoverfit2_1 \
-    --train_data_dir /scratch/yl11330/re-arc/train_data_debug_overfit2_1/tasks \
-    --eval_train_dir /scratch/yl11330/re-arc/arc_original_debug_overfit2_1/training \
-    --eval_eval_dir /scratch/yl11330/re-arc/arc_original_debug_overfit2_1/training \
+    --train_data_dir ./data/re-arc/train_data_debug_overfit2_1/tasks \
+    --eval_train_dir ./data/re-arc/arc_original_debug_overfit2_1/training \
+    --eval_eval_dir ./data/re-arc/arc_original_debug_overfit2_1/training \
     --eval_epochs 1 \
     --min_prefix 4 \
     --max_prefix 4 \
@@ -40,9 +40,9 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
 # train nolora on debugoverfit2_1
 accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder/train.py \
     --tag test_nolora_debugoverfit2_1 \
-    --train_data_dir /scratch/yl11330/re-arc/train_data_debug_overfit2_1/tasks \
-    --eval_train_dir /scratch/yl11330/re-arc/arc_original_debug_overfit2_1/training \
-    --eval_eval_dir /scratch/yl11330/re-arc/arc_original_debug_overfit2_1/training \
+    --train_data_dir ./data/re-arc/train_data_debug_overfit2_1/tasks \
+    --eval_train_dir ./data/re-arc/arc_original_debug_overfit2_1/training \
+    --eval_eval_dir ./data/re-arc/arc_original_debug_overfit2_1/training \
     --eval_epochs 1 \
     --min_prefix 4 \
     --max_prefix 4 \
@@ -65,9 +65,9 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
 # train tiemodels on debugoverfit2_1
 accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder/train.py \
     --tag test_tiemodels_debugoverfit2_1 \
-    --train_data_dir /scratch/yl11330/re-arc/train_data_debug_overfit2_1/tasks \
-    --eval_train_dir /scratch/yl11330/re-arc/arc_original_debug_overfit2_1/training \
-    --eval_eval_dir /scratch/yl11330/re-arc/arc_original_debug_overfit2_1/training \
+    --train_data_dir ./data/re-arc/train_data_debug_overfit2_1/tasks \
+    --eval_train_dir ./data/re-arc/arc_original_debug_overfit2_1/training \
+    --eval_eval_dir ./data/re-arc/arc_original_debug_overfit2_1/training \
     --eval_epochs 1 \
     --min_prefix 4 \
     --max_prefix 4 \
@@ -89,9 +89,9 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
 # train quantized on debugoverfit2_1
 accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder/train.py \
     --tag test_quantized_debugoverfit2_1 \
-    --train_data_dir /scratch/yl11330/re-arc/train_data_debug_overfit2_1/tasks \
-    --eval_train_dir /scratch/yl11330/re-arc/arc_original_debug_overfit2_1/training \
-    --eval_eval_dir /scratch/yl11330/re-arc/arc_original_debug_overfit2_1/training \
+    --train_data_dir ./data/re-arc/train_data_debug_overfit2_1/tasks \
+    --eval_train_dir ./data/re-arc/arc_original_debug_overfit2_1/training \
+    --eval_eval_dir ./data/re-arc/arc_original_debug_overfit2_1/training \
     --eval_epochs 1 \
     --min_prefix 4 \
     --max_prefix 4 \
@@ -115,9 +115,9 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
 # train 3bto1b on debugoverfit2_1
 accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder/train.py \
     --tag test_3bto1b_debugoverfit2_1 \
-    --train_data_dir /scratch/yl11330/re-arc/train_data_debug_overfit2_1/tasks \
-    --eval_train_dir /scratch/yl11330/re-arc/arc_original_debug_overfit2_1/training \
-    --eval_eval_dir /scratch/yl11330/re-arc/arc_original_debug_overfit2_1/training \
+    --train_data_dir ./data/re-arc/train_data_debug_overfit2_1/tasks \
+    --eval_train_dir ./data/re-arc/arc_original_debug_overfit2_1/training \
+    --eval_eval_dir ./data/re-arc/arc_original_debug_overfit2_1/training \
     --eval_epochs 1 \
     --min_prefix 4 \
     --max_prefix 4 \

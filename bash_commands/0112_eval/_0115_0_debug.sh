@@ -2,7 +2,7 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
     --tag test_bs1 \
     --weight_dir manual_copy_0113_aug0.5 \
     --weight_epoch 6 \
-    --data_dir /scratch/yl11330/re-arc/arc_original/evaluation \
+    --data_dir ./data/re-arc/arc_original/evaluation \
     --select_tasks_path task_info_selected_easy.csv \
     --compact_grids \
     --max_seq_len 5120 \
@@ -23,7 +23,7 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
     --tag test \
     --weight_dir manual_copy_0113_aug0.5 \
     --weight_epoch 6 \
-    --data_dir /scratch/yl11330/re-arc/arc_original/evaluation \
+    --data_dir ./data/re-arc/arc_original/evaluation \
     --select_tasks_path task_info_selected_easy.csv \
     --compact_grids \
     --max_seq_len 5120 \
@@ -44,7 +44,7 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
     --tag test \
     --weight_dir manual_copy_0113_aug0.5 \
     --weight_epoch 6 \
-    --data_dir /scratch/yl11330/re-arc/arc_original/evaluation \
+    --data_dir ./data/re-arc/arc_original/evaluation \
     --select_tasks_path task_info_selected_easy.csv \
     --compact_grids \
     --max_seq_len 5120 \
