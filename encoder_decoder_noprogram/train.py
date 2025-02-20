@@ -104,6 +104,30 @@ def chunks_uniform_batch(task_ids: List[str], data_idxs: List[int], n: int) -> I
         yield from chunks(data_idxs, n)
 
 
+def best_match_count(s1, s2):
+    # Ensure s1 is the longer string
+    if len(s1) < len(s2):
+        s1, s2 = s2, s1
+
+    L, S = len(s1), len(s2)
+    max_matches = 0
+
+    # Slide s2 over s1.
+    # Range of shifts: from -S+1 (s2 shifted so its end aligns with the start of s1)
+    # to L-1 (s2 shifted so its start aligns with the end of s1)
+    for shift in range(-S + 1, L):
+        matches = 0
+        # Loop over each index of the shorter string
+        for i in range(S):
+            j = i + shift  # corresponding index in s1
+            # Only count if within bounds of s1
+            if 0 <= j < L and s2[i] == s1[j]:
+                matches += 1
+        max_matches = max(max_matches, matches)
+
+    return max_matches
+
+
 ################################################
 # Evaluate with cross-entropy + exact-match
 ################################################
@@ -151,6 +175,7 @@ def evaluate(
     valid_grid_list = []
     correct_grid_dim_list = []
     token_acc_list = []
+    relaxed_token_acc_list = []
     ttt_provided_list = []
 
     data_idxs = list(range(len(dataset)))
@@ -239,27 +264,36 @@ def evaluate(
                     do_sample=False,
                     eos_token_id=[dataset.tokenizer.eos_token_id],
                 )
-                gen_texts = dataset.tokenizer.batch_decode(gen_tokens[:, gen_input_ids.shape[1]:], skip_special_tokens=True)
+                gen_texts = dataset.tokenizer.batch_decode(
+                    gen_tokens[:, gen_input_ids.shape[1]:],
+                    skip_special_tokens=True,
+                    no_separate_color_tokens=dataset.no_separate_color_tokens,
+                )
 
             # Compare each gen_text with label_texts
             assert len(task_ids) == len(inverters) == bs, (len(task_ids), len(inverters), bs)
             assert len(gen_texts) == len(label_texts) == bs, (len(gen_texts), len(label_texts), bs)
             for task_id, inverter, gen_text, label_text in zip(task_ids, inverters, gen_texts, label_texts):
-                # save gen and gt text
-                task_id_and_text_list.append((task_id, gen_text, label_text))
-                # exact acc
-                exact_acc_list.append(int(gen_text == label_text))
+                relaxed_token_acc_list.append(best_match_count(gen_text, label_text) / len(label_text))
                 # is valid grid
-                gen_grid, gen_is_grid = text_to_2d_grid(gen_text)
-                label_grid, label_is_grid = text_to_2d_grid(label_text)
+                gen_grid, gen_is_grid = text_to_2d_grid(text=gen_text)
+                label_grid, label_is_grid = text_to_2d_grid(text=label_text)
                 assert label_is_grid
                 valid_grid_list.append(int(gen_is_grid))
                 if not gen_is_grid:
+                    task_id_and_text_list.append((task_id, gen_text, label_text))
+                    exact_acc_list.append(0)
                     correct_grid_dim_list.append(0)
                     token_acc_list.append(0)
                     continue
                 assert isinstance(gen_grid, list)
                 assert isinstance(label_grid, list)
+                # now we know it's a valid grid
+                gen_text = grid_2d_to_text(gen_grid)
+                task_id_and_text_list.append((task_id, gen_text, label_text))
+                gen_grid, label_grid = list2d_to_tuple(gen_grid), list2d_to_tuple(label_grid)
+                # exact acc
+                exact_acc_list.append(int(gen_grid == label_grid))
                 # save gen and gt grid
                 task_id_and_inverter_grids.append((task_id, inverter, gen_grid, label_grid))
                 # correct grid dim
@@ -287,6 +321,7 @@ def evaluate(
     valid_grid_list = gather_object(valid_grid_list)
     correct_grid_dim_list = gather_object(correct_grid_dim_list)
     token_acc_list = gather_object(token_acc_list)
+    relaxed_token_acc_list = gather_object(relaxed_token_acc_list)
     # ttt
     ttt_provided_list = gather_object(ttt_provided_list)
 
@@ -296,6 +331,7 @@ def evaluate(
     assert len(valid_grid_list) == len(dataset), (len(valid_grid_list), len(dataset))
     assert len(correct_grid_dim_list) == len(dataset), (len(correct_grid_dim_list), len(dataset))
     assert len(token_acc_list) == len(dataset), (len(token_acc_list), len(dataset))
+    assert len(relaxed_token_acc_list) == len(dataset), (len(relaxed_token_acc_list), len(dataset))
     assert len(ttt_provided_list) == len(dataset), (len(ttt_provided_list), len(dataset))
 
     # average metrics
@@ -305,6 +341,7 @@ def evaluate(
     valid_grid = sum(valid_grid_list) / len(dataset)
     correct_grid_dim = sum(correct_grid_dim_list) / len(dataset)
     token_acc = sum(token_acc_list) / len(dataset)
+    relaxed_token_acc = sum(relaxed_token_acc_list) / len(dataset)
     ttt_provided = sum(ttt_provided_list) / len(dataset)
 
     # grab all results
@@ -343,7 +380,7 @@ def evaluate(
         os.remove(cached_weights_path)
 
     return avg_ce_loss, \
-        exact_acc, valid_grid, correct_grid_dim, token_acc, task_id_to_texts, \
+        exact_acc, valid_grid, correct_grid_dim, token_acc, relaxed_token_acc, task_id_to_texts, \
         votes, competition_sub_acc, competition_all_acc, ttt_provided
 
 
@@ -434,18 +471,28 @@ def invert_and_vote(inverters_and_grids: List[Tuple[str, Tuple[Tuple[int]]]]):
     return c1, c2, grids_all
 
 
+def grid_2d_to_text(grid: list[List[int]]):
+    height, width = len(grid), len(grid[0])
+    lines = [f"{str(height)}{str(width)}"]
+    for row in grid:
+        lines.append("".join([str(x) for x in row]))
+    return "\n".join(lines)
+
+
 def text_to_2d_grid(text: str) -> Tuple[Optional[List[List[int]]], bool]:
     try:
         text = text.strip() # label is appended by \n
         grid_lines = text.split('\n')
         grid = []
         row_lens = []
-        for l in grid_lines[1:]: # skip dimensions
+        grid_lines = grid_lines[1:]
+        for l in grid_lines: # skip dimensions
             row = [int(x) for x in l]
             grid.append(row)
             row_lens.append(len(row))
             assert all(0 <= x and x < 10 for x in row)
         assert len(set(row_lens)) == 1 # so the grid is not empty
+        assert row_lens[0] > 0
         return grid, True
     except:
         return None, False
@@ -488,6 +535,26 @@ def print_trainable_parameters(model):
         )
 
 
+def initialize_program_embeddings(
+        embeddings: torch.Tensor,
+        accelerator: Accelerator,
+        ntokens: int,
+        cov_scale: float,
+    ) -> torch.Tensor:
+
+    dtype = embeddings.dtype
+    device = embeddings.device
+    n_embeds = embeddings.shape[0]
+    embeddings = embeddings.to(torch.float32).to(device=accelerator.device)
+    mean_embeddings = torch.mean(embeddings, axis=0) # type: ignore
+    centered_embeddings = embeddings - mean_embeddings
+    covariance = centered_embeddings.T @ centered_embeddings / n_embeds
+    eigenvalues = torch.linalg.eigvals(covariance)
+    assert not ((covariance == covariance.T).all() and not torch.is_complex(eigenvalues) and (eigenvalues > 0).all())
+    distribution = torch.distributions.multivariate_normal.MultivariateNormal(mean_embeddings, covariance_matrix=cov_scale * covariance)
+    return distribution.sample(sample_shape=(ntokens,)).to(device).to(dtype) # type: ignore
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--tag", type=str, required=True)
@@ -503,6 +570,7 @@ def main():
     parser.add_argument("--debug_fixed_order", action="store_true")
     parser.add_argument("--debug_random_pad", action="store_true")
     parser.add_argument("--debug_pad_len", type=int, default=-1)
+    parser.add_argument("--no_separate_color_tokens", action='store_true')
     parser.add_argument("--no_color_permute", action="store_true")
     parser.add_argument("--no_pair_permute", action="store_true")
     parser.add_argument("--no_d8", action="store_true")
@@ -588,7 +656,7 @@ def main():
     if args.debug:
         args.tag = 'test'
         args.wandb = False
-        args.samples_per_epoch = 128
+        args.samples_per_epoch = 32
         args.log_every = 1
 
     # check args
@@ -687,18 +755,28 @@ def main():
 
     # only keep these tokens, resize model embedding (eos == pad)
     # we do not include program tokens here, those are added later during training and inference
-    keep_tokens = [str(i) for i in range(31)] + \
-        [tokenizer.bos_token, tokenizer.eos_token, "\n", "input", "output", "pad"]
+    keep_tokens = [str(i) for i in range(31)] # dim
+    keep_tokens += [tokenizer.bos_token, tokenizer.eos_token, "\n", "input", "output", "pad"]
     assert len(set(keep_tokens)) == len(keep_tokens)
 
-    with torch.no_grad():
-        keep_token_ids = []
-        for token in keep_tokens:
-            token_id = tokenizer(token)["input_ids"] # type: ignore
-            assert isinstance(token_id, list) and len(token_id) == 2 # with start token
-            keep_token_ids.append(token_id[1])
-        assert len(set(keep_token_ids)) == len(keep_token_ids)
+    keep_token_ids = []
+    for token in keep_tokens:
+        token_id = tokenizer(token)["input_ids"] # type: ignore
+        assert isinstance(token_id, list) and len(token_id) == 2 # with start token
+        keep_token_ids.append(token_id[1])
+    assert len(set(keep_token_ids)) == len(keep_token_ids)
 
+    color_embeddings = None
+    if not args.no_separate_color_tokens:
+        color_embeddings = initialize_program_embeddings(
+            base_model.model.embed_tokens.weight.data.detach().clone(),
+            accelerator,
+            ntokens=10,
+            cov_scale=1.0,
+        )
+
+    # this breaks embedding tying, but whatever
+    with torch.no_grad():
         # subset embeddings and lmheads
         assert base_model.model.embed_tokens.weight.shape == base_model.lm_head.weight.shape
         base_model.model.embed_tokens.weight = nn.Parameter(base_model.model.embed_tokens.weight[keep_token_ids])
@@ -708,11 +786,21 @@ def main():
         base_model.lm_head.out_features = len(keep_token_ids)
         base_model.config.tie_word_embeddings = False
 
+        if not args.no_separate_color_tokens:
+            assert isinstance(color_embeddings, torch.Tensor)
+            base_model.model.embed_tokens.weight = nn.Parameter(torch.cat([color_embeddings, base_model.model.embed_tokens.weight]))
+            base_model.model.embed_tokens.num_embeddings += 10
+            base_model.lm_head.weight = nn.Parameter(torch.cat([color_embeddings, base_model.lm_head.weight]))
+            base_model.lm_head.out_features += 10
+
+    if not args.no_separate_color_tokens:
+        keep_tokens = [f"c{c}" for c in range(10)] + keep_tokens
+
     # update configs
     assert base_model.config.vocab_size and base_model.config.bos_token_id and base_model.config.eos_token_id
-    base_model.config.vocab_size = len(keep_token_ids)
-    base_model.config.bos_token_id = keep_tokens.index(tokenizer.bos_token)
-    base_model.config.eos_token_id = keep_tokens.index(tokenizer.eos_token)
+    base_model.config.vocab_size = len(keep_token_ids) + (0 if args.no_separate_color_tokens else 10)
+    base_model.config.bos_token_id = keep_tokens.index(tokenizer.bos_token) # type: ignore
+    base_model.config.eos_token_id = keep_tokens.index(tokenizer.eos_token) # type: ignore
 
     # create custom tokenizer
     arc_tokenizer = ARCTokenizer(
@@ -776,6 +864,7 @@ def main():
         only_train_original=args.only_train_original,
         debug_len=args.debug_len,
         num_workers=args.num_workers,
+        no_separate_color_tokens=args.no_separate_color_tokens,
         max_seq_len=args.max_seq_len,
     )
     train_collate_fn = partial(collate_fn_train, dataset=train_dataset)
@@ -850,6 +939,47 @@ def main():
             pass
         exit()
 
+    # Build evaluation datasets
+    eval_train_dataset = EvalDataset(
+        args.eval_train_dir,
+        select_tasks_path=args.eval_train_select_tasks_path,
+        leave_ns=args.eval_train_leave_ns,
+        leave_ns_inc=args.eval_train_leave_ns_inc,
+        permute_n=args.eval_train_permute_n,
+        augment_n=args.eval_train_augment_n,
+        permute_iters=args.eval_train_permute_iters,
+        seed=args.seed,
+        tokenizer=tokenizer,
+        debug_random_pad=args.debug_random_pad,
+        debug_pad_len=args.debug_pad_len,
+        train_pad_side=args.train_pad_side,
+        gen_pad_side=args.gen_pad_side,
+        debug_len=args.debug_len,
+        no_separate_color_tokens=args.no_separate_color_tokens,
+        max_seq_len=args.max_seq_len,
+    )
+    eval_eval_dataset = EvalDataset(
+        eval_dir=args.eval_eval_dir,
+        select_tasks_path=args.eval_eval_select_tasks_path,
+        leave_ns=args.eval_eval_leave_ns,
+        leave_ns_inc=args.eval_eval_leave_ns_inc,
+        permute_n=args.eval_eval_permute_n,
+        augment_n=args.eval_eval_augment_n,
+        permute_iters=args.eval_eval_permute_iters,
+        seed=args.seed,
+        tokenizer=tokenizer,
+        debug_random_pad=args.debug_random_pad,
+        debug_pad_len=args.debug_pad_len,
+        train_pad_side=args.train_pad_side,
+        gen_pad_side=args.gen_pad_side,
+        debug_len=args.debug_len,
+        no_separate_color_tokens=args.no_separate_color_tokens,
+        max_seq_len=args.max_seq_len,
+    )
+    eval_collate_fn = partial(collate_fn_eval, dataset=eval_train_dataset)
+    if args.debug_len > 0:
+        eval_collate_fn = partial(collate_fn_eval_dummy, dataset=eval_train_dataset)
+
     logger.info(f'======= TRAINING INFO START =======')
     logger.info(f'num_epochs={args.num_epochs}')
     logger.info(f'train_batch_size={args.train_batch_size}')
@@ -921,47 +1051,8 @@ def main():
 
         # Evaluate every N epochs
         if (epoch + 1) % args.eval_epochs == 0:
-            # Build evaluation datasets
-            eval_train_dataset = EvalDataset(
-                args.eval_train_dir,
-                select_tasks_path=args.eval_train_select_tasks_path,
-                leave_ns=args.eval_train_leave_ns,
-                leave_ns_inc=args.eval_train_leave_ns_inc,
-                permute_n=args.eval_train_permute_n,
-                augment_n=args.eval_train_augment_n,
-                permute_iters=args.eval_train_permute_iters,
-                seed=args.seed,
-                tokenizer=tokenizer,
-                debug_random_pad=args.debug_random_pad,
-                debug_pad_len=args.debug_pad_len,
-                train_pad_side=args.train_pad_side,
-                gen_pad_side=args.gen_pad_side,
-                debug_len=args.debug_len,
-                max_seq_len=args.max_seq_len,
-            )
-            eval_eval_dataset = EvalDataset(
-                eval_dir=args.eval_eval_dir,
-                select_tasks_path=args.eval_eval_select_tasks_path,
-                leave_ns=args.eval_eval_leave_ns,
-                leave_ns_inc=args.eval_eval_leave_ns_inc,
-                permute_n=args.eval_eval_permute_n,
-                augment_n=args.eval_eval_augment_n,
-                permute_iters=args.eval_eval_permute_iters,
-                seed=args.seed,
-                tokenizer=tokenizer,
-                debug_random_pad=args.debug_random_pad,
-                debug_pad_len=args.debug_pad_len,
-                train_pad_side=args.train_pad_side,
-                gen_pad_side=args.gen_pad_side,
-                debug_len=args.debug_len,
-                max_seq_len=args.max_seq_len,
-            )
-            eval_collate_fn = partial(collate_fn_eval, dataset=eval_train_dataset)
-            if args.debug_len > 0:
-                eval_collate_fn = partial(collate_fn_eval_dummy, dataset=eval_train_dataset)
-
             train_ce_loss, \
-                train_exact_acc, train_valid_grid, train_correct_grid_dim, train_token_acc, train_texts, \
+                train_exact_acc, train_valid_grid, train_correct_grid_dim, train_token_acc, train_relaxed_token_acc, train_texts, \
                 train_votes, train_competition_sub_acc, train_competition_all_acc, _ = evaluate(
                 task_to_ttt_path=None,
                 ttt_param_names=None,
@@ -974,7 +1065,7 @@ def main():
                 output_dir=args.output_dir,
             )
             eval_ce_loss, \
-                eval_exact_acc, eval_valid_grid, eval_correct_grid_dim, eval_token_acc, eval_texts, \
+                eval_exact_acc, eval_valid_grid, eval_correct_grid_dim, eval_token_acc, eval_relaxed_token_acc, eval_texts, \
                 eval_votes, eval_competition_sub_acc, eval_competition_all_acc, _ = evaluate(
                 task_to_ttt_path=None,
                 ttt_param_names=None,
@@ -994,6 +1085,7 @@ def main():
                     "eval/train_valid_grid": train_valid_grid,
                     "eval/train_correct_grid_dim": train_correct_grid_dim,
                     "eval/train_token_acc": train_token_acc,
+                    "eval/train_relaxed_token_acc": train_relaxed_token_acc,
                     "eval/train_competition_sub_acc": train_competition_sub_acc,
                     "eval/train_competition_all_acc": train_competition_all_acc,
                     "eval/eval_ce_loss": eval_ce_loss,
@@ -1001,6 +1093,7 @@ def main():
                     "eval/eval_valid_grid": eval_valid_grid,
                     "eval/eval_correct_grid_dim": eval_correct_grid_dim,
                     "eval/eval_token_acc": eval_token_acc,
+                    "eval/eval_relaxed_token_acc": eval_relaxed_token_acc,
                     "eval/eval_competition_sub_acc": eval_competition_sub_acc,
                     "eval/eval_competition_all_acc": eval_competition_all_acc,
                 }

@@ -3,7 +3,7 @@ import os
 import glob
 
 template = """#!/bin/bash
-
+#BURST
 #SBATCH --constraint='a100|h100'
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=$NGPU
@@ -32,12 +32,18 @@ parser.add_argument('--ngpu', type=int, help='bash file of commands', default=1)
 parser.add_argument('--ncpu', type=int, help='bash file of commands', default=8)
 parser.add_argument('--time', type=str, help='bash file of commands', required=True)
 parser.add_argument('--sbatch_dir', type=str, help='bash file of commands', default='/scratch/yl11330/marc/sbatch_files')
+parser.add_argument('--burst', type=str, help='bash file of commands', required=True)
+
 args = parser.parse_args()
 
 # remove existing sbatch files
 for sbatch_file in glob.glob(os.path.join(args.sbatch_dir, '*')):
     os.remove(sbatch_file)
 
+if args.burst:
+    template = template.replace("#BURST", "\n#SBATCH --requeue")
+else:
+    template = template.replace("#BURST", "")
 template = template.replace('$NGPU', str(args.ngpu))
 template = template.replace('$NCPU', str(args.ncpu))
 template = template.replace('$TIME', str(args.time))
