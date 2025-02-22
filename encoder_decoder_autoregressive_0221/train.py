@@ -373,6 +373,7 @@ def get_predicted_program(
 
     # apply program norm to prior
     prior_inputs_embeds = prior_embeddings("dummy")[None, ...].expand(batch_size, -1, -1)
+    # norm
     if program_norm is not None:
         prior_inputs_embeds = program_norm(prior_inputs_embeds)
     # quantize prior
@@ -489,6 +490,7 @@ def model_loss(
     vae_projection: Union[VaeProjection, DistributedDataParallel],
     quantizer: Optional[Union[Quantizer, DistributedDataParallel]],
     program_norm: Optional[Union[LlamaRMSNorm, DistributedDataParallel]],
+    program_dropout: nn.Dropout,
     tokenizer: ARCTokenizer,
     # data
     input_ids: List[torch.Tensor],
@@ -511,6 +513,7 @@ def model_loss(
     concat_programs: bool,
     train_codebook_only: bool,
     ar_gradient_checkpointing: bool,
+    program_noise_std: float,
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, List[torch.Tensor]]:
 
     def forward_with_checkpoint(model, inputs_embeds, attention_mask, labels=None):
@@ -568,6 +571,7 @@ def model_loss(
     prior_inputs_embeds = prior_embeddings("dummy")[None, ...].expand(batch_size, -1, -1)
     if program_norm is not None:
         prior_inputs_embeds = program_norm(prior_inputs_embeds)
+    # NOTE: no dropout or noise injection to prior
     # quantize prior
     if (quantizer is not None) and not no_discrete_prior:
         prior_inputs_embeds, codebook_loss, commitment_loss, perplexity = quantizer(prior_inputs_embeds, train_codebook_only=train_codebook_only)
@@ -677,6 +681,10 @@ def model_loss(
             )
             new_program_mus, new_program_logvars = vae_projection(model_output_programs)
             new_programs = sample_from_vae(mu=new_program_mus, logvar=new_program_logvars, sample=vae_sample)
+            # optionally dropout
+            new_programs = program_dropout(new_programs)
+            # optionally inject noise
+            new_programs += program_noise_std * torch.randn_like(new_programs, dtype=new_programs.dtype, device=device)
             # optionally use residual connection
             if not no_residual:
                 new_programs += prev_programs
@@ -1775,10 +1783,14 @@ def main():
     parser.add_argument("--dry_eval_run", action="store_true")
     parser.add_argument("--warmup_epoch", type=int, default=1)
     parser.add_argument("--max_seq_len", type=int, default=8192)
+    parser.add_argument("--attention_dropout", type=float, default=0.0)
+    parser.add_argument("--program_dropout", type=float, default=0.0)
+    parser.add_argument("--program_noise_std", type=float, default=0.0)
 
     # Evaluation
     parser.add_argument("--extra_inference_pairs", type=int, default=0)
     parser.add_argument("--limit_inference_pairs", action='store_true')
+    parser.add_argument("--limit_inference_pairs_strict", action='store_true') # overrides limit_inference_pairs
 
     # scheduled extra losses
     parser.add_argument("--consistency_loss_lambda", type=float, default=1.0)
@@ -1979,6 +1991,14 @@ def main():
         pretrained_model_name_or_path=MODEL_NAME_TO_PATH[args.model_name],
         **from_pretrained_kwargs,
     )
+
+    # attention dropout
+    for layer in base_model.model.layers:
+        layer.self_attn.attention_dropout = args.attention_dropout
+    base_model.config.attention_dropout = args.attention_dropout
+
+    # program dropout
+    program_dropout = nn.Dropout(p=args.program_dropout)
 
     if args.untrainable_nbit in [4, 8]:
         base_model = prepare_model_for_kbit_training(
@@ -2386,6 +2406,7 @@ def main():
         no_separate_color_tokens=args.no_separate_color_tokens,
         extra_inference_pairs=args.extra_inference_pairs,
         limit_inference_pairs=args.limit_inference_pairs,
+        limit_inference_pairs_strict=args.limit_inference_pairs_strict,
         max_num_train_pair=args.max_num_pair - 1,
     )
     eval_eval_dataset = EvalDataset(
@@ -2408,6 +2429,7 @@ def main():
         no_separate_color_tokens=args.no_separate_color_tokens,
         extra_inference_pairs=args.extra_inference_pairs,
         limit_inference_pairs=args.limit_inference_pairs,
+        limit_inference_pairs_strict=args.limit_inference_pairs_strict,
         max_num_train_pair=args.max_num_pair - 1,
     )
     eval_collate_fn = partial(collate_fn_eval, dataset=eval_train_dataset) # only use tokenizer, padding info
@@ -2446,6 +2468,7 @@ def main():
             quantizer.train()
         if program_norm is not None:
             program_norm.train()
+        program_dropout.train()
 
         ce_loss_accum = 0.0
         kl_loss_accum = 0.0
@@ -2476,6 +2499,7 @@ def main():
                         vae_projection=vae_projection,
                         quantizer=quantizer,
                         program_norm=program_norm,
+                        program_dropout=program_dropout,
                         tokenizer=tokenizer,
                         # data
                         input_ids=input_ids,
@@ -2498,6 +2522,7 @@ def main():
                         concat_programs=args.concat_programs,
                         train_codebook_only=train_codebook_only,
                         ar_gradient_checkpointing=args.ar_gradient_checkpointing,
+                        program_noise_std=args.program_noise_std,
                     )
 
                 # only log one process

@@ -864,6 +864,8 @@ class EvalDataset:
         no_dim: bool,
         no_separate_color_tokens: bool,
         extra_inference_pairs: int,
+        limit_inference_pairs: int,
+        max_num_train_pair: int,
     ):
         self.permute_n = permute_n
         self.augment_n = augment_n
@@ -878,6 +880,8 @@ class EvalDataset:
         self.debug_len = debug_len
         self.no_dim = no_dim
         self.no_separate_color_tokens = no_separate_color_tokens
+        self.limit_inference_pairs = limit_inference_pairs
+        self.max_num_train_pair = max_num_train_pair # max num pair in training, used for limiting inference
 
         self.extra_inference_pairs = extra_inference_pairs
         self.inference_pair_rng = np.random.RandomState(seed)
@@ -1041,11 +1045,17 @@ class EvalDataset:
 
         # extra inference pairs for inference scaling
         if extra_inference_pairs > 0:
-            task.train_examples += self.inference_pair_rng.choice(
-                task.train_examples, # type: ignore
-                size=extra_inference_pairs,
-                replace=True,
-            ).tolist() # type: ignore
+            # determine number of pairs to sample
+            num_new_pairs = extra_inference_pairs
+            if self.limit_inference_pairs:
+                num_new_pairs = min(extra_inference_pairs, self.max_num_train_pair - len(task.train_examples))
+            # sample new pairs
+            if num_new_pairs > 0:
+                task.train_examples += self.inference_pair_rng.choice(
+                    task.train_examples, # type: ignore
+                    size=num_new_pairs,
+                    replace=True,
+                ).tolist() # type: ignore
 
         # parse task
         pair_idx_to_input_ids = []

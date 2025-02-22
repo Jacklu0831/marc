@@ -23,3 +23,7 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
     --consistency_type only_first \
     --consistency_loss_lambda 1.0 \
     --wandb
+
+# Submitted batch job 57467035
+# Submitted batch job 57467036
+# Submitted batch job 57467037
