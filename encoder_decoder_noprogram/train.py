@@ -1,4 +1,4 @@
-from custom_llama import LlamaForCausalLM
+from custom_llama import MyLlamaForCausalLM
 from transformers.tokenization_utils_fast import PreTrainedTokenizerFast
 from datetime import timedelta
 import arclib # required
@@ -290,7 +290,7 @@ def evaluate(
                     for task_input_ids, task_inputs_embeds, task_attention_mask, input_ids_len, start_idxs in zip(gen_input_ids, gen_inputs_embeds, gen_attention_mask, gen_input_ids_lens, pair_start_idxs):
                         assert start_idxs[0] == 1 # first pair starts after bos
                         # start_idxs are offset if padding side is left
-                        if dataset.gen_pad_side == "left":
+                        if dataset.pad_side == "left":
                             start_idxs = [s + task_input_ids.shape[0] - input_ids_len for s in start_idxs]
                         assert len(set(task_input_ids[start_idxs].tolist())) == 1 # all should be the input token (we remove bos)
 
@@ -301,7 +301,7 @@ def evaluate(
 
                         for i, start_idx in enumerate(start_idxs):
                             end_idx = start_idxs[i+1] if i < len(start_idxs) - 1 else len(task_inputs_embeds)
-                            # program start
+                            # program intervals
                             program_start = sum(len(x) for x in task_inputs_embeds_with_programs)
                             task_program_intervals.append((program_start, program_start + ntokens))
                             # insert program embedding into inputs_embeds
@@ -315,7 +315,7 @@ def evaluate(
                         pad_length = (max_num_pairs - len(start_idxs)) * ntokens
                         task_pad_inputs_embeds = pad_embeds[None, ...].expand(pad_length, -1)
                         task_pad_attention_mask = torch.full((pad_length,), 0, device=device, dtype=dtype)
-                        if dataset.gen_pad_side == 'left':
+                        if dataset.pad_side == 'left':
                             task_inputs_embeds_with_programs.insert(0, task_pad_inputs_embeds)
                             task_attention_mask_with_programs.insert(0, task_pad_attention_mask)
                             task_program_intervals = [(x[0] + pad_length, x[1] + pad_length) for x in task_program_intervals]
@@ -333,6 +333,19 @@ def evaluate(
                     attention_mask_with_programs = torch.stack(attention_mask_with_programs)
                     assert inputs_embeds_with_programs.shape[1] == gen_input_ids.shape[1] + max_num_pairs * ntokens
                     assert inputs_embeds_with_programs.shape[:2] == attention_mask_with_programs.shape[:2]
+
+                    # # debug: assert programs are programs based on stored intervals
+                    # for embs, attn, intervals in zip(inputs_embeds_with_programs, attention_mask_with_programs, program_intervals):
+                    #     for a, b in intervals:
+                    #         assert torch.equal(embs[a:b], program_embeddings('dummy'))
+                    #         assert attn[a:b].sum() == attn[a:b].numel()
+
+                    # # debug: assert no middle padding
+                    # assert set(torch.unique(attention_mask_with_programs).tolist()).issubset({0, 1})
+                    # if dataset.pad_side == 'left':
+                    #     assert torch.all(attention_mask_with_programs[:, :-1] <= attention_mask_with_programs[:, 1:])
+                    # else:
+                    #     assert torch.all(attention_mask_with_programs[:, :-1] >= attention_mask_with_programs[:, 1:])
 
                     # generate
                     if not attention_cutoff:
@@ -741,6 +754,20 @@ def model_loss(
     assert inputs_embeds_with_programs.shape[1] == input_ids.shape[1] + max_num_pairs * ntokens
     assert inputs_embeds_with_programs.shape[:2] == attention_mask_with_programs.shape[:2] == label_ids_with_programs.shape[:2]
 
+    # # debug: assert programs are programs based on stored intervals
+    # for embs, attn, lab, intervals in zip(inputs_embeds_with_programs, attention_mask_with_programs, label_ids_with_programs, program_intervals):
+    #     for a, b in intervals:
+    #         assert torch.equal(embs[a:b], program_embeddings('dummy'))
+    #         assert attn[a:b].sum() == attn[a:b].numel()
+    #         assert (lab[a:b] == -100).sum() == lab[a:b].numel()
+
+    # # debug: assert no middle padding
+    # assert set(torch.unique(attention_mask_with_programs).tolist()).issubset({0, 1})
+    # if pad_side == 'left':
+    #     assert torch.all(attention_mask_with_programs[:, :-1] <= attention_mask_with_programs[:, 1:])
+    # else:
+    #     assert torch.all(attention_mask_with_programs[:, :-1] >= attention_mask_with_programs[:, 1:])
+
     if not attention_cutoff:
         return model(
             inputs_embeds=inputs_embeds_with_programs,
@@ -813,8 +840,7 @@ def main():
     parser.add_argument("--min_num_pair", type=int, default=3) # includes test pair
     parser.add_argument("--max_num_pair", type=int, default=8) # includes test pair
     parser.add_argument("--max_seq_len", type=int, default=8192)
-    parser.add_argument("--train_pad_side", type=str, choices=["left", "right"], default="right")
-    parser.add_argument("--gen_pad_side", type=str, choices=["left", "right"], default="left")
+    parser.add_argument("--pad_side", type=str, choices=["left", "right"], default="left")
 
     # re-arc train data
     parser.add_argument("--train_data_dir", type=str, default="./data/re-arc/train_data/tasks")
@@ -869,7 +895,7 @@ def main():
 
     # check args
     if args.model_name == "nemo8b":
-        assert args.train_pad_side == args.gen_pad_side == "left"
+        assert args.pad_side == "left"
     assert not (args.no_train_original and args.only_train_original)
     assert args.min_num_pair >= 3
 
@@ -944,7 +970,7 @@ def main():
     else:
         raise ValueError(f"unrecognized untrainable_nbit {args.untrainable_nbit}")
 
-    base_model = LlamaForCausalLM.from_pretrained(
+    base_model = MyLlamaForCausalLM.from_pretrained(
         pretrained_model_name_or_path=MODEL_NAME_TO_PATH[args.model_name],
         **from_pretrained_kwargs,
     )
@@ -1087,7 +1113,7 @@ def main():
         debug_fixed_order=args.debug_fixed_order,
         debug_random_pad=args.debug_random_pad,
         debug_pad_len=args.debug_pad_len,
-        train_pad_side=args.train_pad_side,
+        pad_side=args.pad_side,
         no_color_permute=args.no_color_permute,
         no_pair_permute=args.no_pair_permute,
         no_d8=args.no_d8,
@@ -1193,8 +1219,7 @@ def main():
         tokenizer=tokenizer,
         debug_random_pad=args.debug_random_pad,
         debug_pad_len=args.debug_pad_len,
-        train_pad_side=args.train_pad_side,
-        gen_pad_side=args.gen_pad_side,
+        pad_side=args.pad_side,
         debug_len=args.debug_len,
         no_separate_color_tokens=args.no_separate_color_tokens,
         max_seq_len=args.max_seq_len,
@@ -1212,8 +1237,7 @@ def main():
         tokenizer=tokenizer,
         debug_random_pad=args.debug_random_pad,
         debug_pad_len=args.debug_pad_len,
-        train_pad_side=args.train_pad_side,
-        gen_pad_side=args.gen_pad_side,
+        pad_side=args.pad_side,
         debug_len=args.debug_len,
         no_separate_color_tokens=args.no_separate_color_tokens,
         max_seq_len=args.max_seq_len,
@@ -1271,7 +1295,7 @@ def main():
                         input_ids_lens=input_ids_lens,
                         pair_start_idxs=pair_start_idxs,
                         ntokens=args.ntokens,
-                        pad_side=args.train_pad_side,
+                        pad_side=args.pad_side,
                         attention_cutoff=args.attention_cutoff,
                         attend_prev_programs=args.attend_prev_programs,
                     )
