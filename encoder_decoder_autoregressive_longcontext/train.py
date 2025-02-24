@@ -1252,7 +1252,7 @@ def main():
     parser.add_argument("--grad_accum_steps", type=int, default=4)
     parser.add_argument("--train_batch_size", type=int, default=2)
     parser.add_argument("--eval_batch_size", type=int, default=2)
-    parser.add_argument("--lr_embedding", type=float, default=1e-4)
+    parser.add_argument("--lr_embedding", type=float, default=1e-5)
     parser.add_argument("--lr_program", type=float, default=1e-4)
     parser.add_argument("--lr_prior", type=float, default=1e-4)
     parser.add_argument("--lr_other", type=float, default=1e-4)
@@ -1283,7 +1283,11 @@ def main():
     parser.add_argument("--separate_color_tokens", action='store_true')
 
     # re-arc train data
+<<<<<<< HEAD
     parser.add_argument("--train_data_dir", type=str, default="/scratch/zy3101/re-arc/train_data/tasks")
+=======
+    parser.add_argument("--train_data_dir", type=str, default="./data/re-arc/train_data/tasks")
+>>>>>>> origin/main
     parser.add_argument("--no_train_original", action="store_true")
     parser.add_argument("--only_train_original", action="store_true")
 
@@ -1297,7 +1301,11 @@ def main():
     parser.add_argument("--extra_augment_single_grid", action="store_true")
 
     # eval train data
+<<<<<<< HEAD
     parser.add_argument("--eval_train_dir", type=str, default="/scratch/zy3101/re-arc/arc_original/training")
+=======
+    parser.add_argument("--eval_train_dir", type=str, default="./data/re-arc/arc_original/training")
+>>>>>>> origin/main
     parser.add_argument("--eval_train_select_tasks_path", type=str, default=None)
     parser.add_argument("--eval_train_leave_ns", type=int, nargs="+", default=[0])
     parser.add_argument("--eval_train_leave_ns_inc", action="store_true")
@@ -1306,7 +1314,11 @@ def main():
     parser.add_argument("--eval_train_permute_iters", type=int, default=0)
 
     # eval eval data (mirror eval train data)
+<<<<<<< HEAD
     parser.add_argument("--eval_eval_dir", type=str, default="/scratch/zy3101/re-arc/arc_original/evaluation")
+=======
+    parser.add_argument("--eval_eval_dir", type=str, default="./data/re-arc/arc_original/evaluation")
+>>>>>>> origin/main
     parser.add_argument("--eval_eval_select_tasks_path", type=str, default=None)
     parser.add_argument("--eval_eval_leave_ns", type=int, nargs="+", default=[0])
     parser.add_argument("--eval_eval_leave_ns_inc", action="store_true")

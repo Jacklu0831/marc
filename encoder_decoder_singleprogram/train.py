@@ -1629,15 +1629,24 @@ def main():
     parser.add_argument("--color_equiv", action='store_true')
 
     # train data
+<<<<<<< HEAD
     parser.add_argument("--train_data_dir", type=str, default="/scratch/zy3101/re-arc/train_data/tasks")
     parser.add_argument("--verifier_file", type=str, default="/scratch/zy3101/re-arc/verifiers.py") # for re-arc and train-original invar loss
+=======
+    parser.add_argument("--train_data_dir", type=str, default="./data/re-arc/train_data/tasks")
+    parser.add_argument("--verifier_file", type=str, default="./data/re-arc/verifiers.py") # for re-arc and train-original invar loss
+>>>>>>> origin/main
     parser.add_argument("--min_prefix", type=int, default=2)
     parser.add_argument("--max_prefix", type=int, default=7)
     parser.add_argument("--augment_ratio", type=float, default=0.0)
     parser.add_argument("--augment_single_grid", action="store_true")
 
     # eval train data
+<<<<<<< HEAD
     parser.add_argument("--eval_train_dir", type=str, default="/scratch/zy3101/re-arc/arc_original/training")
+=======
+    parser.add_argument("--eval_train_dir", type=str, default="./data/re-arc/arc_original/training")
+>>>>>>> origin/main
     parser.add_argument("--eval_train_select_tasks_path", type=str, default=None)
     parser.add_argument("--eval_train_leave_ns", type=int, nargs="+", default=[0])
     parser.add_argument("--eval_train_leave_ns_inc", action="store_true")
@@ -1646,7 +1655,11 @@ def main():
     parser.add_argument("--eval_train_permute_iters", type=int, default=0)
 
     # eval eval data (mirror eval train data)
+<<<<<<< HEAD
     parser.add_argument("--eval_eval_dir", type=str, default="/scratch/zy3101/re-arc/arc_original/evaluation")
+=======
+    parser.add_argument("--eval_eval_dir", type=str, default="./data/re-arc/arc_original/evaluation")
+>>>>>>> origin/main
     parser.add_argument("--eval_eval_select_tasks_path", type=str, default=None)
     parser.add_argument("--eval_eval_leave_ns", type=int, nargs="+", default=[0])
     parser.add_argument("--eval_eval_leave_ns_inc", action="store_true")

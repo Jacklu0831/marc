@@ -155,7 +155,11 @@ def main():
     parser.add_argument("--aug_type", type=str, choices=['none', 'd8', 'extra', 'both'], default='extra')
     parser.add_argument("--max_samples_per_task", type=int, default=250)
     parser.add_argument("--permute_n", type=int, default=1)
+<<<<<<< HEAD
     parser.add_argument("--data_dir", type=str, default="/scratch/zy3101/re-arc/arc_original/evaluation")
+=======
+    parser.add_argument("--data_dir", type=str, default="./data/re-arc/arc_original/evaluation")
+>>>>>>> origin/main
     parser.add_argument("--select_tasks_path", type=str, default=None)
     parser.add_argument("--num_workers", type=int, default=8)
     parser.add_argument("--encoder_pad_side", type=str, choices=["left", "right"], default="right")

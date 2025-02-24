@@ -5,7 +5,11 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
     --weight_epoch 1 \
     --ttt_weight_dir ttt_test1_partiallora_single_gpu_test_ttt_1 \
     --ttt_weight_epoch 100 \
+<<<<<<< HEAD
     --data_dir /scratch/zy3101/re-arc/arc_original_debug_overfit2_ttt/training \
+=======
+    --data_dir ./data/re-arc/arc_original_debug_overfit2_ttt/training \
+>>>>>>> origin/main
     --compact_grids \
     --max_seq_len 5120 \
     --flash_attn \
@@ -22,7 +26,11 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
     --weight_epoch 1 \
     --ttt_weight_dir ttt_test1_partiallora_multi_gpu_test_ttt_1 \
     --ttt_weight_epoch 100 \
+<<<<<<< HEAD
     --data_dir /scratch/zy3101/re-arc/arc_original_debug_overfit2_ttt/training \
+=======
+    --data_dir ./data/re-arc/arc_original_debug_overfit2_ttt/training \
+>>>>>>> origin/main
     --compact_grids \
     --max_seq_len 5120 \
     --flash_attn \
@@ -39,7 +47,11 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
     --weight_epoch 1 \
     --ttt_weight_dir ttt_test2_partiallora_test_ttt_2 \
     --ttt_weight_epoch 100 \
+<<<<<<< HEAD
     --data_dir /scratch/zy3101/re-arc/arc_original_debug_overfit4_ttt/training \
+=======
+    --data_dir ./data/re-arc/arc_original_debug_overfit4_ttt/training \
+>>>>>>> origin/main
     --compact_grids \
     --max_seq_len 5120 \
     --flash_attn \
@@ -54,7 +66,11 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
     --weight_epoch 1 \
     --ttt_weight_dir ttt_test1_fulllora_test_ttt_1 \
     --ttt_weight_epoch 100 \
+<<<<<<< HEAD
     --data_dir /scratch/zy3101/re-arc/arc_original_debug_overfit4_ttt/training \
+=======
+    --data_dir ./data/re-arc/arc_original_debug_overfit4_ttt/training \
+>>>>>>> origin/main
     --compact_grids \
     --max_seq_len 5120 \
     --flash_attn \
@@ -70,7 +86,11 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
     --weight_epoch 1 \
     --ttt_weight_dir ttt_test2_fulllora_test_ttt_2 \
     --ttt_weight_epoch 100 \
+<<<<<<< HEAD
     --data_dir /scratch/zy3101/re-arc/arc_original_debug_overfit4_ttt/training \
+=======
+    --data_dir ./data/re-arc/arc_original_debug_overfit4_ttt/training \
+>>>>>>> origin/main
     --compact_grids \
     --max_seq_len 5120 \
     --flash_attn \
@@ -85,7 +105,11 @@ accelerate launch --main_process_port $MASTER_PORT --num_processes 1 --mixed_pre
     --weight_epoch 1 \
     --ttt_weight_dir ttt_test1_partiallora_test_ttt_1 \
     --ttt_weight_epoch 100 \
+<<<<<<< HEAD
     --data_dir /scratch/zy3101/re-arc/arc_original_debug_overfit4_ttt/training \
+=======
+    --data_dir ./data/re-arc/arc_original_debug_overfit4_ttt/training \
+>>>>>>> origin/main
     --compact_grids \
     --max_seq_len 5120 \
     --flash_attn \

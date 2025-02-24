@@ -2,7 +2,11 @@
 accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder/evaluate.py \
     --tag test \
     --weight_dir test_prefix2prefix \
+<<<<<<< HEAD
     --data_dir /scratch/zy3101/re-arc/arc_original_debug_overfit4/training \
+=======
+    --data_dir ./data/re-arc/arc_original_debug_overfit4/training \
+>>>>>>> origin/main
     --batch_size 2 \
     --conditioning_method prefix2prefix \
     --weight_epoch 2 \
@@ -20,7 +24,11 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
 accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder/evaluate.py \
     --tag test \
     --weight_dir test_hidden2prefix_full \
+<<<<<<< HEAD
     --data_dir /scratch/zy3101/re-arc/arc_original_debug_overfit4/training \
+=======
+    --data_dir ./data/re-arc/arc_original_debug_overfit4/training \
+>>>>>>> origin/main
     --batch_size 2 \
     --conditioning_method hidden2prefix_full \
     --weight_epoch 2 \
@@ -38,7 +46,11 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
 accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder/evaluate.py \
     --tag test \
     --weight_dir test_hidden2prompt \
+<<<<<<< HEAD
     --data_dir /scratch/zy3101/re-arc/arc_original_debug_overfit4/training \
+=======
+    --data_dir ./data/re-arc/arc_original_debug_overfit4/training \
+>>>>>>> origin/main
     --batch_size 2 \
     --conditioning_method hidden2prompt \
     --weight_epoch 2 \
@@ -56,7 +68,11 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
 accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder/evaluate.py \
     --tag test \
     --weight_dir test_hidden2prompt_full \
+<<<<<<< HEAD
     --data_dir /scratch/zy3101/re-arc/arc_original_debug_overfit4/training \
+=======
+    --data_dir ./data/re-arc/arc_original_debug_overfit4/training \
+>>>>>>> origin/main
     --batch_size 2 \
     --conditioning_method hidden2prompt_full \
     --weight_epoch 1 \
@@ -74,7 +90,11 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
 accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder/evaluate.py \
     --tag test \
     --weight_dir test_hidden2prompt_full_identity \
+<<<<<<< HEAD
     --data_dir /scratch/zy3101/re-arc/arc_original_debug_overfit4/training \
+=======
+    --data_dir ./data/re-arc/arc_original_debug_overfit4/training \
+>>>>>>> origin/main
     --batch_size 2 \
     --conditioning_method hidden2prompt_full_identity \
     --weight_epoch 4 \
@@ -92,7 +112,11 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
 accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder/evaluate.py \
     --tag test \
     --weight_dir test_nolora \
+<<<<<<< HEAD
     --data_dir /scratch/zy3101/re-arc/arc_original_debug_overfit4/training \
+=======
+    --data_dir ./data/re-arc/arc_original_debug_overfit4/training \
+>>>>>>> origin/main
     --batch_size 2 \
     --conditioning_method hidden2prompt \
     --no_lora \
@@ -111,7 +135,11 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
 accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder/evaluate.py \
     --tag test \
     --weight_dir test_tiemodels \
+<<<<<<< HEAD
     --data_dir /scratch/zy3101/re-arc/arc_original_debug_overfit4/training \
+=======
+    --data_dir ./data/re-arc/arc_original_debug_overfit4/training \
+>>>>>>> origin/main
     --batch_size 2 \
     --conditioning_method hidden2prompt \
     --tie_models \
@@ -130,7 +158,11 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
 accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder/evaluate.py \
     --tag test \
     --weight_dir test_3bto1b \
+<<<<<<< HEAD
     --data_dir /scratch/zy3101/re-arc/arc_original_debug_overfit4/training \
+=======
+    --data_dir ./data/re-arc/arc_original_debug_overfit4/training \
+>>>>>>> origin/main
     --batch_size 2 \
     --conditioning_method hidden2prompt_full \
     --encoder_name llama3b \
@@ -151,7 +183,11 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
 accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder/evaluate.py \
     --tag test \
     --weight_dir test_quantized \
+<<<<<<< HEAD
     --data_dir /scratch/zy3101/re-arc/arc_original_debug_overfit4/training \
+=======
+    --data_dir ./data/re-arc/arc_original_debug_overfit4/training \
+>>>>>>> origin/main
     --batch_size 2 \
     --conditioning_method hidden2prompt \
     --untrainable_nbit 3.6 \
@@ -172,7 +208,11 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
 accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder/evaluate.py \
     --tag test \
     --weight_dir test_quantized2 \
+<<<<<<< HEAD
     --data_dir /scratch/zy3101/re-arc/arc_original_debug_overfit4/training \
+=======
+    --data_dir ./data/re-arc/arc_original_debug_overfit4/training \
+>>>>>>> origin/main
     --batch_size 2 \
     --conditioning_method hidden2prompt \
     --untrainable_nbit 4 \
@@ -185,7 +225,11 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
 accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder/evaluate.py \
     --tag test \
     --weight_dir test_quantized3 \
+<<<<<<< HEAD
     --data_dir /scratch/zy3101/re-arc/arc_original_debug_overfit4/training \
+=======
+    --data_dir ./data/re-arc/arc_original_debug_overfit4/training \
+>>>>>>> origin/main
     --batch_size 2 \
     --conditioning_method hidden2prompt \
     --untrainable_nbit 3.6 \
@@ -198,7 +242,11 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
 accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder/evaluate.py \
     --tag test \
     --weight_dir test_quantized4 \
+<<<<<<< HEAD
     --data_dir /scratch/zy3101/re-arc/arc_original_debug_overfit4/training \
+=======
+    --data_dir ./data/re-arc/arc_original_debug_overfit4/training \
+>>>>>>> origin/main
     --batch_size 2 \
     --conditioning_method hidden2prompt \
     --untrainable_nbit 4 \
@@ -210,7 +258,11 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
 accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder/evaluate.py \
     --tag test \
     --weight_dir test_combined \
+<<<<<<< HEAD
     --data_dir /scratch/zy3101/re-arc/arc_original_debug_overfit4/training \
+=======
+    --data_dir ./data/re-arc/arc_original_debug_overfit4/training \
+>>>>>>> origin/main
     --batch_size 2 \
     --conditioning_method hidden2prefix_full \
     --no_lora \

@@ -1,9 +1,15 @@
 # lmheads
 accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder/train.py \
     --tag test_lmhead \
+<<<<<<< HEAD
     --train_data_dir /scratch/zy3101/re-arc/train_data_debug_overfit4/tasks \
     --eval_train_dir /scratch/zy3101/re-arc/arc_original_debug_overfit4/training \
     --eval_eval_dir /scratch/zy3101/re-arc/arc_original_debug_overfit4/training \
+=======
+    --train_data_dir ./data/re-arc/train_data_debug_overfit4/tasks \
+    --eval_train_dir ./data/re-arc/arc_original_debug_overfit4/training \
+    --eval_eval_dir ./data/re-arc/arc_original_debug_overfit4/training \
+>>>>>>> origin/main
     --eval_epochs 1 \
     --min_prefix 4 \
     --max_prefix 4 \
@@ -38,7 +44,11 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
 accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder/evaluate.py \
     --tag test \
     --weight_dir test_lmhead \
+<<<<<<< HEAD
     --data_dir /scratch/zy3101/re-arc/arc_original_debug_overfit4/training \
+=======
+    --data_dir ./data/re-arc/arc_original_debug_overfit4/training \
+>>>>>>> origin/main
     --conditioning_method prefix2prefix \
     --epoch 1
 

@@ -3,9 +3,15 @@
 # conditionings hidden2prompt ckpting
 accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder/train.py \
     --tag 0111_conditionings_hidden2prompt_ckpting \
+<<<<<<< HEAD
     --train_data_dir /scratch/zy3101/re-arc/train_data/tasks \
     --eval_train_dir /scratch/zy3101/re-arc/arc_original/training \
     --eval_eval_dir /scratch/zy3101/re-arc/arc_original/evaluation \
+=======
+    --train_data_dir ./data/re-arc/train_data/tasks \
+    --eval_train_dir ./data/re-arc/arc_original/training \
+    --eval_eval_dir ./data/re-arc/arc_original/evaluation \
+>>>>>>> origin/main
     --eval_epochs 1 \
     --num_epochs 20 \
     --samples_per_epoch 20000 \
@@ -21,9 +27,15 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
 # conditionings hidden2prompt ckpting nocompact
 accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder/train.py \
     --tag 0111_conditionings_hidden2prompt_ckpting_nocompact \
+<<<<<<< HEAD
     --train_data_dir /scratch/zy3101/re-arc/train_data/tasks \
     --eval_train_dir /scratch/zy3101/re-arc/arc_original/training \
     --eval_eval_dir /scratch/zy3101/re-arc/arc_original/evaluation \
+=======
+    --train_data_dir ./data/re-arc/train_data/tasks \
+    --eval_train_dir ./data/re-arc/arc_original/training \
+    --eval_eval_dir ./data/re-arc/arc_original/evaluation \
+>>>>>>> origin/main
     --eval_epochs 1 \
     --num_epochs 20 \
     --samples_per_epoch 20000 \

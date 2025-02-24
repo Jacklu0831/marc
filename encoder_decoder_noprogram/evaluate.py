@@ -80,7 +80,7 @@ def main():
     parser.add_argument("--gen_pad_side", type=str, choices=["left", "right"], default="left")
 
     # eval data
-    parser.add_argument("--data_dir", type=str, default="/scratch/yl11330/re-arc/arc_original/evaluation")
+    parser.add_argument("--data_dir", type=str, default="./data/re-arc/arc_original/evaluation")
     parser.add_argument("--select_tasks_path", type=str, default=None)
     parser.add_argument("--leave_ns", type=int, nargs="+", default=[0])
     parser.add_argument("--leave_ns_inc", action="store_true")

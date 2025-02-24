@@ -3,9 +3,15 @@
 # conditionings prefix2prefix
 accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder/train.py \
     --tag 0111_conditionings_prefix2prefix \
+<<<<<<< HEAD
     --train_data_dir /scratch/zy3101/re-arc/train_data/tasks \
     --eval_train_dir /scratch/zy3101/re-arc/arc_original/training \
     --eval_eval_dir /scratch/zy3101/re-arc/arc_original/evaluation \
+=======
+    --train_data_dir ./data/re-arc/train_data/tasks \
+    --eval_train_dir ./data/re-arc/arc_original/training \
+    --eval_eval_dir ./data/re-arc/arc_original/evaluation \
+>>>>>>> origin/main
     --eval_epochs 1 \
     --num_epochs 20 \
     --samples_per_epoch 20000 \
@@ -19,9 +25,15 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
 # conditionings hidden2prompt
 accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder/train.py \
     --tag 0111_conditionings_hidden2prompt \
+<<<<<<< HEAD
     --train_data_dir /scratch/zy3101/re-arc/train_data/tasks \
     --eval_train_dir /scratch/zy3101/re-arc/arc_original/training \
     --eval_eval_dir /scratch/zy3101/re-arc/arc_original/evaluation \
+=======
+    --train_data_dir ./data/re-arc/train_data/tasks \
+    --eval_train_dir ./data/re-arc/arc_original/training \
+    --eval_eval_dir ./data/re-arc/arc_original/evaluation \
+>>>>>>> origin/main
     --eval_epochs 1 \
     --num_epochs 20 \
     --samples_per_epoch 20000 \
@@ -35,9 +47,15 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
 # conditionings hidden2prefix_full
 accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder/train.py \
     --tag 0111_conditionings_hidden2prefix_full \
+<<<<<<< HEAD
     --train_data_dir /scratch/zy3101/re-arc/train_data/tasks \
     --eval_train_dir /scratch/zy3101/re-arc/arc_original/training \
     --eval_eval_dir /scratch/zy3101/re-arc/arc_original/evaluation \
+=======
+    --train_data_dir ./data/re-arc/train_data/tasks \
+    --eval_train_dir ./data/re-arc/arc_original/training \
+    --eval_eval_dir ./data/re-arc/arc_original/evaluation \
+>>>>>>> origin/main
     --eval_epochs 1 \
     --num_epochs 20 \
     --samples_per_epoch 20000 \
@@ -51,9 +69,15 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
 # conditionings hidden2prefix_shared
 accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder/train.py \
     --tag 0111_conditionings_hidden2prefix_shared \
+<<<<<<< HEAD
     --train_data_dir /scratch/zy3101/re-arc/train_data/tasks \
     --eval_train_dir /scratch/zy3101/re-arc/arc_original/training \
     --eval_eval_dir /scratch/zy3101/re-arc/arc_original/evaluation \
+=======
+    --train_data_dir ./data/re-arc/train_data/tasks \
+    --eval_train_dir ./data/re-arc/arc_original/training \
+    --eval_eval_dir ./data/re-arc/arc_original/evaluation \
+>>>>>>> origin/main
     --eval_epochs 1 \
     --num_epochs 20 \
     --samples_per_epoch 20000 \

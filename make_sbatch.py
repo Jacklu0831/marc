@@ -4,7 +4,10 @@ import glob
 
 template = """#!/bin/bash
 
-#SBATCH --constraint='a100|h100'
+$REQUEUE
+$ACCOUNT
+$PARTITION
+$CONSTRAINT
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=$NGPU
 #SBATCH --cpus-per-task=$NCPU
@@ -31,12 +34,36 @@ parser.add_argument('--gb', type=int, help='bash file of commands', default=32)
 parser.add_argument('--ngpu', type=int, help='bash file of commands', default=1)
 parser.add_argument('--ncpu', type=int, help='bash file of commands', default=8)
 parser.add_argument('--time', type=str, help='bash file of commands', required=True)
+<<<<<<< HEAD
 parser.add_argument('--sbatch_dir', type=str, help='bash file of commands', default='/scratch/zy3101/marc/sbatch_files')
+=======
+parser.add_argument('--sbatch_dir', type=str, help='bash file of commands', default='/scratch/yl11330/marc/sbatch_files')
+parser.add_argument('--burst', action='store_true')
+
+>>>>>>> origin/main
 args = parser.parse_args()
 
 # remove existing sbatch files
 for sbatch_file in glob.glob(os.path.join(args.sbatch_dir, '*')):
     os.remove(sbatch_file)
+
+# burst stuff
+if args.burst:
+    template = template.replace("$REQUEUE", "#SBATCH --requeue")
+    template = template.replace("$ACCOUNT", "#SBATCH --account yl11330")
+    assert args.ngpu in [1, 2, 4]
+    partition = {
+        1: "c12m85-a100-1",
+        2: "c24m170-a100-2",
+        4: "a100-4-spot",
+    }[args.ngpu]
+    template = template.replace("$PARTITION", f"#SBATCH --partition {partition}")
+    template = template.replace("$CONSTRAINT", "")
+else:
+    template = template.replace("$REQUEUE", "")
+    template = template.replace("$ACCOUNT", "")
+    template = template.replace("$PARTITION", "")
+    template = template.replace("$CONSTRAINT", "#SBATCH --constraint='a100|h100'")
 
 template = template.replace('$NGPU', str(args.ngpu))
 template = template.replace('$NCPU', str(args.ncpu))
@@ -86,7 +113,7 @@ for bash_file in args.bash_files:
     assert len(job_lines) == len(set(job_lines)), 'duplicate jobs'
     if '--tag' in job_lines[0]:
         tags = [l.split()[l.split().index('--tag') + 1] for l in job_lines]
-        assert len(tags) == len(set(tags)), 'duplicate tags'
+        assert len(tags) == len(set(tags)), f'duplicate tags {tags}'
     # collect clusters
     job_cluster_names = []
     job_clusters = []
@@ -120,5 +147,7 @@ for cluster_name, job_cluster in model_dirs_dict.items():
         with open(sbatch_path, 'w') as f:
             f.write(sbatch_content)
 
-for sbatch_path in sbatch_paths:
-    os.system(f'sbatch {sbatch_path}')
+if not args.burst:
+    # run sbatch
+    for sbatch_path in sbatch_paths:
+        os.system(f'sbatch {sbatch_path}')

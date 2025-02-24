@@ -96,9 +96,13 @@ def main():
 
     # eval data
 <<<<<<< HEAD
+<<<<<<< HEAD
     parser.add_argument("--data_dir", type=str, default="/scratch/zy3101/re-arc/arc_original/training")
 =======
     parser.add_argument("--data_dir", type=str, default="/scratch/yl11330/re-arc/arc_original/evaluation")
+>>>>>>> origin/main
+=======
+    parser.add_argument("--data_dir", type=str, default="./data/re-arc/arc_original/evaluation")
 >>>>>>> origin/main
     parser.add_argument("--select_tasks_path", type=str, default=None)
     parser.add_argument("--leave_ns", type=int, nargs="+", default=[0])

@@ -18,4 +18,4 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
     --wandb
 
 # Submitted batch job 57149751
-# Submitted batch job 57149752
+# Submitted batch job 57149752 # ideky killed

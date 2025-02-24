@@ -66,12 +66,15 @@ class ARCTokenizer:
              self.token_to_id["\n"]],
             dtype=torch.int64)
 
-    def encode_grid_to_tensor(self, grid: np.ndarray) -> torch.Tensor:
+    def encode_grid_to_tensor(self, grid: np.ndarray, no_separate_color_tokens: bool) -> torch.Tensor:
         assert grid.ndim == 2
         token_ids = []
         for row in grid:
             for x in row:
-                token_ids.append(self.token_to_id[str(x)])
+                if no_separate_color_tokens:
+                    token_ids.append(self.token_to_id[str(x)])
+                else:
+                    token_ids.append(self.token_to_id[f"c{str(x)}"])
             token_ids.append(self.token_to_id["\n"])
         token_ids = token_ids[:-1] # no \n at end
         return torch.tensor(token_ids, dtype=torch.int64)
@@ -79,11 +82,11 @@ class ARCTokenizer:
     def convert_token_to_id(self, token: str) -> torch.Tensor:
         return torch.tensor([self.token_to_id[token]], dtype=torch.int64)
 
-    def get_input_and_output_grid_ids(self, example: Example, add_bos: bool) -> Tuple[torch.Tensor, torch.Tensor]:
+    def get_input_and_output_grid_ids(self, example: Example, add_bos: bool, no_separate_color_tokens: bool) -> Tuple[torch.Tensor, torch.Tensor]:
         input_dim_ids = self.encode_dimensions_to_tensor(len(example.input), len(example.input[0]))
         output_dim_ids = self.encode_dimensions_to_tensor(len(example.output), len(example.output[0]))
-        input_grid_ids = self.encode_grid_to_tensor(example.input)
-        output_grid_ids = self.encode_grid_to_tensor(example.output)
+        input_grid_ids = self.encode_grid_to_tensor(example.input, no_separate_color_tokens)
+        output_grid_ids = self.encode_grid_to_tensor(example.output, no_separate_color_tokens)
 
         # input_grid_ids should contain everything except the output_grid_ids
         input_grid_ids = torch.cat([
@@ -106,6 +109,7 @@ class ARCTokenizer:
     def decode(
             self,
             token_ids: Union[List[int], torch.Tensor],
+            no_separate_color_tokens: bool,
             skip_special_tokens: bool = False,
             extra_id_to_token: Dict[int, str] = {}
         ) -> str:
@@ -116,7 +120,10 @@ class ARCTokenizer:
                 if token_id not in self.id_to_token:
                     tokens.append(extra_id_to_token[token_id])
                 else:
-                    tokens.append(self.id_to_token[token_id])
+                    token = self.id_to_token[token_id]
+                    if token.startswith('c') and (not no_separate_color_tokens):
+                        token = token[1:]
+                    tokens.append(token)
         return "".join(tokens)
 
     def get_grid_dimensions(self, token_ids: Union[List[int], torch.Tensor]) -> List[Tuple[int, int]]:
@@ -128,11 +135,15 @@ class ARCTokenizer:
                 dimensions.append((height, width))
         return dimensions
 
-    def batch_decode(self, batch_token_ids: torch.Tensor, skip_special_tokens: bool) -> List[str]:
+    def batch_decode(self, batch_token_ids: torch.Tensor, skip_special_tokens: bool, no_separate_color_tokens: bool) -> List[str]:
         assert batch_token_ids.dim() == 2
         texts = []
         for token_ids in batch_token_ids:
-            text = self.decode(token_ids, skip_special_tokens=skip_special_tokens)
+            text = self.decode(
+                token_ids=token_ids,
+                no_separate_color_tokens=no_separate_color_tokens,
+                skip_special_tokens=skip_special_tokens
+            )
             texts.append(text)
         return texts
 
@@ -274,8 +285,8 @@ def load_re_arc_from_data_dir(data_dir: str) -> Dict[str, List[Dict[str, List[Li
 
 
 def load_concept_arc() -> Dict[str, List[Dict[str, List[List[int]]]]]:
-    files = glob.glob(f'/scratch/yl11330/ConceptARC/corpus/*/*.json')
-    files += glob.glob(f'/scratch/yl11330/ConceptARC/MinimalTasks/*.json')
+    files = glob.glob(f'./data/ConceptARC/corpus/*/*.json')
+    files += glob.glob(f'./data/ConceptARC/MinimalTasks/*.json')
     tasks_dict = {}
     for data_i, file in enumerate(files):
         data = json.load(open(file, 'r'))
@@ -340,7 +351,9 @@ class TrainDataset(Dataset):
         only_train_original: bool,
         debug_len: int,
         num_workers: int,
+        no_separate_color_tokens: bool,
         max_seq_len: int,
+        ntokens: int,
     ):
         self.re_arc_ratio = re_arc_ratio
         self.concept_arc_ratio = concept_arc_ratio
@@ -360,7 +373,9 @@ class TrainDataset(Dataset):
         self.min_num_pair = min_num_pair
         self.max_num_pair = max_num_pair
         self.debug_len = debug_len
+        self.no_separate_color_tokens = no_separate_color_tokens
         self.max_seq_len = max_seq_len
+        self.ntokens = ntokens
 
         # setup args
         self.normalized_ratio = np.array([self.re_arc_ratio, self.concept_arc_ratio, self.arc_heavy_ratio])
@@ -520,7 +535,11 @@ def collate_fn_train(batch: List[int], dataset: TrainDataset, ntokens: int = 0, 
         for pair_i in range(required_num_pair):
             # get inputids, attention, labelids for batch of pairs at pair_i
             example = (task.train_examples + [task.test_example])[pair_i]
-            input_grid_ids, output_grid_ids = dataset.tokenizer.get_input_and_output_grid_ids(example=example, add_bos=(pair_i == 0))
+            input_grid_ids, output_grid_ids = dataset.tokenizer.get_input_and_output_grid_ids(
+                example=example,
+                add_bos=(pair_i == 0),
+                no_separate_color_tokens=dataset.no_separate_color_tokens,
+            )
             input_ids = torch.cat([input_grid_ids, output_grid_ids])
             attention_mask = torch.full(input_ids.shape, 1, dtype=torch.int64)
             # label id for all except first pair
@@ -538,6 +557,10 @@ def collate_fn_train(batch: List[int], dataset: TrainDataset, ntokens: int = 0, 
                 pair_idx_to_attention_mask.append(torch.full(ntokens, 1, dtype=torch.int64))
                 pair_idx_to_label_ids.append(torch.full(ntokens, -100, dtype=torch.int64))
 
+        # start idxs computed from cumsum of lengths of pairs except last, set first start idx to 1 for bos
+        pair_start_idxs = np.cumsum([0, *[len(x) for x in pair_idx_to_input_ids[:-1]]]).tolist()
+        pair_start_idxs[0] = 1
+
         input_ids = torch.cat(pair_idx_to_input_ids)
         attention_mask = torch.cat(pair_idx_to_attention_mask)
         label_ids = torch.cat(pair_idx_to_label_ids)
@@ -550,12 +573,15 @@ def collate_fn_train(batch: List[int], dataset: TrainDataset, ntokens: int = 0, 
             "input_ids": input_ids,
             "attention_mask": attention_mask,
             "label_ids": label_ids,
+            "pair_start_idxs": pair_start_idxs,
         })
 
     input_ids = [x['input_ids'] for x in out_list]
     attention_mask = [x['attention_mask'] for x in out_list]
     label_ids = [x['label_ids'] for x in out_list]
 
+    pair_start_idxs = [x['pair_start_idxs'] for x in out_list]
+    assert all(start_idxs[0] == 1 for start_idxs in pair_start_idxs)
     input_ids_lens = [len(i) for i in input_ids]
 
     # pad
@@ -573,9 +599,10 @@ def collate_fn_train(batch: List[int], dataset: TrainDataset, ntokens: int = 0, 
 
     batch_dict = {
         "input_ids": input_ids,
-        "attention_mask": label_ids,
+        "attention_mask": attention_mask,
         "label_ids": label_ids,
         "input_ids_lens": input_ids_lens,
+        "pair_start_idxs": pair_start_idxs,
     }
     return batch_dict
 
@@ -589,11 +616,14 @@ def collate_fn_train_dummy(batch: List[int], dataset: TrainDataset) -> Dict:
     attention_mask = torch.full((batch_size, dataset.debug_len), 1, dtype=torch.int64, device='cpu')
     input_ids_lens = [dataset.debug_len] * batch_size
 
+    pair_start_idxs = [list(range(1, dataset.debug_len * 9 // 10, dataset.debug_len // 15))[:10] for _ in range(batch_size)]
+
     return {
         "input_ids": input_ids,
         "attention_mask": attention_mask,
         "label_ids": input_ids,
         "input_ids_lens": input_ids_lens,
+        "pair_start_idxs": pair_start_idxs,
     }
 
 
@@ -617,7 +647,9 @@ class EvalDataset:
         train_pad_side: str,
         gen_pad_side: str,
         debug_len: int,
+        no_separate_color_tokens: bool,
         max_seq_len: int,
+        ntokens: int,
     ):
         self.permute_n = permute_n
         self.augment_n = augment_n
@@ -630,6 +662,8 @@ class EvalDataset:
         self.gen_pad_side = gen_pad_side
         self.debug_len = debug_len
         self.max_seq_len = max_seq_len
+        self.no_separate_color_tokens = no_separate_color_tokens
+        self.ntokens = ntokens
 
         self.augmenters = [Transpose(), Flip(0), Flip(1), Rotate(90), Rotate(180)]
 
@@ -798,14 +832,18 @@ class EvalDataset:
 
         for pair_i in range(num_pair):
             example = (task.train_examples + [task.test_example])[pair_i]
-            input_grid_ids, output_grid_ids = self.tokenizer.get_input_and_output_grid_ids(example=example, add_bos=(pair_i == 0))
+            input_grid_ids, output_grid_ids = self.tokenizer.get_input_and_output_grid_ids(
+                example=example,
+                add_bos=(pair_i == 0),
+                no_separate_color_tokens=self.no_separate_color_tokens,
+            )
             input_ids = torch.cat([input_grid_ids, output_grid_ids])
             attention_mask = torch.full(input_ids.shape, 1, dtype=torch.int64)
             # gen ids
-            gen_input_ids.append(input_grid_ids)
             if pair_i < num_pair - 1:
-                gen_input_ids.append(output_grid_ids)
+                gen_input_ids.append(torch.cat([input_grid_ids, output_grid_ids]))
             else:
+                gen_input_ids.append(input_grid_ids)
                 gen_output_ids = output_grid_ids
             # label id for all except first pair
             label_ids = torch.full(input_grid_ids.shape, -100, dtype=torch.int64)
@@ -816,6 +854,10 @@ class EvalDataset:
             pair_idx_to_input_ids.append(input_ids)
             pair_idx_to_attention_mask.append(attention_mask)
             pair_idx_to_label_ids.append(label_ids)
+
+        # start idxs computed from cumsum of lengths of pairs except last, plus one for bos
+        pair_start_idxs = np.cumsum([0, *[len(x) for x in pair_idx_to_input_ids[:-1]]]).tolist()
+        pair_start_idxs[0] = 1
 
         input_ids = torch.cat(pair_idx_to_input_ids)
         attention_mask = torch.cat(pair_idx_to_attention_mask)
@@ -829,7 +871,10 @@ class EvalDataset:
         assert isinstance(gen_output_ids, torch.Tensor)
         out_token_length = len(gen_output_ids) - 1 # remove eos token
         gen_attention_mask = torch.full(gen_input_ids.shape, 1, dtype=torch.int64)
-        label_texts = self.tokenizer.decode(gen_output_ids)[:-len(self.tokenizer.eos_token)]
+        label_texts = self.tokenizer.decode(
+            gen_output_ids,
+            no_separate_color_tokens=self.no_separate_color_tokens
+        )[:-len(self.tokenizer.eos_token)]
 
         return {
             "task_id": task.name,
@@ -841,6 +886,7 @@ class EvalDataset:
             "gen_attention_mask": gen_attention_mask,
             "out_token_length": out_token_length,
             "label_texts": label_texts,  # used for exact match
+            "pair_start_idxs": pair_start_idxs,
         }
 
     def __len__(self):
@@ -860,6 +906,8 @@ def collate_fn_eval(batch: List[Dict], dataset: EvalDataset) -> Dict:
     gen_attention_mask = [x["gen_attention_mask"] for x in batch]
     out_token_length = [x["out_token_length"] for x in batch]
     label_texts = [x["label_texts"] for x in batch]
+    pair_start_idxs = [x["pair_start_idxs"] for x in batch]
+    assert all(start_idxs[0] == 1 for start_idxs in pair_start_idxs)
 
     input_ids_lens = [len(x) for x in input_ids]
     input_ids = pad_sequence_with_side(input_ids, padding_value=dataset.tokenizer.pad_token_id, side=dataset.train_pad_side)
@@ -896,6 +944,7 @@ def collate_fn_eval(batch: List[Dict], dataset: EvalDataset) -> Dict:
         "label_texts": label_texts,
         "input_ids_lens": input_ids_lens,
         "gen_input_ids_lens": gen_input_ids_lens,
+        "pair_start_idxs": pair_start_idxs,
     }
     return batch_dict
 
@@ -911,6 +960,8 @@ def collate_fn_eval_dummy(batch: List[Dict], dataset: EvalDataset) -> Dict:
     gen_input_ids = torch.randint(0, 30, (batch_size, dataset.debug_len * 9 // 10 + 1), dtype=torch.int64, device='cpu')
     gen_attention_mask = torch.full((batch_size, dataset.debug_len * 9 // 10 + 1), 1, dtype=torch.int64, device='cpu')
     gen_input_ids_lens = [dataset.debug_len // 10 + 1] * batch_size
+
+    pair_start_idxs = [list(range(1, dataset.debug_len * 9 // 10, dataset.debug_len // 15))[:10] for _ in range(batch_size)]
 
     task_ids = [str(x) for x in range(100000, 100000 + batch_size)]
     out_token_length = [dataset.debug_len // 10 + 1] * batch_size
@@ -928,6 +979,7 @@ def collate_fn_eval_dummy(batch: List[Dict], dataset: EvalDataset) -> Dict:
         "label_texts": label_texts,
         "input_ids_lens": input_ids_lens,
         "gen_input_ids_lens": gen_input_ids_lens,
+        "pair_start_idxs": pair_start_idxs,
     }
     return batch_dict
 
@@ -947,6 +999,7 @@ class TTTDataset(Dataset):
         pad_side: str,
         debug_no_aug: bool,
         aug_type: str,
+        no_separate_color_tokens: bool,
     ):
         self.permute_n = permute_n
         self.tokenizer = tokenizer
@@ -954,6 +1007,7 @@ class TTTDataset(Dataset):
         self.seed = seed
         self.pad_side = pad_side
         self.debug_no_aug = debug_no_aug
+        self.no_separate_color_tokens = no_separate_color_tokens
 
         # get all augmenters
         d8_augmenters = get_d8_augmenters(include_identity=False)
@@ -1065,7 +1119,11 @@ class TTTDataset(Dataset):
 
         for pair_i in range(num_pair):
             example = (task.train_examples + [task.test_example])[pair_i]
-            input_grid_ids, output_grid_ids = self.tokenizer.get_input_and_output_grid_ids(example=example, add_bos=(pair_i == 0))
+            input_grid_ids, output_grid_ids = self.tokenizer.get_input_and_output_grid_ids(
+                example=example,
+                add_bos=(pair_i == 0),
+                no_separate_color_tokens=self.no_separate_color_tokens,
+            )
             input_ids = torch.cat([input_grid_ids, output_grid_ids])
             attention_mask = torch.full(input_ids.shape, 1, dtype=torch.int64)
             # label id for all except first pair

@@ -1,9 +1,15 @@
 # overfit1 novae (weird, when debug_random_pad, need max_grad_norm to lower to fit properly and not nan)
 accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder_autoregressive/train.py \
     --tag test \
+<<<<<<< HEAD
     --train_data_dir /scratch/zy3101/re-arc/train_data_debug_overfit/tasks \
     --eval_train_dir /scratch/zy3101/re-arc/arc_original_debug_overfit/training \
     --eval_eval_dir /scratch/zy3101/re-arc/arc_original_debug_overfit/training \
+=======
+    --train_data_dir ./data/re-arc/train_data_debug_overfit/tasks \
+    --eval_train_dir ./data/re-arc/arc_original_debug_overfit/training \
+    --eval_eval_dir ./data/re-arc/arc_original_debug_overfit/training \
+>>>>>>> origin/main
     --eval_epochs 1 \
     --num_epochs 100 \
     --samples_per_epoch 500 \
@@ -23,16 +29,13 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
     --no_train_original \
     --log_every 1 \
     --grad_accum_steps 1 \
-    --train_no_sample \
-    --eval_no_sample \
     --debug_random_pad
-
 
 accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder_autoregressive/train.py \
     --tag test \
-    --train_data_dir /scratch/yl11330/re-arc/train_data_debug_overfit/tasks \
-    --eval_train_dir /scratch/yl11330/re-arc/arc_original_debug_overfit/training \
-    --eval_eval_dir /scratch/yl11330/re-arc/arc_original_debug_overfit/training \
+    --train_data_dir ./data/re-arc/train_data_debug_overfit/tasks \
+    --eval_train_dir ./data/re-arc/arc_original_debug_overfit/training \
+    --eval_eval_dir ./data/re-arc/arc_original_debug_overfit/training \
     --eval_epochs 1 \
     --num_epochs 100 \
     --samples_per_epoch 500 \
@@ -52,16 +55,14 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
     --no_train_original \
     --log_every 1 \
     --grad_accum_steps 1 \
-    --train_no_sample \
-    --eval_no_sample \
     --debug_random_pad
 
 # overfit4 novae (harder to fit, but gradaccum and maxgradnorm and smaller lr help)
 accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder_autoregressive/train.py \
     --tag test \
-    --train_data_dir /scratch/yl11330/re-arc/train_data_debug_overfit4/tasks \
-    --eval_train_dir /scratch/yl11330/re-arc/arc_original_debug_overfit4/training \
-    --eval_eval_dir /scratch/yl11330/re-arc/arc_original_debug_overfit4/training \
+    --train_data_dir ./data/re-arc/train_data_debug_overfit4/tasks \
+    --eval_train_dir ./data/re-arc/arc_original_debug_overfit4/training \
+    --eval_eval_dir ./data/re-arc/arc_original_debug_overfit4/training \
     --eval_epochs 1 \
     --num_epochs 100 \
     --samples_per_epoch 500 \
@@ -81,6 +82,7 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
     --no_train_original \
     --log_every 1 \
     --grad_accum_steps 4 \
+<<<<<<< HEAD
     --train_no_sample \
     --eval_no_sample \
     --debug_random_pad
@@ -111,6 +113,8 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
     --grad_accum_steps 1 \
     --eval_no_sample \
     --kl_loss_lambda 0.001 \
+=======
+>>>>>>> origin/main
     --debug_random_pad
 
 <<<<<<< HEAD
@@ -147,9 +151,15 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
 # test if it runs on multigpu
 accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder1031_autoregressive/train.py \
     --tag test \
+<<<<<<< HEAD
     --train_data_dir /scratch/zy3101/re-arc/train_data_debug_overfit4/tasks \
     --eval_train_dir /scratch/zy3101/re-arc/arc_original_debug_overfit4/training \
     --eval_eval_dir /scratch/zy3101/re-arc/arc_original_debug_overfit4/training \
+=======
+    --train_data_dir ./data/re-arc/train_data_debug_overfit4/tasks \
+    --eval_train_dir ./data/re-arc/arc_original_debug_overfit4/training \
+    --eval_eval_dir ./data/re-arc/arc_original_debug_overfit4/training \
+>>>>>>> origin/main
     --eval_epochs 1 \
     --num_epochs 100 \
     --samples_per_epoch 500 \
@@ -168,5 +178,3 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
     --no_train_original \
     --log_every 1 \
     --grad_accum_steps 1 \
-    --train_no_sample \
-    --eval_no_sample

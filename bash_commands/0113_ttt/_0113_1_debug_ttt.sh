@@ -16,9 +16,15 @@ python ttt_old/test_time_train.py \
 # base
 accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder/train.py \
     --tag test_base \
+<<<<<<< HEAD
     --train_data_dir /scratch/zy3101/re-arc/train_data_debug_overfit/tasks \
     --eval_train_dir /scratch/zy3101/re-arc/arc_original_debug_overfit/training \
     --eval_eval_dir /scratch/zy3101/re-arc/arc_original_debug_overfit/training \
+=======
+    --train_data_dir ./data/re-arc/train_data_debug_overfit/tasks \
+    --eval_train_dir ./data/re-arc/arc_original_debug_overfit/training \
+    --eval_eval_dir ./data/re-arc/arc_original_debug_overfit/training \
+>>>>>>> origin/main
     --eval_epochs 1 \
     --num_epochs 1 \
     --samples_per_epoch 2 \
@@ -29,9 +35,15 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
 # tiemodels
 accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder/train.py \
     --tag test_tiemodels \
+<<<<<<< HEAD
     --train_data_dir /scratch/zy3101/re-arc/train_data_debug_overfit/tasks \
     --eval_train_dir /scratch/zy3101/re-arc/arc_original_debug_overfit/training \
     --eval_eval_dir /scratch/zy3101/re-arc/arc_original_debug_overfit/training \
+=======
+    --train_data_dir ./data/re-arc/train_data_debug_overfit/tasks \
+    --eval_train_dir ./data/re-arc/arc_original_debug_overfit/training \
+    --eval_eval_dir ./data/re-arc/arc_original_debug_overfit/training \
+>>>>>>> origin/main
     --eval_epochs 1 \
     --num_epochs 1 \
     --samples_per_epoch 2 \
@@ -43,9 +55,15 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
 # nolora
 accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder/train.py \
     --tag test_nolora \
+<<<<<<< HEAD
     --train_data_dir /scratch/zy3101/re-arc/train_data_debug_overfit/tasks \
     --eval_train_dir /scratch/zy3101/re-arc/arc_original_debug_overfit/training \
     --eval_eval_dir /scratch/zy3101/re-arc/arc_original_debug_overfit/training \
+=======
+    --train_data_dir ./data/re-arc/train_data_debug_overfit/tasks \
+    --eval_train_dir ./data/re-arc/arc_original_debug_overfit/training \
+    --eval_eval_dir ./data/re-arc/arc_original_debug_overfit/training \
+>>>>>>> origin/main
     --eval_epochs 1 \
     --num_epochs 1 \
     --samples_per_epoch 2 \
@@ -58,7 +76,11 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
     --tag test \
     --weight_dir test_base \
     --weight_epoch 1 \
+<<<<<<< HEAD
     --data_dir /scratch/zy3101/re-arc/arc_original/evaluation \
+=======
+    --data_dir ./data/re-arc/arc_original/evaluation \
+>>>>>>> origin/main
     --select_tasks_path task_info_selected_test.csv \
     --eval_epochs 1 \
     --num_epochs 2 \
@@ -77,7 +99,11 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
     --tag test_fulllora \
     --weight_dir test_tiemodels \
     --weight_epoch 1 \
+<<<<<<< HEAD
     --data_dir /scratch/zy3101/re-arc/arc_original/evaluation \
+=======
+    --data_dir ./data/re-arc/arc_original/evaluation \
+>>>>>>> origin/main
     --select_tasks_path task_info_selected_test.csv \
     --eval_epochs 1 \
     --num_epochs 2 \
@@ -97,7 +123,11 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
     --tag test_partiallora \
     --weight_dir test_tiemodels \
     --weight_epoch 1 \
+<<<<<<< HEAD
     --data_dir /scratch/zy3101/re-arc/arc_original/evaluation \
+=======
+    --data_dir ./data/re-arc/arc_original/evaluation \
+>>>>>>> origin/main
     --select_tasks_path task_info_selected_test.csv \
     --eval_epochs 1 \
     --num_epochs 2 \
@@ -116,7 +146,11 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
     --tag test \
     --weight_dir test_nolora \
     --weight_epoch 1 \
+<<<<<<< HEAD
     --data_dir /scratch/zy3101/re-arc/arc_original/evaluation \
+=======
+    --data_dir ./data/re-arc/arc_original/evaluation \
+>>>>>>> origin/main
     --select_tasks_path task_info_selected_test.csv \
     --eval_epochs 1 \
     --num_epochs 2 \
@@ -135,7 +169,11 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
     --tag test_ddp_error \
     --weight_dir test_tiemodels \
     --weight_epoch 1 \
+<<<<<<< HEAD
     --data_dir /scratch/zy3101/re-arc/arc_original_debug_overfit4_ttt/training \
+=======
+    --data_dir ./data/re-arc/arc_original_debug_overfit4_ttt/training \
+>>>>>>> origin/main
     --save_epochs 2 \
     --num_epochs 2 \
     --compact_grids \
@@ -154,7 +192,11 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
     --tag test2_fulllora \
     --weight_dir test_ttt_2 \
     --weight_epoch 1 \
+<<<<<<< HEAD
     --data_dir /scratch/zy3101/re-arc/arc_original_debug_overfit4_ttt/training \
+=======
+    --data_dir ./data/re-arc/arc_original_debug_overfit4_ttt/training \
+>>>>>>> origin/main
     --compact_grids \
     --max_seq_len 5120 \
     --flash_attn \

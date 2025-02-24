@@ -1,9 +1,15 @@
 # debug overfit 1 token (require SGD)
 accelerate launch --main_process_port $MASTER_PORT --num_processes 1 --mixed_precision bf16 encoder_decoder7/train.py \
     --tag test \
+<<<<<<< HEAD
     --train_data_dir /scratch/zy3101/re-arc/train_data_debug_overfit/tasks \
     --eval_train_dir /scratch/zy3101/re-arc/arc_original_debug_overfit/training \
     --eval_eval_dir /scratch/zy3101/re-arc/arc_original_debug_overfit/training \
+=======
+    --train_data_dir ./data/re-arc/train_data_debug_overfit/tasks \
+    --eval_train_dir ./data/re-arc/arc_original_debug_overfit/training \
+    --eval_eval_dir ./data/re-arc/arc_original_debug_overfit/training \
+>>>>>>> origin/main
     --eval_epochs 1 \
     --min_prefix 4 \
     --max_prefix 4 \

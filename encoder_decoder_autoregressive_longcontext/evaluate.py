@@ -103,7 +103,11 @@ def main():
     parser.add_argument("--decoder_gen_pad_side", type=str, choices=["left", "right"], default="left")
 
     # eval data
+<<<<<<< HEAD
     parser.add_argument("--data_dir", type=str, default="/scratch/zy3101/re-arc/arc_original/training")
+=======
+    parser.add_argument("--data_dir", type=str, default="./data/re-arc/arc_original/training")
+>>>>>>> origin/main
     parser.add_argument("--select_tasks_path", type=str, default=None)
     parser.add_argument("--leave_ns", type=int, nargs="+", default=[0])
     parser.add_argument("--leave_ns_inc", action="store_true")

@@ -5,7 +5,11 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
     --tag 400task_original \
     --weight_dir manual_copy_0113_ntoken1 \
     --weight_epoch 14 \
+<<<<<<< HEAD
     --data_dir /scratch/zy3101/re-arc/arc_original/evaluation \
+=======
+    --data_dir ./data/re-arc/arc_original/evaluation \
+>>>>>>> origin/main
     --compact_grids \
     --max_seq_len 5120 \
     --flash_attn \
@@ -17,7 +21,11 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
     --tag 400task_original_noflashattn \
     --weight_dir manual_copy_0113_ntoken1 \
     --weight_epoch 14 \
+<<<<<<< HEAD
     --data_dir /scratch/zy3101/re-arc/arc_original/evaluation \
+=======
+    --data_dir ./data/re-arc/arc_original/evaluation \
+>>>>>>> origin/main
     --compact_grids \
     --max_seq_len 5120 \
     --tie_models \
@@ -28,7 +36,11 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
     --tag 80task_leavens0 \
     --weight_dir manual_copy_0113_ntoken1 \
     --weight_epoch 14 \
+<<<<<<< HEAD
     --data_dir /scratch/zy3101/re-arc/arc_original/evaluation \
+=======
+    --data_dir ./data/re-arc/arc_original/evaluation \
+>>>>>>> origin/main
     --select_tasks_path task_info_selected.csv \
     --compact_grids \
     --max_seq_len 5120 \
@@ -45,7 +57,11 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
     --tag 80task_leavens1 \
     --weight_dir manual_copy_0113_ntoken1 \
     --weight_epoch 14 \
+<<<<<<< HEAD
     --data_dir /scratch/zy3101/re-arc/arc_original/evaluation \
+=======
+    --data_dir ./data/re-arc/arc_original/evaluation \
+>>>>>>> origin/main
     --select_tasks_path task_info_selected.csv \
     --compact_grids \
     --max_seq_len 5120 \
@@ -62,7 +78,11 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
     --tag 80task_leavens01 \
     --weight_dir manual_copy_0113_ntoken1 \
     --weight_epoch 14 \
+<<<<<<< HEAD
     --data_dir /scratch/zy3101/re-arc/arc_original/evaluation \
+=======
+    --data_dir ./data/re-arc/arc_original/evaluation \
+>>>>>>> origin/main
     --select_tasks_path task_info_selected.csv \
     --compact_grids \
     --max_seq_len 5120 \

@@ -1,3 +1,4 @@
+from custom_llama import LlamaForCausalLM
 from transformers.tokenization_utils_fast import PreTrainedTokenizerFast
 from datetime import timedelta
 import arclib # required
@@ -16,7 +17,6 @@ from torch.nn.parallel import DistributedDataParallel
 from torch.utils.data import DataLoader
 from transformers import (
     AutoTokenizer,
-    AutoModelForCausalLM,
     get_cosine_schedule_with_warmup,
     get_constant_schedule_with_warmup,
 )
@@ -73,6 +73,16 @@ class ProgramEmbeddings(nn.Module):
     def forward(self, program_i: int) -> torch.Tensor:
         del program_i
         return self.embedding
+
+class ProgramEmbeddings(nn.Module):
+    def __init__(self, embedding: torch.Tensor):
+        super(ProgramEmbeddings, self).__init__()
+        self.embedding = nn.Parameter(embedding)
+
+    def forward(self, program_i: int) -> torch.Tensor:
+        del program_i
+        return self.embedding
+
 
 def three_commas(x):
     x = str(x)
@@ -151,6 +161,30 @@ def get_memory_footprint(module: nn.Module):
     return sum(p.nelement() * p.element_size() for p in module.parameters()) + \
         sum(p.nelement() * p.element_size() for p in module.buffers())
 
+def best_match_count(s1, s2):
+    # Ensure s1 is the longer string
+    if len(s1) < len(s2):
+        s1, s2 = s2, s1
+
+    L, S = len(s1), len(s2)
+    max_matches = 0
+
+    # Slide s2 over s1.
+    # Range of shifts: from -S+1 (s2 shifted so its end aligns with the start of s1)
+    # to L-1 (s2 shifted so its start aligns with the end of s1)
+    for shift in range(-S + 1, L):
+        matches = 0
+        # Loop over each index of the shorter string
+        for i in range(S):
+            j = i + shift  # corresponding index in s1
+            # Only count if within bounds of s1
+            if 0 <= j < L and s2[i] == s1[j]:
+                matches += 1
+        max_matches = max(max_matches, matches)
+
+    return max_matches
+
+
 ################################################
 # Evaluate with cross-entropy + exact-match
 ################################################
@@ -159,18 +193,27 @@ def evaluate(
     task_to_ttt_path: Optional[Dict[str, str]],
     ttt_param_names: Optional[Set[str]],
     model: Union[nn.Module, DistributedDataParallel],
+    program_embeddings: Optional[Union[ProgramEmbeddings, DistributedDataParallel]],
+    tokenizer: ARCTokenizer,
     dataset: EvalDataset,
     accelerator: Accelerator,
     batch_size: int,
     collate_fn: Callable,
     dry_eval_run: bool,
     output_dir: str,
+<<<<<<< HEAD
     thinking_embeddings: Union[ProgramEmbeddings, DistributedDataParallel]=None,
+=======
+    ntokens: int,
+    attention_cutoff: bool,
+    attend_prev_programs: bool,
+>>>>>>> origin/main
 ):
     model.eval()
 
     # get modules in case of DDP
     module = model.module if isinstance(model, DistributedDataParallel) else model
+    embed_tokens = module.model.embed_tokens if hasattr(module.model, "embed_tokens") else module.model.model.embed_tokens
 
     # if ttt provided, same model weights for the missing ttt task weights
     cached_weights_path = None
@@ -194,11 +237,11 @@ def evaluate(
     distributed_state = PartialState()
     task_id_and_text_list = []
     task_id_and_inverter_grids = []
-    ce_loss_list = []
     exact_acc_list = []
     valid_grid_list = []
     correct_grid_dim_list = []
     token_acc_list = []
+    relaxed_token_acc_list = []
     ttt_provided_list = []
 
     data_idxs = list(range(len(dataset)))
@@ -256,13 +299,12 @@ def evaluate(
             # get tensors
             task_ids = batch["task_ids"]
             inverters = batch["inverters"]
-            input_ids = batch["input_ids"].to(accelerator.device)
-            attention_mask = batch["attention_mask"].to(accelerator.device)
-            label_ids = batch["label_ids"].to(accelerator.device)
             gen_input_ids = batch["gen_input_ids"].to(accelerator.device)
             gen_attention_mask = batch["gen_attention_mask"].to(accelerator.device)
+            gen_input_ids_lens = batch["gen_input_ids_lens"]
             out_token_length = batch["out_token_length"]
             label_texts = batch["label_texts"]
+<<<<<<< HEAD
 
             # compute ce loss
             if thinking_embeddings != None:
@@ -291,6 +333,119 @@ def evaluate(
                     pad_side=pad_side,
                     pad_id=pad_embeds,
                 )
+=======
+            pair_start_idxs = batch["pair_start_idxs"]
+
+            # compute accuracy
+            with accelerator.autocast():
+                arbitrary_increase = 5
+                if program_embeddings is None:
+                    # generate with no program
+                    gen_tokens = module.generate(
+                        input_ids=gen_input_ids,
+                        attention_mask=gen_attention_mask,
+                        max_new_tokens=max(out_token_length) + arbitrary_increase, # arbitrary increase
+                        num_return_sequences=1,
+                        temperature=1.0,
+                        top_p=1.0,
+                        do_sample=False,
+                        eos_token_id=[dataset.tokenizer.eos_token_id],
+                    )
+                    gen_texts = dataset.tokenizer.batch_decode(
+                        gen_tokens[:, gen_input_ids.shape[1]:],
+                        skip_special_tokens=True,
+                        no_separate_color_tokens=dataset.no_separate_color_tokens,
+                    )
+                else:
+                    # generate with no program
+                    device, dtype = gen_input_ids.device, gen_input_ids.dtype
+                    max_num_pairs = max(len(start_idxs) for start_idxs in pair_start_idxs)
+                    pad_embeds = embed_tokens(torch.tensor(tokenizer.pad_token_id, device=device)) # (hidden_dim,)
+                    gen_inputs_embeds = embed_tokens(gen_input_ids)
+
+                    # insert program embeddings
+                    inputs_embeds_with_programs = []
+                    attention_mask_with_programs = []
+                    program_intervals = []
+
+                    for task_input_ids, task_inputs_embeds, task_attention_mask, input_ids_len, start_idxs in zip(gen_input_ids, gen_inputs_embeds, gen_attention_mask, gen_input_ids_lens, pair_start_idxs):
+                        assert start_idxs[0] == 1 # first pair starts after bos
+                        # start_idxs are offset if padding side is left
+                        if dataset.gen_pad_side == "left":
+                            start_idxs = [s + task_input_ids.shape[0] - input_ids_len for s in start_idxs]
+                        assert len(set(task_input_ids[start_idxs].tolist())) == 1 # all should be the input token (we remove bos)
+
+                        # insert program token before every pair
+                        task_inputs_embeds_with_programs = [task_inputs_embeds[:start_idxs[0]]]
+                        task_attention_mask_with_programs = [task_attention_mask[:start_idxs[0]]]
+                        task_program_intervals = []
+
+                        for i, start_idx in enumerate(start_idxs):
+                            end_idx = start_idxs[i+1] if i < len(start_idxs) - 1 else len(task_inputs_embeds)
+                            # program start
+                            program_start = sum(len(x) for x in task_inputs_embeds_with_programs)
+                            task_program_intervals.append((program_start, program_start + ntokens))
+                            # insert program embedding into inputs_embeds
+                            task_inputs_embeds_with_programs.append(program_embeddings("dummy"))
+                            task_inputs_embeds_with_programs.append(task_inputs_embeds[start_idx: end_idx])
+                            # insert full attention for programs
+                            task_attention_mask_with_programs.append(torch.full((ntokens,), 1, device=device, dtype=dtype))
+                            task_attention_mask_with_programs.append(task_attention_mask[start_idx: end_idx])
+
+                        # some programs in batch have fewer pairs, pad manually, so hacky
+                        pad_length = (max_num_pairs - len(start_idxs)) * ntokens
+                        task_pad_inputs_embeds = pad_embeds[None, ...].expand(pad_length, -1)
+                        task_pad_attention_mask = torch.full((pad_length,), 0, device=device, dtype=dtype)
+                        if dataset.gen_pad_side == 'left':
+                            task_inputs_embeds_with_programs.insert(0, task_pad_inputs_embeds)
+                            task_attention_mask_with_programs.insert(0, task_pad_attention_mask)
+                            task_program_intervals = [(x[0] + pad_length, x[1] + pad_length) for x in task_program_intervals]
+                        else:
+                            task_inputs_embeds_with_programs.append(task_pad_inputs_embeds)
+                            task_attention_mask_with_programs.append(task_pad_attention_mask)
+
+                        # concat all
+                        inputs_embeds_with_programs.append(torch.cat(task_inputs_embeds_with_programs))
+                        attention_mask_with_programs.append(torch.cat(task_attention_mask_with_programs))
+                        program_intervals.append(task_program_intervals)
+
+                    # stack and check, now we have the three inputs with programs
+                    inputs_embeds_with_programs = torch.stack(inputs_embeds_with_programs)
+                    attention_mask_with_programs = torch.stack(attention_mask_with_programs)
+                    assert inputs_embeds_with_programs.shape[1] == gen_input_ids.shape[1] + max_num_pairs * ntokens
+                    assert inputs_embeds_with_programs.shape[:2] == attention_mask_with_programs.shape[:2]
+
+                    # generate
+                    if not attention_cutoff:
+                        gen_tokens = module.generate(
+                            inputs_embeds=inputs_embeds_with_programs,
+                            attention_mask=attention_mask_with_programs,
+                            max_new_tokens=max(out_token_length) + arbitrary_increase, # arbitrary increase
+                            num_return_sequences=1,
+                            temperature=1.0,
+                            top_p=1.0,
+                            do_sample=False,
+                            eos_token_id=[dataset.tokenizer.eos_token_id],
+                        )
+                    else:
+                        gen_tokens = module.generate(
+                            inputs_embeds=inputs_embeds_with_programs,
+                            attention_mask=attention_mask_with_programs,
+                            max_new_tokens=max(out_token_length) + arbitrary_increase, # arbitrary increase
+                            num_return_sequences=1,
+                            temperature=1.0,
+                            top_p=1.0,
+                            do_sample=False,
+                            eos_token_id=[dataset.tokenizer.eos_token_id],
+                            program_intervals=program_intervals,
+                            attend_prev_programs=attend_prev_programs,
+                        )
+                    gen_texts = dataset.tokenizer.batch_decode(
+                        gen_tokens,
+                        skip_special_tokens=True,
+                        no_separate_color_tokens=dataset.no_separate_color_tokens,
+                    )
+>>>>>>> origin/main
 
                 with_thinking_labels = insert_based_on_sides(
                     data=label_ids,
@@ -372,21 +527,26 @@ def evaluate(
             assert len(task_ids) == len(inverters) == bs, (len(task_ids), len(inverters), bs)
             assert len(gen_texts) == len(label_texts) == bs, (len(gen_texts), len(label_texts), bs)
             for task_id, inverter, gen_text, label_text in zip(task_ids, inverters, gen_texts, label_texts):
-                # save gen and gt text
-                task_id_and_text_list.append((task_id, gen_text, label_text))
-                # exact acc
-                exact_acc_list.append(int(gen_text == label_text))
+                relaxed_token_acc_list.append(best_match_count(gen_text, label_text) / len(label_text))
                 # is valid grid
-                gen_grid, gen_is_grid = text_to_2d_grid(gen_text)
-                label_grid, label_is_grid = text_to_2d_grid(label_text)
+                gen_grid, gen_is_grid = text_to_2d_grid(text=gen_text)
+                label_grid, label_is_grid = text_to_2d_grid(text=label_text)
                 assert label_is_grid
                 valid_grid_list.append(int(gen_is_grid))
                 if not gen_is_grid:
+                    task_id_and_text_list.append((task_id, gen_text, label_text))
+                    exact_acc_list.append(0)
                     correct_grid_dim_list.append(0)
                     token_acc_list.append(0)
                     continue
                 assert isinstance(gen_grid, list)
                 assert isinstance(label_grid, list)
+                # now we know it's a valid grid
+                gen_text = grid_2d_to_text(gen_grid)
+                task_id_and_text_list.append((task_id, gen_text, label_text))
+                gen_grid, label_grid = list2d_to_tuple(gen_grid), list2d_to_tuple(label_grid)
+                # exact acc
+                exact_acc_list.append(int(gen_grid == label_grid))
                 # save gen and gt grid
                 task_id_and_inverter_grids.append((task_id, inverter, gen_grid, label_grid))
                 # correct grid dim
@@ -407,31 +567,30 @@ def evaluate(
     # results
     task_id_and_text_list = gather_object(task_id_and_text_list)
     task_id_and_inverter_grids = gather_object(task_id_and_inverter_grids) # likely diff len from dataset
-    # losses
-    ce_loss_list = gather_object(ce_loss_list)
     # accuracies
     exact_acc_list = gather_object(exact_acc_list)
     valid_grid_list = gather_object(valid_grid_list)
     correct_grid_dim_list = gather_object(correct_grid_dim_list)
     token_acc_list = gather_object(token_acc_list)
+    relaxed_token_acc_list = gather_object(relaxed_token_acc_list)
     # ttt
     ttt_provided_list = gather_object(ttt_provided_list)
 
     assert len(task_id_and_text_list) == len(dataset), (len(task_id_and_text_list), len(dataset))
-    assert len(ce_loss_list) == len(dataset), (len(ce_loss_list), len(dataset))
     assert len(exact_acc_list) == len(dataset), (len(exact_acc_list), len(dataset))
     assert len(valid_grid_list) == len(dataset), (len(valid_grid_list), len(dataset))
     assert len(correct_grid_dim_list) == len(dataset), (len(correct_grid_dim_list), len(dataset))
     assert len(token_acc_list) == len(dataset), (len(token_acc_list), len(dataset))
+    assert len(relaxed_token_acc_list) == len(dataset), (len(relaxed_token_acc_list), len(dataset))
     assert len(ttt_provided_list) == len(dataset), (len(ttt_provided_list), len(dataset))
 
     # average metrics
     # note these are all computed without accounting for skipped eval grids
-    avg_ce_loss = sum(ce_loss_list) / len(dataset)
     exact_acc = sum(exact_acc_list) / len(dataset)
     valid_grid = sum(valid_grid_list) / len(dataset)
     correct_grid_dim = sum(correct_grid_dim_list) / len(dataset)
     token_acc = sum(token_acc_list) / len(dataset)
+    relaxed_token_acc = sum(relaxed_token_acc_list) / len(dataset)
     ttt_provided = sum(ttt_provided_list) / len(dataset)
 
     # grab all results
@@ -469,8 +628,7 @@ def evaluate(
     if cached_weights_path is not None:
         os.remove(cached_weights_path)
 
-    return avg_ce_loss, \
-        exact_acc, valid_grid, correct_grid_dim, token_acc, task_id_to_texts, \
+    return exact_acc, valid_grid, correct_grid_dim, token_acc, relaxed_token_acc, task_id_to_texts, \
         votes, competition_sub_acc, competition_all_acc, ttt_provided
 
 
@@ -561,18 +719,28 @@ def invert_and_vote(inverters_and_grids: List[Tuple[str, Tuple[Tuple[int]]]]):
     return c1, c2, grids_all
 
 
+def grid_2d_to_text(grid: list[List[int]]):
+    height, width = len(grid), len(grid[0])
+    lines = [f"{str(height)}{str(width)}"]
+    for row in grid:
+        lines.append("".join([str(x) for x in row]))
+    return "\n".join(lines)
+
+
 def text_to_2d_grid(text: str) -> Tuple[Optional[List[List[int]]], bool]:
     try:
         text = text.strip() # label is appended by \n
         grid_lines = text.split('\n')
         grid = []
         row_lens = []
-        for l in grid_lines[1:]: # skip dimensions
+        grid_lines = grid_lines[1:]
+        for l in grid_lines: # skip dimensions
             row = [int(x) for x in l]
             grid.append(row)
             row_lens.append(len(row))
             assert all(0 <= x and x < 10 for x in row)
         assert len(set(row_lens)) == 1 # so the grid is not empty
+        assert row_lens[0] > 0
         return grid, True
     except:
         return None, False
@@ -619,6 +787,10 @@ def initialize_program_embeddings(
         embeddings: torch.Tensor,
         accelerator: Accelerator,
         ntokens: int,
+<<<<<<< HEAD
+=======
+        cov_scale: float,
+>>>>>>> origin/main
     ) -> torch.Tensor:
 
     dtype = embeddings.dtype
@@ -630,9 +802,127 @@ def initialize_program_embeddings(
     covariance = centered_embeddings.T @ centered_embeddings / n_embeds
     eigenvalues = torch.linalg.eigvals(covariance)
     assert not ((covariance == covariance.T).all() and not torch.is_complex(eigenvalues) and (eigenvalues > 0).all())
+<<<<<<< HEAD
     distribution = torch.distributions.multivariate_normal.MultivariateNormal(mean_embeddings, covariance_matrix=1e-9 * covariance)
     return distribution.sample(sample_shape=(ntokens,)).to(device).to(dtype) # type: ignore
 
+=======
+    distribution = torch.distributions.multivariate_normal.MultivariateNormal(mean_embeddings, covariance_matrix=cov_scale * covariance)
+    return distribution.sample(sample_shape=(ntokens,)).to(device).to(dtype) # type: ignore
+
+
+def model_loss(
+    model: Union[nn.Module, DistributedDataParallel],
+    tokenizer: ARCTokenizer,
+    program_embeddings: Optional[Union[ProgramEmbeddings, DistributedDataParallel]],
+    # data
+    input_ids: torch.Tensor,
+    attention_mask: torch.Tensor,
+    label_ids: torch.Tensor,
+    input_ids_lens: List[int],
+    pair_start_idxs: List[List[int]],
+    ntokens: int,
+    # others
+    pad_side: str,
+    attention_cutoff: bool,
+    attend_prev_programs: bool,
+) -> torch.Tensor:
+
+    # original baseline
+    if program_embeddings is None:
+        return model(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            labels=label_ids,
+        ).loss
+
+    module = model.module if isinstance(model, DistributedDataParallel) else model
+    embed_tokens = module.model.embed_tokens if hasattr(module.model, "embed_tokens") else module.model.model.embed_tokens
+    device, dtype = input_ids.device, input_ids.dtype
+    max_num_pairs = max(len(start_idxs) for start_idxs in pair_start_idxs)
+
+    # get embeddings
+    pad_embeds = embed_tokens(torch.tensor(tokenizer.pad_token_id, device=device)) # (hidden_dim,)
+    inputs_embeds = embed_tokens(input_ids)
+
+    # insert program embeddings
+    inputs_embeds_with_programs = []
+    attention_mask_with_programs = []
+    label_ids_with_programs = []
+    program_intervals = []
+
+    for task_input_ids, task_inputs_embeds, task_attention_mask, task_label_ids, input_ids_len, start_idxs in zip(input_ids, inputs_embeds, attention_mask, label_ids, input_ids_lens, pair_start_idxs):
+        assert start_idxs[0] == 1 # first pair starts after bos
+        # start_idxs are offset if padding side is left
+        if pad_side == "left":
+            start_idxs = [s + task_input_ids.shape[0] - input_ids_len for s in start_idxs]
+        assert len(set(task_input_ids[start_idxs].tolist())) == 1 # all should be the input token (we remove bos)
+
+        # insert program token before every pair
+        task_inputs_embeds_with_programs = [task_inputs_embeds[:start_idxs[0]]]
+        task_attention_mask_with_programs = [task_attention_mask[:start_idxs[0]]]
+        task_label_ids_with_programs = [task_label_ids[:start_idxs[0]]]
+        task_program_intervals = []
+
+        for i, start_idx in enumerate(start_idxs):
+            end_idx = start_idxs[i+1] if i < len(start_idxs) - 1 else len(task_inputs_embeds)
+            # program intervals
+            program_start = sum(len(x) for x in task_inputs_embeds_with_programs)
+            task_program_intervals.append((program_start, program_start + ntokens))
+            # insert program embedding into inputs_embeds
+            task_inputs_embeds_with_programs.append(program_embeddings("dummy"))
+            task_inputs_embeds_with_programs.append(task_inputs_embeds[start_idx: end_idx])
+            # insert full attention for programs
+            task_attention_mask_with_programs.append(torch.full((ntokens,), 1, device=device, dtype=dtype))
+            task_attention_mask_with_programs.append(task_attention_mask[start_idx: end_idx])
+            # insert no label supervision for programs
+            task_label_ids_with_programs.append(torch.full((ntokens,), -100, device=device, dtype=dtype))
+            task_label_ids_with_programs.append(task_label_ids[start_idx: end_idx])
+
+        # some programs in batch have fewer pairs, pad manually, so hacky
+        pad_length = (max_num_pairs - len(start_idxs)) * ntokens
+        task_pad_inputs_embeds = pad_embeds[None, ...].expand(pad_length, -1)
+        task_pad_attention_mask = torch.full((pad_length,), 0, device=device, dtype=dtype)
+        task_pad_label_ids = torch.full((pad_length,), -100, device=device, dtype=dtype)
+        if pad_side == 'left':
+            task_inputs_embeds_with_programs.insert(0, task_pad_inputs_embeds)
+            task_attention_mask_with_programs.insert(0, task_pad_attention_mask)
+            task_label_ids_with_programs.insert(0, task_pad_label_ids)
+            task_program_intervals = [(x[0] + pad_length, x[1] + pad_length) for x in task_program_intervals]
+        else:
+            task_inputs_embeds_with_programs.append(task_pad_inputs_embeds)
+            task_attention_mask_with_programs.append(task_pad_attention_mask)
+            task_label_ids_with_programs.append(task_pad_label_ids)
+
+        # concat all
+        inputs_embeds_with_programs.append(torch.cat(task_inputs_embeds_with_programs))
+        attention_mask_with_programs.append(torch.cat(task_attention_mask_with_programs))
+        label_ids_with_programs.append(torch.cat(task_label_ids_with_programs))
+        program_intervals.append(task_program_intervals)
+
+    # stack and check, now we have the three inputs with programs
+    inputs_embeds_with_programs = torch.stack(inputs_embeds_with_programs)
+    attention_mask_with_programs = torch.stack(attention_mask_with_programs)
+    label_ids_with_programs = torch.stack(label_ids_with_programs)
+    assert inputs_embeds_with_programs.shape[1] == input_ids.shape[1] + max_num_pairs * ntokens
+    assert inputs_embeds_with_programs.shape[:2] == attention_mask_with_programs.shape[:2] == label_ids_with_programs.shape[:2]
+
+    if not attention_cutoff:
+        return model(
+            inputs_embeds=inputs_embeds_with_programs,
+            attention_mask=attention_mask_with_programs,
+            labels=label_ids_with_programs,
+        ).loss
+    else:
+        return model(
+            inputs_embeds=inputs_embeds_with_programs,
+            attention_mask=attention_mask_with_programs,
+            labels=label_ids_with_programs,
+            program_intervals=program_intervals,
+            attend_prev_programs=attend_prev_programs,
+        ).loss
+
+>>>>>>> origin/main
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--tag", type=str, required=True)
@@ -648,6 +938,7 @@ def main():
     parser.add_argument("--debug_fixed_order", action="store_true")
     parser.add_argument("--debug_random_pad", action="store_true")
     parser.add_argument("--debug_pad_len", type=int, default=-1)
+    parser.add_argument("--no_separate_color_tokens", action='store_true')
     parser.add_argument("--no_color_permute", action="store_true")
     parser.add_argument("--no_pair_permute", action="store_true")
     parser.add_argument("--no_d8", action="store_true")
@@ -662,15 +953,22 @@ def main():
     parser.add_argument("--no_lora", action="store_true")
     parser.add_argument("--thinking_tokens", action="store_true")
 
+    # Gist/thinking tokens
+    # single means one program, all means pay attention to all programs
+    parser.add_argument("--ntokens", type=int, default=-1)
+    parser.add_argument("--attention_cutoff", action="store_true")
+    parser.add_argument("--attend_prev_programs", action="store_true")
+
     # Training
-    parser.add_argument("--grad_accum_steps", type=int, default=4)
+    parser.add_argument("--grad_accum_steps", type=int, default=8)
     parser.add_argument("--train_batch_size", type=int, default=2)
-    parser.add_argument("--eval_batch_size", type=int, default=4)
+    parser.add_argument("--eval_batch_size", type=int, default=16)
     parser.add_argument("--lr_embedding", type=float, default=1e-5)
+    parser.add_argument("--lr_program", type=float, default=1e-4)
     parser.add_argument("--lr_other", type=float, default=1e-4)
     parser.add_argument("--lr_thinking", type=float, default=1e-4)
     parser.add_argument("--weight_decay", type=float, default=0.0)
-    parser.add_argument("--num_epochs", type=int, default=30)
+    parser.add_argument("--num_epochs", type=int, default=10000)
     parser.add_argument("--samples_per_epoch", type=int, default=20000)
     parser.add_argument("--eval_epochs", type=int, default=2)
     parser.add_argument("--max_grad_norm", default=1.0, type=float, help="Max gradient norm.")
@@ -688,7 +986,7 @@ def main():
     parser.add_argument("--gen_pad_side", type=str, choices=["left", "right"], default="left")
 
     # re-arc train data
-    parser.add_argument("--train_data_dir", type=str, default="/scratch/yl11330/re-arc/train_data/tasks")
+    parser.add_argument("--train_data_dir", type=str, default="./data/re-arc/train_data/tasks")
     parser.add_argument("--no_train_original", action="store_true")
     parser.add_argument("--only_train_original", action="store_true")
 
@@ -702,7 +1000,7 @@ def main():
     parser.add_argument("--extra_augment_single_grid", action="store_true")
 
     # eval train data
-    parser.add_argument("--eval_train_dir", type=str, default="/scratch/yl11330/re-arc/arc_original/training")
+    parser.add_argument("--eval_train_dir", type=str, default="./data/re-arc/arc_original/training")
     parser.add_argument("--eval_train_select_tasks_path", type=str, default=None)
     parser.add_argument("--eval_train_leave_ns", type=int, nargs="+", default=[0])
     parser.add_argument("--eval_train_leave_ns_inc", action="store_true")
@@ -711,7 +1009,7 @@ def main():
     parser.add_argument("--eval_train_permute_iters", type=int, default=0)
 
     # eval eval data (mirror eval train data)
-    parser.add_argument("--eval_eval_dir", type=str, default="/scratch/yl11330/re-arc/arc_original/evaluation")
+    parser.add_argument("--eval_eval_dir", type=str, default="./data/re-arc/arc_original/evaluation")
     parser.add_argument("--eval_eval_select_tasks_path", type=str, default=None)
     parser.add_argument("--eval_eval_leave_ns", type=int, nargs="+", default=[0])
     parser.add_argument("--eval_eval_leave_ns_inc", action="store_true")
@@ -736,7 +1034,7 @@ def main():
     if args.debug:
         args.tag = 'test'
         args.wandb = False
-        args.samples_per_epoch = 128
+        args.samples_per_epoch = 32
         args.log_every = 1
 
     # check args
@@ -816,7 +1114,7 @@ def main():
     else:
         raise ValueError(f"unrecognized untrainable_nbit {args.untrainable_nbit}")
 
-    base_model = AutoModelForCausalLM.from_pretrained(
+    base_model = LlamaForCausalLM.from_pretrained(
         pretrained_model_name_or_path=MODEL_NAME_TO_PATH[args.model_name],
         **from_pretrained_kwargs,
     )
@@ -853,34 +1151,67 @@ def main():
         thinking_embeddings_n_params = sum(p.numel() for p in thinking_embeddings.parameters())
         logger.info(f'thking embeddings size {round(get_memory_footprint(thinking_embeddings) / 1024 ** 3, 2)}GB')
 
+    # initialize program embeddings
+    program_embeddings = None
+    if args.ntokens > 0:
+        program_embeddings = ProgramEmbeddings(
+            embedding=initialize_program_embeddings(
+                base_model.model.embed_tokens.weight.data.detach().clone(),
+                accelerator,
+                ntokens=args.ntokens,
+                cov_scale=1e-9,
+            ),
+        )
+        logger.info("Program embeddings initialized.")
+
     # only keep these tokens, resize model embedding (eos == pad)
     # we do not include program tokens here, those are added later during training and inference
-    keep_tokens = [str(i) for i in range(31)] + \
-        [tokenizer.bos_token, tokenizer.eos_token, "\n", "input", "output", "pad"]
+    keep_tokens = [str(i) for i in range(31)] # dim
+    keep_tokens += [tokenizer.bos_token, tokenizer.eos_token, "\n", "input", "output", "pad"]
     assert len(set(keep_tokens)) == len(keep_tokens)
 
-    with torch.no_grad():
-        keep_token_ids = []
-        for token in keep_tokens:
-            token_id = tokenizer(token)["input_ids"] # type: ignore
-            assert isinstance(token_id, list) and len(token_id) == 2 # with start token
-            keep_token_ids.append(token_id[1])
-        assert len(set(keep_token_ids)) == len(keep_token_ids)
+    keep_token_ids = []
+    for token in keep_tokens:
+        token_id = tokenizer(token)["input_ids"] # type: ignore
+        assert isinstance(token_id, list) and len(token_id) == 2 # with start token
+        keep_token_ids.append(token_id[1])
+    assert len(set(keep_token_ids)) == len(keep_token_ids)
 
+    color_embeddings = None
+    if not args.no_separate_color_tokens:
+        color_embeddings = initialize_program_embeddings(
+            base_model.model.embed_tokens.weight.data.detach().clone(),
+            accelerator,
+            ntokens=10,
+            cov_scale=1.0,
+        )
+
+    # this breaks embedding tying, but whatever
+    with torch.no_grad():
         # subset embeddings and lmheads
         assert base_model.model.embed_tokens.weight.shape == base_model.lm_head.weight.shape
         base_model.model.embed_tokens.weight = nn.Parameter(base_model.model.embed_tokens.weight[keep_token_ids])
-        base_model.model.embed_tokens.num_embeddings = len(keep_token_ids)
+        base_model.model.embed_tokens.num_embeddings = len(keep_token_ids) # type: ignore
         assert base_model.lm_head.bias is None
         base_model.lm_head.weight = nn.Parameter(base_model.lm_head.weight[keep_token_ids])
         base_model.lm_head.out_features = len(keep_token_ids)
         base_model.config.tie_word_embeddings = False
 
+        if not args.no_separate_color_tokens:
+            assert isinstance(color_embeddings, torch.Tensor)
+            base_model.model.embed_tokens.weight = nn.Parameter(torch.cat([color_embeddings, base_model.model.embed_tokens.weight]))
+            base_model.model.embed_tokens.num_embeddings += 10 # type: ignore
+            base_model.lm_head.weight = nn.Parameter(torch.cat([color_embeddings, base_model.lm_head.weight]))
+            base_model.lm_head.out_features += 10
+
+    if not args.no_separate_color_tokens:
+        keep_tokens = [f"c{c}" for c in range(10)] + keep_tokens
+
     # update configs
     assert base_model.config.vocab_size and base_model.config.bos_token_id and base_model.config.eos_token_id
-    base_model.config.vocab_size = len(keep_token_ids)
-    base_model.config.bos_token_id = keep_tokens.index(tokenizer.bos_token)
-    base_model.config.eos_token_id = keep_tokens.index(tokenizer.eos_token)
+    base_model.config.vocab_size = len(keep_token_ids) + (0 if args.no_separate_color_tokens else 10)
+    base_model.config.bos_token_id = keep_tokens.index(tokenizer.bos_token) # type: ignore
+    base_model.config.eos_token_id = keep_tokens.index(tokenizer.eos_token) # type: ignore
 
     # create custom tokenizer
     arc_tokenizer = ARCTokenizer(
@@ -908,15 +1239,27 @@ def main():
         model = get_peft_model(base_model, peft_config)
     logger.info("LoRA-wrapped models initialized (optional)")
 
+    # ensure require grad
+    if program_embeddings is not None:
+        for param in program_embeddings.parameters():
+            param.requires_grad = True
+
     # convert model weights
     for name, param in model.named_parameters():
         if param.requires_grad:
+            param.data = param.data.to(NBIT_TO_DTYPE[args.trainable_nbit])
+    if program_embeddings is not None:
+        for name, param in program_embeddings.named_parameters():
+            assert param.requires_grad
             param.data = param.data.to(NBIT_TO_DTYPE[args.trainable_nbit])
     logger.info(f'converted trainable model weights to {NBIT_TO_DTYPE[args.trainable_nbit]}')
 
     # number of parameters and size
     print_trainable_parameters(model)
     logger.info(f'model size {round(model.get_memory_footprint() / 1024 ** 3, 2)}GB')
+    if program_embeddings is not None:
+        program_embeddings_n_params = sum(p.numel() for p in program_embeddings.parameters())
+        logger.info(f'program embedding params {three_commas(program_embeddings_n_params)}')
 
     # Build training dataset
     train_dataset = TrainDataset(
@@ -944,7 +1287,9 @@ def main():
         only_train_original=args.only_train_original,
         debug_len=args.debug_len,
         num_workers=args.num_workers,
+        no_separate_color_tokens=args.no_separate_color_tokens,
         max_seq_len=args.max_seq_len,
+        ntokens=args.ntokens,
     )
     # special token id
     thinking_token_id = 666
@@ -971,6 +1316,7 @@ def main():
                 embedding_params.append(param)
             else:
                 other_params.append(param)
+<<<<<<< HEAD
     if args.thinking_tokens:
         thinking_params = [param for param in thinking_embeddings.parameters()]
         optimizer_grouped_params = [
@@ -986,6 +1332,17 @@ def main():
         ]
         all_params = embedding_params + other_params
     
+=======
+    program_params = [param for param in program_embeddings.parameters()] if program_embeddings is not None else []
+
+    optimizer_grouped_params = [
+        {"params": embedding_params, "lr": args.lr_embedding},
+        {"params": program_params, "lr": args.lr_program},
+        {"params": other_params, "lr": args.lr_other},
+    ]
+
+    all_params = embedding_params + other_params + program_params
+>>>>>>> origin/main
     if args.optimizer == 'adamw':
         optimizer = torch.optim.AdamW(optimizer_grouped_params, weight_decay=args.weight_decay) # type: ignore
     elif args.optimizer == 'adamw8bit':
@@ -1015,19 +1372,66 @@ def main():
     # Prepare with accelerator
     (
         model,
+        program_embeddings,
         optimizer,
         train_loader,
     ) = accelerator.prepare(
         model,
+        program_embeddings,
         optimizer,
         train_loader,
     )
     assert isinstance(model, (nn.Module, DistributedDataParallel))
+    if program_embeddings is not None:
+        assert isinstance(program_embeddings, (ProgramEmbeddings, DistributedDataParallel))
 
     if args.dry_train_run:
         for _ in tqdm(train_loader, total=len(train_loader)):
             pass
         exit()
+
+    # Build evaluation datasets
+    eval_train_dataset = EvalDataset(
+        args.eval_train_dir,
+        select_tasks_path=args.eval_train_select_tasks_path,
+        leave_ns=args.eval_train_leave_ns,
+        leave_ns_inc=args.eval_train_leave_ns_inc,
+        permute_n=args.eval_train_permute_n,
+        augment_n=args.eval_train_augment_n,
+        permute_iters=args.eval_train_permute_iters,
+        seed=args.seed,
+        tokenizer=tokenizer,
+        debug_random_pad=args.debug_random_pad,
+        debug_pad_len=args.debug_pad_len,
+        train_pad_side=args.train_pad_side,
+        gen_pad_side=args.gen_pad_side,
+        debug_len=args.debug_len,
+        no_separate_color_tokens=args.no_separate_color_tokens,
+        max_seq_len=args.max_seq_len,
+        ntokens=args.ntokens,
+    )
+    eval_eval_dataset = EvalDataset(
+        eval_dir=args.eval_eval_dir,
+        select_tasks_path=args.eval_eval_select_tasks_path,
+        leave_ns=args.eval_eval_leave_ns,
+        leave_ns_inc=args.eval_eval_leave_ns_inc,
+        permute_n=args.eval_eval_permute_n,
+        augment_n=args.eval_eval_augment_n,
+        permute_iters=args.eval_eval_permute_iters,
+        seed=args.seed,
+        tokenizer=tokenizer,
+        debug_random_pad=args.debug_random_pad,
+        debug_pad_len=args.debug_pad_len,
+        train_pad_side=args.train_pad_side,
+        gen_pad_side=args.gen_pad_side,
+        debug_len=args.debug_len,
+        no_separate_color_tokens=args.no_separate_color_tokens,
+        max_seq_len=args.max_seq_len,
+        ntokens=args.ntokens,
+    )
+    eval_collate_fn = partial(collate_fn_eval, dataset=eval_train_dataset)
+    if args.debug_len > 0:
+        eval_collate_fn = partial(collate_fn_eval_dummy, dataset=eval_train_dataset)
 
     logger.info(f'======= TRAINING INFO START =======')
     logger.info(f'num_epochs={args.num_epochs}')
@@ -1063,6 +1467,8 @@ def main():
             input_ids = batch_data["input_ids"].to(accelerator.device)
             attention_mask = batch_data["attention_mask"].to(accelerator.device)
             label_ids = batch_data["label_ids"].to(accelerator.device)
+            input_ids_lens = batch_data["input_ids_lens"]
+            pair_start_idxs = batch_data["pair_start_idxs"]
 
             if args.thinking_tokens:
                 ntokens = args.ntokens
@@ -1107,6 +1513,7 @@ def main():
 
             with accelerator.accumulate(model):
                 with accelerator.autocast():
+<<<<<<< HEAD
                     if args.thinking_tokens:
                         ce_loss = model(
                             input_embeds=with_thiking_embeds,
@@ -1119,6 +1526,22 @@ def main():
                             attention_mask=attention_mask,
                             labels=label_ids,
                         ).loss
+=======
+                    ce_loss = model_loss(
+                        model=model,
+                        tokenizer=tokenizer,
+                        program_embeddings=program_embeddings,
+                        input_ids=input_ids,
+                        attention_mask=attention_mask,
+                        label_ids=label_ids,
+                        input_ids_lens=input_ids_lens,
+                        pair_start_idxs=pair_start_idxs,
+                        ntokens=args.ntokens,
+                        pad_side=args.train_pad_side,
+                        attention_cutoff=args.attention_cutoff,
+                        attend_prev_programs=args.attend_prev_programs,
+                    )
+>>>>>>> origin/main
 
                 avg_ce_loss = accelerator.gather(ce_loss.repeat(args.train_batch_size)).mean() # type: ignore
                 ce_loss_accum += avg_ce_loss.item() / args.grad_accum_steps
@@ -1139,7 +1562,8 @@ def main():
                             "train/ce_loss": ce_loss_accum,
                             "train/grad_norm": grad_norm_accum,
                             "train/lr_embedding": lr_scheduler.get_last_lr()[0],
-                            "train/lr_other": lr_scheduler.get_last_lr()[1],
+                            "train/lr_program": lr_scheduler.get_last_lr()[1],
+                            "train/lr_other": lr_scheduler.get_last_lr()[2],
                         }, step=global_step)
                     except:
                         logger.info(f"wandb failed on process {accelerator.process_index}, skipping the error")
@@ -1149,86 +1573,55 @@ def main():
 
         # Evaluate every N epochs
         if (epoch + 1) % args.eval_epochs == 0:
-            # Build evaluation datasets
-            eval_train_dataset = EvalDataset(
-                args.eval_train_dir,
-                select_tasks_path=args.eval_train_select_tasks_path,
-                leave_ns=args.eval_train_leave_ns,
-                leave_ns_inc=args.eval_train_leave_ns_inc,
-                permute_n=args.eval_train_permute_n,
-                augment_n=args.eval_train_augment_n,
-                permute_iters=args.eval_train_permute_iters,
-                seed=args.seed,
-                tokenizer=tokenizer,
-                debug_random_pad=args.debug_random_pad,
-                debug_pad_len=args.debug_pad_len,
-                train_pad_side=args.train_pad_side,
-                gen_pad_side=args.gen_pad_side,
-                debug_len=args.debug_len,
-                max_seq_len=args.max_seq_len,
-            )
-            eval_eval_dataset = EvalDataset(
-                eval_dir=args.eval_eval_dir,
-                select_tasks_path=args.eval_eval_select_tasks_path,
-                leave_ns=args.eval_eval_leave_ns,
-                leave_ns_inc=args.eval_eval_leave_ns_inc,
-                permute_n=args.eval_eval_permute_n,
-                augment_n=args.eval_eval_augment_n,
-                permute_iters=args.eval_eval_permute_iters,
-                seed=args.seed,
-                tokenizer=tokenizer,
-                debug_random_pad=args.debug_random_pad,
-                debug_pad_len=args.debug_pad_len,
-                train_pad_side=args.train_pad_side,
-                gen_pad_side=args.gen_pad_side,
-                debug_len=args.debug_len,
-                max_seq_len=args.max_seq_len,
-            )
-            eval_collate_fn = partial(collate_fn_eval, dataset=eval_train_dataset)
-            if args.debug_len > 0:
-                eval_collate_fn = partial(collate_fn_eval_dummy, dataset=eval_train_dataset)
-
-            train_ce_loss, \
-                train_exact_acc, train_valid_grid, train_correct_grid_dim, train_token_acc, train_texts, \
+            train_exact_acc, train_valid_grid, train_correct_grid_dim, train_token_acc, train_relaxed_token_acc, train_texts, \
                 train_votes, train_competition_sub_acc, train_competition_all_acc, _ = evaluate(
                 task_to_ttt_path=None,
                 ttt_param_names=None,
                 model=model,
+                program_embeddings=program_embeddings,
+                tokenizer=tokenizer,
                 dataset=eval_train_dataset,
                 accelerator=accelerator,
                 batch_size=args.eval_batch_size,
                 collate_fn=eval_collate_fn,
                 dry_eval_run=args.dry_eval_run,
                 output_dir=args.output_dir,
+                ntokens=args.ntokens,
+                attention_cutoff=args.attention_cutoff,
+                attend_prev_programs=args.attend_prev_programs,
             )
-            eval_ce_loss, \
-                eval_exact_acc, eval_valid_grid, eval_correct_grid_dim, eval_token_acc, eval_texts, \
+            eval_exact_acc, eval_valid_grid, eval_correct_grid_dim, eval_token_acc, eval_relaxed_token_acc, eval_texts, \
                 eval_votes, eval_competition_sub_acc, eval_competition_all_acc, _ = evaluate(
                 task_to_ttt_path=None,
                 ttt_param_names=None,
                 model=model,
+                program_embeddings=program_embeddings,
+                tokenizer=tokenizer,
                 dataset=eval_eval_dataset,
                 accelerator=accelerator,
                 batch_size=args.eval_batch_size,
                 collate_fn=eval_collate_fn,
                 dry_eval_run=args.dry_eval_run,
                 output_dir=args.output_dir,
+                ntokens=args.ntokens,
+                attention_cutoff=args.attention_cutoff,
+                attend_prev_programs=args.attend_prev_programs,
             )
 
             if accelerator.is_main_process:
                 eval_metric_dict = {
-                    "eval/train_ce_loss": train_ce_loss,
                     "eval/train_exact_acc": train_exact_acc,
                     "eval/train_valid_grid": train_valid_grid,
                     "eval/train_correct_grid_dim": train_correct_grid_dim,
                     "eval/train_token_acc": train_token_acc,
+                    "eval/train_relaxed_token_acc": train_relaxed_token_acc,
                     "eval/train_competition_sub_acc": train_competition_sub_acc,
                     "eval/train_competition_all_acc": train_competition_all_acc,
-                    "eval/eval_ce_loss": eval_ce_loss,
                     "eval/eval_exact_acc": eval_exact_acc,
                     "eval/eval_valid_grid": eval_valid_grid,
                     "eval/eval_correct_grid_dim": eval_correct_grid_dim,
                     "eval/eval_token_acc": eval_token_acc,
+                    "eval/eval_relaxed_token_acc": eval_relaxed_token_acc,
                     "eval/eval_competition_sub_acc": eval_competition_sub_acc,
                     "eval/eval_competition_all_acc": eval_competition_all_acc,
                 }
