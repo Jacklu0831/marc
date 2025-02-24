@@ -5,18 +5,15 @@ import torch.utils.checkpoint
 from torch import nn
 
 from transformers.cache_utils import Cache, DynamicCache, StaticCache
-from transformers.generation import GenerationMixin
 from transformers.modeling_attn_mask_utils import AttentionMaskConverter
 from transformers.modeling_flash_attention_utils import FlashAttentionKwargs
 from transformers.modeling_outputs import (
     BaseModelOutputWithPast,
-    CausalLMOutputWithPast,
 )
 from transformers.processing_utils import Unpack
 from transformers.utils import (
     add_start_docstrings_to_model_forward,
     logging,
-    replace_return_docstrings,
 )
 from transformers.models.llama.configuration_llama import LlamaConfig
 from transformers.models.llama.modeling_llama import (
@@ -25,14 +22,13 @@ from transformers.models.llama.modeling_llama import (
     LlamaRMSNorm,
     LlamaRotaryEmbedding,
     LLAMA_INPUTS_DOCSTRING,
-    _CONFIG_FOR_DOC,
-    KwargsForCausalLM,
+    LlamaForCausalLM,
 )
 
 logger = logging.get_logger(__name__)
 
 
-class LlamaModel(LlamaPreTrainedModel):
+class MyLlamaModel(LlamaPreTrainedModel):
     """
     Transformer decoder consisting of *config.num_hidden_layers* layers. Each layer is a [`LlamaDecoderLayer`]
 
@@ -318,23 +314,35 @@ class LlamaModel(LlamaPreTrainedModel):
 
         if program_intervals is not None:
             assert isinstance(min_dtype, float)
+
+            # debug: asserts for program intervals
+            ntokens = -1
+            for seq_program_intervals in program_intervals:
+                # same number of tokens
+                for a, b in seq_program_intervals:
+                    if ntokens == -1: ntokens = b - a
+                    assert b - a == ntokens
+                # increasing
+                for interval_i in range(len(seq_program_intervals) - 1):
+                    assert seq_program_intervals[interval_i + 1][0] > seq_program_intervals[interval_i][1]
+            assert ntokens > 0
+
             if sequence_length == 1:
                 # inference
                 assert causal_mask.shape[2] == 1 # query length is always 1
                 assert cache_position.dim() == 1 and cache_position.numel() == 1 # single cache position
+                assert cache_position.item() >= max(interval[-1][1] for interval in program_intervals) # generate past provided programs
+
                 for batch_i, intervals in enumerate(program_intervals):
-                    cumulative_intervals = []
-                    for (start_idx, end_idx) in intervals:
-                        if start_idx > 0 and cache_position.item() >= end_idx:
-                            if attend_prev_programs:
-                                allowed = torch.zeros(start_idx, dtype=torch.bool, device=device)
-                                for (a, b) in cumulative_intervals:
-                                    allowed[a: b] = True
-                                mask_range = (~allowed).nonzero().squeeze(-1)
-                                causal_mask[batch_i, :, 0, mask_range] = min_dtype
-                            else:
-                                causal_mask[batch_i, :, 0, :start_idx] = min_dtype
-                        cumulative_intervals.append((start_idx, end_idx))
+                    # turn off everything before the last program start
+                    final_start_index = intervals[-1][0]
+                    causal_mask[batch_i, :, 0, :final_start_index] = min_dtype
+                    # if attend prev programs, turn those back on
+                    if attend_prev_programs:
+                        for (start_idx, end_idx) in intervals:
+                            causal_mask[batch_i, :, 0, start_idx: end_idx] = 0.0
+                # print((causal_mask[0][0] == 0.0).sum().item())
+
             else:
                 # training
                 for batch_i, intervals in enumerate(program_intervals):
@@ -350,126 +358,18 @@ class LlamaModel(LlamaPreTrainedModel):
                             else:
                                 causal_mask[batch_i, :, end_idx:, :start_idx] = min_dtype
                         cumulative_intervals.append((start_idx, end_idx))
+                # for x in (causal_mask[0][0] == 0).int(): print(x.sum().item())
 
         return causal_mask
 
 
-class LlamaForCausalLM(LlamaPreTrainedModel, GenerationMixin):
-    _tied_weights_keys = ["lm_head.weight"]
-    _tp_plan = {"lm_head": "colwise_rep"}
+class MyLlamaForCausalLM(LlamaForCausalLM):
 
     def __init__(self, config):
         super().__init__(config)
-        self.model = LlamaModel(config)
+        self.model = MyLlamaModel(config)
         self.vocab_size = config.vocab_size
         self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
 
         # Initialize weights and apply final processing
         self.post_init()
-
-    def get_input_embeddings(self):
-        return self.model.embed_tokens
-
-    def set_input_embeddings(self, value):
-        self.model.embed_tokens = value
-
-    def get_output_embeddings(self):
-        return self.lm_head
-
-    def set_output_embeddings(self, new_embeddings):
-        self.lm_head = new_embeddings
-
-    def set_decoder(self, decoder):
-        self.model = decoder
-
-    def get_decoder(self):
-        return self.model
-
-    @add_start_docstrings_to_model_forward(LLAMA_INPUTS_DOCSTRING)
-    @replace_return_docstrings(output_type=CausalLMOutputWithPast, config_class=_CONFIG_FOR_DOC)
-    def forward(
-        self,
-        input_ids: torch.LongTensor = None,
-        attention_mask: Optional[torch.Tensor] = None,
-        position_ids: Optional[torch.LongTensor] = None,
-        past_key_values: Optional[Union[Cache, List[torch.FloatTensor]]] = None,
-        inputs_embeds: Optional[torch.FloatTensor] = None,
-        labels: Optional[torch.LongTensor] = None,
-        use_cache: Optional[bool] = None,
-        output_attentions: Optional[bool] = None,
-        output_hidden_states: Optional[bool] = None,
-        return_dict: Optional[bool] = None,
-        cache_position: Optional[torch.LongTensor] = None,
-        num_logits_to_keep: int = 0,
-        **kwargs: Unpack[KwargsForCausalLM],
-    ) -> Union[Tuple, CausalLMOutputWithPast]:
-        r"""
-        Args:
-            labels (`torch.LongTensor` of shape `(batch_size, sequence_length)`, *optional*):
-                Labels for computing the masked language modeling loss. Indices should either be in `[0, ...,
-                config.vocab_size]` or -100 (see `input_ids` docstring). Tokens with indices set to `-100` are ignored
-                (masked), the loss is only computed for the tokens with labels in `[0, ..., config.vocab_size]`.
-
-            num_logits_to_keep (`int`, *optional*):
-                Calculate logits for the last `num_logits_to_keep` tokens. If `0`, calculate logits for all
-                `input_ids` (special case). Only last token logits are needed for generation, and calculating them only for that
-                token can save memory, which becomes pretty significant for long sequences or large vocabulary size.
-
-        Returns:
-
-        Example:
-
-        ```python
-        >>> from transformers import AutoTokenizer, LlamaForCausalLM
-
-        >>> model = LlamaForCausalLM.from_pretrained("meta-llama/Llama-2-7b-hf")
-        >>> tokenizer = AutoTokenizer.from_pretrained("meta-llama/Llama-2-7b-hf")
-
-        >>> prompt = "Hey, are you conscious? Can you talk to me?"
-        >>> inputs = tokenizer(prompt, return_tensors="pt")
-
-        >>> # Generate
-        >>> generate_ids = model.generate(inputs.input_ids, max_length=30)
-        >>> tokenizer.batch_decode(generate_ids, skip_special_tokens=True, clean_up_tokenization_spaces=False)[0]
-        "Hey, are you conscious? Can you talk to me?\nI'm not conscious, but I can talk to you."
-        ```"""
-        output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
-        output_hidden_states = (
-            output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
-        )
-        return_dict = return_dict if return_dict is not None else self.config.use_return_dict
-
-        # decoder outputs consists of (dec_features, layer_state, dec_hidden, dec_attn)
-        outputs = self.model(
-            input_ids=input_ids,
-            attention_mask=attention_mask,
-            position_ids=position_ids,
-            past_key_values=past_key_values,
-            inputs_embeds=inputs_embeds,
-            use_cache=use_cache,
-            output_attentions=output_attentions,
-            output_hidden_states=output_hidden_states,
-            return_dict=return_dict,
-            cache_position=cache_position,
-            **kwargs,
-        )
-
-        hidden_states = outputs[0]
-        # Only compute necessary logits, and do not upcast them to float if we are not computing the loss
-        logits = self.lm_head(hidden_states[:, -num_logits_to_keep:, :])
-
-        loss = None
-        if labels is not None:
-            loss = self.loss_function(logits=logits, labels=labels, vocab_size=self.config.vocab_size, **kwargs)
-
-        if not return_dict:
-            output = (logits,) + outputs[1:]
-            return (loss,) + output if loss is not None else output
-
-        return CausalLMOutputWithPast(
-            loss=loss,
-            logits=logits,
-            past_key_values=outputs.past_key_values,
-            hidden_states=outputs.hidden_states,
-            attentions=outputs.attentions,
-        )

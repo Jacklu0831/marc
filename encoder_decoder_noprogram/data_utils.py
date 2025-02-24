@@ -341,7 +341,7 @@ class TrainDataset(Dataset):
         debug_fixed_order: bool,
         debug_random_pad: bool,
         debug_pad_len: int,
-        train_pad_side: str,
+        pad_side: str,
         no_color_permute: bool,
         no_pair_permute: bool,
         no_d8: bool,
@@ -366,7 +366,7 @@ class TrainDataset(Dataset):
         self.debug_fixed_order = debug_fixed_order
         self.debug_random_pad = debug_random_pad
         self.debug_pad_len = debug_pad_len
-        self.train_pad_side = train_pad_side
+        self.pad_side = pad_side
         self.no_color_permute = no_color_permute
         self.no_pair_permute = no_pair_permute
         self.no_d8 = no_d8
@@ -585,16 +585,16 @@ def collate_fn_train(batch: List[int], dataset: TrainDataset, ntokens: int = 0, 
     input_ids_lens = [len(i) for i in input_ids]
 
     # pad
-    input_ids = pad_sequence_with_side(input_ids, padding_value=dataset.tokenizer.pad_token_id, side=dataset.train_pad_side)
-    attention_mask = pad_sequence_with_side(attention_mask, padding_value=0, side=dataset.train_pad_side)
-    label_ids = pad_sequence_with_side(label_ids, padding_value=-100, side=dataset.train_pad_side)
+    input_ids = pad_sequence_with_side(input_ids, padding_value=dataset.tokenizer.pad_token_id, side=dataset.pad_side)
+    attention_mask = pad_sequence_with_side(attention_mask, padding_value=0, side=dataset.pad_side)
+    label_ids = pad_sequence_with_side(label_ids, padding_value=-100, side=dataset.pad_side)
 
     if dataset.debug_random_pad or dataset.debug_pad_len > -1:
         input_ids, attention_mask, label_ids = debug_extra_pad_tensors(
             [input_ids, attention_mask, label_ids],
             padding_values=[dataset.tokenizer.pad_token_id, 0, -100],
             pad_len=dataset.debug_pad_len,
-            side=dataset.train_pad_side,
+            side=dataset.pad_side,
         )
 
     batch_dict = {
@@ -644,8 +644,7 @@ class EvalDataset:
         tokenizer: ARCTokenizer,
         debug_random_pad: bool,
         debug_pad_len: int,
-        train_pad_side: str,
-        gen_pad_side: str,
+        pad_side: str,
         debug_len: int,
         no_separate_color_tokens: bool,
         max_seq_len: int,
@@ -658,8 +657,7 @@ class EvalDataset:
         self.tokenizer = tokenizer
         self.debug_random_pad = debug_random_pad
         self.debug_pad_len = debug_pad_len
-        self.train_pad_side = train_pad_side
-        self.gen_pad_side = gen_pad_side
+        self.pad_side = pad_side
         self.debug_len = debug_len
         self.max_seq_len = max_seq_len
         self.no_separate_color_tokens = no_separate_color_tokens
@@ -910,26 +908,26 @@ def collate_fn_eval(batch: List[Dict], dataset: EvalDataset) -> Dict:
     assert all(start_idxs[0] == 1 for start_idxs in pair_start_idxs)
 
     input_ids_lens = [len(x) for x in input_ids]
-    input_ids = pad_sequence_with_side(input_ids, padding_value=dataset.tokenizer.pad_token_id, side=dataset.train_pad_side)
-    attention_mask = pad_sequence_with_side(attention_mask, padding_value=0, side=dataset.train_pad_side)
-    label_ids = pad_sequence_with_side(label_ids, padding_value=-100, side=dataset.train_pad_side)
+    input_ids = pad_sequence_with_side(input_ids, padding_value=dataset.tokenizer.pad_token_id, side=dataset.pad_side)
+    attention_mask = pad_sequence_with_side(attention_mask, padding_value=0, side=dataset.pad_side)
+    label_ids = pad_sequence_with_side(label_ids, padding_value=-100, side=dataset.pad_side)
 
     gen_input_ids_lens = [len(x) for x in gen_input_ids]
-    gen_input_ids = pad_sequence_with_side(gen_input_ids, padding_value=dataset.tokenizer.pad_token_id, side=dataset.gen_pad_side)
-    gen_attention_mask = pad_sequence_with_side(gen_attention_mask, padding_value=0, side=dataset.gen_pad_side)
+    gen_input_ids = pad_sequence_with_side(gen_input_ids, padding_value=dataset.tokenizer.pad_token_id, side=dataset.pad_side)
+    gen_attention_mask = pad_sequence_with_side(gen_attention_mask, padding_value=0, side=dataset.pad_side)
 
     if dataset.debug_random_pad or dataset.debug_pad_len > -1:
         input_ids, attention_mask, label_ids = debug_extra_pad_tensors(
             [input_ids, attention_mask, label_ids],
             padding_values=[dataset.tokenizer.pad_token_id, 0, -100],
             pad_len=dataset.debug_pad_len,
-            side=dataset.train_pad_side,
+            side=dataset.pad_side,
         )
         gen_input_ids, gen_attention_mask = debug_extra_pad_tensors(
             [gen_input_ids, gen_attention_mask],
             padding_values=[dataset.tokenizer.pad_token_id, 0],
             pad_len=dataset.debug_pad_len,
-            side=dataset.gen_pad_side,
+            side=dataset.pad_side,
         )
 
     batch_dict = {
