@@ -201,13 +201,9 @@ def evaluate(
     collate_fn: Callable,
     dry_eval_run: bool,
     output_dir: str,
-<<<<<<< HEAD
-    thinking_embeddings: Union[ProgramEmbeddings, DistributedDataParallel]=None,
-=======
     ntokens: int,
     attention_cutoff: bool,
     attend_prev_programs: bool,
->>>>>>> origin/main
 ):
     model.eval()
 
@@ -963,10 +959,9 @@ def main():
     parser.add_argument("--grad_accum_steps", type=int, default=8)
     parser.add_argument("--train_batch_size", type=int, default=2)
     parser.add_argument("--eval_batch_size", type=int, default=16)
-    parser.add_argument("--lr_embedding", type=float, default=1e-5)
-    parser.add_argument("--lr_program", type=float, default=1e-4)
-    parser.add_argument("--lr_other", type=float, default=1e-4)
-    parser.add_argument("--lr_thinking", type=float, default=1e-4)
+    parser.add_argument("--lr_embedding", type=float, default=2e-5)
+    parser.add_argument("--lr_program", type=float, default=2e-4)
+    parser.add_argument("--lr_other", type=float, default=2e-4)
     parser.add_argument("--weight_decay", type=float, default=0.0)
     parser.add_argument("--num_epochs", type=int, default=10000)
     parser.add_argument("--samples_per_epoch", type=int, default=20000)
@@ -1316,23 +1311,6 @@ def main():
                 embedding_params.append(param)
             else:
                 other_params.append(param)
-<<<<<<< HEAD
-    if args.thinking_tokens:
-        thinking_params = [param for param in thinking_embeddings.parameters()]
-        optimizer_grouped_params = [
-            {"params": embedding_params, "lr": args.lr_embedding},
-            {"params": other_params, "lr": args.lr_other},
-            {"params": thinking_params, "lr": args.lr_thinking},
-        ]
-        all_params = embedding_params + other_params+thinking_params
-    else:
-        optimizer_grouped_params = [
-            {"params": embedding_params, "lr": args.lr_embedding},
-            {"params": other_params, "lr": args.lr_other},
-        ]
-        all_params = embedding_params + other_params
-    
-=======
     program_params = [param for param in program_embeddings.parameters()] if program_embeddings is not None else []
 
     optimizer_grouped_params = [
@@ -1342,7 +1320,6 @@ def main():
     ]
 
     all_params = embedding_params + other_params + program_params
->>>>>>> origin/main
     if args.optimizer == 'adamw':
         optimizer = torch.optim.AdamW(optimizer_grouped_params, weight_decay=args.weight_decay) # type: ignore
     elif args.optimizer == 'adamw8bit':
@@ -1513,20 +1490,6 @@ def main():
 
             with accelerator.accumulate(model):
                 with accelerator.autocast():
-<<<<<<< HEAD
-                    if args.thinking_tokens:
-                        ce_loss = model(
-                            input_embeds=with_thiking_embeds,
-                            attention_mask=with_thinking_attention_mask,
-                            labels=with_thinking_labels,
-                        ).loss
-                    else:
-                        ce_loss = model(
-                            input_ids=input_ids,
-                            attention_mask=attention_mask,
-                            labels=label_ids,
-                        ).loss
-=======
                     ce_loss = model_loss(
                         model=model,
                         tokenizer=tokenizer,
@@ -1541,7 +1504,6 @@ def main():
                         attention_cutoff=args.attention_cutoff,
                         attend_prev_programs=args.attend_prev_programs,
                     )
->>>>>>> origin/main
 
                 avg_ce_loss = accelerator.gather(ce_loss.repeat(args.train_batch_size)).mean() # type: ignore
                 ce_loss_accum += avg_ce_loss.item() / args.grad_accum_steps
