@@ -1,4 +1,4 @@
-from custom_llama import MyLlamaForCausalLM
+from transformers.models.llama.modeling_llama import LlamaRMSNorm
 import time
 from transformers.tokenization_utils_fast import PreTrainedTokenizerFast
 from datetime import timedelta
@@ -17,6 +17,7 @@ from torch.nn.parallel import DistributedDataParallel
 from torch.utils.data import DataLoader
 from transformers import (
     AutoTokenizer,
+    AutoModelForCausalLM,
     get_cosine_schedule_with_warmup,
 )
 from accelerate import Accelerator, InitProcessGroupKwargs
@@ -29,11 +30,13 @@ import bitsandbytes as bnb
 
 from data_utils import TTTDataset, collate_fn_ttt, ARCTokenizer
 from train import (
+    ProgramEmbeddings,
+    VaeProjection,
+    LambdaScheduler,
+    Quantizer,
     three_commas,
     set_up_main_process_logger,
     model_loss,
-    ProgramEmbeddings,
-    initialize_program_embeddings,
 )
 
 import os
@@ -62,9 +65,12 @@ NBIT_TO_DTYPE = {
 
 
 def save_model_ttt(
-        model: Union[nn.Module, DistributedDataParallel],
-        prior_embeddings: Optional[Union[ProgramEmbeddings, DistributedDataParallel]],
-        program_embeddings: Optional[Union[ProgramEmbeddings, DistributedDataParallel]],
+        model: nn.Module,
+        prior_embeddings: Union[ProgramEmbeddings, DistributedDataParallel],
+        program_embeddings: Union[ProgramEmbeddings, DistributedDataParallel],
+        vae_projection: Union[VaeProjection, DistributedDataParallel],
+        quantizer: Optional[Union[Quantizer, DistributedDataParallel]],
+        program_norm: Optional[Union[LlamaRMSNorm, DistributedDataParallel]],
         output_dir: str,
         task_id: str,
         epoch: int,
@@ -96,6 +102,33 @@ def save_model_ttt(
     torch.save(program_embeddings_module, save_program_embeddings_path)
     logger.info(f"Saved program embeddings to {save_program_embeddings_path}")
 
+    # projection
+    save_vae_projection_path = os.path.join(output_dir, task_id, f"vae_projection_epoch_{epoch+1}.pt")
+    vae_projection_module = vae_projection
+    if isinstance(vae_projection, DistributedDataParallel):
+        vae_projection_module = vae_projection.module
+    torch.save(vae_projection_module, save_vae_projection_path)
+    logger.info(f"Saved vae projection to {save_vae_projection_path}")
+
+    # quantizer
+    save_quantizer_path = None
+    if quantizer is not None:
+        save_quantizer_path = os.path.join(output_dir, task_id, f"quantizer_epoch_{epoch+1}.pt")
+        quantizer_module = quantizer
+        if isinstance(quantizer, DistributedDataParallel):
+            quantizer_module = quantizer.module
+        torch.save(quantizer_module, save_quantizer_path)
+        logger.info(f"Saved quantizer to {save_quantizer_path}")
+
+    # program norm
+    save_program_norm_path = None
+    if program_norm is not None:
+        save_program_norm_path = os.path.join(output_dir, task_id, f"program_norm_epoch_{epoch+1}.pt")
+        program_norm_module = program_norm
+        if isinstance(program_norm, DistributedDataParallel):
+            program_norm_module = program_norm.module
+        torch.save(program_norm_module, save_program_norm_path)
+        logger.info(f"Saved program norm to {save_program_norm_path}")
 
 
 def get_lora_data(model: nn.Module, lora_target_modules: List[str]) -> Dict[str, torch.Tensor]:
@@ -123,11 +156,22 @@ def main():
     parser.add_argument("--trainable_nbit", type=float, choices=[16, 32], default=16)
     parser.add_argument("--gradient_checkpointing", action="store_true")
     parser.add_argument("--full_lora", action="store_true")
+    parser.add_argument("--residual", action="store_true")
+    parser.add_argument("--normalize", action="store_true")
 
-    # Gist/thinking tokens
-    parser.add_argument("--ntokens", type=int, default=-1)
-    parser.add_argument("--attention_cutoff", action="store_true")
-    parser.add_argument("--attend_prev_programs", action="store_true")
+    # Self-consistency
+    parser.add_argument("--consistency_type", type=str, choices=["none", "all", "only_first", "include_last"], default="none")
+    parser.add_argument("--consistency_loss_lambda", type=float, default=0.5)
+    parser.add_argument("--linear_consistency", action="store_true")
+
+    # vqvae
+    parser.add_argument("--codebook_size", type=int, default=-1)
+    parser.add_argument("--commitment_loss_lambda", type=float, default=0.0)
+    parser.add_argument("--linear_commitment", action="store_true")
+    parser.add_argument("--discrete_prior", action="store_true")
+
+    # vae
+    parser.add_argument("--no_sample", action="store_true")
 
     # Weights
     parser.add_argument("--weight_root_dir", type=str, default="./encoder_decoder/outputs")
@@ -135,15 +179,19 @@ def main():
     parser.add_argument("--weight_epoch", type=int, required=True)
 
     # Training
-    parser.add_argument("--grad_accum_steps", type=int, default=8)
-    parser.add_argument("--batch_size", type=int, default=2)
-    parser.add_argument("--lr", type=float, default=2e-4)
-    parser.add_argument("--weight_decay", type=float, default=0.0)
+    parser.add_argument("--warmup_epochs", type=int, default=0)
     parser.add_argument("--num_epochs", type=int, default=5)
+    parser.add_argument("--save_epochs", type=int, default=-1)
+    parser.add_argument("--lr", type=float, default=1e-4)
+    parser.add_argument("--batch_size", type=int, default=2)
+    parser.add_argument("--grad_accum_steps", type=int, default=4)
+    parser.add_argument("--weight_decay", type=float, default=0.0)
     parser.add_argument("--max_grad_norm", default=1.0, type=float, help="Max gradient norm.")
     parser.add_argument("--optimizer", type=str, choices=["adamw8bit", "adamw", "sgd"], default="adamw")
-    parser.add_argument("--warmup_epochs", type=int, default=0)
-    parser.add_argument("--save_epochs", type=int, default=-1)
+
+    # scheduled extra losses
+    parser.add_argument("--kl_loss_lambda", type=float, default=0.0)
+    parser.add_argument("--linear_kl", action="store_true")
 
     # data
     parser.add_argument("--aug_type", type=str, choices=['none', 'd8', 'extra', 'both'], default='extra')
@@ -153,9 +201,10 @@ def main():
     parser.add_argument("--select_tasks_path", type=str, default=None)
     parser.add_argument("--num_workers", type=int, default=8)
     parser.add_argument("--pad_side", type=str, choices=["left", "right"], default="right")
-    parser.add_argument("--no_separate_color_tokens", action='store_true')
-    parser.add_argument("--max_seq_len", type=int, default=8192)
+    parser.add_argument("--no_dim", action='store_true')
+    parser.add_argument("--separate_color_tokens", action='store_true')
 
+    parser.add_argument("--ntokens", type=int, default=64)
     parser.add_argument("--seed", type=int, default=0)
     args = parser.parse_args()
 
@@ -234,7 +283,7 @@ def main():
     else:
         raise ValueError(f"unrecognized untrainable_nbit {args.untrainable_nbit}")
 
-    base_model = MyLlamaForCausalLM.from_pretrained(
+    base_model = AutoModelForCausalLM.from_pretrained(
         pretrained_model_name_or_path=MODEL_NAME_TO_PATH[args.model_name],
         **from_pretrained_kwargs,
     )
@@ -253,52 +302,32 @@ def main():
 
     # only keep these tokens, resize model embedding (eos == pad)
     # we do not include program tokens here, those are added later during training and inference
-    keep_tokens = [str(i) for i in range(31)] # dim
-    keep_tokens += [tokenizer.bos_token, tokenizer.eos_token, "\n", "input", "output", "pad"]
+    keep_tokens = [str(i) for i in range(31)] + \
+        [tokenizer.bos_token, tokenizer.eos_token, "\n", "input", "output", "pad"]
     assert len(set(keep_tokens)) == len(keep_tokens)
 
-    keep_token_ids = []
-    for token in keep_tokens:
-        token_id = tokenizer(token)["input_ids"] # type: ignore
-        assert isinstance(token_id, list) and len(token_id) == 2 # with start token
-        keep_token_ids.append(token_id[1])
-    assert len(set(keep_token_ids)) == len(keep_token_ids)
-
-    color_embeddings = None
-    if not args.no_separate_color_tokens:
-        color_embeddings = initialize_program_embeddings(
-            base_model.model.embed_tokens.weight.data.detach().clone(),
-            accelerator,
-            ntokens=10,
-            cov_scale=1.0,
-        )
-
-    # this breaks embedding tying, but whatever
     with torch.no_grad():
+        keep_token_ids = []
+        for token in keep_tokens:
+            token_id = tokenizer(token)["input_ids"] # type: ignore
+            assert isinstance(token_id, list) and len(token_id) == 2 # with start token
+            keep_token_ids.append(token_id[1])
+        assert len(set(keep_token_ids)) == len(keep_token_ids)
+
         # subset embeddings and lmheads
         assert base_model.model.embed_tokens.weight.shape == base_model.lm_head.weight.shape
         base_model.model.embed_tokens.weight = nn.Parameter(base_model.model.embed_tokens.weight[keep_token_ids])
-        base_model.model.embed_tokens.num_embeddings = len(keep_token_ids) # type: ignore
+        base_model.model.embed_tokens.num_embeddings = len(keep_token_ids)
         assert base_model.lm_head.bias is None
         base_model.lm_head.weight = nn.Parameter(base_model.lm_head.weight[keep_token_ids])
         base_model.lm_head.out_features = len(keep_token_ids)
         base_model.config.tie_word_embeddings = False
 
-        if not args.no_separate_color_tokens:
-            assert isinstance(color_embeddings, torch.Tensor)
-            base_model.model.embed_tokens.weight = nn.Parameter(torch.cat([color_embeddings, base_model.model.embed_tokens.weight]))
-            base_model.model.embed_tokens.num_embeddings += 10 # type: ignore
-            base_model.lm_head.weight = nn.Parameter(torch.cat([color_embeddings, base_model.lm_head.weight]))
-            base_model.lm_head.out_features += 10
-
-    if not args.no_separate_color_tokens:
-        keep_tokens = [f"c{c}" for c in range(10)] + keep_tokens
-
     # update configs
     assert base_model.config.vocab_size and base_model.config.bos_token_id and base_model.config.eos_token_id
-    base_model.config.vocab_size = len(keep_token_ids) + (0 if args.no_separate_color_tokens else 10)
-    base_model.config.bos_token_id = keep_tokens.index(tokenizer.bos_token) # type: ignore
-    base_model.config.eos_token_id = keep_tokens.index(tokenizer.eos_token) # type: ignore
+    base_model.config.vocab_size = len(keep_token_ids)
+    base_model.config.bos_token_id = keep_tokens.index(tokenizer.bos_token)
+    base_model.config.eos_token_id = keep_tokens.index(tokenizer.eos_token)
 
     # create custom tokenizer
     arc_tokenizer = ARCTokenizer(
@@ -313,11 +342,15 @@ def main():
     # load weights
     weight_dir = os.path.join(args.weight_root_dir, args.weight_dir)
     model_weight_path = os.path.join(weight_dir, f"lora_epoch_{args.weight_epoch}")
-    prior_embeddings_weight_path = None
-    program_embeddings_weight_path = None
-    if args.ntokens > 0:
-        prior_embeddings_weight_path = os.path.join(weight_dir, f"prior_embeddings_epoch_{args.weight_epoch}.pt")
-        program_embeddings_weight_path = os.path.join(weight_dir, f"program_embeddings_epoch_{args.weight_epoch}.pt")
+    prior_embeddings_weight_path = os.path.join(weight_dir, f"prior_embeddings_epoch_{args.weight_epoch}.pt")
+    program_embeddings_weight_path = os.path.join(weight_dir, f"program_embeddings_epoch_{args.weight_epoch}.pt")
+    vae_projection_weight_path = os.path.join(weight_dir, f"vae_projection_epoch_{args.weight_epoch}.pt")
+    quantizer_weight_path = None
+    if args.codebook_size > 0:
+        quantizer_weight_path = os.path.join(weight_dir, f"quantizer_epoch_{args.weight_epoch}.pt")
+    program_norm_weight_path = None
+    if args.normalize:
+        program_norm_weight_path = os.path.join(weight_dir, f"program_norm_epoch_{args.weight_epoch}.pt")
 
     model = PeftModel.from_pretrained(base_model, model_weight_path)
     logger.info("loaded model weights")
@@ -369,12 +402,12 @@ def main():
         max_samples_per_task=args.max_samples_per_task,
         permute_n=args.permute_n,
         tokenizer=tokenizer,
-        max_seq_len=args.max_seq_len,
         seed=args.seed,
         pad_side=args.pad_side,
         debug_no_aug=args.debug_no_aug,
         aug_type=args.aug_type,
-        no_separate_color_tokens=args.no_separate_color_tokens,
+        no_dim=args.no_dim,
+        separate_color_tokens=args.separate_color_tokens,
     )
 
     # save memory by making datasets on the fly
@@ -419,28 +452,43 @@ def main():
         )
 
         # load and set grads and nbit
-        prior_embeddings: Optional[ProgramEmbeddings] = None
-        if prior_embeddings_weight_path is not None:
-            prior_embeddings = torch.load(prior_embeddings_weight_path, weights_only=False, map_location=accelerator.device)
-        program_embeddings: Optional[ProgramEmbeddings] = None
-        if program_embeddings_weight_path is not None:
-            program_embeddings = torch.load(program_embeddings_weight_path, weights_only=False, map_location=accelerator.device)
+        prior_embeddings: ProgramEmbeddings = torch.load(prior_embeddings_weight_path, weights_only=False, map_location=accelerator.device)
+        program_embeddings: ProgramEmbeddings = torch.load(program_embeddings_weight_path, weights_only=False, map_location=accelerator.device)
+        vae_projection: VaeProjection = torch.load(vae_projection_weight_path, weights_only=False, map_location=accelerator.device)
+        quantizer: Optional[Quantizer] = None
+        if quantizer_weight_path is not None:
+            quantizer = torch.load(quantizer_weight_path, weights_only=False, map_location=accelerator.device)
+        program_norm: Optional[LlamaRMSNorm] = None
+        if program_norm_weight_path is not None:
+            program_norm = torch.load(program_norm_weight_path, weights_only=False, map_location=accelerator.device)
 
-        if prior_embeddings is not None:
-            for param in prior_embeddings.parameters():
+        for param in prior_embeddings.parameters():
+            param.requires_grad = True
+            param.data = param.data.to(NBIT_TO_DTYPE[args.trainable_nbit])
+        for param in program_embeddings.parameters():
+            param.requires_grad = True
+            param.data = param.data.to(NBIT_TO_DTYPE[args.trainable_nbit])
+        for param in vae_projection.parameters():
+            param.requires_grad = True
+            param.data = param.data.to(NBIT_TO_DTYPE[args.trainable_nbit])
+        if quantizer is not None:
+            for param in quantizer.parameters():
                 param.requires_grad = True
                 param.data = param.data.to(NBIT_TO_DTYPE[args.trainable_nbit])
-        if program_embeddings is not None:
-            for param in program_embeddings.parameters():
+        if program_norm is not None:
+            for param in program_norm.parameters():
                 param.requires_grad = True
-                param.data = param.data.to(NBIT_TO_DTYPE[args.trainable_nbit])
+                param.data = param.data.to(torch.float32)
 
         # Param groups for LoRA
         all_params = [p for p in model.parameters() if p.requires_grad]
-        if prior_embeddings is not None:
-            all_params += [p for p in prior_embeddings.parameters() if p.requires_grad]
-        if program_embeddings is not None:
-            all_params += [p for p in program_embeddings.parameters() if p.requires_grad]
+        all_params += [p for p in prior_embeddings.parameters() if p.requires_grad]
+        all_params += [p for p in program_embeddings.parameters() if p.requires_grad]
+        all_params += [p for p in vae_projection.parameters() if p.requires_grad]
+        if quantizer is not None:
+            all_params += [p for p in quantizer.parameters() if p.requires_grad]
+        if program_norm is not None:
+            all_params += [p for p in program_norm.parameters() if p.requires_grad]
         logger.info(f"Optimizer with {len(all_params)} params")
 
         # optimizer
@@ -462,16 +510,39 @@ def main():
         )
         logger.info(f'lr scheduler with {num_training_steps} warmup steps')
 
+        # lambda schedulers
+        kl_loss_lambda_scheduler = LambdaScheduler(
+            loss_lambda=args.kl_loss_lambda,
+            linear=args.linear_kl,
+            total_steps=num_training_steps,
+        )
+        commitment_loss_lambda_scheduler = LambdaScheduler(
+            loss_lambda=args.commitment_loss_lambda,
+            linear=args.linear_commitment,
+            total_steps=num_training_steps,
+        )
+        consistency_loss_lambda_scheduler = LambdaScheduler(
+            loss_lambda=args.consistency_loss_lambda,
+            linear=args.linear_consistency,
+            total_steps=num_training_steps,
+        )
+
         # Prepare with accelerator
         (
-            optimizer,
             prior_embeddings,
             program_embeddings,
+            vae_projection,
+            quantizer,
+            program_norm,
+            optimizer,
             ttt_dataloader
         ) = accelerator.prepare(
-            optimizer,
             prior_embeddings,
             program_embeddings,
+            vae_projection,
+            quantizer,
+            program_norm,
+            optimizer,
             ttt_dataloader
         )
 
@@ -494,47 +565,56 @@ def main():
         progress_bar.set_description("Total Train Steps")
 
         model.train()
-        if prior_embeddings is not None:
-            prior_embeddings.train()
-        if program_embeddings is not None:
-            program_embeddings.train()
+        prior_embeddings.train()
+        program_embeddings.train()
+        vae_projection.train()
+        if quantizer is not None:
+            quantizer.train()
+        if program_norm is not None:
+            program_norm.train()
 
         # start training
         for epoch in range(args.num_epochs):
             for batch_data in ttt_dataloader:
-                input_ids = batch_data["input_ids"].to(accelerator.device)
-                attention_mask = batch_data["attention_mask"].to(accelerator.device)
-                label_ids = batch_data["label_ids"].to(accelerator.device)
+                input_ids = [x.to(accelerator.device) for x in batch_data["input_ids"]]
+                attention_mask = [x.to(accelerator.device) for x in batch_data["attention_mask"]]
+                label_ids = [x.to(accelerator.device) for x in batch_data["label_ids"]]
                 input_ids_lens = batch_data["input_ids_lens"]
-                pair_start_idxs = batch_data["pair_start_idxs"]
+                num_pairs = batch_data["num_pairs"]
 
-                with accelerator.accumulate(model, prior_embeddings, program_embeddings):
+                with accelerator.accumulate(model, prior_embeddings, program_embeddings, vae_projection, quantizer, program_norm):
                     with accelerator.autocast():
-                        ce_loss = model_loss(
+                        _, _, _, _, _, _, total_loss, _ = model_loss(
+                            # model
                             model=model,
-                            tokenizer=tokenizer,
                             prior_embeddings=prior_embeddings,
                             program_embeddings=program_embeddings,
+                            vae_projection=vae_projection,
+                            quantizer=quantizer,
+                            program_norm=program_norm,
+                            tokenizer=tokenizer,
+                            # data
                             input_ids=input_ids,
                             attention_mask=attention_mask,
                             label_ids=label_ids,
                             input_ids_lens=input_ids_lens,
-                            pair_start_idxs=pair_start_idxs,
+                            num_pairs=num_pairs,
+                            # others
                             ntokens=args.ntokens,
                             pad_side=args.pad_side,
-                            attention_cutoff=args.attention_cutoff,
-                            attend_prev_programs=args.attend_prev_programs,
+                            kl_loss_lambda_scheduler=kl_loss_lambda_scheduler,
+                            commitment_loss_lambda_scheduler=commitment_loss_lambda_scheduler,
+                            consistency_loss_lambda_scheduler=consistency_loss_lambda_scheduler,
+                            global_step=global_step,
+                            vae_no_sample=args.no_sample,
+                            residual=args.residual,
+                            discrete_prior=args.discrete_prior,
+                            consistency_type=args.consistency_type,
                         )
 
-                        ce_loss = model(
-                            input_ids=input_ids,
-                            attention_mask=attention_mask,
-                            labels=label_ids,
-                        ).loss
-
-                    accelerator.backward(ce_loss)
+                    accelerator.backward(total_loss)
                     if accelerator.sync_gradients:
-                        accelerator.clip_grad_norm_(all_params, args.max_grad_norm).item() / args.grad_accum_steps # type: ignore
+                        accelerator.clip_grad_norm_(all_params, args.max_grad_norm).item() # type: ignore
                     optimizer.step()
                     lr_scheduler.step()
                     optimizer.zero_grad()
@@ -550,6 +630,9 @@ def main():
                     model=model,
                     prior_embeddings=prior_embeddings,
                     program_embeddings=program_embeddings,
+                    vae_projection=vae_projection,
+                    quantizer=quantizer,
+                    program_norm=program_norm,
                     output_dir=args.output_dir,
                     task_id=task_id,
                     epoch=epoch,
@@ -559,6 +642,13 @@ def main():
         # zero grads
         optimizer.state.clear()
         model.zero_grad(set_to_none=True)
+        prior_embeddings.zero_grad(set_to_none=True)
+        program_embeddings.zero_grad(set_to_none=True)
+        vae_projection.zero_grad(set_to_none=True)
+        if quantizer is not None:
+            quantizer.zero_grad(set_to_none=True)
+        if program_norm is not None:
+            program_norm.zero_grad(set_to_none=True)
 
         # delete stuff
         del ttt_datasets[0], ttt_dataloader
