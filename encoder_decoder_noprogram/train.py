@@ -300,36 +300,6 @@ def evaluate(
             gen_input_ids_lens = batch["gen_input_ids_lens"]
             out_token_length = batch["out_token_length"]
             label_texts = batch["label_texts"]
-<<<<<<< HEAD
-
-            # compute ce loss
-            if thinking_embeddings != None:
-                pad_side = 'right'
-                ntokens = len(thinking_embeddings[0])
-                batch_size = len(input_ids[0])
-                module = model.module if isinstance(model, DistributedDataParallel) else model
-                embed_tokens = module.model.embed_tokens if hasattr(module.model, "embed_tokens") else module.model.model.embed_tokens
-                dtype, device = input_ids[0].dtype, input_ids[0].device
-                thinking_inputs_embeds = thinking_embeddings("dummy")[None, ...].expand(batch_size, -1, -1)
-                extra_program_attention_mask = torch.full((batch_size, ntokens), 1, device=device, dtype=dtype)
-                extra_program_label_ids = torch.full((batch_size, ntokens), -100, device=device, dtype=dtype)
-                pad_embeds = embed_tokens(torch.tensor(dataset.tokenizer.pad_token_id, device=device))
-                inputs_embeds = [embed_tokens(pair_input_ids) for pair_input_ids in input_ids]
-                with_thiking_embeds = insert_based_on_sides(
-                    data=inputs_embeds,
-                    to_insert=thinking_inputs_embeds,
-                    insert_side="right",
-                    pad_side=pad_side,
-                    pad_id=pad_embeds,
-                )
-                with_thinking_attention_mask = insert_based_on_sides(
-                    data=attention_mask,
-                    to_insert=extra_program_attention_mask,
-                    insert_side="right",
-                    pad_side=pad_side,
-                    pad_id=pad_embeds,
-                )
-=======
             pair_start_idxs = batch["pair_start_idxs"]
 
             # compute accuracy
@@ -454,7 +424,6 @@ def evaluate(
                         skip_special_tokens=True,
                         no_separate_color_tokens=dataset.no_separate_color_tokens,
                     )
->>>>>>> origin/main
 
                 with_thinking_labels = insert_based_on_sides(
                     data=label_ids,
@@ -504,9 +473,7 @@ def evaluate(
                         eos_token_id=[dataset.tokenizer.eos_token_id],
                     )
                     gen_texts = dataset.tokenizer.batch_decode(gen_tokens[:, with_thiking_gen_embeds.shape[1]:], skip_special_tokens=True)
-
-
-            else:
+        else:
                 with accelerator.autocast():
                     ce_loss = model(
                         input_ids=input_ids,
@@ -760,6 +727,7 @@ def save_train_model(
         model: Union[nn.Module, DistributedDataParallel],
         output_dir: str,
         epoch: int,
+        global_step: int,
     ) -> str:
     save_enc_path = os.path.join(output_dir, f"lora_epoch_{epoch+1}")
     module = model.module if isinstance(model, DistributedDataParallel) else model
@@ -796,10 +764,7 @@ def initialize_program_embeddings(
         embeddings: torch.Tensor,
         accelerator: Accelerator,
         ntokens: int,
-<<<<<<< HEAD
-=======
         cov_scale: float,
->>>>>>> origin/main
     ) -> torch.Tensor:
 
     dtype = embeddings.dtype
@@ -811,11 +776,6 @@ def initialize_program_embeddings(
     covariance = centered_embeddings.T @ centered_embeddings / n_embeds
     eigenvalues = torch.linalg.eigvals(covariance)
     assert not ((covariance == covariance.T).all() and not torch.is_complex(eigenvalues) and (eigenvalues > 0).all())
-<<<<<<< HEAD
-    distribution = torch.distributions.multivariate_normal.MultivariateNormal(mean_embeddings, covariance_matrix=1e-9 * covariance)
-    return distribution.sample(sample_shape=(ntokens,)).to(device).to(dtype) # type: ignore
-
-=======
     distribution = torch.distributions.multivariate_normal.MultivariateNormal(mean_embeddings, covariance_matrix=cov_scale * covariance)
     return distribution.sample(sample_shape=(ntokens,)).to(device).to(dtype) # type: ignore
 
@@ -945,7 +905,22 @@ def model_loss(
             attend_prev_programs=attend_prev_programs,
         ).loss
 
->>>>>>> origin/main
+
+def save_latest_checkpoint(model, optimizer, lr_scheduler, global_step, args):
+    checkpoint = {
+        "global_step": global_step,
+        "model_state_dict": model.state_dict(),
+        "optimizer_state_dict": optimizer.state_dict(),
+        "lr_scheduler_state_dict": lr_scheduler.state_dict(),
+        "args": vars(args),  
+    }
+    # checkpoint_path = os.path.join(args.output_dir, f"checkpoint_{global_step}.pth")
+    checkpoint_path = os.path.join(args.output_dir, "checkpoint_latest.pth") #only the latest one is saved
+    torch.save(checkpoint, checkpoint_path)
+    print(f"Checkpoint saved at {checkpoint_path}")
+
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--tag", type=str, required=True)
@@ -1048,6 +1023,7 @@ def main():
     parser.add_argument("--no_rslora", action='store_true')
 
     parser.add_argument("--ntokens", type=int, default=64)
+    parser.add_argument("--save_per_steps", type=int, default=5000)
     parser.add_argument("--seed", type=int, default=0)
     args = parser.parse_args()
 
@@ -1081,6 +1057,7 @@ def main():
         log_with="wandb" if args.wandb else None,
         kwargs_handlers=[init_process_process_kwargs],
     )
+    
     set_up_main_process_logger(accelerator, logger)
     set_seed(args.seed + accelerator.process_index)
     if accelerator.is_main_process:
@@ -1089,7 +1066,10 @@ def main():
         accelerator.init_trackers(
             args.tracker_project_name,
             tracker_config,
-            init_kwargs={"wandb": {"name": args.tag}}
+            init_kwargs={"wandb": {
+                "name": args.tag,
+                "resume": "allow" if args.resume else "never",
+            }}
         )
     torch.backends.cuda.matmul.allow_tf32 = True
     logger.info("Accelerator and seed set up.")
@@ -1135,10 +1115,20 @@ def main():
     else:
         raise ValueError(f"unrecognized untrainable_nbit {args.untrainable_nbit}")
 
-    base_model = MyLlamaForCausalLM.from_pretrained(
-        pretrained_model_name_or_path=MODEL_NAME_TO_PATH[args.model_name],
-        **from_pretrained_kwargs,
-    )
+    global_step = 0
+    if args.resume and os.path.exists(latest_checkpoint_path):
+        logger.info(f"Resuming from {latest_checkpoint_path} ...")
+        checkpoint = torch.load(os.path.join(latest_checkpoint_path, "model.pth"), map_location="cpu")
+        base_model = MyLlamaForCausalLM(checkpoint["model_config"]) 
+        base_model.load_state_dict(checkpoint["model_state_dict"])  
+        global_step = checkpoint["global_step"]
+        logger.info(f"Model loaded from checkpoint at step {global_step}")
+    else:
+        base_model = MyLlamaForCausalLM.from_pretrained(
+            pretrained_model_name_or_path=MODEL_NAME_TO_PATH[args.model_name],
+            **from_pretrained_kwargs,
+        )
+        logger.info("🚀 Loading model from `from_pretrained()`")
 
     if args.untrainable_nbit in [4, 8]:
         base_model = prepare_model_for_kbit_training(
