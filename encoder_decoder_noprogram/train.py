@@ -185,14 +185,20 @@ def best_match_count(s1, s2):
     return max_matches
 
 
+def get_memory_footprint(module: nn.Module):
+    return sum(p.nelement() * p.element_size() for p in module.parameters()) + \
+        sum(p.nelement() * p.element_size() for p in module.buffers())
+
+
 ################################################
 # Evaluate with cross-entropy + exact-match
 ################################################
 @torch.no_grad()
 def evaluate(
-    task_to_ttt_path: Optional[Dict[str, str]],
+    task_to_ttt_path: Optional[Dict[str, Tuple[str, Optional[str], Optional[str]]]],
     ttt_param_names: Optional[Set[str]],
     model: Union[nn.Module, DistributedDataParallel],
+    prior_embeddings: Optional[Union[ProgramEmbeddings, DistributedDataParallel]],
     program_embeddings: Optional[Union[ProgramEmbeddings, DistributedDataParallel]],
     tokenizer: ARCTokenizer,
     dataset: EvalDataset,
@@ -206,25 +212,45 @@ def evaluate(
     attend_prev_programs: bool,
 ):
     model.eval()
+    if prior_embeddings is not None:
+        prior_embeddings.eval()
+    if program_embeddings is not None:
+        program_embeddings.eval()
 
     # get modules in case of DDP
     module = model.module if isinstance(model, DistributedDataParallel) else model
     embed_tokens = module.model.embed_tokens if hasattr(module.model, "embed_tokens") else module.model.model.embed_tokens
 
     # if ttt provided, same model weights for the missing ttt task weights
-    cached_weights_path = None
+    cached_model_weights_path = None
+    cached_prior_embeddings_weights_path = None
+    cached_program_embeddings_weights_path = None
     curr_ttt_task_name = None
     if task_to_ttt_path is not None: # run on both processes
         # save model for default when ttt is missing
-        cached_weights_path = os.path.join(output_dir, f"process{accelerator.process_index}_cache.pt")
+        cached_model_weights_path = os.path.join(output_dir, f"process{accelerator.process_index}_cache.pt")
         assert isinstance(ttt_param_names, set)
         names = set(name for name, _ in module.named_parameters())
         assert all(name in names for name in ttt_param_names), f"process{accelerator.process_index}\n\n{ttt_param_names}\n\n{names}"
         cache_weights = {name: param for name, param in module.named_parameters() if name in ttt_param_names}
-        torch.save(cache_weights, cached_weights_path)
-        logger.info(f"ttt provided, cached {len(cache_weights)} weights to {cached_weights_path}")
+        torch.save(cache_weights, cached_model_weights_path)
+        logger.info(f"ttt provided, cached {len(cache_weights)} weights to {cached_model_weights_path}")
+        # save prior embeddings
+        if prior_embeddings is not None:
+            cached_prior_embeddings_weights_path = os.path.join(output_dir, f"process{accelerator.process_index}_prior_embeddings_cache.pt")
+            torch.save(prior_embeddings, cached_prior_embeddings_weights_path)
+            logger.info(f"ttt provided, cached prior embeddings weights to {cached_prior_embeddings_weights_path}")
+        # save program embeddings
+        if program_embeddings is not None:
+            cached_program_embeddings_weights_path = os.path.join(output_dir, f"process{accelerator.process_index}_program_embeddings_cache.pt")
+            torch.save(program_embeddings, cached_program_embeddings_weights_path)
+            logger.info(f"ttt provided, cached program embeddings weights to {cached_program_embeddings_weights_path}")
         # save default to model paths and set current ttt weights to default
-        task_to_ttt_path["default"] = cached_weights_path
+        task_to_ttt_path["default"] = (
+            cached_model_weights_path,
+            cached_prior_embeddings_weights_path,
+            cached_program_embeddings_weights_path,
+        )
         curr_ttt_task_name = "default"
 
     # setup terminators and suppress warning
@@ -273,17 +299,32 @@ def evaluate(
                 # load ttt if necessary
                 if task_name != curr_ttt_task_name:
                     # load model
-                    ttt_path = task_to_ttt_path[task_name]
+                    (
+                        ttt_model_weights_path,
+                        ttt_prior_embeddings_weights_path,
+                        ttt_program_embeddings_weights_path,
+                    ) = task_to_ttt_path[task_name]
+                    # load model
                     ttt_state_dict = torch.load(
-                        ttt_path,
+                        ttt_model_weights_path,
                         weights_only=True,
                         map_location=accelerator.device
                     )
                     assert set(ttt_state_dict.keys()) == ttt_param_names
                     module.load_state_dict(ttt_state_dict, strict=False)
                     del ttt_state_dict
+                    # load prior embeddings
+                    if ttt_prior_embeddings_weights_path is not None:
+                        prior_embeddings = torch.load(ttt_prior_embeddings_weights_path, weights_only=False, map_location=accelerator.device)
+                    # load program embeddings
+                    if ttt_program_embeddings_weights_path is not None:
+                        program_embeddings = torch.load(ttt_program_embeddings_weights_path, weights_only=False, map_location=accelerator.device)
                     curr_ttt_task_name = task_name # set current task name
                     model.eval() # another eval after loading weight just in case
+                    if prior_embeddings is not None:
+                        prior_embeddings.eval()
+                    if program_embeddings is not None:
+                        program_embeddings.eval()
             ttt_provided_list += ttt_provided
 
             batch_data = [dataset[i] for i in batch_idxs]
@@ -306,6 +347,7 @@ def evaluate(
             with accelerator.autocast():
                 arbitrary_increase = 5
                 if program_embeddings is None:
+                    assert prior_embeddings is None
                     # generate with no program
                     gen_tokens = module.generate(
                         input_ids=gen_input_ids,
@@ -323,6 +365,7 @@ def evaluate(
                         no_separate_color_tokens=dataset.no_separate_color_tokens,
                     )
                 else:
+                    assert prior_embeddings is not None
                     # generate with no program
                     device, dtype = gen_input_ids.device, gen_input_ids.dtype
                     max_num_pairs = max(len(start_idxs) for start_idxs in pair_start_idxs)
@@ -351,8 +394,10 @@ def evaluate(
                             # program intervals
                             program_start = sum(len(x) for x in task_inputs_embeds_with_programs)
                             task_program_intervals.append((program_start, program_start + ntokens))
+                            # prior or program
+                            embedding = prior_embeddings('dummy') if i == 0 else program_embeddings('dummy')
                             # insert program embedding into inputs_embeds
-                            task_inputs_embeds_with_programs.append(program_embeddings("dummy"))
+                            task_inputs_embeds_with_programs.append(embedding)
                             task_inputs_embeds_with_programs.append(task_inputs_embeds[start_idx: end_idx])
                             # insert full attention for programs
                             task_attention_mask_with_programs.append(torch.full((ntokens,), 1, device=device, dtype=dtype))
@@ -601,8 +646,12 @@ def evaluate(
     competition_sub_acc = competition_sub_correct / sum(len(corrects) for corrects in task_name_to_corrects.values())
     competition_all_acc = competition_all_correct / len(task_name_to_corrects)
 
-    if cached_weights_path is not None:
-        os.remove(cached_weights_path)
+    if cached_model_weights_path is not None:
+        os.remove(cached_model_weights_path)
+    if cached_prior_embeddings_weights_path is not None:
+        os.remove(cached_prior_embeddings_weights_path)
+    if cached_program_embeddings_weights_path is not None:
+        os.remove(cached_program_embeddings_weights_path)
 
     return exact_acc, valid_grid, correct_grid_dim, token_acc, relaxed_token_acc, task_id_to_texts, \
         votes, competition_sub_acc, competition_all_acc, ttt_provided
@@ -725,15 +774,39 @@ def text_to_2d_grid(text: str) -> Tuple[Optional[List[List[int]]], bool]:
 @torch.no_grad()
 def save_train_model(
         model: Union[nn.Module, DistributedDataParallel],
+        prior_embeddings: Optional[Union[ProgramEmbeddings, DistributedDataParallel]],
+        program_embeddings: Optional[Union[ProgramEmbeddings, DistributedDataParallel]],
         output_dir: str,
         epoch: int,
-        global_step: int,
-    ) -> str:
-    save_enc_path = os.path.join(output_dir, f"lora_epoch_{epoch+1}")
+    ) -> Tuple[str, Optional[str], Optional[str]]:
+
+    # model
+    save_model_path = os.path.join(output_dir, f"lora_epoch_{epoch+1}")
     module = model.module if isinstance(model, DistributedDataParallel) else model
-    module.save_pretrained(save_enc_path, save_embedding_layers=True)
-    logger.info(f"Saved model to {save_enc_path}")
-    return save_enc_path
+    module.save_pretrained(save_model_path, save_embedding_layers=True)
+    logger.info(f"Saved model to {save_model_path}")
+
+    # prior embeddings
+    save_prior_embeddings_path = None
+    if prior_embeddings is not None:
+        save_prior_embeddings_path = os.path.join(output_dir, f"prior_embeddings_epoch_{epoch+1}.pt")
+        prior_embeddings_module = prior_embeddings
+        if isinstance(prior_embeddings, DistributedDataParallel):
+            prior_embeddings_module = prior_embeddings.module
+        torch.save(prior_embeddings_module, save_prior_embeddings_path)
+        logger.info(f"Saved prior embeddings to {save_prior_embeddings_path}")
+
+    # program embeddings
+    save_program_embeddings_path = None
+    if program_embeddings is not None:
+        save_program_embeddings_path = os.path.join(output_dir, f"program_embeddings_epoch_{epoch+1}.pt")
+        program_embeddings_module = program_embeddings
+        if isinstance(program_embeddings, DistributedDataParallel):
+            program_embeddings_module = program_embeddings.module
+        torch.save(program_embeddings_module, save_program_embeddings_path)
+        logger.info(f"Saved program embeddings to {save_program_embeddings_path}")
+
+    return save_model_path, save_prior_embeddings_path, save_program_embeddings_path
 
 
 def print_trainable_parameters(model):
@@ -783,6 +856,7 @@ def initialize_program_embeddings(
 def model_loss(
     model: Union[nn.Module, DistributedDataParallel],
     tokenizer: ARCTokenizer,
+    prior_embeddings: Optional[Union[ProgramEmbeddings, DistributedDataParallel]],
     program_embeddings: Optional[Union[ProgramEmbeddings, DistributedDataParallel]],
     # data
     input_ids: torch.Tensor,
@@ -799,12 +873,14 @@ def model_loss(
 
     # original baseline
     if program_embeddings is None:
+        assert prior_embeddings is None
         return model(
             input_ids=input_ids,
             attention_mask=attention_mask,
             labels=label_ids,
         ).loss
 
+    assert prior_embeddings is not None
     module = model.module if isinstance(model, DistributedDataParallel) else model
     embed_tokens = module.model.embed_tokens if hasattr(module.model, "embed_tokens") else module.model.model.embed_tokens
     device, dtype = input_ids.device, input_ids.dtype
@@ -838,8 +914,10 @@ def model_loss(
             # program intervals
             program_start = sum(len(x) for x in task_inputs_embeds_with_programs)
             task_program_intervals.append((program_start, program_start + ntokens))
+            # prior or program
+            embedding = prior_embeddings('dummy') if i == 0 else program_embeddings('dummy')
             # insert program embedding into inputs_embeds
-            task_inputs_embeds_with_programs.append(program_embeddings("dummy"))
+            task_inputs_embeds_with_programs.append(embedding)
             task_inputs_embeds_with_programs.append(task_inputs_embeds[start_idx: end_idx])
             # insert full attention for programs
             task_attention_mask_with_programs.append(torch.full((ntokens,), 1, device=device, dtype=dtype))
@@ -952,7 +1030,6 @@ def main():
     parser.add_argument("--thinking_tokens", action="store_true")
 
     # Gist/thinking tokens
-    # single means one program, all means pay attention to all programs
     parser.add_argument("--ntokens", type=int, default=-1)
     parser.add_argument("--attention_cutoff", action="store_true")
     parser.add_argument("--attend_prev_programs", action="store_true")
@@ -963,6 +1040,7 @@ def main():
     parser.add_argument("--eval_batch_size", type=int, default=16)
     parser.add_argument("--lr_embedding", type=float, default=2e-5)
     parser.add_argument("--lr_program", type=float, default=2e-4)
+    parser.add_argument("--lr_prior", type=float, default=2e-4)
     parser.add_argument("--lr_other", type=float, default=2e-4)
     parser.add_argument("--weight_decay", type=float, default=0.0)
     parser.add_argument("--num_epochs", type=int, default=10000)
@@ -972,7 +1050,7 @@ def main():
     parser.add_argument("--optimizer", type=str, choices=["adamw8bit", "adamw", "sgd"], default="adamw")
     parser.add_argument("--dry_train_run", action="store_true")
     parser.add_argument("--dry_eval_run", action="store_true")
-    parser.add_argument("--warmup_epoch", type=int, default=1)
+    parser.add_argument("--warmup_epochs", type=int, default=1)
 
     # both data
     parser.add_argument("--num_workers", type=int, default=8)
@@ -1163,8 +1241,17 @@ def main():
         logger.info(f'thking embeddings size {round(get_memory_footprint(thinking_embeddings) / 1024 ** 3, 2)}GB')
 
     # initialize program embeddings
+    prior_embeddings = None
     program_embeddings = None
     if args.ntokens > 0:
+        prior_embeddings = ProgramEmbeddings(
+            embedding=initialize_program_embeddings(
+                base_model.model.embed_tokens.weight.data.detach().clone(),
+                accelerator,
+                ntokens=args.ntokens,
+                cov_scale=1e-9,
+            ),
+        )
         program_embeddings = ProgramEmbeddings(
             embedding=initialize_program_embeddings(
                 base_model.model.embed_tokens.weight.data.detach().clone(),
@@ -1173,7 +1260,7 @@ def main():
                 cov_scale=1e-9,
             ),
         )
-        logger.info("Program embeddings initialized.")
+        logger.info("Prior & Program embeddings initialized.")
 
     # only keep these tokens, resize model embedding (eos == pad)
     # we do not include program tokens here, those are added later during training and inference
@@ -1251,6 +1338,9 @@ def main():
     logger.info("LoRA-wrapped models initialized (optional)")
 
     # ensure require grad
+    if prior_embeddings is not None:
+        for param in prior_embeddings.parameters():
+            param.requires_grad = True
     if program_embeddings is not None:
         for param in program_embeddings.parameters():
             param.requires_grad = True
@@ -1259,18 +1349,31 @@ def main():
     for name, param in model.named_parameters():
         if param.requires_grad:
             param.data = param.data.to(NBIT_TO_DTYPE[args.trainable_nbit])
+    if prior_embeddings is not None:
+        for name, param in prior_embeddings.named_parameters():
+            assert param.requires_grad
+            param.data = param.data.to(NBIT_TO_DTYPE[args.trainable_nbit])
     if program_embeddings is not None:
         for name, param in program_embeddings.named_parameters():
             assert param.requires_grad
             param.data = param.data.to(NBIT_TO_DTYPE[args.trainable_nbit])
     logger.info(f'converted trainable model weights to {NBIT_TO_DTYPE[args.trainable_nbit]}')
 
-    # number of parameters and size
+    # number of parameters
     print_trainable_parameters(model)
-    logger.info(f'model size {round(model.get_memory_footprint() / 1024 ** 3, 2)}GB')
+    if prior_embeddings is not None:
+        prior_embeddings_n_params = sum(p.numel() for p in prior_embeddings.parameters())
+        logger.info(f'prior embedding params {three_commas(prior_embeddings_n_params)}')
     if program_embeddings is not None:
         program_embeddings_n_params = sum(p.numel() for p in program_embeddings.parameters())
         logger.info(f'program embedding params {three_commas(program_embeddings_n_params)}')
+
+    # model size
+    logger.info(f'model size {round(model.get_memory_footprint() / 1024 ** 3, 2)}GB')
+    if prior_embeddings is not None:
+        logger.info(f'prior embeddings size {round(get_memory_footprint(prior_embeddings) / 1024 ** 3, 2)}GB')
+    if program_embeddings is not None:
+        logger.info(f'program embeddings size {round(get_memory_footprint(program_embeddings) / 1024 ** 3, 2)}GB')
 
     # Build training dataset
     train_dataset = TrainDataset(
@@ -1327,15 +1430,16 @@ def main():
                 embedding_params.append(param)
             else:
                 other_params.append(param)
+    prior_params = [param for param in prior_embeddings.parameters()] if prior_embeddings is not None else []
     program_params = [param for param in program_embeddings.parameters()] if program_embeddings is not None else []
 
     optimizer_grouped_params = [
         {"params": embedding_params, "lr": args.lr_embedding},
+        {"params": prior_params, "lr": args.lr_prior},
         {"params": program_params, "lr": args.lr_program},
         {"params": other_params, "lr": args.lr_other},
     ]
-
-    all_params = embedding_params + other_params + program_params
+    all_params = embedding_params + prior_params + program_params + other_params
     if args.optimizer == 'adamw':
         optimizer = torch.optim.AdamW(optimizer_grouped_params, weight_decay=args.weight_decay) # type: ignore
     elif args.optimizer == 'adamw8bit':
@@ -1344,6 +1448,8 @@ def main():
     else:
         optimizer = torch.optim.SGD(optimizer_grouped_params) # type: ignore
     logger.info(f"Optimizer with {len(embedding_params)} embed-params lr={args.lr_embedding}")
+    logger.info(f"Optimizer with {len(prior_params)} prior-params lr={args.lr_prior}")
+    logger.info(f"Optimizer with {len(program_params)} program-params lr={args.lr_program}")
     logger.info(f"Optimizer with {len(other_params)} other-params lr={args.lr_other}")
 
     # LR schedule
@@ -1352,24 +1458,26 @@ def main():
     if args.lr_scheduler == 'cosine':
         lr_scheduler = get_cosine_schedule_with_warmup(
             optimizer,
-            num_warmup_steps=steps_per_epoch * args.grad_accum_steps * args.warmup_epoch,
+            num_warmup_steps=steps_per_epoch * args.grad_accum_steps * args.warmup_epochs,
             num_training_steps=num_training_steps * args.grad_accum_steps,
         )
     else:
         lr_scheduler = get_constant_schedule_with_warmup(
             optimizer=optimizer,
-            num_warmup_steps=steps_per_epoch * args.grad_accum_steps * args.warmup_epoch,
+            num_warmup_steps=steps_per_epoch * args.grad_accum_steps * args.warmup_epochs,
         )
     logger.info(f'lr scheduler with {steps_per_epoch} warmup steps')
 
     # Prepare with accelerator
     (
         model,
+        prior_embeddings,
         program_embeddings,
         optimizer,
         train_loader,
     ) = accelerator.prepare(
         model,
+        prior_embeddings,
         program_embeddings,
         optimizer,
         train_loader,
@@ -1377,6 +1485,8 @@ def main():
     assert isinstance(model, (nn.Module, DistributedDataParallel))
     if program_embeddings is not None:
         assert isinstance(program_embeddings, (ProgramEmbeddings, DistributedDataParallel))
+    if prior_embeddings is not None:
+        assert isinstance(prior_embeddings, (ProgramEmbeddings, DistributedDataParallel))
 
     if args.dry_train_run:
         for _ in tqdm(train_loader, total=len(train_loader)):
@@ -1400,7 +1510,6 @@ def main():
         debug_len=args.debug_len,
         no_separate_color_tokens=args.no_separate_color_tokens,
         max_seq_len=args.max_seq_len,
-        ntokens=args.ntokens,
     )
     eval_eval_dataset = EvalDataset(
         eval_dir=args.eval_eval_dir,
@@ -1418,7 +1527,6 @@ def main():
         debug_len=args.debug_len,
         no_separate_color_tokens=args.no_separate_color_tokens,
         max_seq_len=args.max_seq_len,
-        ntokens=args.ntokens,
     )
     eval_collate_fn = partial(collate_fn_eval, dataset=eval_train_dataset)
     if args.debug_len > 0:
@@ -1449,6 +1557,10 @@ def main():
     # train!
     for epoch in range(args.num_epochs):
         model.train()
+        if prior_embeddings is not None:
+            prior_embeddings.train()
+        if program_embeddings is not None:
+            program_embeddings.train()
 
         ce_loss_accum = 0.0
         grad_norm_accum = 0.0
@@ -1461,52 +1573,12 @@ def main():
             input_ids_lens = batch_data["input_ids_lens"]
             pair_start_idxs = batch_data["pair_start_idxs"]
 
-            if args.thinking_tokens:
-                ntokens = args.ntokens
-                batch_size = len(input_ids[0])
-                module = model.module if isinstance(model, DistributedDataParallel) else model
-                embed_tokens = module.model.embed_tokens if hasattr(module.model, "embed_tokens") else module.model.model.embed_tokens
-                dtype, device = input_ids[0].dtype, input_ids[0].device
-                # thinking_inputs_embeds = thinking_embeddings("dummy")[None, ...].expand(batch_size, -1, -1)
-                mask = (x == thinking_token_id).unsqueeze(-1)
-                inputs_embeds = [embed_tokens(pair_input_ids) for pair_input_ids in input_ids]
-                input_embeds = torch.where(mask, thinking_embeddings, inputs_embeds)
-
-                # extra_program_attention_mask = torch.full((batch_size, ntokens), 1, device=device, dtype=dtype)
-                # extra_program_label_ids = torch.full((batch_size, ntokens), -100, device=device, dtype=dtype)
-                # pad_embeds = embed_tokens(torch.tensor(tokenizer.pad_token_id, device=device))
-                # inputs_embeds = [embed_tokens(pair_input_ids) for pair_input_ids in input_ids]
-                # with_thiking_embeds = insert_based_on_sides(
-                #     data=inputs_embeds,
-                #     to_insert=thinking_inputs_embeds,
-                #     insert_side="right",
-                #     pad_side=pad_side,
-                #     pad_id=pad_embeds,
-                # )
-                # with_thinking_attention_mask = insert_based_on_sides(
-                #     data=attention_mask,
-                #     to_insert=extra_program_attention_mask,
-                #     insert_side="right",
-                #     pad_side=pad_side,
-                #     pad_id=pad_embeds,
-                # )
-
-                # with_thinking_labels = insert_based_on_sides(
-                #     data=label_ids,
-                #     to_insert=extra_program_attention_mask,
-                #     lens=extra_program_label_ids,
-                #     insert_side="right",
-                #     pad_side=pad_side,
-                #     pad_id=pad_embeds,
-                # )
-                
-                
-
-            with accelerator.accumulate(model):
+            with accelerator.accumulate(model, prior_embeddings, program_embeddings):
                 with accelerator.autocast():
                     ce_loss = model_loss(
                         model=model,
                         tokenizer=tokenizer,
+                        prior_embeddings=prior_embeddings,
                         program_embeddings=program_embeddings,
                         input_ids=input_ids,
                         attention_mask=attention_mask,
@@ -1538,8 +1610,9 @@ def main():
                             "train/ce_loss": ce_loss_accum,
                             "train/grad_norm": grad_norm_accum,
                             "train/lr_embedding": lr_scheduler.get_last_lr()[0],
-                            "train/lr_program": lr_scheduler.get_last_lr()[1],
-                            "train/lr_other": lr_scheduler.get_last_lr()[2],
+                            "train/lr_prior": lr_scheduler.get_last_lr()[1],
+                            "train/lr_program": lr_scheduler.get_last_lr()[2],
+                            "train/lr_other": lr_scheduler.get_last_lr()[3],
                         }, step=global_step)
                     except:
                         logger.info(f"wandb failed on process {accelerator.process_index}, skipping the error")
@@ -1554,6 +1627,7 @@ def main():
                 task_to_ttt_path=None,
                 ttt_param_names=None,
                 model=model,
+                prior_embeddings=prior_embeddings,
                 program_embeddings=program_embeddings,
                 tokenizer=tokenizer,
                 dataset=eval_train_dataset,
@@ -1571,6 +1645,7 @@ def main():
                 task_to_ttt_path=None,
                 ttt_param_names=None,
                 model=model,
+                prior_embeddings=prior_embeddings,
                 program_embeddings=program_embeddings,
                 tokenizer=tokenizer,
                 dataset=eval_eval_dataset,
@@ -1635,11 +1710,17 @@ def main():
 
                 if do_save_model:
                     if (not args.save_all_models) and (last_save_model_path is not None):
-                        save_enc_path = last_save_model_path
-                        rm_cmd = f"rm -rf {save_enc_path}"
+                        save_model_path, save_prior_embeddings_path, save_program_embeddings_path = last_save_model_path
+                        rm_cmd = f"rm -rf {save_model_path}"
+                        if save_prior_embeddings_path is not None:
+                            rm_cmd += f" {save_prior_embeddings_path}"
+                        if save_program_embeddings_path is not None:
+                            rm_cmd += f" {save_program_embeddings_path}"
                         os.system(rm_cmd)
                     last_save_model_path = save_train_model(
                         model=model,
+                        prior_embeddings=prior_embeddings,
+                        program_embeddings=program_embeddings,
                         output_dir=args.output_dir,
                         epoch=epoch,
                     )

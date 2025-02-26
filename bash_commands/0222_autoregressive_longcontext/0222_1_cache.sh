@@ -3,10 +3,9 @@
 # arlong
 accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder_autoregressive_longcontext_caching/train.py \
     --lr_scheduler constant \
+    --token_weighted_loss \
     --tag test \
-    --train_batch_size 2 \
     --eval_batch_size 8 \
-    --grad_accum_steps 4 \
     --ar_gradient_checkpointing \
     --wandb
 

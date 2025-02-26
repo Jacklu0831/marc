@@ -4,7 +4,7 @@
 accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder_autoregressive_0223/train.py \
     --lr_scheduler constant \
     --tag 0218_ar_tokenweighted \
-    --token_weighted \
+    --token_weighted_loss \
     --wandb
 
 # Submitted batch job 57540159
