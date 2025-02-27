@@ -13,15 +13,6 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
     --tag 0218_ar_float16 \
     --wandb
 
-# ar float32
-accelerate launch --main_process_port $MASTER_PORT encoder_decoder_autoregressive_0223/train.py \
-    --lr_scheduler constant \
-    --token_weighted_loss \
-    --tag 0218_ar_float32 \
-    --trainable_nbit 32 \
-    --no_flash_attn \
-    --wandb
-
 # ar trainpadleft
 accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder_autoregressive_0223/train.py \
     --lr_scheduler constant \
@@ -32,5 +23,4 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
 
 # Submitted batch job 57581804
 # Submitted batch job 57577164
-# Submitted batch job 57577165
 # Submitted batch job 57577166
