@@ -12,6 +12,7 @@ from tqdm import tqdm
 from functools import partial
 import argparse
 import torch
+import torch.nn.functional as F
 from torch import nn
 from torch.nn.parallel import DistributedDataParallel
 from torch.utils.data import DataLoader
@@ -24,6 +25,8 @@ from accelerate import Accelerator, PartialState, InitProcessGroupKwargs
 from accelerate.logging import get_logger
 from accelerate.utils import ProjectConfiguration, set_seed, gather_object
 from peft import LoraConfig, TaskType, get_peft_model, prepare_model_for_kbit_training # type: ignore
+import wandb
+import shutil
 
 import logging
 import datasets
@@ -42,6 +45,7 @@ from data_utils import (
 )
 
 import os
+os.system('nvidia-smi')
 os.environ["TOKENIZERS_PARALLELISM"] = "false" # weird tokenizer issue
 os.environ["NCCL_TIMEOUT"] = "28800" # 4hr for evaluation time variance across gpus
 os.environ["NCCL_TIMEOUT_MS"] = "28800000"
@@ -65,14 +69,6 @@ NBIT_TO_DTYPE = {
     32: torch.float32,
 }
 
-class ProgramEmbeddings(nn.Module):
-    def __init__(self, embedding: torch.Tensor):
-        super(ProgramEmbeddings, self).__init__()
-        self.embedding = nn.Parameter(embedding)
-
-    def forward(self, program_i: int) -> torch.Tensor:
-        del program_i
-        return self.embedding
 
 class ProgramEmbeddings(nn.Module):
     def __init__(self, embedding: torch.Tensor):
@@ -121,45 +117,6 @@ def chunks_uniform_batch(task_ids: List[str], data_idxs: List[int], n: int) -> I
     for task_id, data_idxs in task_id_to_data_idx.items():
         yield from chunks(data_idxs, n)
 
-def insert_based_on_sides(
-        data: torch.Tensor,
-        to_insert: torch.Tensor,
-        insert_side: str,
-        pad_side: str,
-        pad_id: Union[int, torch.Tensor],
-        lens: List[int]=None,
-    ) -> torch.Tensor:
-
-    if pad_side == "right":
-        if insert_side == "left":
-            return torch.cat([to_insert, data], dim=1)
-        else:
-            data_new = []
-            for x, m, l in zip(data, to_insert, lens):
-                if isinstance(pad_id, int):
-                    assert torch.equal(x[l:], torch.full(x[l:].shape, pad_id, device=x[l:].device)), x[l:]
-                else:
-                    assert torch.equal(x[l:], pad_id.unsqueeze(0).expand(x[l:].shape[0], -1)), x[l:]
-                x = torch.cat([x[:l], m, x[l:]])
-                data_new.append(x)
-            return torch.stack(data_new)
-    else:
-        if insert_side == "left":
-            data_new = []
-            for x, m, l in zip(data, to_insert, lens):
-                if isinstance(pad_id, int):
-                    assert torch.equal(x[:-l], torch.full(x[:-l].shape, pad_id, device=x[:-l].device)), x[:-l]
-                else:
-                    assert torch.equal(x[:-l], pad_id.unsqueeze(0).expand(x[:-l].shape[0], -1)), x[:-l]
-                x = torch.cat([x[:-l], m, x[-l:]])
-                data_new.append(x)
-            return torch.stack(data_new)
-        else:
-            return torch.cat([data, to_insert], dim=1)
-
-def get_memory_footprint(module: nn.Module):
-    return sum(p.nelement() * p.element_size() for p in module.parameters()) + \
-        sum(p.nelement() * p.element_size() for p in module.buffers())
 
 def best_match_count(s1, s2):
     # Ensure s1 is the longer string
@@ -470,80 +427,6 @@ def evaluate(
                         no_separate_color_tokens=dataset.no_separate_color_tokens,
                     )
 
-                with_thinking_labels = insert_based_on_sides(
-                    data=label_ids,
-                    to_insert=extra_program_attention_mask,
-                    lens=extra_program_label_ids,
-                    insert_side="right",
-                    pad_side=pad_side,
-                    pad_id=pad_embeds,
-                )
-                with accelerator.autocast():
-                    ce_loss = model(
-                        input_embeds=with_thiking_embeds,
-                        attention_mask= with_thinking_attention_mask,
-                        labels=with_thinking_labels,
-                    ).loss
-                    ce_loss_list += [ce_loss.item()] * bs
-
-
-                gen_input_embeds = [embed_tokens(pair_input_ids) for pair_input_ids in gen_input_ids]
-                with_thiking_gen_embeds = insert_based_on_sides(
-                    data=gen_input_embeds,
-                    to_insert=thinking_inputs_embeds,
-                    insert_side="right",
-                    pad_side=pad_side,
-                    pad_id=pad_embeds,
-                )
-                with_thinking_gen_attention_mask = insert_based_on_sides(
-                    data=gen_attention_mask,
-                    to_insert=extra_program_attention_mask,
-                    insert_side="right",
-                    pad_side=pad_side,
-                    pad_id=pad_embeds,
-                )
-
-           
-                # compute accuracy
-                with accelerator.autocast():
-                    # generate
-                    gen_tokens = module.generate(
-                        input_embeds=with_thiking_gen_embeds,
-                        attention_mask=with_thinking_gen_attention_mask,
-                        max_new_tokens=max(out_token_length), # arbitrary increase
-                        num_return_sequences=1,
-                        temperature=1.0,
-                        top_p=1.0,
-                        do_sample=False,
-                        eos_token_id=[dataset.tokenizer.eos_token_id],
-                    )
-                    gen_texts = dataset.tokenizer.batch_decode(gen_tokens[:, with_thiking_gen_embeds.shape[1]:], skip_special_tokens=True)
-        else:
-                with accelerator.autocast():
-                    ce_loss = model(
-                        input_ids=input_ids,
-                        attention_mask=attention_mask,
-                        labels=label_ids,
-                    ).loss
-                    ce_loss_list += [ce_loss.item()] * bs
-
-                    # compute accuracy
-                with accelerator.autocast():
-                    # generate
-                    gen_tokens = module.generate(
-                        input_ids=gen_input_ids,
-                        attention_mask=gen_attention_mask,
-                        max_new_tokens=max(out_token_length), # arbitrary increase
-                        num_return_sequences=1,
-                        temperature=1.0,
-                        top_p=1.0,
-                        do_sample=False,
-                        eos_token_id=[dataset.tokenizer.eos_token_id],
-                    )
-                    gen_texts = dataset.tokenizer.batch_decode(gen_tokens[:, gen_input_ids.shape[1]:], skip_special_tokens=True)
-
-
-            
             # Compare each gen_text with label_texts
             assert len(task_ids) == len(inverters) == bs, (len(task_ids), len(inverters), bs)
             assert len(gen_texts) == len(label_texts) == bs, (len(gen_texts), len(label_texts), bs)
@@ -983,21 +866,21 @@ def model_loss(
             attend_prev_programs=attend_prev_programs,
         ).loss
 
-
-def save_latest_checkpoint(model, optimizer, lr_scheduler, global_step, args):
-    checkpoint = {
-        "global_step": global_step,
-        "model_state_dict": model.state_dict(),
-        "optimizer_state_dict": optimizer.state_dict(),
-        "lr_scheduler_state_dict": lr_scheduler.state_dict(),
-        "args": vars(args),  
-    }
-    # checkpoint_path = os.path.join(args.output_dir, f"checkpoint_{global_step}.pth")
-    checkpoint_path = os.path.join(args.output_dir, "checkpoint_latest.pth") #only the latest one is saved
-    torch.save(checkpoint, checkpoint_path)
-    print(f"Checkpoint saved at {checkpoint_path}")
-
-
+def example_loss_function(logits, labels):
+    """
+    计算交叉熵损失
+    
+    参数:
+      logits (Tensor): 模型输出，形状为 (batch_size, seq_len, num_classes)
+      labels (Tensor): 标签，形状为 (batch_size, seq_len)，其中每个值为类别索引
+    返回:
+      loss (Tensor): 计算得到的交叉熵损失
+    """
+    batch_size, seq_len, num_classes = logits.size()
+    logits_flat = logits.view(-1, num_classes)
+    labels_flat = labels.view(-1)
+    loss = F.cross_entropy(logits_flat, labels_flat)
+    return loss
 
 def main():
     parser = argparse.ArgumentParser()
@@ -1005,6 +888,7 @@ def main():
     parser.add_argument("--wandb", action="store_true")
     parser.add_argument("--output_dir", type=str, default="./encoder_decoder/outputs")
     parser.add_argument("--log_every", type=int, default=10)
+    parser.add_argument("--save_every", type=int, default=5000)
     parser.add_argument("--tracker_project_name", type=str, default="arc")
     parser.add_argument("--save_all_models", action="store_true") # otherwise save only best
 
@@ -1019,6 +903,7 @@ def main():
     parser.add_argument("--no_pair_permute", action="store_true")
     parser.add_argument("--no_d8", action="store_true")
     parser.add_argument("--lr_scheduler", type=str, choices=["cosine", "constant"], default="cosine")
+    parser.add_argument("--resume_debug", action='store_true')
 
     # Model
     parser.add_argument("--model_name", type=str, default="llama1b")
@@ -1027,7 +912,6 @@ def main():
     parser.add_argument("--trainable_nbit", type=int, choices=[16, 32], default=16)
     parser.add_argument("--gradient_checkpointing", action="store_true")
     parser.add_argument("--no_lora", action="store_true")
-    parser.add_argument("--thinking_tokens", action="store_true")
 
     # Gist/thinking tokens
     parser.add_argument("--ntokens", type=int, default=-1)
@@ -1100,8 +984,7 @@ def main():
     ])
     parser.add_argument("--no_rslora", action='store_true')
 
-    parser.add_argument("--ntokens", type=int, default=64)
-    parser.add_argument("--save_per_steps", type=int, default=5000)
+    parser.add_argument("--resume", action="store_true")
     parser.add_argument("--seed", type=int, default=0)
     args = parser.parse_args()
 
@@ -1111,6 +994,14 @@ def main():
         args.wandb = False
         args.samples_per_epoch = 32
         args.log_every = 1
+
+    if args.resume_debug:
+        args.save_every = 50
+    #     import uuid
+
+    #     run_id = run_id = str(uuid.uuid4())[:8]
+    # else:
+    run_id = None
 
     # check args
     if args.model_name == "nemo8b":
@@ -1122,6 +1013,8 @@ def main():
         args.untrainable_nbit = args.trainable_nbit # untrainable become trainable
 
     args.output_dir = os.path.join(args.output_dir, args.tag)
+    checkpoint_dir = os.path.join(args.output_dir, "checkpoint")
+    
 
     # Setup accelerator
     project_config = ProjectConfiguration(project_dir=args.output_dir)
@@ -1135,18 +1028,26 @@ def main():
         log_with="wandb" if args.wandb else None,
         kwargs_handlers=[init_process_process_kwargs],
     )
-    
     set_up_main_process_logger(accelerator, logger)
     set_seed(args.seed + accelerator.process_index)
     if accelerator.is_main_process:
+
         os.makedirs(args.output_dir, exist_ok=True)
         tracker_config = dict(vars(args))
+        if os.path.exists(checkpoint_dir):
+            state_file = os.path.join(checkpoint_dir, "training_state.json")
+            if os.path.exists(state_file):
+                with open(state_file, "r") as f:
+                    state = json.load(f)
+                run_id = state.get("run_id", 0)
+
         accelerator.init_trackers(
             args.tracker_project_name,
             tracker_config,
             init_kwargs={"wandb": {
                 "name": args.tag,
                 "resume": "allow" if args.resume else "never",
+                "id": run_id if run_id else None,
             }}
         )
     torch.backends.cuda.matmul.allow_tf32 = True
@@ -1193,20 +1094,10 @@ def main():
     else:
         raise ValueError(f"unrecognized untrainable_nbit {args.untrainable_nbit}")
 
-    global_step = 0
-    if args.resume and os.path.exists(latest_checkpoint_path):
-        logger.info(f"Resuming from {latest_checkpoint_path} ...")
-        checkpoint = torch.load(os.path.join(latest_checkpoint_path, "model.pth"), map_location="cpu")
-        base_model = MyLlamaForCausalLM(checkpoint["model_config"]) 
-        base_model.load_state_dict(checkpoint["model_state_dict"])  
-        global_step = checkpoint["global_step"]
-        logger.info(f"Model loaded from checkpoint at step {global_step}")
-    else:
-        base_model = MyLlamaForCausalLM.from_pretrained(
-            pretrained_model_name_or_path=MODEL_NAME_TO_PATH[args.model_name],
-            **from_pretrained_kwargs,
-        )
-        logger.info("🚀 Loading model from `from_pretrained()`")
+    base_model = MyLlamaForCausalLM.from_pretrained(
+        pretrained_model_name_or_path=MODEL_NAME_TO_PATH[args.model_name],
+        **from_pretrained_kwargs,
+    )
 
     if args.untrainable_nbit in [4, 8]:
         base_model = prepare_model_for_kbit_training(
@@ -1219,26 +1110,6 @@ def main():
             base_model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
 
     logger.info("Base models loaded.")
-    # for thinking tokens
-    if args.thinking_tokens:
-        # initialize program embeddings
-        thinking_embeddings = ProgramEmbeddings(
-            embedding=initialize_program_embeddings(
-                base_model.model.embed_tokens.weight.data.detach().clone(),
-                accelerator,
-                ntokens=args.ntokens,
-            ),
-        )
-  
-        for param in thinking_embeddings.parameters():
-            param.requires_grad = True
-     
-        for name, param in thinking_embeddings.named_parameters():
-            assert param.requires_grad
-            param.data = param.data.to(NBIT_TO_DTYPE[args.trainable_nbit])
-        
-        thinking_embeddings_n_params = sum(p.numel() for p in thinking_embeddings.parameters())
-        logger.info(f'thking embeddings size {round(get_memory_footprint(thinking_embeddings) / 1024 ** 3, 2)}GB')
 
     # initialize program embeddings
     prior_embeddings = None
@@ -1405,9 +1276,7 @@ def main():
         max_seq_len=args.max_seq_len,
         ntokens=args.ntokens,
     )
-    # special token id
-    thinking_token_id = 666
-    train_collate_fn = partial(collate_fn_train, dataset=train_dataset,ntokens = args.ntokens, special_token_id = thinking_token_id)
+    train_collate_fn = partial(collate_fn_train, dataset=train_dataset)
     if args.debug_len > 0:
         train_collate_fn = partial(collate_fn_train_dummy, dataset=train_dataset)
     train_loader = DataLoader(
@@ -1467,7 +1336,8 @@ def main():
             num_warmup_steps=steps_per_epoch * args.grad_accum_steps * args.warmup_epochs,
         )
     logger.info(f'lr scheduler with {steps_per_epoch} warmup steps')
-
+    # breakpoint recovery
+    accelerator.register_for_checkpointing(lr_scheduler)
     # Prepare with accelerator
     (
         model,
@@ -1482,6 +1352,38 @@ def main():
         optimizer,
         train_loader,
     )
+    # breakpoint recovery
+    resume_batch_idx = 0 
+    if os.path.exists(checkpoint_dir):
+        accelerator.print("Loading checkpoint from", checkpoint_dir)
+        accelerator.load_state(checkpoint_dir)
+        state_file = os.path.join(checkpoint_dir, "training_state.json")
+        if os.path.exists(state_file):
+            with open(state_file, "r") as f:
+                state = json.load(f)
+            resume_global_step = state.get("global_step", 0)
+            start_epoch = state.get("epoch", 0)
+            resume_batch_idx = state.get("batch_idx", 0)
+            run_id = state.get("run_id", 0)
+            global_step = 0
+        else:
+            resume_global_step = 0
+            global_step = 0
+            start_epoch = 0
+        accelerator.print(f"Resumed training from epoch {start_epoch}, global_step {resume_global_step}")
+        api = wandb.Api()
+        run = api.run(f"{wandb.run.entity}/{wandb.run.project}/{wandb.run.id}")
+        # print(run.history().head())
+        print(run.history().columns.tolist())
+
+
+        history = run.history()
+        last_logged = history["_step"].max()
+    else:
+        resume_global_step = -1
+        global_step = 0
+        start_epoch = 0
+        last_logged = -1
     assert isinstance(model, (nn.Module, DistributedDataParallel))
     if program_embeddings is not None:
         assert isinstance(program_embeddings, (ProgramEmbeddings, DistributedDataParallel))
@@ -1541,7 +1443,7 @@ def main():
     logger.info(f'{three_commas(sum(p.numel() for p in all_params))} trainable params')
     logger.info(f'======= TRAINING INFO END =======\n')
 
-    global_step = 0
+    # global_step = 0
     progress_bar = tqdm(
         range(num_training_steps),
         desc="Steps",
@@ -1555,7 +1457,10 @@ def main():
     epoch_to_eval_exact_acc = {}
 
     # train!
-    for epoch in range(args.num_epochs):
+    accelerator.print(f"Strat training from epoch {start_epoch}, resume_global_step {resume_global_step}, global step{global_step}")
+    global_step = resume_global_step
+    progress_bar.update(resume_global_step)
+    for epoch in range(start_epoch,args.num_epochs):
         model.train()
         if prior_embeddings is not None:
             prior_embeddings.train()
@@ -1564,9 +1469,10 @@ def main():
 
         ce_loss_accum = 0.0
         grad_norm_accum = 0.0
-        pad_side = 'right'
 
-        for batch_data in train_loader:
+        for batch_idx, batch_data in enumerate(train_loader):
+            if epoch == start_epoch and batch_idx < resume_batch_idx:
+                continue
             input_ids = batch_data["input_ids"].to(accelerator.device)
             attention_mask = batch_data["attention_mask"].to(accelerator.device)
             label_ids = batch_data["label_ids"].to(accelerator.device)
@@ -1603,6 +1509,12 @@ def main():
 
             if accelerator.sync_gradients:
                 global_step += 1
+                if global_step < resume_global_step:
+                    print(f'global_step {global_step}')
+                    if global_step % args.log_every == 0:
+                        progress_bar.update(args.log_every)
+                    continue
+                
                 if global_step % args.log_every == 0:
                     progress_bar.update(args.log_every)
                     try:
@@ -1619,6 +1531,49 @@ def main():
 
                 ce_loss_accum = 0.0
                 grad_norm_accum = 0.0
+                
+                if global_step % args.save_every == 0 :
+                    # breakpoint continue
+                    if accelerator.is_main_process:
+                        if os.path.exists(checkpoint_dir):
+                            shutil.rmtree(checkpoint_dir) 
+                        os.makedirs(checkpoint_dir, exist_ok=True)
+                        accelerator.save_state(checkpoint_dir)
+                        state = {"global_step": global_step, "epoch": epoch,"batch_idx": batch_idx + 1,'run_id': wandb.run.id}
+                        with open(os.path.join(checkpoint_dir, "training_state.json"), "w") as f:
+                            json.dump(state, f)
+                        logger.info(f"Checkpoint saved at epoch {epoch}, global_step {global_step}")
+
+                        # if args.resume_debug:
+                        #     dummy_input_ids = torch.randint(0, 10, (args.train_batch_size, 32)).to(accelerator.device)
+                        #     dummy_attention_mask = torch.ones_like(dummy_input_ids).to(accelerator.device)
+                        #     dummy_labels = torch.randint(0, 2, (args.train_batch_size, 32)).to(accelerator.device)
+
+                        #     model.eval() 
+                        #     with torch.no_grad(), accelerator.autocast():
+                        #         original_output = model(dummy_input_ids, attention_mask=dummy_attention_mask)
+                        #         original_logits = original_output.logits
+                        #         original_loss = example_loss_function(original_logits, dummy_labels)  
+                        #     print("Before saving state:")
+                        #     print("Loss:", original_loss.item())
+
+                        #     accelerator.save_state(checkpoint_dir)
+
+                        #     accelerator.load_state(checkpoint_dir)
+                        #     model.eval() 
+
+                        #     with torch.no_grad(), accelerator.autocast():
+                        #         loaded_logits = model(dummy_input_ids, attention_mask=dummy_attention_mask)
+                        #         loaded_loss = example_loss_function(loaded_logits.logits, dummy_labels)
+                        #     print("After loading state:")
+                        #     print("Loss:", loaded_loss.item())
+
+                        #     if torch.allclose(original_loss, loaded_loss, atol=1e-6) and torch.allclose(original_logits, loaded_logits.logits, atol=1e-6):
+                        #         print("After checkpoint recovery, the output is consistent and the precision conversion status is retained correctly")
+                        #     else:
+                        #         print("the output is different after recovery, please check the breakpoint recovery logic")
+
+                        #     model.train()
 
         # Evaluate every N epochs
         if (epoch + 1) % args.eval_epochs == 0:
@@ -1681,6 +1636,7 @@ def main():
                     accelerator.log(eval_metric_dict, step=global_step)
                 except:
                     logger.info(f"wandb failed on process {accelerator.process_index}, skipping the error")
+
 
                 # Save outputs
                 save_eval_train_pred_gt_path = os.path.join(args.output_dir, f"eval_train_{epoch+1}_pred_gt.json")
