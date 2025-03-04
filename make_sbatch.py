@@ -8,7 +8,7 @@ $REQUEUE
 $ACCOUNT
 $PARTITION
 $CONSTRAINT
-#SBATCH --nodes=1
+#SBATCH --nodes=$NODE
 #SBATCH --ntasks-per-node=$NGPU
 #SBATCH --cpus-per-task=$NCPU
 #SBATCH --time=$TIME:00:00
@@ -39,6 +39,7 @@ parser.add_argument('--sbatch_dir', type=str, help='bash file of commands', defa
 =======
 parser.add_argument('--sbatch_dir', type=str, help='bash file of commands', default='/scratch/yl11330/marc/sbatch_files')
 parser.add_argument('--burst', action='store_true')
+parser.add_argument('--multi_node', action='store_true')
 
 >>>>>>> origin/main
 args = parser.parse_args()
@@ -65,10 +66,17 @@ else:
     template = template.replace("$PARTITION", "")
     template = template.replace("$CONSTRAINT", "#SBATCH --constraint='a100|h100'")
 
-template = template.replace('$NGPU', str(args.ngpu))
+if args.multi_node:
+    template = template.replace('$NODE', str(args.ngpu))
+    template = template.replace('$NGPU', '1')
+    template = template.replace('$MEM', str(args.gb))
+else:
+    template = template.replace('$NODE', '1')
+    template = template.replace('$NGPU', str(args.ngpu))
+    template = template.replace('$MEM', str(args.gb * args.ngpu))
+
 template = template.replace('$NCPU', str(args.ncpu))
 template = template.replace('$TIME', str(args.time))
-template = template.replace('$MEM', str(args.gb * args.ngpu))
 
 # todo: support multi-gpu
 gpu_line = f'#SBATCH --gres=gpu:{args.ngpu}'

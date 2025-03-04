@@ -419,7 +419,7 @@ def debug_extra_pad_tensors(
     assert len(tensors) == len(padding_values)
     assert all(t.dim() == 2 for t in tensors)
     if pad_len == -1:
-        pad_len = random.randint(0, 15) # arbitrary
+        pad_len = random.randint(1, 15) # arbitrary
     padded_tensors = []
     for arg, padding_value in zip(tensors, padding_values):
         pad = torch.full((arg.shape[0], pad_len), padding_value, device=arg.device, dtype=arg.dtype)
@@ -446,8 +446,13 @@ def load_re_arc_from_data_dir(data_dir: str) -> Dict[str, List[Dict[str, List[Li
 
 
 def load_concept_arc() -> Dict[str, List[Dict[str, List[List[int]]]]]:
+<<<<<<< HEAD
+    files = glob.glob(f'/scratch/zy3101/ConceptARC/corpus/*/*.json')
+    files += glob.glob(f'/scratch/zy3101/ConceptARC/MinimalTasks/*.json')
+=======
     files = glob.glob(f'./data/ConceptARC/corpus/*/*.json')
     files += glob.glob(f'./data/ConceptARC/MinimalTasks/*.json')
+>>>>>>> origin/main
     tasks_dict = {}
     for data_i, file in enumerate(files):
         data = json.load(open(file, 'r'))
@@ -620,6 +625,7 @@ def collate_fn_train(batch: List[int], dataset: TrainDataset) -> Dict:
 
     # the restriction here is to enforce all list of pairs in batch are equal length
     all_task_ids = []
+    token_lens = []
     all_np_chosen_pairs = []
 
     # must sample this number of pairs to avoid GPU synchronization issues
@@ -647,6 +653,9 @@ def collate_fn_train(batch: List[int], dataset: TrainDataset) -> Dict:
             all_pairs = dataset.heavy_arc_data[int(idx)]["examples"]
             all_pairs = [{"input": pair[0], "output": pair[1]} for pair in all_pairs]
             assert all(len(pair) == 2 for pair in all_pairs)
+
+        if dataset.debug_fixed_order:
+            required_num_pair = len(all_pairs)
 
         # need at least required_num_pair to proceed
         if len(all_pairs) < required_num_pair:
@@ -704,11 +713,13 @@ def collate_fn_train(batch: List[int], dataset: TrainDataset) -> Dict:
             pair_token_len += 4 # bos, input, output, eos
             pair_token_len += 6 # hw\n for both input and output
             token_len += pair_token_len
+
         if token_len > dataset.max_seq_len:
             continue
 
         # STEP 4: found a valid task!
         all_task_ids.append(task_id) # type: ignore
+        token_lens.append(token_len)
         all_np_chosen_pairs.append(np_chosen_pairs)
 
     # apply color and pair permutation
@@ -753,10 +764,11 @@ def collate_fn_train(batch: List[int], dataset: TrainDataset) -> Dict:
             batch_input_ids.append(input_ids)
             batch_attention_mask.append(attention_mask)
             batch_label_ids.append(label_ids)
-
+        # aggregate
         pair_idx_to_input_ids.append(batch_input_ids)
         pair_idx_to_attention_mask.append(batch_attention_mask)
         pair_idx_to_label_ids.append(batch_label_ids)
+    assert [sum(x[batch_i].shape[0] for x in pair_idx_to_input_ids) for batch_i in range(batch_size)] == token_lens
 
     # visualize some training data
     if dataset.debug_train_data:
@@ -864,8 +876,10 @@ class EvalDataset:
         no_dim: bool,
         no_separate_color_tokens: bool,
         extra_inference_pairs: int,
-        limit_inference_pairs: int,
+        limit_inference_pairs: bool,
+        limit_inference_pairs_strict: bool,
         max_num_train_pair: int,
+        max_seq_len: int,
     ):
         self.permute_n = permute_n
         self.augment_n = augment_n
@@ -881,7 +895,9 @@ class EvalDataset:
         self.no_dim = no_dim
         self.no_separate_color_tokens = no_separate_color_tokens
         self.limit_inference_pairs = limit_inference_pairs
+        self.limit_inference_pairs_strict = limit_inference_pairs_strict
         self.max_num_train_pair = max_num_train_pair # max num pair in training, used for limiting inference
+        self.max_seq_len = max_seq_len
 
         self.extra_inference_pairs = extra_inference_pairs
         self.inference_pair_rng = np.random.RandomState(seed)
@@ -944,9 +960,9 @@ class EvalDataset:
         # since this function has to do filtering, might as well parse data as well
         self.eval_tasks = []
         for task in tasks:
-            new_tasks = self.get_task_augmentations_leave_ns(task, leave_ns=leave_ns)
+            new_tasks = self.get_task_augmentations_leave_ns_filtered(task, leave_ns=leave_ns)
             if len(new_tasks) == 0 and leave_ns_inc:
-                new_tasks = self.get_task_augmentations_leave_ns(task, leave_ns=leave_ns + [leave_ns[-1] + 1])
+                new_tasks = self.get_task_augmentations_leave_ns_filtered(task, leave_ns=leave_ns + [leave_ns[-1] + 1])
             self.eval_tasks += new_tasks
         logger.info(f'augmented data from {len(tasks)} to {len(self.eval_tasks)}')
 
@@ -968,7 +984,7 @@ class EvalDataset:
         logger.info(f"encoder sequence length range from {min_len} to {max_len}]")
         del parsed_data
 
-    def get_task_augmentations_leave_ns(
+    def get_task_augmentations_leave_ns_filtered(
             self,
             task: Task,
             leave_ns: list[int],
@@ -977,7 +993,12 @@ class EvalDataset:
         augmented_tasks = []
         for leave_n in leave_ns:
             augmented_tasks += self.get_task_augmentations_leave_n(task, leave_n=leave_n)
-        return augmented_tasks
+        # filter augmented queries
+        filtered_tasks = []
+        for task in augmented_tasks:
+            if self.format_and_filter(task) is not None:
+                filtered_tasks.append(task)
+        return filtered_tasks
 
     def get_task_augmentations_leave_n(
             self,
@@ -1029,7 +1050,7 @@ class EvalDataset:
         # logger.info(f"{task.name} has {len(test_tasks)} after permute set augment set")
         return test_tasks
 
-    def format(self, task: Task, permutation: Optional[List[int]] = None, extra_inference_pairs: int = 0) -> Dict:
+    def format_and_filter(self, task: Task, permutation: Optional[List[int]] = None, extra_inference_pairs: int = 0) -> Optional[Dict]:
         # do not add any randomness to this function!
         # this function only filters by token length, not by grid dimension
         # even the voting augmentation does not increase resolution
@@ -1056,6 +1077,10 @@ class EvalDataset:
                     size=num_new_pairs,
                     replace=True,
                 ).tolist() # type: ignore
+
+        # if strict, eval samples are always at most max_num_train_pair
+        if self.limit_inference_pairs_strict:
+            task.train_examples = task.train_examples[:self.max_num_train_pair]
 
         # parse task
         pair_idx_to_input_ids = []
@@ -1084,9 +1109,14 @@ class EvalDataset:
             no_dim=self.no_dim,
             no_separate_color_tokens=self.no_separate_color_tokens,
         )
-        out_token_length = len(gen_output_ids) - 1 # remove eos token
         assert isinstance(gen_input_ids, torch.Tensor) and isinstance(gen_output_ids, torch.Tensor)
         gen_attention_mask = torch.full(gen_input_ids.shape, 1, dtype=torch.int64)
+        out_token_length = len(gen_output_ids) - 1 # remove eos token
+
+        # filter just in case (test with eval script later to see if this limits performance)
+        total_seq_len = sum(x.shape[0] for x in pair_idx_to_input_ids) + gen_input_ids.shape[0] + gen_output_ids.shape[0]
+        if total_seq_len > self.max_seq_len:
+            return None
 
         # decoder label text has to be non-color-mapped
         label_texts = self.tokenizer.decode(
@@ -1109,7 +1139,7 @@ class EvalDataset:
         return len(self.eval_tasks)
 
     def __getitem__(self, idx):
-        return self.format(self.eval_tasks[idx])
+        return self.format_and_filter(self.eval_tasks[idx])
 
     def get_io_permuted_batches(self, batch_idxs: List[int]) -> Iterator[Tuple[List[Dict], List[bool]]]:
         # TODO: optionally can leave1, but might mess with underlying program
@@ -1131,8 +1161,9 @@ class EvalDataset:
             avail = [len(permutations) > permute_i for permutations in permutations_of_tasks]
             permutations = [permutations_of_tasks[idx][permute_i] for idx in range(batch_size) if avail[idx]]
             avail_eval_tasks = [eval_tasks[idx] for idx in range(batch_size) if avail[idx]]
-            permuted_tasks = [self.format(task, permutation, self.extra_inference_pairs) for task, permutation in zip(avail_eval_tasks, permutations)]
-            yield (permuted_tasks, avail)
+            permuted_tasks = [self.format_and_filter(task, permutation, self.extra_inference_pairs) for task, permutation in zip(avail_eval_tasks, permutations)]
+            assert all(x is not None for x in permuted_tasks)
+            yield (permuted_tasks, avail) # type: ignore
 
 
 def collate_fn_eval(batch: List[Dict], dataset: EvalDataset) -> Dict:
@@ -1186,7 +1217,7 @@ def collate_fn_eval(batch: List[Dict], dataset: EvalDataset) -> Dict:
         for input_ids, attention_mask in zip(padded_input_ids, padded_attention_mask):
             input_ids, attention_mask = debug_extra_pad_tensors(
                 [input_ids, attention_mask],
-                padding_values=[dataset.tokenizer.pad_token_id, 0, -100],
+                padding_values=[dataset.tokenizer.pad_token_id, 0],
                 pad_len=dataset.debug_pad_len,
                 side=dataset.train_pad_side,
             )
@@ -1226,20 +1257,22 @@ def collate_fn_eval(batch: List[Dict], dataset: EvalDataset) -> Dict:
 def collate_fn_eval_dummy(batch: List[Dict], dataset: EvalDataset) -> Dict:
     batch_size = len(batch)
     del batch  # we don't use it directly
+
     num_demonstration_pair = 9
 
     input_ids = [torch.randint(0, 30, (batch_size, dataset.debug_len), dtype=torch.int64, device='cpu') for _ in range(num_demonstration_pair)]
     attention_mask = [torch.full((batch_size, dataset.debug_len), 1, dtype=torch.int64, device='cpu') for _ in range(num_demonstration_pair)]
     input_ids_lens = [[dataset.debug_len] * batch_size for _ in range(num_demonstration_pair)]
-
+    # gen
     gen_input_ids = torch.randint(0, 30, (batch_size, dataset.debug_len // 2 + 1), dtype=torch.int64, device='cpu')
     gen_attention_mask = torch.full((batch_size, dataset.debug_len // 2 + 1), 1, dtype=torch.int64, device='cpu')
     gen_input_ids_lens = [dataset.debug_len // 2 + 1] * batch_size
+    out_token_length = [dataset.debug_len // 2 + 1] * batch_size
 
     task_ids = [str(x) for x in range(100000, 100000 + batch_size)]
-    out_token_length = [dataset.debug_len // 2 + 1] * batch_size
     label_texts = ['1\n1\n1'] * batch_size
     num_pairs = [num_demonstration_pair] * batch_size
+
 
     batch_dict = {
         "task_ids": task_ids,

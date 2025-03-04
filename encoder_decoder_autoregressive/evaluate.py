@@ -27,10 +27,10 @@ from train import (
     ProgramEmbeddings,
     Quantizer,
     VaeProjection,
-    LambdaScheduler,
     set_up_main_process_logger,
     evaluate,
     initialize_program_embeddings,
+    ProgramEmbeddings,
 )
 
 
@@ -69,18 +69,18 @@ def main():
     parser.add_argument("--no_flash_attn", action="store_true")
     parser.add_argument("--untrainable_nbit", type=float, choices=[3.6, 4, 8, 16, 32], default=16)
     parser.add_argument("--trainable_nbit", type=float, choices=[16, 32], default=16)
-    parser.add_argument("--residual", action="store_true")
-    parser.add_argument("--normalize", action="store_true")
-
-    # Self-consistency
-    parser.add_argument("--consistency_type", type=str, choices=["none", "all", "only_first", "include_last"], default="none")
+    parser.add_argument("--no_residual", action="store_true")
+    parser.add_argument("--no_normalize", action="store_true")
+    parser.add_argument("--concat_programs", action="store_true")
+    parser.add_argument("--weird_cast", action="store_true")
 
     # vqvae
     parser.add_argument("--codebook_size", type=int, default=-1)
-    parser.add_argument("--discrete_prior", action="store_true")
+    parser.add_argument("--fsq_L", metavar='N', type=int, nargs='+', default=[])
+    parser.add_argument("--no_discrete_prior", action="store_true")
 
     # vae
-    parser.add_argument("--no_sample", action="store_true")
+    parser.add_argument("--vae", action="store_true")
 
     # Weights
     parser.add_argument("--weight_root_dir", type=str, default="./encoder_decoder/outputs")
@@ -91,15 +91,20 @@ def main():
     parser.add_argument("--ttt_weight_epoch", type=int, default=-1)
 
     # Evaluation
-    parser.add_argument("--batch_size", type=int, default=2)
+    parser.add_argument("--batch_size", type=int, default=64)
     parser.add_argument("--max_seq_len", type=int, default=8192)
+    parser.add_argument("--max_num_pair", type=int, default=8) # includes test pair
+    parser.add_argument("--extra_inference_pairs", type=int, default=0)
+    parser.add_argument("--limit_inference_pairs", action='store_true')
+    parser.add_argument("--limit_inference_pairs_strict", action='store_true') # overrides limit_inference_pairs
+    parser.add_argument("--long_context", action="store_true")
+    parser.add_argument("--long_context_repeat_demonstration", action="store_true")
 
     # data
     parser.add_argument("--train_pad_side", type=str, choices=["left", "right"], default="right")
     parser.add_argument("--gen_pad_side", type=str, choices=["left", "right"], default="left")
     parser.add_argument("--no_dim", action='store_true')
-    parser.add_argument("--separate_color_tokens", action='store_true')
-    parser.add_argument("--color_equiv", action="store_true")
+    parser.add_argument("--no_separate_color_tokens", action='store_true')
 
     # eval data
     parser.add_argument("--data_dir", type=str, default="./data/re-arc/arc_original/evaluation")
@@ -122,7 +127,7 @@ def main():
     parser.add_argument("--gs_take_best", action="store_true")
 
     # Virtual tokens approach
-    parser.add_argument("--ntokens", type=int, default=64)
+    parser.add_argument("--ntokens", type=int, default=16)
     parser.add_argument("--seed", type=int, default=0)
     args = parser.parse_args()
 
@@ -209,7 +214,7 @@ def main():
 
     # only keep these tokens, resize model embedding (eos == pad)
     # we do not include program tokens here, those are added later during training and inference
-    if args.separate_color_tokens:
+    if not args.no_separate_color_tokens:
         keep_tokens = [str(i) for i in range(31)]
         if args.no_dim:
             keep_tokens = []
@@ -228,11 +233,12 @@ def main():
     assert len(set(keep_token_ids)) == len(keep_token_ids)
 
     color_embeddings = None
-    if args.separate_color_tokens:
+    if not args.no_separate_color_tokens:
         color_embeddings = initialize_program_embeddings(
             base_model.model.embed_tokens.weight.data.detach().clone(),
             accelerator,
             ntokens=10,
+            cov_scale=1.0,
         )
 
     # this breaks embedding tying, but whatever
@@ -246,19 +252,19 @@ def main():
         base_model.lm_head.out_features = len(keep_token_ids)
         base_model.config.tie_word_embeddings = False
 
-        if args.separate_color_tokens:
+        if not args.no_separate_color_tokens:
             assert isinstance(color_embeddings, torch.Tensor)
             base_model.model.embed_tokens.weight = nn.Parameter(torch.cat([color_embeddings, base_model.model.embed_tokens.weight]))
             base_model.model.embed_tokens.num_embeddings += 10
             base_model.lm_head.weight = nn.Parameter(torch.cat([color_embeddings, base_model.lm_head.weight]))
             base_model.lm_head.out_features += 10
 
-    if args.separate_color_tokens:
+    if not args.no_separate_color_tokens:
         keep_tokens = [f"c{c}" for c in range(10)] + keep_tokens
 
     # update configs
     assert base_model.config.vocab_size and base_model.config.bos_token_id and base_model.config.eos_token_id
-    base_model.config.vocab_size = len(keep_token_ids) + (10 if args.separate_color_tokens else 0)
+    base_model.config.vocab_size = len(keep_token_ids) + (0 if args.no_separate_color_tokens else 10)
     base_model.config.bos_token_id = keep_tokens.index(tokenizer.bos_token) # type: ignore
     base_model.config.eos_token_id = keep_tokens.index(tokenizer.eos_token) # type: ignore
 
@@ -292,20 +298,22 @@ def main():
         weights_only=False,
         map_location=accelerator.device
     )
-    vae_projection: VaeProjection = torch.load(
-        vae_projection_weight_path,
-        weights_only=False,
-        map_location=accelerator.device
-    )
+    vae_projection: Optional[VaeProjection] = None
+    if args.vae:
+        vae_projection = torch.load(
+            vae_projection_weight_path,
+            weights_only=False,
+            map_location=accelerator.device
+        )
     quantizer: Optional[Quantizer] = None
-    if args.codebook_size > 0:
+    if args.codebook_size > 0 or args.fsq_L != []:
         quantizer = torch.load(
             quantizer_weight_path,
             weights_only=False,
             map_location=accelerator.device
         )
     program_norm: Optional[LlamaRMSNorm] = None
-    if args.normalize:
+    if not args.no_normalize:
         program_norm = torch.load(
             program_norm_weight_path,
             weights_only=False,
@@ -321,15 +329,16 @@ def main():
         param.data = param.data.to(NBIT_TO_DTYPE[args.trainable_nbit])
     for param in program_embeddings.parameters():
         param.data = param.data.to(NBIT_TO_DTYPE[args.trainable_nbit])
-    for param in vae_projection.parameters():
-        param.data = param.data.to(NBIT_TO_DTYPE[args.trainable_nbit])
+    if vae_projection is not None:
+        for param in vae_projection.parameters():
+            param.data = param.data.to(torch.float32)
     if quantizer is not None:
         for param in quantizer.parameters():
             param.data = param.data.to(NBIT_TO_DTYPE[args.trainable_nbit])
     if program_norm is not None:
         for param in program_norm.parameters():
             param.data = param.data.to(torch.float32)
-    logger.info(f'converted model weights to {NBIT_TO_DTYPE[args.trainable_nbit]}')
+    logger.info(f'converted most model weights to {NBIT_TO_DTYPE[args.trainable_nbit]}')
 
     # get ttt model paths
     task_to_ttt_path = None
@@ -351,12 +360,13 @@ def main():
                 assert os.path.exists(prior_embeddings_ttt_path), prior_embeddings_ttt_path
                 program_embeddings_ttt_path = os.path.join(task_weight_dir, f"program_embeddings_epoch_{args.ttt_weight_epoch}.pt")
                 assert os.path.exists(program_embeddings_ttt_path), program_embeddings_ttt_path
-                vae_projection_ttt_path = os.path.join(task_weight_dir, f"vae_projection_epoch_{args.ttt_weight_epoch}.pt")
-                assert os.path.exists(vae_projection_ttt_path), vae_projection_ttt_path
-                if args.codebook_size > 0:
+                if args.vae:
+                    vae_projection_ttt_path = os.path.join(task_weight_dir, f"vae_projection_epoch_{args.ttt_weight_epoch}.pt")
+                    assert os.path.exists(vae_projection_ttt_path), vae_projection_ttt_path
+                if args.codebook_size > 0 or args.fsq_L != []:
                     quantizer_ttt_path = os.path.join(task_weight_dir, f"quantizer_epoch_{args.ttt_weight_epoch}.pt")
                     assert os.path.exists(quantizer_ttt_path), quantizer_ttt_path
-                if args.normalize:
+                if not args.no_normalize:
                     program_norm_ttt_path = os.path.join(task_weight_dir, f"program_norm_epoch_{args.ttt_weight_epoch}.pt")
                     assert os.path.exists(program_norm_ttt_path), program_norm_ttt_path
                 task_to_ttt_path[task_name] = (
@@ -371,7 +381,7 @@ def main():
         assert len(task_to_ttt_path) > 0, ttt_weight_dir
 
         # hacky way to get param names
-        model_ttt_path, _, _, _, _ = list(task_to_ttt_path.values())[0]
+        model_ttt_path, _, _, _, _, _ = list(task_to_ttt_path.values())[0]
         ttt_param_names = set(torch.load(model_ttt_path, weights_only=True, map_location=accelerator.device).keys())
         logger.info(f"found {len(ttt_param_names)} ttt params")
 
@@ -409,21 +419,22 @@ def main():
         train_pad_side=args.train_pad_side,
         gen_pad_side=args.gen_pad_side,
         debug_len=-1,
-        color_equiv=args.color_equiv,
         no_dim=args.no_dim,
-        separate_color_tokens=args.separate_color_tokens,
+        no_separate_color_tokens=args.no_separate_color_tokens,
+        extra_inference_pairs=args.extra_inference_pairs,
+        limit_inference_pairs=args.limit_inference_pairs,
+        limit_inference_pairs_strict=args.limit_inference_pairs_strict,
+        max_num_train_pair=args.max_num_pair - 1,
+        long_context=args.long_context,
+        long_context_repeat_demonstration=args.long_context_repeat_demonstration,
+        max_seq_len=args.max_seq_len,
     )
     collate_fn = partial(collate_fn_eval, dataset=dataset)
 
-    # lambda schedulers
-    kl_loss_lambda_scheduler = LambdaScheduler(loss_lambda=0.0, linear=False, total_steps=0)
-    commitment_loss_lambda_scheduler = LambdaScheduler(loss_lambda=0.0, linear=False, total_steps=0)
-    consistency_loss_lambda_scheduler = LambdaScheduler(loss_lambda=0.0, linear=False, total_steps=0)
-
     # evaluate
-    ce_loss, kl_loss, codebook_loss, commitment_loss, perplexity, consistency_loss, \
-        exact_acc, valid_grid, correct_grid_dim, token_acc, texts, \
+    exact_acc, valid_grid, correct_grid_dim, token_acc, relaxed_token_acc, texts, \
         votes, competition_sub_acc, competition_all_acc, ttt_provided = evaluate(
+        desc="eval",
         task_to_ttt_path=task_to_ttt_path,
         ttt_param_names=ttt_param_names,
         model=model,
@@ -439,11 +450,6 @@ def main():
         collate_fn=collate_fn,
         trainable_nbit=args.trainable_nbit,
         no_flash_attn=args.no_flash_attn,
-        vae_no_sample=args.no_sample,
-        kl_loss_lambda_scheduler=kl_loss_lambda_scheduler,
-        commitment_loss_lambda_scheduler=commitment_loss_lambda_scheduler,
-        consistency_loss_lambda_scheduler=consistency_loss_lambda_scheduler,
-        global_step=0,
         dry_eval_run=False,
         gs_iters=args.gs_iters,
         gs_lr=args.gs_lr,
@@ -454,25 +460,22 @@ def main():
         gs_max_grad_norm=args.gs_max_grad_norm,
         gs_lr_scheduler=args.gs_lr_scheduler,
         gs_take_best=args.gs_take_best,
-        residual=args.residual,
-        discrete_prior=args.discrete_prior,
+        no_residual=args.no_residual,
+        no_discrete_prior=args.no_discrete_prior,
         output_dir=args.output_dir,
-        consistency_type=args.consistency_type,
+        concat_programs=args.concat_programs,
+        no_codebook=False,
+        weird_cast=args.weird_cast,
     )
 
     if accelerator.is_main_process:
         # log metrics
         metric_dict = {
-            "eval/ce_loss": ce_loss,
-            "eval/kl_loss": kl_loss,
-            "eval/codebook_loss": codebook_loss,
-            "eval/commitment_loss": commitment_loss,
-            "eval/perplexity": perplexity,
-            "eval/consistency_loss": consistency_loss,
             "eval/exact_acc": exact_acc,
             "eval/valid_grid": valid_grid,
             "eval/correct_grid_dim": correct_grid_dim,
             "eval/token_acc": token_acc,
+            "eval/relaxed_token_acc": relaxed_token_acc,
             "eval/competition_sub_acc": competition_sub_acc,
             "eval/competition_all_acc": competition_all_acc,
             "eval/ttt_provided": ttt_provided,

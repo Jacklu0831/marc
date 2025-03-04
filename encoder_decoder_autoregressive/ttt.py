@@ -37,6 +37,7 @@ from train import (
     three_commas,
     set_up_main_process_logger,
     model_loss,
+    initialize_program_embeddings,
 )
 
 import os
@@ -65,10 +66,10 @@ NBIT_TO_DTYPE = {
 
 
 def save_model_ttt(
-        model: nn.Module,
+        model: Union[nn.Module, DistributedDataParallel],
         prior_embeddings: Union[ProgramEmbeddings, DistributedDataParallel],
         program_embeddings: Union[ProgramEmbeddings, DistributedDataParallel],
-        vae_projection: Union[VaeProjection, DistributedDataParallel],
+        vae_projection: Optional[Union[VaeProjection, DistributedDataParallel]],
         quantizer: Optional[Union[Quantizer, DistributedDataParallel]],
         program_norm: Optional[Union[LlamaRMSNorm, DistributedDataParallel]],
         output_dir: str,
@@ -103,12 +104,14 @@ def save_model_ttt(
     logger.info(f"Saved program embeddings to {save_program_embeddings_path}")
 
     # projection
-    save_vae_projection_path = os.path.join(output_dir, task_id, f"vae_projection_epoch_{epoch+1}.pt")
-    vae_projection_module = vae_projection
-    if isinstance(vae_projection, DistributedDataParallel):
-        vae_projection_module = vae_projection.module
-    torch.save(vae_projection_module, save_vae_projection_path)
-    logger.info(f"Saved vae projection to {save_vae_projection_path}")
+    save_vae_projection_path = None
+    if save_vae_projection_path is not None:
+        save_vae_projection_path = os.path.join(output_dir, task_id, f"vae_projection_epoch_{epoch+1}.pt")
+        vae_projection_module = vae_projection
+        if isinstance(vae_projection, DistributedDataParallel):
+            vae_projection_module = vae_projection.module
+        torch.save(vae_projection_module, save_vae_projection_path)
+        logger.info(f"Saved vae projection to {save_vae_projection_path}")
 
     # quantizer
     save_quantizer_path = None
@@ -151,27 +154,35 @@ def main():
 
     # Model
     parser.add_argument("--model_name", type=str, default="llama1b")
-    parser.add_argument("--flash_attn", action="store_true")
+    parser.add_argument("--no_flash_attn", action="store_true")
     parser.add_argument("--untrainable_nbit", type=float, choices=[3.6, 4, 8, 16, 32], default=16)
-    parser.add_argument("--trainable_nbit", type=float, choices=[16, 32], default=16)
+    parser.add_argument("--trainable_nbit", type=int, choices=[16, 32], default=16)
     parser.add_argument("--gradient_checkpointing", action="store_true")
+    parser.add_argument("--ar_gradient_checkpointing", action="store_true")
     parser.add_argument("--full_lora", action="store_true")
-    parser.add_argument("--residual", action="store_true")
-    parser.add_argument("--normalize", action="store_true")
+    parser.add_argument("--no_residual", action="store_true")
+    parser.add_argument("--no_normalize", action="store_true")
+    parser.add_argument("--concat_programs", action="store_true")
+    parser.add_argument("--token_weighted_loss", action="store_true")
+    parser.add_argument("--weird_cast", action="store_true")
+
+    # long context
+    parser.add_argument("--long_context", action="store_true")
+    parser.add_argument("--long_context_repeat_demonstration", action="store_true")
+    parser.add_argument("--checkpointing_threshold", type=int, default=0)
 
     # Self-consistency
-    parser.add_argument("--consistency_type", type=str, choices=["none", "all", "only_first", "include_last"], default="none")
-    parser.add_argument("--consistency_loss_lambda", type=float, default=0.5)
-    parser.add_argument("--linear_consistency", action="store_true")
+    parser.add_argument("--consistency_type", type=str, choices=["none", "all", "only_first", "exclude_last", "only_last"], default="none")
 
     # vqvae
     parser.add_argument("--codebook_size", type=int, default=-1)
-    parser.add_argument("--commitment_loss_lambda", type=float, default=0.0)
-    parser.add_argument("--linear_commitment", action="store_true")
-    parser.add_argument("--discrete_prior", action="store_true")
+    parser.add_argument("--fsq_L", metavar='N', type=int, nargs='+', default=[])
+    parser.add_argument("--no_discrete_prior", action="store_true")
+    parser.add_argument("--warmup_cookbook_only_epochs", type=int, default=0)
 
     # vae
-    parser.add_argument("--no_sample", action="store_true")
+    parser.add_argument("--vae", action="store_true")
+    parser.add_argument("--subset_kl", action="store_true")
 
     # Weights
     parser.add_argument("--weight_root_dir", type=str, default="./encoder_decoder/outputs")
@@ -179,19 +190,34 @@ def main():
     parser.add_argument("--weight_epoch", type=int, required=True)
 
     # Training
-    parser.add_argument("--warmup_epochs", type=int, default=0)
-    parser.add_argument("--num_epochs", type=int, default=5)
-    parser.add_argument("--save_epochs", type=int, default=-1)
-    parser.add_argument("--lr", type=float, default=1e-4)
+    parser.add_argument("--grad_accum_steps", type=int, default=8)
     parser.add_argument("--batch_size", type=int, default=2)
-    parser.add_argument("--grad_accum_steps", type=int, default=4)
+    parser.add_argument("--eval_batch_size", type=int, default=64)
+    parser.add_argument("--lr", type=float, default=2e-4)
     parser.add_argument("--weight_decay", type=float, default=0.0)
+    parser.add_argument("--num_epochs", type=int, default=5)
     parser.add_argument("--max_grad_norm", default=1.0, type=float, help="Max gradient norm.")
     parser.add_argument("--optimizer", type=str, choices=["adamw8bit", "adamw", "sgd"], default="adamw")
+    parser.add_argument("--warmup_epochs", type=int, default=0)
+    parser.add_argument("--max_seq_len", type=int, default=8192)
+    parser.add_argument("--attention_dropout", type=float, default=0.0)
+    parser.add_argument("--program_dropout", type=float, default=0.0)
+    parser.add_argument("--program_noise_std", type=float, default=0.0)
+    parser.add_argument("--save_epochs", type=int, default=-1)
 
     # scheduled extra losses
+    parser.add_argument("--consistency_loss_lambda", type=float, default=1.0)
+    parser.add_argument("--consistency_loss_offset_epochs", type=int, default=0)
+    parser.add_argument("--consistency_loss_linear_epochs", type=int, default=0)
+    parser.add_argument("--commitment_loss_lambda", type=float, default=0.1)
+    parser.add_argument("--commitment_loss_offset_epochs", type=int, default=0)
+    parser.add_argument("--commitment_loss_linear_epochs", type=int, default=0)
+    parser.add_argument("--codebook_loss_lambda", type=float, default=1.0)
+    parser.add_argument("--codebook_loss_offset_epochs", type=int, default=0)
+    parser.add_argument("--codebook_loss_linear_epochs", type=int, default=0)
     parser.add_argument("--kl_loss_lambda", type=float, default=0.0)
-    parser.add_argument("--linear_kl", action="store_true")
+    parser.add_argument("--kl_loss_offset_epochs", type=int, default=0)
+    parser.add_argument("--kl_loss_linear_epochs", type=int, default=0)
 
     # data
     parser.add_argument("--aug_type", type=str, choices=['none', 'd8', 'extra', 'both'], default='extra')
@@ -202,9 +228,9 @@ def main():
     parser.add_argument("--num_workers", type=int, default=8)
     parser.add_argument("--pad_side", type=str, choices=["left", "right"], default="right")
     parser.add_argument("--no_dim", action='store_true')
-    parser.add_argument("--separate_color_tokens", action='store_true')
+    parser.add_argument("--no_separate_color_tokens", action='store_true')
 
-    parser.add_argument("--ntokens", type=int, default=64)
+    parser.add_argument("--ntokens", type=int, default=16)
     parser.add_argument("--seed", type=int, default=0)
     args = parser.parse_args()
 
@@ -260,7 +286,7 @@ def main():
         "cache_dir": "./encoder_decoder_cache",
         "low_cpu_mem_usage": True,
     }
-    if args.flash_attn:
+    if not args.no_flash_attn:
         from_pretrained_kwargs["attn_implementation"] = "flash_attention_2"
     if args.untrainable_nbit in NBIT_TO_DTYPE:
         from_pretrained_kwargs["torch_dtype"] = NBIT_TO_DTYPE[args.untrainable_nbit]
@@ -288,6 +314,14 @@ def main():
         **from_pretrained_kwargs,
     )
 
+    # attention dropout
+    for layer in base_model.model.layers:
+        layer.self_attn.attention_dropout = args.attention_dropout
+    base_model.config.attention_dropout = args.attention_dropout
+
+    # program dropout
+    program_dropout = nn.Dropout(p=args.program_dropout)
+
     if args.untrainable_nbit in [4, 8]:
         base_model = prepare_model_for_kbit_training(
             base_model,
@@ -302,18 +336,35 @@ def main():
 
     # only keep these tokens, resize model embedding (eos == pad)
     # we do not include program tokens here, those are added later during training and inference
-    keep_tokens = [str(i) for i in range(31)] + \
-        [tokenizer.bos_token, tokenizer.eos_token, "\n", "input", "output", "pad"]
+    if not args.no_separate_color_tokens:
+        keep_tokens = [str(i) for i in range(31)]
+        if args.no_dim:
+            keep_tokens = []
+    else:
+        keep_tokens = [str(i) for i in range(31)]
+        if args.no_dim:
+            keep_tokens = [str(i) for i in range(10)]
+    keep_tokens += [tokenizer.bos_token, tokenizer.eos_token, "\n", "input", "output", "pad"]
     assert len(set(keep_tokens)) == len(keep_tokens)
 
-    with torch.no_grad():
-        keep_token_ids = []
-        for token in keep_tokens:
-            token_id = tokenizer(token)["input_ids"] # type: ignore
-            assert isinstance(token_id, list) and len(token_id) == 2 # with start token
-            keep_token_ids.append(token_id[1])
-        assert len(set(keep_token_ids)) == len(keep_token_ids)
+    keep_token_ids = []
+    for token in keep_tokens:
+        token_id = tokenizer(token)["input_ids"] # type: ignore
+        assert isinstance(token_id, list) and len(token_id) == 2 # with start token
+        keep_token_ids.append(token_id[1])
+    assert len(set(keep_token_ids)) == len(keep_token_ids)
 
+    color_embeddings = None
+    if not args.no_separate_color_tokens:
+        color_embeddings = initialize_program_embeddings(
+            base_model.model.embed_tokens.weight.data.detach().clone(),
+            accelerator,
+            ntokens=10,
+            cov_scale=1.0,
+        )
+
+    # this breaks embedding tying, but whatever
+    with torch.no_grad():
         # subset embeddings and lmheads
         assert base_model.model.embed_tokens.weight.shape == base_model.lm_head.weight.shape
         base_model.model.embed_tokens.weight = nn.Parameter(base_model.model.embed_tokens.weight[keep_token_ids])
@@ -323,11 +374,21 @@ def main():
         base_model.lm_head.out_features = len(keep_token_ids)
         base_model.config.tie_word_embeddings = False
 
+        if not args.no_separate_color_tokens:
+            assert isinstance(color_embeddings, torch.Tensor)
+            base_model.model.embed_tokens.weight = nn.Parameter(torch.cat([color_embeddings, base_model.model.embed_tokens.weight]))
+            base_model.model.embed_tokens.num_embeddings += 10
+            base_model.lm_head.weight = nn.Parameter(torch.cat([color_embeddings, base_model.lm_head.weight]))
+            base_model.lm_head.out_features += 10
+
+    if not args.no_separate_color_tokens:
+        keep_tokens = [f"c{c}" for c in range(10)] + keep_tokens
+
     # update configs
     assert base_model.config.vocab_size and base_model.config.bos_token_id and base_model.config.eos_token_id
-    base_model.config.vocab_size = len(keep_token_ids)
-    base_model.config.bos_token_id = keep_tokens.index(tokenizer.bos_token)
-    base_model.config.eos_token_id = keep_tokens.index(tokenizer.eos_token)
+    base_model.config.vocab_size = len(keep_token_ids) + (0 if args.no_separate_color_tokens else 10)
+    base_model.config.bos_token_id = keep_tokens.index(tokenizer.bos_token) # type: ignore
+    base_model.config.eos_token_id = keep_tokens.index(tokenizer.eos_token) # type: ignore
 
     # create custom tokenizer
     arc_tokenizer = ARCTokenizer(
@@ -344,12 +405,14 @@ def main():
     model_weight_path = os.path.join(weight_dir, f"lora_epoch_{args.weight_epoch}")
     prior_embeddings_weight_path = os.path.join(weight_dir, f"prior_embeddings_epoch_{args.weight_epoch}.pt")
     program_embeddings_weight_path = os.path.join(weight_dir, f"program_embeddings_epoch_{args.weight_epoch}.pt")
-    vae_projection_weight_path = os.path.join(weight_dir, f"vae_projection_epoch_{args.weight_epoch}.pt")
+    vae_projection_weight_path = None
+    if args.vae:
+        vae_projection_weight_path = os.path.join(weight_dir, f"vae_projection_epoch_{args.weight_epoch}.pt")
     quantizer_weight_path = None
-    if args.codebook_size > 0:
+    if args.codebook_size > 0 or args.fsq_L != []:
         quantizer_weight_path = os.path.join(weight_dir, f"quantizer_epoch_{args.weight_epoch}.pt")
     program_norm_weight_path = None
-    if args.normalize:
+    if not args.no_normalize:
         program_norm_weight_path = os.path.join(weight_dir, f"program_norm_epoch_{args.weight_epoch}.pt")
 
     model = PeftModel.from_pretrained(base_model, model_weight_path)
@@ -407,12 +470,19 @@ def main():
         debug_no_aug=args.debug_no_aug,
         aug_type=args.aug_type,
         no_dim=args.no_dim,
-        separate_color_tokens=args.separate_color_tokens,
+        no_separate_color_tokens=args.no_separate_color_tokens,
+        long_context=args.long_context,
+        long_context_repeat_demonstration=args.long_context_repeat_demonstration,
+        max_seq_len=args.max_seq_len,
     )
 
     # save memory by making datasets on the fly
-    with Pool(args.num_workers) as p:
-        ttt_datasets = p.map(ttt_dataset_maker, file_paths)
+    if args.num_workers > 0:
+        with Pool(args.num_workers) as p:
+            ttt_datasets = p.map(ttt_dataset_maker, file_paths)
+    else:
+        ttt_datasets = [ttt_dataset_maker(f) for f in file_paths]
+
     for dataset in ttt_datasets:
         logger.info(f"task {dataset.task_id} augmented to {len(dataset)} ttt data")
     ttt_datasets = [dataset for dataset in ttt_datasets if len(dataset) > 0]
@@ -454,7 +524,9 @@ def main():
         # load and set grads and nbit
         prior_embeddings: ProgramEmbeddings = torch.load(prior_embeddings_weight_path, weights_only=False, map_location=accelerator.device)
         program_embeddings: ProgramEmbeddings = torch.load(program_embeddings_weight_path, weights_only=False, map_location=accelerator.device)
-        vae_projection: VaeProjection = torch.load(vae_projection_weight_path, weights_only=False, map_location=accelerator.device)
+        vae_projection: Optional[VaeProjection] = None
+        if vae_projection_weight_path is not None:
+            vae_projection = torch.load(vae_projection_weight_path, weights_only=False, map_location=accelerator.device)
         quantizer: Optional[Quantizer] = None
         if quantizer_weight_path is not None:
             quantizer = torch.load(quantizer_weight_path, weights_only=False, map_location=accelerator.device)
@@ -468,9 +540,10 @@ def main():
         for param in program_embeddings.parameters():
             param.requires_grad = True
             param.data = param.data.to(NBIT_TO_DTYPE[args.trainable_nbit])
-        for param in vae_projection.parameters():
-            param.requires_grad = True
-            param.data = param.data.to(NBIT_TO_DTYPE[args.trainable_nbit])
+        if vae_projection is not None:
+            for param in vae_projection.parameters():
+                param.requires_grad = True
+                param.data = param.data.to(NBIT_TO_DTYPE[args.trainable_nbit])
         if quantizer is not None:
             for param in quantizer.parameters():
                 param.requires_grad = True
@@ -484,11 +557,9 @@ def main():
         all_params = [p for p in model.parameters() if p.requires_grad]
         all_params += [p for p in prior_embeddings.parameters() if p.requires_grad]
         all_params += [p for p in program_embeddings.parameters() if p.requires_grad]
-        all_params += [p for p in vae_projection.parameters() if p.requires_grad]
-        if quantizer is not None:
-            all_params += [p for p in quantizer.parameters() if p.requires_grad]
-        if program_norm is not None:
-            all_params += [p for p in program_norm.parameters() if p.requires_grad]
+        all_params += [p for p in vae_projection.parameters() if p.requires_grad] if vae_projection is not None else []
+        all_params += [p for p in quantizer.parameters() if p.requires_grad] if quantizer is not None else []
+        all_params += [p for p in program_norm.parameters() if p.requires_grad] if program_norm is not None else []
         logger.info(f"Optimizer with {len(all_params)} params")
 
         # optimizer
@@ -513,18 +584,27 @@ def main():
         # lambda schedulers
         kl_loss_lambda_scheduler = LambdaScheduler(
             loss_lambda=args.kl_loss_lambda,
-            linear=args.linear_kl,
-            total_steps=num_training_steps,
+            start_epoch=args.kl_loss_offset_epochs,
+            linear_epochs=args.kl_loss_linear_epochs,
+            steps_per_epoch=steps_per_epoch,
+        )
+        codebook_loss_lambda_scheduler = LambdaScheduler(
+            loss_lambda=args.codebook_loss_lambda,
+            start_epoch=args.codebook_loss_offset_epochs,
+            linear_epochs=args.codebook_loss_linear_epochs,
+            steps_per_epoch=steps_per_epoch,
         )
         commitment_loss_lambda_scheduler = LambdaScheduler(
             loss_lambda=args.commitment_loss_lambda,
-            linear=args.linear_commitment,
-            total_steps=num_training_steps,
+            start_epoch=args.commitment_loss_offset_epochs,
+            linear_epochs=args.commitment_loss_linear_epochs,
+            steps_per_epoch=steps_per_epoch,
         )
         consistency_loss_lambda_scheduler = LambdaScheduler(
             loss_lambda=args.consistency_loss_lambda,
-            linear=args.linear_consistency,
-            total_steps=num_training_steps,
+            start_epoch=args.consistency_loss_offset_epochs,
+            linear_epochs=args.consistency_loss_linear_epochs,
+            steps_per_epoch=steps_per_epoch,
         )
 
         # Prepare with accelerator
@@ -567,11 +647,13 @@ def main():
         model.train()
         prior_embeddings.train()
         program_embeddings.train()
-        vae_projection.train()
+        if vae_projection is not None:
+            vae_projection.train()
         if quantizer is not None:
             quantizer.train()
         if program_norm is not None:
             program_norm.train()
+        program_dropout.train()
 
         # start training
         for epoch in range(args.num_epochs):
@@ -585,32 +667,41 @@ def main():
                 with accelerator.accumulate(model, prior_embeddings, program_embeddings, vae_projection, quantizer, program_norm):
                     with accelerator.autocast():
                         _, _, _, _, _, _, total_loss, _ = model_loss(
-                            # model
-                            model=model,
-                            prior_embeddings=prior_embeddings,
-                            program_embeddings=program_embeddings,
-                            vae_projection=vae_projection,
-                            quantizer=quantizer,
-                            program_norm=program_norm,
-                            tokenizer=tokenizer,
-                            # data
-                            input_ids=input_ids,
-                            attention_mask=attention_mask,
-                            label_ids=label_ids,
-                            input_ids_lens=input_ids_lens,
-                            num_pairs=num_pairs,
-                            # others
-                            ntokens=args.ntokens,
-                            pad_side=args.pad_side,
-                            kl_loss_lambda_scheduler=kl_loss_lambda_scheduler,
-                            commitment_loss_lambda_scheduler=commitment_loss_lambda_scheduler,
-                            consistency_loss_lambda_scheduler=consistency_loss_lambda_scheduler,
-                            global_step=global_step,
-                            vae_no_sample=args.no_sample,
-                            residual=args.residual,
-                            discrete_prior=args.discrete_prior,
-                            consistency_type=args.consistency_type,
-                        )
+                                # model
+                                model=model,
+                                prior_embeddings=prior_embeddings,
+                                program_embeddings=program_embeddings,
+                                vae_projection=vae_projection,
+                                quantizer=quantizer,
+                                program_norm=program_norm,
+                                program_dropout=program_dropout,
+                                tokenizer=tokenizer,
+                                # data
+                                input_ids=input_ids,
+                                attention_mask=attention_mask,
+                                label_ids=label_ids,
+                                input_ids_lens=input_ids_lens,
+                                num_pairs=num_pairs,
+                                # others
+                                ntokens=args.ntokens,
+                                pad_side=args.pad_side,
+                                kl_loss_lambda_scheduler=kl_loss_lambda_scheduler,
+                                codebook_loss_lambda_scheduler=codebook_loss_lambda_scheduler,
+                                commitment_loss_lambda_scheduler=commitment_loss_lambda_scheduler,
+                                consistency_loss_lambda_scheduler=consistency_loss_lambda_scheduler,
+                                global_step=global_step,
+                                no_residual=args.no_residual,
+                                no_discrete_prior=args.no_discrete_prior,
+                                consistency_type=args.consistency_type,
+                                concat_programs=args.concat_programs,
+                                train_codebook_only=False,
+                                ar_gradient_checkpointing=args.ar_gradient_checkpointing,
+                                program_noise_std=args.program_noise_std,
+                                subset_kl=args.subset_kl,
+                                checkpointing_threshold=args.checkpointing_threshold,
+                                token_weighted_loss=args.token_weighted_loss,
+                                weird_cast=args.weird_cast,
+                            )
 
                     accelerator.backward(total_loss)
                     if accelerator.sync_gradients:
@@ -644,7 +735,8 @@ def main():
         model.zero_grad(set_to_none=True)
         prior_embeddings.zero_grad(set_to_none=True)
         program_embeddings.zero_grad(set_to_none=True)
-        vae_projection.zero_grad(set_to_none=True)
+        if vae_projection is not None:
+            vae_projection.zero_grad(set_to_none=True)
         if quantizer is not None:
             quantizer.zero_grad(set_to_none=True)
         if program_norm is not None:

@@ -1,3 +1,4 @@
+import gc
 import torch.utils.checkpoint as checkpoint
 import matplotlib.pyplot as plt
 from datetime import timedelta
@@ -36,6 +37,8 @@ from transformers import (
     get_constant_schedule_with_warmup,
 )
 import bitsandbytes as bnb
+
+# torch.autograd.set_detect_anomaly(True)
 
 from data_utils import (
     TrainDataset,
@@ -85,10 +88,28 @@ class ProgramEmbeddings(nn.Module):
 
 
 class Quantizer(nn.Module):
-    def __init__(self, embedding: torch.Tensor):
+    def __init__(
+            self,
+            codebook_size: int,
+            hidden_size: int,
+            fsq_L: List[int],
+            device: torch.device,
+        ):
         super(Quantizer, self).__init__()
-        self.embedding = nn.Parameter(embedding)
-        self.num_embeddings, self.embedding_dim = tuple(self.embedding.shape)
+
+        self.quantizer_type = 'vqvae' if fsq_L == [] else 'fsq'
+        self.device = device
+
+        if self.quantizer_type == 'vqvae':
+            self.embedding = nn.Parameter(torch.randn(
+                (codebook_size, hidden_size),
+                device=device,
+            ))
+            self.num_embeddings, self.embedding_dim = tuple(self.embedding.shape)
+        else:
+            self.fsq_L = torch.tensor(fsq_L, device=device)
+            self.fsq_hidden_to_latent = nn.Linear(hidden_size, len(fsq_L))
+            self.fsq_latent_to_hidden = nn.Linear(len(fsq_L), hidden_size)
 
     def forward(
             self,
@@ -97,6 +118,17 @@ class Quantizer(nn.Module):
         ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
 
         batch_size, ntokens, embedding_dim = program.shape
+        if self.quantizer_type == 'fsq':
+            # quantize
+            latent = self.fsq_hidden_to_latent(program)
+            latent_bounded = (self.fsq_L - 1.0) / 2.0 * torch.tanh(latent)
+            latent_quantized = latent_bounded + (torch.round(latent_bounded) - latent_bounded).detach()
+            program_quantized = self.fsq_latent_to_hidden(latent_quantized)
+            # check and return
+            assert program_quantized.shape == program.shape
+            dummy = torch.tensor(0.0, device=self.device)
+            return program_quantized, dummy, dummy, dummy
+
         assert embedding_dim == self.embedding_dim
 
         # when only training codebook, match codebook to ntokens
@@ -177,98 +209,25 @@ class LambdaScheduler:
 class VaeProjection(nn.Module):
     def __init__(
             self,
-            ntokens: int,
-            model: Union[nn.Module, DistributedDataParallel],
-            identity_init: bool,
-            projection_type: str,
+            mlp_factor: int,
+            latent_dim: int,
             device: torch.device,
         ):
         super(VaeProjection, self).__init__()
 
-        self.ntokens = ntokens
-        self.projection_type = projection_type
         self.device = device
+        self.mlp_mu = self.get_projection(mlp_factor, latent_dim)
+        self.mlp_logvar = self.get_projection(mlp_factor, latent_dim)
 
-        # model config
-        self.hidden_size = model.config.hidden_size
+    def get_projection(self, mlp_factor: int, latent_dim: int) -> nn.Module:
+        return nn.Sequential(
+            nn.Linear(latent_dim, mlp_factor * latent_dim),
+            nn.SiLU(),
+            nn.Linear(mlp_factor * latent_dim, latent_dim)
+        )
 
-        # weights
-        if projection_type != 'none':
-            self.mu_weights, self.mu_biases = self.get_projection(
-                scheme="identity" if identity_init else "random",
-                projection_type=projection_type,
-            )
-            self.logvar_weights, self.logvar_biases = self.get_projection(
-                scheme="zero" if identity_init else "random",
-                projection_type=projection_type,
-            )
-
-    def get_projection(self, scheme: str, projection_type: str) -> Tuple[torch.Tensor, torch.Tensor]:
-        if projection_type == "shared":
-            projections = nn.Linear(self.hidden_size, self.hidden_size, device=self.device)
-            if scheme == "identity":
-                assert self.hidden_size == self.hidden_size
-                with torch.no_grad():
-                    projections.weight.data.copy_(torch.eye(self.hidden_size, dtype=projections.weight.dtype, device=self.device))
-                    projections.bias.data.zero_()
-            elif scheme == "zero":
-                with torch.no_grad():
-                    projections.weight.data.zero_()
-                    projections.bias.data.zero_()
-
-            weights = nn.Parameter(projections.weight)
-            biases = nn.Parameter(projections.bias)
-
-        elif projection_type == "full":
-            projections = nn.ModuleList([
-                nn.Linear(
-                    self.hidden_size,
-                    self.hidden_size,
-                    device=self.device,
-                ) for _ in range(self.ntokens)
-            ])
-            if scheme == "identity":
-                assert self.hidden_size == self.hidden_size
-                with torch.no_grad():
-                    for projection in projections:
-                        projection.weight.data.copy_(torch.eye(self.hidden_size, dtype=projection.weight.dtype, device=self.device))
-                        projection.bias.data.zero_()
-            elif scheme == "zero":
-                with torch.no_grad():
-                    for projection in projections:
-                        projection.weight.data.zero_()
-                        projection.bias.data.zero_()
-
-            weights = nn.Parameter(torch.stack([projection.weight for projection in projections], dim=0))
-            biases = nn.Parameter(torch.stack([projection.bias for projection in projections], dim=0))
-
-        else:
-            raise NotImplementedError(f"{projection_type} not yet implemented")
-
-        del projections
-        return weights, biases
-
-    def forward(
-            self,
-            predicted_program: torch.Tensor,
-        ) -> Tuple[torch.Tensor, torch.Tensor]:
-
-        # predicted_program has shape (batch_size, ntokens, hidden_dim)
-        assert predicted_program.shape[1] == self.ntokens
-
-        if self.projection_type == 'none':
-            mu = predicted_program
-            logvar = torch.zeros_like(predicted_program, dtype=predicted_program.dtype, device=self.device)
-        elif self.projection_type == "shared":
-            mu = torch.einsum("bth,hd->btd", predicted_program, self.mu_weights.transpose(0, 1)) + self.mu_biases
-            logvar = torch.einsum("bth,hd->btd", predicted_program, self.logvar_weights.transpose(0, 1)) + self.logvar_biases
-        elif self.projection_type == "full":
-            mu = torch.einsum("bth,thd->btd", predicted_program, self.mu_weights.transpose(1, 2)) + self.mu_biases
-            logvar = torch.einsum("bth,thd->btd", predicted_program, self.logvar_weights.transpose(1, 2)) + self.logvar_biases
-        else:
-            raise NotImplementedError(f"{self.projection_type} not yet implemented")
-
-        return mu, logvar
+    def forward(self, predicted_program: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        return self.mlp_mu(predicted_program), self.mlp_logvar(predicted_program)
 
 
 def three_commas(x):
@@ -304,9 +263,7 @@ def extract_program_from_right_side(data: torch.Tensor, lens: List[int], ntokens
         return data[:, -ntokens:, :]
 
 
-def sample_from_vae(mu: torch.Tensor, logvar: torch.Tensor, sample: bool) -> torch.Tensor:
-    if not sample:
-        return mu
+def sample_from_vae(mu: torch.Tensor, logvar: torch.Tensor) -> torch.Tensor:
     std = torch.exp(0.5 * logvar)
     eps = torch.randn_like(std)
     return mu + eps * std
@@ -337,7 +294,7 @@ def get_predicted_program(
     model: Union[nn.Module, DistributedDataParallel],
     prior_embeddings: Union[ProgramEmbeddings, DistributedDataParallel],
     program_embeddings: Union[ProgramEmbeddings, DistributedDataParallel],
-    vae_projection: Union[VaeProjection, DistributedDataParallel],
+    vae_projection: Optional[Union[VaeProjection, DistributedDataParallel]],
     quantizer: Optional[Union[Quantizer, DistributedDataParallel]],
     program_norm: Optional[Union[LlamaRMSNorm, DistributedDataParallel]],
     tokenizer: ARCTokenizer,
@@ -349,11 +306,11 @@ def get_predicted_program(
     # others
     ntokens: int,
     pad_side: str,
-    vae_sample: bool,
     no_residual: bool,
     no_discrete_prior: bool,
     concat_programs: bool,
     train_codebook_only: bool,
+    weird_cast: bool,
 ) -> torch.Tensor:
 
     module = model.module if isinstance(model, DistributedDataParallel) else model
@@ -373,6 +330,7 @@ def get_predicted_program(
 
     # apply program norm to prior
     prior_inputs_embeds = prior_embeddings("dummy")[None, ...].expand(batch_size, -1, -1)
+    # norm
     if program_norm is not None:
         prior_inputs_embeds = program_norm(prior_inputs_embeds)
     # quantize prior
@@ -401,7 +359,7 @@ def get_predicted_program(
         # STEP 1: prepend the last predicted program for all pairs except the first
         pair_inputs_embeds = insert_based_on_sides(
             data=pair_inputs_embeds,
-            to_insert=prev_programs,
+            to_insert=(prev_programs.to(torch.bfloat16) if weird_cast else prev_programs),
             lens=pair_input_ids_lens,
             insert_side="left",
             pad_side=pad_side,
@@ -420,9 +378,10 @@ def get_predicted_program(
         pair_input_ids_lens = [l + program_len for l in pair_input_ids_lens]
 
         # STEP 2: append new program input to the right for all pairs except the last
+        emb = program_embeddings("dummy")[None, ...].expand(n_avail, -1, -1)
         pair_inputs_embeds = insert_based_on_sides(
             data=pair_inputs_embeds,
-            to_insert=program_embeddings("dummy")[None, ...].expand(n_avail, -1, -1),
+            to_insert=(emb.to(torch.bfloat16) if weird_cast else emb),
             lens=pair_input_ids_lens,
             insert_side="right",
             pad_side=pad_side,
@@ -437,6 +396,12 @@ def get_predicted_program(
             pad_id=0,
         )
 
+        # debug: assert no middle padding
+        if pad_side == 'left':
+            assert torch.all(pair_attention_mask[:, :-1] <= pair_attention_mask[:, 1:])
+        else:
+            assert torch.all(pair_attention_mask[:, :-1] >= pair_attention_mask[:, 1:])
+
         # refine program
         model_out = model(
             inputs_embeds=pair_inputs_embeds,
@@ -447,14 +412,15 @@ def get_predicted_program(
         # projection then sample new program prediction for all pairs except the last
         # sample program
         hidden_states = model_out.hidden_states[-1] # (batch_size, seq_len, hidden_dim)
-        model_output_programs = extract_program_from_right_side(
+        new_programs = extract_program_from_right_side(
             data=hidden_states,
             lens=pair_input_ids_lens,
             ntokens=ntokens,
             pad_side=pad_side,
         )
-        new_program_mus, new_program_logvars = vae_projection(model_output_programs)
-        new_programs = sample_from_vae(mu=new_program_mus, logvar=new_program_logvars, sample=vae_sample)
+        # vae projection (no sample in eval)
+        if vae_projection is not None:
+            new_programs, _ = vae_projection(new_programs)
         # optionally use residual connection
         if not no_residual:
             new_programs += prev_programs
@@ -486,9 +452,10 @@ def model_loss(
     model: Union[nn.Module, DistributedDataParallel],
     prior_embeddings: Union[ProgramEmbeddings, DistributedDataParallel],
     program_embeddings: Union[ProgramEmbeddings, DistributedDataParallel],
-    vae_projection: Union[VaeProjection, DistributedDataParallel],
+    vae_projection: Optional[Union[VaeProjection, DistributedDataParallel]],
     quantizer: Optional[Union[Quantizer, DistributedDataParallel]],
     program_norm: Optional[Union[LlamaRMSNorm, DistributedDataParallel]],
+    program_dropout: nn.Dropout,
     tokenizer: ARCTokenizer,
     # data
     input_ids: List[torch.Tensor],
@@ -504,35 +471,39 @@ def model_loss(
     commitment_loss_lambda_scheduler: LambdaScheduler,
     consistency_loss_lambda_scheduler: LambdaScheduler,
     global_step: int,
-    vae_sample: bool,
     no_residual: bool,
     no_discrete_prior: bool,
     consistency_type: str,
     concat_programs: bool,
     train_codebook_only: bool,
     ar_gradient_checkpointing: bool,
+    program_noise_std: float,
+    subset_kl: bool,
+    checkpointing_threshold: int,
+    token_weighted_loss: bool,
+    weird_cast: bool,
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, List[torch.Tensor]]:
 
-    def forward_with_checkpoint(model, inputs_embeds, attention_mask, labels=None):
-        def custom_forward(x, attn, lab=None):
+    def forward_with_checkpoint(model, inputs_embeds, attention_mask, output_hidden_states, labels=None):
+        def custom_forward(x, attn, output_hidden_states, lab=None):
             if lab is None:
                 return model(
                     inputs_embeds=x,
                     attention_mask=attn,
-                    output_hidden_states=True,
+                    output_hidden_states=output_hidden_states,
                 )
             else:
                 return model(
                     inputs_embeds=x,
                     attention_mask=attn,
                     labels=lab,
-                    output_hidden_states=True,
+                    output_hidden_states=output_hidden_states,
                 )
 
         if labels is None:
-            return checkpoint.checkpoint(custom_forward, inputs_embeds, attention_mask, use_reentrant=False)
+            return checkpoint.checkpoint(custom_forward, inputs_embeds, attention_mask, output_hidden_states, use_reentrant=False)
         else:
-            return checkpoint.checkpoint(custom_forward, inputs_embeds, attention_mask, labels, use_reentrant=False)
+            return checkpoint.checkpoint(custom_forward, inputs_embeds, attention_mask, output_hidden_states, labels, use_reentrant=False)
 
     module = model.module if isinstance(model, DistributedDataParallel) else model
     embed_tokens = module.model.embed_tokens if hasattr(module.model, "embed_tokens") else module.model.model.embed_tokens
@@ -568,19 +539,25 @@ def model_loss(
     prior_inputs_embeds = prior_embeddings("dummy")[None, ...].expand(batch_size, -1, -1)
     if program_norm is not None:
         prior_inputs_embeds = program_norm(prior_inputs_embeds)
+    # NOTE: no dropout or noise injection to prior
     # quantize prior
     if (quantizer is not None) and not no_discrete_prior:
         prior_inputs_embeds, codebook_loss, commitment_loss, perplexity = quantizer(prior_inputs_embeds, train_codebook_only=train_codebook_only)
         codebook_losses.append(codebook_loss)
         commitment_losses.append(commitment_loss)
         perplexitys.append(perplexity)
-        assert torch.allclose(prior_inputs_embeds[0], prior_inputs_embeds[1])
+        if batch_size > 1:
+            assert torch.allclose(prior_inputs_embeds[0], prior_inputs_embeds[1])
 
     # previous program of each sample in batch
     prev_programs = prior_inputs_embeds
     prev_program_mus = torch.zeros_like(prior_inputs_embeds, device=device, dtype=prior_inputs_embeds.dtype)
     prev_program_logvars = torch.zeros_like(prior_inputs_embeds, device=device, dtype=prior_inputs_embeds.dtype)
-    saved_all_programs = [prev_programs] # save all programs for randomly selecting one for consistency loss
+
+    # save all programs for randomly selecting one for consistency loss
+    saved_all_programs = []
+    if consistency_type != 'none':
+        saved_all_programs = [prev_programs]
 
     for pair_i, (pair_inputs_embeds, pair_attention_mask, pair_label_ids, pair_input_ids_lens) in enumerate(zip(inputs_embeds, attention_mask, label_ids, input_ids_lens)):
 
@@ -588,7 +565,7 @@ def model_loss(
         program_len = prev_programs.shape[1]
         pair_inputs_embeds = insert_based_on_sides(
             data=pair_inputs_embeds,
-            to_insert=prev_programs,
+            to_insert=(prev_programs.to(torch.bfloat16) if weird_cast else prev_programs),
             lens=pair_input_ids_lens,
             insert_side="left",
             pad_side=pad_side,
@@ -617,9 +594,10 @@ def model_loss(
 
         # STEP 2: append new program input to the right for all pairs except the last
         if pair_i < n_pairs - 1 or consistency_type != 'none':
+            emb = program_embeddings("dummy")[None, ...].expand(batch_size, -1, -1)
             pair_inputs_embeds = insert_based_on_sides(
                 data=pair_inputs_embeds,
-                to_insert=program_embeddings("dummy")[None, ...].expand(batch_size, -1, -1),
+                to_insert=(emb.to(torch.bfloat16) if weird_cast else emb),
                 lens=pair_input_ids_lens,
                 insert_side="right",
                 pad_side=pad_side,
@@ -643,71 +621,90 @@ def model_loss(
                     pad_id=-100,
                 )
 
+        # debug: assert no middle padding
+        if pad_side == 'left':
+            assert torch.all(pair_attention_mask[:, :-1] <= pair_attention_mask[:, 1:])
+        else:
+            assert torch.all(pair_attention_mask[:, :-1] >= pair_attention_mask[:, 1:])
+
         # STEP 4: refine program (no output grid label for first pair)
+        can_checkpoint = inputs_embeds[pair_i].shape[1] > checkpointing_threshold
+        output_hidden_states = (pair_i < n_pairs - 1 or consistency_type != 'none')
         if pair_i == 0:
-            if ar_gradient_checkpointing:
-                model_out = forward_with_checkpoint(model, pair_inputs_embeds, pair_attention_mask)
+            if ar_gradient_checkpointing and can_checkpoint:
+                model_out = forward_with_checkpoint(model, pair_inputs_embeds, pair_attention_mask, output_hidden_states)
             else:
                 model_out = model(
                     inputs_embeds=pair_inputs_embeds,
                     attention_mask=pair_attention_mask,
-                    output_hidden_states=True,
+                    output_hidden_states=output_hidden_states,
                 )
         else:
-            if ar_gradient_checkpointing:
-                model_out = forward_with_checkpoint(model, pair_inputs_embeds, pair_attention_mask, pair_label_ids)
+            if ar_gradient_checkpointing and can_checkpoint:
+                model_out = forward_with_checkpoint(model, pair_inputs_embeds, pair_attention_mask, output_hidden_states, pair_label_ids)
             else:
                 model_out = model(
                     inputs_embeds=pair_inputs_embeds,
                     attention_mask=pair_attention_mask,
                     labels=pair_label_ids,
-                    output_hidden_states=True,
+                    output_hidden_states=output_hidden_states,
                 )
             ce_losses.append(model_out.loss) # type: ignore
 
         # STEP 5: projection then sample new program prediction for all pairs except the last
-        if pair_i < n_pairs - 1 or consistency_type != 'none':
+        if output_hidden_states:
             # extract and sample program
             hidden_states = model_out.hidden_states[-1] # (batch_size, seq_len, hidden_dim) # type: ignore
-            model_output_programs = extract_program_from_right_side(
+            new_programs = extract_program_from_right_side(
                 data=hidden_states,
                 lens=pair_input_ids_lens,
                 ntokens=ntokens,
                 pad_side=pad_side,
             )
-            new_program_mus, new_program_logvars = vae_projection(model_output_programs)
-            new_programs = sample_from_vae(mu=new_program_mus, logvar=new_program_logvars, sample=vae_sample)
-            # optionally use residual connection
+
+            # vae projection (no sample in eval)
+            new_program_mus, new_program_logvars = None, None
+            if vae_projection is not None:
+                new_program_mus, new_program_logvars = vae_projection(new_programs)
+                new_programs = sample_from_vae(mu=new_program_mus, logvar=new_program_logvars)
+            # dropout
+            new_programs = program_dropout(new_programs)
+            # inject noise
+            new_programs += program_noise_std * torch.randn_like(new_programs, dtype=new_programs.dtype, device=device)
+            # use residual connection
             if not no_residual:
                 new_programs += prev_programs
-            # optionally apply norm
+            # apply norm
             if program_norm is not None:
                 new_programs = program_norm(new_programs)
-            # optionally quantize
+            # quantize
             if quantizer is not None:
                 new_programs, codebook_loss, commitment_loss, perplexity = quantizer(program=new_programs, train_codebook_only=train_codebook_only)
                 codebook_losses.append(codebook_loss)
                 commitment_losses.append(commitment_loss)
                 perplexitys.append(perplexity)
-            # optionally concat program
+            # concat program
             if concat_programs:
                 new_programs = torch.cat([prev_programs, new_programs], dim=1)
-            # update new program
-            saved_all_programs.append(new_programs)
+
+            # save and update new program
+            if consistency_type != 'none':
+                saved_all_programs.append(new_programs)
             prev_programs = new_programs
 
             # kl loss
             if kl_loss_lambda != 0:
-                kl_loss = compute_kl_loss(
+                assert new_program_mus is not None and new_program_logvars is not None
+                kl_losses.append(compute_kl_loss(
                     mu1=new_program_mus,
                     mu2=prev_program_mus,
                     logvar1=new_program_logvars,
                     logvar2=prev_program_logvars,
-                )
-                kl_losses.append(kl_loss)
-                # update new program mus and logvars
-                prev_program_mus = new_program_mus
-                prev_program_logvars = new_program_logvars
+                ))
+                if subset_kl:
+                    # update new program mus and logvars
+                    prev_program_mus = new_program_mus
+                    prev_program_logvars = new_program_logvars
 
     # consistency loss
     consistency_loss = torch.tensor(0.0, device=device)
@@ -721,6 +718,8 @@ def model_loss(
             select_idx = 0
         elif consistency_type == 'exclude_last':
             select_idx = int(torch.randint(low=0, high=program_idx - 1, size=(1,)).item())
+        elif consistency_type == 'only_last':
+            select_idx = program_idx - 1
         else:
             select_idx = int(torch.randint(low=0, high=program_idx, size=(1,)).item())
         # get consistency loss
@@ -756,7 +755,14 @@ def model_loss(
         ).loss
         consistency_loss /= len(ce_losses) # normalize based on num pairs to not dominate
 
-    ce_loss = sum(ce_losses) / len(ce_losses)
+    if token_weighted_loss:
+        token_weights = [(pair_label_ids != -100).sum().item() for pair_label_ids in label_ids[1:]]
+        token_weights = torch.tensor(token_weights, device=device) / sum(token_weights)
+        assert len(ce_losses) == len(token_weights)
+        ce_loss = sum(ce_loss * token_weight for ce_loss, token_weight in zip(ce_losses, token_weights))
+    else:
+        ce_loss = sum(ce_losses) / len(ce_losses)
+
     kl_loss = sum(kl_losses) / len(kl_losses) if len(kl_losses) > 0 else torch.tensor(0.0, device=device)
     codebook_loss = sum(codebook_losses) / len(codebook_losses) if len(codebook_losses) > 0 else torch.tensor(0.0, device=device)
     commitment_loss = sum(commitment_losses) / len(commitment_losses) if len(commitment_losses) > 0 else torch.tensor(0.0, device=device)
@@ -765,7 +771,6 @@ def model_loss(
     # logging perplexity for debugging vqvae
     perplexity = sum(perplexitys) / len(perplexitys) if len(perplexitys) > 0 else torch.tensor(0.0, device=device)
     return ce_loss, kl_loss, codebook_loss, commitment_loss, perplexity, consistency_loss, total_loss, ce_losses # type: ignore
-
 
 def insert_based_on_sides(
         data: torch.Tensor,
@@ -945,7 +950,7 @@ def gradient_search(
                     inputs_embeds=inputs_embeds,
                     attention_mask=attention_mask,
                     labels=label_ids,
-                    output_hidden_states=True,
+                    output_hidden_states=False,
                 ).loss
 
             accelerator.backward(gs_loss)
@@ -1008,12 +1013,12 @@ def best_match_count(s1, s2):
 @torch.no_grad()
 def evaluate(
     desc: str,
-    task_to_ttt_path: Optional[Dict[str, Tuple[str, str, str, str, Optional[str], Optional[str]]]],
+    task_to_ttt_path: Optional[Dict[str, Tuple[str, str, str, Optional[str], Optional[str], Optional[str]]]],
     ttt_param_names: Optional[Set[str]],
     model: Union[nn.Module, DistributedDataParallel],
     prior_embeddings: Union[ProgramEmbeddings, DistributedDataParallel],
     program_embeddings: Union[ProgramEmbeddings, DistributedDataParallel],
-    vae_projection: Union[VaeProjection, DistributedDataParallel],
+    vae_projection: Optional[Union[VaeProjection, DistributedDataParallel]],
     quantizer: Optional[Union[Quantizer, DistributedDataParallel]],
     program_norm: Optional[Union[LlamaRMSNorm, DistributedDataParallel]],
     tokenizer: ARCTokenizer,
@@ -1023,7 +1028,6 @@ def evaluate(
     collate_fn: Callable,
     trainable_nbit: int,
     no_flash_attn: bool,
-    vae_sample: bool,
     dry_eval_run: bool,
     gs_iters: int,
     gs_batch_size: int,
@@ -1039,11 +1043,13 @@ def evaluate(
     output_dir: str,
     concat_programs: bool,
     no_codebook: bool,
+    weird_cast: bool,
 ):
     model.eval()
     prior_embeddings.eval()
     program_embeddings.eval()
-    vae_projection.eval()
+    if vae_projection is not None:
+        vae_projection.eval()
     if quantizer is not None:
         quantizer.eval()
     if program_norm is not None:
@@ -1079,9 +1085,10 @@ def evaluate(
         torch.save(program_embeddings, cached_program_embeddings_weights_path)
         logger.info(f"ttt provided, cached program embeddings weights to {cached_program_embeddings_weights_path}")
         # save vae projection
-        cached_vae_projection_weights_path = os.path.join(output_dir, f"process{accelerator.process_index}_vae_projection_cache.pt")
-        torch.save(vae_projection, cached_vae_projection_weights_path)
-        logger.info(f"ttt provided, cached vae projection weights to {cached_vae_projection_weights_path}")
+        if vae_projection is not None:
+            cached_vae_projection_weights_path = os.path.join(output_dir, f"process{accelerator.process_index}_vae_projection_cache.pt")
+            torch.save(vae_projection, cached_vae_projection_weights_path)
+            logger.info(f"ttt provided, cached vae projection weights to {cached_vae_projection_weights_path}")
         # save quantizer
         if quantizer is not None:
             cached_quantizer_weights_path = os.path.join(output_dir, f"process{accelerator.process_index}_quantizer_cache.pt")
@@ -1170,7 +1177,8 @@ def evaluate(
                     # load program embeddings
                     program_embeddings = torch.load(ttt_program_embeddings_weights_path, weights_only=False, map_location=accelerator.device)
                     # load vae projection
-                    vae_projection = torch.load(ttt_vae_projection_weights_path, weights_only=False, map_location=accelerator.device)
+                    if ttt_vae_projection_weights_path is not None:
+                        vae_projection = torch.load(ttt_vae_projection_weights_path, weights_only=False, map_location=accelerator.device)
                     # load quantizer
                     if ttt_quantizer_weights_path is not None:
                         quantizer = torch.load(ttt_quantizer_weights_path, weights_only=False, map_location=accelerator.device)
@@ -1181,7 +1189,8 @@ def evaluate(
                     model.eval() # another eval after loading weight just in case
                     prior_embeddings.eval()
                     program_embeddings.eval()
-                    vae_projection.eval()
+                    if vae_projection is not None:
+                        vae_projection.eval()
                     if quantizer is not None:
                         quantizer.eval()
                     if program_norm is not None:
@@ -1252,11 +1261,11 @@ def evaluate(
                         # others
                         ntokens=dataset.ntokens,
                         pad_side=dataset.train_pad_side,
-                        vae_sample=vae_sample,
                         no_residual=no_residual,
                         no_discrete_prior=no_discrete_prior,
                         concat_programs=concat_programs,
                         train_codebook_only=no_codebook,
+                        weird_cast=weird_cast,
                     )
 
                 # accumulate program
@@ -1326,6 +1335,7 @@ def evaluate(
                 device = gen_input_ids.device
                 pad_embeds = embed_tokens(torch.tensor(tokenizer.pad_token_id, device=device))
                 gen_inputs_embeds = embed_tokens(gen_input_ids)
+
                 # pad decoder inputs embeds
                 gen_inputs_embeds = insert_based_on_sides(
                     data=gen_inputs_embeds,
@@ -1347,6 +1357,13 @@ def evaluate(
                     pad_side=dataset.gen_pad_side,
                     pad_id=0,
                 )
+
+                # debug: assert no middle padding
+                if dataset.gen_pad_side == 'left':
+                    assert torch.all(gen_attention_mask[:, :-1] <= gen_attention_mask[:, 1:])
+                else:
+                    assert torch.all(gen_attention_mask[:, :-1] >= gen_attention_mask[:, 1:])
+
                 # generate (limit generation length but also prevent information leak)
                 arbitrary_increase = 5
                 gen_tokens = module.generate(
@@ -1607,12 +1624,12 @@ def save_train_model(
         model: Union[nn.Module, DistributedDataParallel],
         prior_embeddings: Union[ProgramEmbeddings, DistributedDataParallel],
         program_embeddings: Union[ProgramEmbeddings, DistributedDataParallel],
-        vae_projection: Union[VaeProjection, DistributedDataParallel],
+        vae_projection: Optional[Union[VaeProjection, DistributedDataParallel]],
         quantizer: Optional[Union[Quantizer, DistributedDataParallel]],
         program_norm: Optional[Union[LlamaRMSNorm, DistributedDataParallel]],
         output_dir: str,
         epoch: int,
-    ) -> Tuple[str, str, str, str, Optional[str], Optional[str]]:
+    ) -> Tuple[str, str, str, Optional[str], Optional[str], Optional[str]]:
 
     # model
     save_model_path = os.path.join(output_dir, f"lora_epoch_{epoch+1}")
@@ -1637,12 +1654,14 @@ def save_train_model(
     logger.info(f"Saved program embeddings to {save_program_embeddings_path}")
 
     # vae projection
-    save_vae_projection_path = os.path.join(output_dir, f"vae_projection_epoch_{epoch+1}.pt")
-    vae_projection_module = vae_projection
-    if isinstance(vae_projection, DistributedDataParallel):
-        vae_projection_module = vae_projection.module
-    torch.save(vae_projection_module, save_vae_projection_path)
-    logger.info(f"Saved conditioning projection to {save_vae_projection_path}")
+    save_vae_projection_path = None
+    if vae_projection is not None:
+        save_vae_projection_path = os.path.join(output_dir, f"vae_projection_epoch_{epoch+1}.pt")
+        vae_projection_module = vae_projection
+        if isinstance(vae_projection, DistributedDataParallel):
+            vae_projection_module = vae_projection.module
+        torch.save(vae_projection_module, save_vae_projection_path)
+        logger.info(f"vae projection to {save_vae_projection_path}")
 
     # quantizer
     save_quantizer_path = None
@@ -1712,6 +1731,71 @@ def initialize_program_embeddings(
     return distribution.sample(sample_shape=(ntokens,)).to(device).to(dtype) # type: ignore
 
 
+def test_model_padding(model, pad_side):
+    # Set up a dummy sequence: a batch with one sequence of length 5.
+    batch_size = 2
+    seq_len = 128
+    hidden_dim = model.config.hidden_size
+    device = next(iter(model.parameters())).device
+    print(device)
+
+    # Create random embeddings for the actual tokens.
+    inputs_embeds_no_pad = torch.randn(batch_size, seq_len, hidden_dim)
+    attention_mask_no_pad = torch.ones(batch_size, seq_len, dtype=torch.long)
+
+    # Create a padded version by prepending 2 padding tokens (with zero embeddings)
+    padding_tokens = 2
+    padding_embeds = torch.randn(batch_size, padding_tokens, hidden_dim)
+    if pad_side == 'left':
+        inputs_embeds_with_pad = torch.cat([padding_embeds, inputs_embeds_no_pad], dim=1)
+        # Attention mask: 0 for padding tokens, 1 for actual tokens.
+        attention_mask_with_pad = torch.cat([
+            torch.zeros(batch_size, padding_tokens, dtype=torch.long),
+            torch.ones(batch_size, seq_len, dtype=torch.long)
+        ], dim=1)
+    else:
+        inputs_embeds_with_pad = torch.cat([inputs_embeds_no_pad, padding_embeds], dim=1)
+        # Attention mask: 0 for padding tokens, 1 for actual tokens.
+        attention_mask_with_pad = torch.cat([
+            torch.ones(batch_size, seq_len, dtype=torch.long),
+            torch.zeros(batch_size, padding_tokens, dtype=torch.long),
+        ], dim=1)
+
+    inputs_embeds_no_pad = inputs_embeds_no_pad.to(device)
+    attention_mask_no_pad = attention_mask_no_pad.to(device)
+    inputs_embeds_with_pad = inputs_embeds_with_pad.to(device)
+    attention_mask_with_pad = attention_mask_with_pad.to(device)
+
+    # Run both inputs through the model.
+    with torch.no_grad():
+        # For the non-padded version.
+        outputs_no_pad = model(
+            inputs_embeds=inputs_embeds_no_pad,
+            attention_mask=attention_mask_no_pad,
+            output_hidden_states=True,
+        )
+        # For the padded version.
+        outputs_with_pad = model(
+            inputs_embeds=inputs_embeds_with_pad,
+            attention_mask=attention_mask_with_pad,
+            output_hidden_states=True,
+        )
+
+    # Get the final hidden states (last layer) from both outputs.
+    # outputs.hidden_states is a tuple: (embeddings_output, hidden_state_layer1, ..., final_hidden_state)
+    hidden_states_no_pad = outputs_no_pad.hidden_states[-1]  # shape: (batch_size, seq_len, hidden_dim)
+    # For the padded input, extract the part corresponding to the actual tokens.
+    if pad_side == 'left':
+        hidden_states_with_pad = outputs_with_pad.hidden_states[-1][:, padding_tokens:, :]  # shape: (batch_size, seq_len, hidden_dim)
+    else:
+        hidden_states_with_pad = outputs_with_pad.hidden_states[-1][:, :-padding_tokens, :]  # shape: (batch_size, seq_len, hidden_dim)
+
+    # For further inspection, print the maximum difference.
+    difference = torch.abs(hidden_states_no_pad - hidden_states_with_pad)
+    print("Mean/Max difference:", difference.mean().item(), difference.max().item())
+    breakpoint()
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--tag", type=str, required=True)
@@ -1740,22 +1824,28 @@ def main():
     parser.add_argument("--no_residual", action="store_true")
     parser.add_argument("--no_normalize", action="store_true")
     parser.add_argument("--concat_programs", action="store_true")
+    parser.add_argument("--token_weighted_loss", action="store_true")
+    parser.add_argument("--weird_cast", action="store_true")
+    parser.add_argument("--no_tf32", action="store_true")
+
+    # long context
+    parser.add_argument("--long_context", action="store_true")
+    parser.add_argument("--long_context_repeat_demonstration", action="store_true")
+    parser.add_argument("--checkpointing_threshold", type=int, default=0)
 
     # Self-consistency
-    parser.add_argument("--consistency_type", type=str, choices=["none", "all", "only_first", "exclude_last"], default="none")
-
-    # Conditioning projection
-    parser.add_argument("--projection_type", type=str, choices=["none", "shared", "full"], default="none")
-    parser.add_argument("--identity_init", action="store_true")
+    parser.add_argument("--consistency_type", type=str, choices=["none", "all", "only_first", "exclude_last", "only_last"], default="none")
 
     # vqvae
     parser.add_argument("--codebook_size", type=int, default=-1)
+    parser.add_argument("--fsq_L", metavar='N', type=int, nargs='+', default=[])
     parser.add_argument("--no_discrete_prior", action="store_true")
     parser.add_argument("--warmup_cookbook_only_epochs", type=int, default=0)
 
     # vae
-    parser.add_argument("--train_sample", action="store_true")
-    parser.add_argument("--eval_sample", action="store_true")
+    parser.add_argument("--vae", action="store_true")
+    parser.add_argument("--subset_kl", action="store_true")
+    parser.add_argument("--mlp_factor", type=int, default=4)
 
     # Training
     parser.add_argument("--grad_accum_steps", type=int, default=8)
@@ -1773,12 +1863,16 @@ def main():
     parser.add_argument("--optimizer", type=str, choices=["adamw8bit", "adamw", "sgd"], default="adamw")
     parser.add_argument("--dry_train_run", action="store_true")
     parser.add_argument("--dry_eval_run", action="store_true")
-    parser.add_argument("--warmup_epoch", type=int, default=1)
+    parser.add_argument("--warmup_epochs", type=int, default=1)
     parser.add_argument("--max_seq_len", type=int, default=8192)
+    parser.add_argument("--attention_dropout", type=float, default=0.0)
+    parser.add_argument("--program_dropout", type=float, default=0.0)
+    parser.add_argument("--program_noise_std", type=float, default=0.0)
 
     # Evaluation
     parser.add_argument("--extra_inference_pairs", type=int, default=0)
     parser.add_argument("--limit_inference_pairs", action='store_true')
+    parser.add_argument("--limit_inference_pairs_strict", action='store_true') # overrides limit_inference_pairs
 
     # scheduled extra losses
     parser.add_argument("--consistency_loss_lambda", type=float, default=1.0)
@@ -1902,12 +1996,7 @@ def main():
     assert args.min_num_pair >= 3
     if args.train_gs_iters > 0 or args.eval_gs_iters > 0:
         assert args.eval_batch_size == 1
-    if args.codebook_size > 0:
-        assert not args.train_sample and not args.eval_sample
-    if args.projection_type == "none":
-        assert not args.train_sample and not args.eval_sample
     if args.concat_programs:
-        assert not args.train_sample and not args.eval_sample
         assert args.consistency_type == "none"
         assert args.no_residual # cannot add programs
         assert args.eval_batch_size == 1
@@ -1915,6 +2004,8 @@ def main():
         assert args.codebook_loss_offset_epochs == 0
         assert args.codebook_loss_linear_epochs == 0
     assert args.commitment_loss_offset_epochs >= args.warmup_cookbook_only_epochs
+    if args.long_context:
+        assert args.extra_inference_pairs == 0
 
     if args.no_lora:
         args.untrainable_nbit = args.trainable_nbit # untrainable become trainable
@@ -1929,7 +2020,6 @@ def main():
     # os.environ["WANDB_API_KEY"]="8f75801720d1540f03dd3a73e52f11d8ec74f395"
     accelerator = Accelerator(
         gradient_accumulation_steps=args.grad_accum_steps,
-        mixed_precision="bf16",
         project_config=project_config,
         log_with="wandb" if args.wandb else None,
         kwargs_handlers=[init_process_process_kwargs],
@@ -1944,7 +2034,8 @@ def main():
             tracker_config,
             init_kwargs={"wandb": {"name": args.tag}}
         )
-    torch.backends.cuda.matmul.allow_tf32 = True
+    if not args.no_tf32:
+        torch.backends.cuda.matmul.allow_tf32 = True
     logger.info("Accelerator and seed set up.")
 
     # log args
@@ -1993,6 +2084,14 @@ def main():
         **from_pretrained_kwargs,
     )
 
+    # attention dropout
+    for layer in base_model.model.layers:
+        layer.self_attn.attention_dropout = args.attention_dropout
+    base_model.config.attention_dropout = args.attention_dropout
+
+    # program dropout
+    program_dropout = nn.Dropout(p=args.program_dropout)
+
     if args.untrainable_nbit in [4, 8]:
         base_model = prepare_model_for_kbit_training(
             base_model,
@@ -2026,23 +2125,14 @@ def main():
 
     # vqvae codebook
     quantizer: Optional[Quantizer] = None
-    if args.codebook_size > 0:
+    if args.codebook_size > 0 or args.fsq_L != []:
         quantizer = Quantizer(
-            embedding=torch.randn(
-                (args.codebook_size, base_model.config.hidden_size),
-                device=accelerator.device,
-                dtype=NBIT_TO_DTYPE[args.trainable_nbit],
-            ),
+            codebook_size=args.codebook_size,
+            hidden_size=base_model.config.hidden_size,
+            fsq_L=args.fsq_L,
+            device=accelerator.device,
         )
-        # quantizer = Quantizer(
-        #     embedding=initialize_program_embeddings(
-        #         base_model.lm_head.weight.data.detach().clone(), # lmhead weights
-        #         accelerator,
-        #         ntokens=args.codebook_size,
-        #         cov_scale=1.0,
-        #     ),
-        # )
-    logger.info("Codebook initialized.")
+        logger.info("Codebook initialized.")
 
     # only keep these tokens, resize model embedding (eos == pad)
     # we do not include program tokens here, those are added later during training and inference
@@ -2126,30 +2216,30 @@ def main():
         model = get_peft_model(base_model, peft_config)
     logger.info("LoRA-wrapped models initialized (optional)")
 
-    # conditioning projection
-    vae_projection = VaeProjection(
-        ntokens=args.ntokens,
-        model=model,
-        identity_init=args.identity_init,
-        projection_type=args.projection_type,
-        device=accelerator.device,
-    )
-    for param in vae_projection.parameters():
-        param.requires_grad = True
-    logger.info("conditioning projection initialized")
+    # vae projection (empty module if vae=False)
+    vae_projection = None
+    if args.vae:
+        vae_projection = VaeProjection(
+            mlp_factor=args.mlp_factor,
+            latent_dim=model.config.hidden_size, # type: ignore
+            device=accelerator.device,
+        )
+        logger.info("vae projection initialized")
 
     # shared norm
     program_norm = None
     if not args.no_normalize:
         program_norm = LlamaRMSNorm(model.config.hidden_size, eps=model.config.rms_norm_eps) # type: ignore
+        logger.info("norm layer initialized")
 
     # ensure requires grad
     for param in prior_embeddings.parameters():
         param.requires_grad = True
     for param in program_embeddings.parameters():
         param.requires_grad = True
-    for param in vae_projection.parameters():
-        param.requires_grad = True
+    if vae_projection is not None:
+        for param in vae_projection.parameters():
+            param.requires_grad = True
     if quantizer is not None:
         for param in quantizer.parameters():
             param.requires_grad = True
@@ -2161,15 +2251,16 @@ def main():
     for name, param in model.named_parameters():
         if param.requires_grad:
             param.data = param.data.to(NBIT_TO_DTYPE[args.trainable_nbit])
-    for name, param in vae_projection.named_parameters():
-        assert param.requires_grad
-        param.data = param.data.to(NBIT_TO_DTYPE[args.trainable_nbit])
     for name, param in prior_embeddings.named_parameters():
         assert param.requires_grad
         param.data = param.data.to(NBIT_TO_DTYPE[args.trainable_nbit])
     for name, param in program_embeddings.named_parameters():
         assert param.requires_grad
         param.data = param.data.to(NBIT_TO_DTYPE[args.trainable_nbit])
+    if vae_projection is not None:
+        for name, param in vae_projection.named_parameters():
+            assert param.requires_grad
+            param.data = param.data.to(torch.float32) # keep vaeproj at float32
     if quantizer is not None:
         for param in quantizer.parameters():
             assert param.requires_grad
@@ -2178,16 +2269,17 @@ def main():
         for param in program_norm.parameters():
             assert param.requires_grad
             param.data = param.data.to(torch.float32) # keep norm at float32
-    logger.info(f'converted trainable model weights to {NBIT_TO_DTYPE[args.trainable_nbit]}')
+    logger.info(f'converted most trainable model weights to {NBIT_TO_DTYPE[args.trainable_nbit]}')
 
     # number of parameters
     print_trainable_parameters(model)
     prior_embeddings_n_params = sum(p.numel() for p in prior_embeddings.parameters())
     program_embeddings_n_params = sum(p.numel() for p in program_embeddings.parameters())
-    vae_projection_n_params = sum(p.numel() for p in vae_projection.parameters())
     logger.info(f'prior embedding params {three_commas(prior_embeddings_n_params)}')
     logger.info(f'program embedding params {three_commas(program_embeddings_n_params)}')
-    logger.info(f'vae projection params {three_commas(vae_projection_n_params)}')
+    if vae_projection is not None:
+        vae_projection_n_params = sum(p.numel() for p in vae_projection.parameters())
+        logger.info(f'vae projection params {three_commas(vae_projection_n_params)}')
     if quantizer is not None:
         quantizer_n_params = sum(p.numel() for p in quantizer.parameters())
         logger.info(f'quantizer params {three_commas(quantizer_n_params)}')
@@ -2199,7 +2291,8 @@ def main():
     logger.info(f'model size {round(model.get_memory_footprint() / 1024 ** 3, 2)}GB')
     logger.info(f'prior embeddings size {round(get_memory_footprint(prior_embeddings) / 1024 ** 3, 2)}GB')
     logger.info(f'program embeddings size {round(get_memory_footprint(program_embeddings) / 1024 ** 3, 2)}GB')
-    logger.info(f'conditioning projection size {round(get_memory_footprint(vae_projection) / 1024 ** 3, 2)}GB')
+    if vae_projection is not None:
+        logger.info(f'vae projection size {round(get_memory_footprint(vae_projection) / 1024 ** 3, 2)}GB')
     if quantizer is not None:
         logger.info(f'quantizer size {round(get_memory_footprint(quantizer) / 1024 ** 3, 2)}GB')
     if program_norm is not None:
@@ -2239,6 +2332,8 @@ def main():
         no_dim=args.no_dim,
         no_separate_color_tokens=args.no_separate_color_tokens,
         max_seq_len=args.max_seq_len,
+        long_context=args.long_context,
+        long_context_repeat_demonstration=args.long_context_repeat_demonstration,
     )
     train_collate_fn = partial(collate_fn_train, dataset=train_dataset)
     if args.debug_len > 0:
@@ -2268,8 +2363,9 @@ def main():
                 embedding_params.append(param)
             else:
                 other_params.append(param)
-    for param in vae_projection.parameters():
-        other_params.append(param)
+    if vae_projection is not None:
+        for param in vae_projection.parameters():
+            other_params.append(param)
     if quantizer is not None:
         for param in quantizer.parameters():
             other_params.append(param)
@@ -2304,13 +2400,13 @@ def main():
     if args.lr_scheduler == 'cosine':
         lr_scheduler = get_cosine_schedule_with_warmup(
             optimizer,
-            num_warmup_steps=steps_per_epoch * args.grad_accum_steps * args.warmup_epoch,
+            num_warmup_steps=steps_per_epoch * args.grad_accum_steps * args.warmup_epochs,
             num_training_steps=num_training_steps * args.grad_accum_steps,
         )
     else:
         lr_scheduler = get_constant_schedule_with_warmup(
             optimizer=optimizer,
-            num_warmup_steps=steps_per_epoch * args.grad_accum_steps * args.warmup_epoch,
+            num_warmup_steps=steps_per_epoch * args.grad_accum_steps * args.warmup_epochs,
         )
     logger.info(f'lr scheduler with {steps_per_epoch} warmup steps')
 
@@ -2367,7 +2463,8 @@ def main():
     assert isinstance(model, (nn.Module, DistributedDataParallel))
     assert isinstance(prior_embeddings, (ProgramEmbeddings, DistributedDataParallel))
     assert isinstance(program_embeddings, (ProgramEmbeddings, DistributedDataParallel))
-    assert isinstance(vae_projection, (VaeProjection, DistributedDataParallel))
+    if vae_projection is not None:
+        assert isinstance(vae_projection, (VaeProjection, DistributedDataParallel))
     if quantizer is not None:
         assert isinstance(quantizer, (Quantizer, DistributedDataParallel))
     if program_norm is not None:
@@ -2399,7 +2496,11 @@ def main():
         no_separate_color_tokens=args.no_separate_color_tokens,
         extra_inference_pairs=args.extra_inference_pairs,
         limit_inference_pairs=args.limit_inference_pairs,
+        limit_inference_pairs_strict=args.limit_inference_pairs_strict,
         max_num_train_pair=args.max_num_pair - 1,
+        long_context=args.long_context,
+        long_context_repeat_demonstration=args.long_context_repeat_demonstration,
+        max_seq_len=args.max_seq_len,
     )
     eval_eval_dataset = EvalDataset(
         eval_dir=args.eval_eval_dir,
@@ -2421,7 +2522,11 @@ def main():
         no_separate_color_tokens=args.no_separate_color_tokens,
         extra_inference_pairs=args.extra_inference_pairs,
         limit_inference_pairs=args.limit_inference_pairs,
+        limit_inference_pairs_strict=args.limit_inference_pairs_strict,
         max_num_train_pair=args.max_num_pair - 1,
+        long_context=args.long_context,
+        long_context_repeat_demonstration=args.long_context_repeat_demonstration,
+        max_seq_len=args.max_seq_len,
     )
     eval_collate_fn = partial(collate_fn_eval, dataset=eval_train_dataset) # only use tokenizer, padding info
     if args.debug_len > 0:
@@ -2454,11 +2559,13 @@ def main():
         model.train()
         prior_embeddings.train()
         program_embeddings.train()
-        vae_projection.train()
+        if vae_projection is not None:
+            vae_projection.train()
         if quantizer is not None:
             quantizer.train()
         if program_norm is not None:
             program_norm.train()
+        program_dropout.train()
 
         ce_loss_accum = 0.0
         kl_loss_accum = 0.0
@@ -2489,6 +2596,7 @@ def main():
                         vae_projection=vae_projection,
                         quantizer=quantizer,
                         program_norm=program_norm,
+                        program_dropout=program_dropout,
                         tokenizer=tokenizer,
                         # data
                         input_ids=input_ids,
@@ -2504,13 +2612,17 @@ def main():
                         commitment_loss_lambda_scheduler=commitment_loss_lambda_scheduler,
                         consistency_loss_lambda_scheduler=consistency_loss_lambda_scheduler,
                         global_step=global_step,
-                        vae_sample=args.train_sample,
                         no_residual=args.no_residual,
                         no_discrete_prior=args.no_discrete_prior,
                         consistency_type=args.consistency_type,
                         concat_programs=args.concat_programs,
                         train_codebook_only=train_codebook_only,
                         ar_gradient_checkpointing=args.ar_gradient_checkpointing,
+                        program_noise_std=args.program_noise_std,
+                        subset_kl=args.subset_kl,
+                        checkpointing_threshold=args.checkpointing_threshold,
+                        token_weighted_loss=args.token_weighted_loss,
+                        weird_cast=args.weird_cast,
                     )
 
                 # only log one process
@@ -2566,6 +2678,9 @@ def main():
 
         # Evaluate every N epochs
         if (epoch + 1) % args.eval_epochs == 0:
+            torch.cuda.empty_cache()
+            gc.collect()
+
             no_codebook = epoch < args.warmup_cookbook_only_epochs
 
             train_exact_acc, train_valid_grid, train_correct_grid_dim, train_token_acc, train_relaxed_token_acc, train_texts, \
@@ -2586,7 +2701,6 @@ def main():
                 collate_fn=eval_collate_fn,
                 trainable_nbit=args.trainable_nbit,
                 no_flash_attn=args.no_flash_attn,
-                vae_sample=args.eval_sample,
                 dry_eval_run=args.dry_eval_run,
                 gs_iters=args.train_gs_iters,
                 gs_lr=args.train_gs_lr,
@@ -2602,6 +2716,7 @@ def main():
                 output_dir=args.output_dir,
                 concat_programs=args.concat_programs,
                 no_codebook=no_codebook,
+                weird_cast=args.weird_cast,
             )
             eval_exact_acc, eval_valid_grid, eval_correct_grid_dim, eval_token_acc, eval_relaxed_token_acc, eval_texts, \
                 eval_votes, eval_competition_sub_acc, eval_competition_all_acc, _ = evaluate(
@@ -2621,7 +2736,6 @@ def main():
                 collate_fn=eval_collate_fn,
                 trainable_nbit=args.trainable_nbit,
                 no_flash_attn=args.no_flash_attn,
-                vae_sample=args.eval_sample,
                 dry_eval_run=args.dry_eval_run,
                 gs_iters=args.eval_gs_iters,
                 gs_lr=args.eval_gs_lr,
@@ -2637,7 +2751,11 @@ def main():
                 output_dir=args.output_dir,
                 concat_programs=args.concat_programs,
                 no_codebook=no_codebook,
+                weird_cast=args.weird_cast,
             )
+
+            torch.cuda.empty_cache()
+            gc.collect()
 
             if accelerator.is_main_process:
                 eval_metric_dict = {
@@ -2693,7 +2811,9 @@ def main():
                         save_model_path, save_prior_embeddings_path, save_program_embeddings_path, \
                             save_vae_projection_path, save_quantizer_path, save_program_norm_path = last_save_model_path
                         rm_cmd = f"rm -rf {save_model_path} {save_prior_embeddings_path}"
-                        rm_cmd += f" {save_program_embeddings_path} {save_vae_projection_path}"
+                        rm_cmd += f" {save_program_embeddings_path}"
+                        if save_vae_projection_path is not None:
+                            rm_cmd += f" {save_vae_projection_path}"
                         if save_quantizer_path is not None:
                             rm_cmd += f" {save_quantizer_path}"
                         if save_program_norm_path is not None:
