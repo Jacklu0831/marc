@@ -1118,11 +1118,9 @@ class TTTDataset(Dataset):
             input_ids = torch.cat([input_grid_ids, output_grid_ids])
             attention_mask = torch.full(input_ids.shape, 1, dtype=torch.int64)
             # label id for all except first pair
+            # NOTE: loss on first is applied here
             label_ids = torch.full(input_grid_ids.shape, -100, dtype=torch.int64)
-            if pair_i == 0:
-                label_ids = torch.cat([label_ids, torch.full(output_grid_ids.shape, -100, dtype=torch.int64)])
-            else:
-                label_ids = torch.cat([label_ids, output_grid_ids])
+            label_ids = torch.cat([label_ids, output_grid_ids])
             # aggregate
             pair_idx_to_input_ids.append(input_ids)
             pair_idx_to_attention_mask.append(attention_mask)

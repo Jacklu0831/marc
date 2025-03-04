@@ -78,7 +78,7 @@ def main():
     parser.add_argument("--ttt_weight_epoch", type=int, default=-1)
 
     # Evaluation & data
-    parser.add_argument("--batch_size", type=int, default=16)
+    parser.add_argument("--batch_size", type=int, default=4)
     parser.add_argument("--max_seq_len", type=int, default=8192)
     parser.add_argument("--pad_side", type=str, choices=["left", "right"], default="left")
     parser.add_argument("--no_separate_color_tokens", action='store_true')

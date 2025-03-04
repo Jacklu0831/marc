@@ -419,7 +419,7 @@ def debug_extra_pad_tensors(
     assert len(tensors) == len(padding_values)
     assert all(t.dim() == 2 for t in tensors)
     if pad_len == -1:
-        pad_len = random.randint(0, 15) # arbitrary
+        pad_len = random.randint(1, 15) # arbitrary
     padded_tensors = []
     for arg, padding_value in zip(tensors, padding_values):
         pad = torch.full((arg.shape[0], pad_len), padding_value, device=arg.device, dtype=arg.dtype)

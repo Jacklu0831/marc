@@ -42,6 +42,7 @@ from data_utils import (
 )
 
 import os
+os.system('nvidia-smi')
 os.environ["TOKENIZERS_PARALLELISM"] = "false" # weird tokenizer issue
 os.environ["NCCL_TIMEOUT"] = "28800" # 4hr for evaluation time variance across gpus
 os.environ["NCCL_TIMEOUT_MS"] = "28800000"
