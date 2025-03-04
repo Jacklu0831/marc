@@ -12,6 +12,7 @@ import json
 from tqdm import tqdm
 from functools import partial
 import argparse
+import wandb
 
 import torch
 from torch import nn
@@ -35,7 +36,7 @@ from transformers import (
     get_constant_schedule_with_warmup,
 )
 import bitsandbytes as bnb
-
+import shutil
 from data_utils import (
     TrainDataset,
     EvalDataset,
@@ -1981,6 +1982,7 @@ def main():
     parser.add_argument("--wandb", action="store_true")
     parser.add_argument("--output_dir", type=str, default="./encoder_decoder/outputs")
     parser.add_argument("--log_every", type=int, default=10)
+    parser.add_argument("--save_every", type=int, default=5000)
     parser.add_argument("--tracker_project_name", type=str, default="arc")
     parser.add_argument("--save_all_models", action="store_true") # otherwise save only best
 
@@ -2073,11 +2075,7 @@ def main():
     parser.add_argument("--lr_scheduler", type=str, choices=["cosine", "constant"], default="cosine")
 
     # re-arc train data
-<<<<<<< HEAD
-    parser.add_argument("--train_data_dir", type=str, default="/scratch/zy3101/re-arc/train_data/tasks")
-=======
     parser.add_argument("--train_data_dir", type=str, default="./data/re-arc/train_data/tasks")
->>>>>>> origin/main
     parser.add_argument("--no_train_original", action="store_true")
     parser.add_argument("--only_train_original", action="store_true")
 
@@ -2091,11 +2089,7 @@ def main():
     parser.add_argument("--extra_augment_single_grid", action="store_true")
 
     # eval train data
-<<<<<<< HEAD
-    parser.add_argument("--eval_train_dir", type=str, default="/scratch/zy3101/re-arc/arc_original/training")
-=======
     parser.add_argument("--eval_train_dir", type=str, default="./data/re-arc/arc_original/training")
->>>>>>> origin/main
     parser.add_argument("--eval_train_select_tasks_path", type=str, default=None)
     parser.add_argument("--eval_train_leave_ns", type=int, nargs="+", default=[0])
     parser.add_argument("--eval_train_leave_ns_inc", action="store_true")
@@ -2104,11 +2098,7 @@ def main():
     parser.add_argument("--eval_train_permute_iters", type=int, default=0)
 
     # eval eval data (mirror eval train data)
-<<<<<<< HEAD
-    parser.add_argument("--eval_eval_dir", type=str, default="/scratch/zy3101/re-arc/arc_original/evaluation")
-=======
     parser.add_argument("--eval_eval_dir", type=str, default="./data/re-arc/arc_original/evaluation")
->>>>>>> origin/main
     parser.add_argument("--eval_eval_select_tasks_path", type=str, default=None)
     parser.add_argument("--eval_eval_leave_ns", type=int, nargs="+", default=[0])
     parser.add_argument("--eval_eval_leave_ns_inc", action="store_true")
@@ -2126,6 +2116,8 @@ def main():
     parser.add_argument("--no_rslora", action='store_true')
 
     # Virtual tokens approach
+    parser.add_argument("--resume", action="store_true")
+    parser.add_argument("--resume_debug", action="store_true")
     parser.add_argument("--ntokens", type=int, default=16)
     parser.add_argument("--seed", type=int, default=0)
     args = parser.parse_args()
@@ -2136,7 +2128,10 @@ def main():
         args.wandb = False
         args.samples_per_epoch = 32
         args.log_every = 1
-
+    # breakpoint recovery
+    if args.resume_debug:
+        args.save_every = 50
+    run_id = None
     # check args
     if args.model_name == "nemo8b":
         assert args.train_pad_side == args.gen_pad_side == "left"
@@ -2152,12 +2147,13 @@ def main():
         args.untrainable_nbit = args.trainable_nbit # untrainable become trainable
 
     args.output_dir = os.path.join(args.output_dir, args.tag)
+    # breakpoint recovery
+    checkpoint_dir = os.path.join(args.output_dir, "checkpoint")
 
     # Setup accelerator
     project_config = ProjectConfiguration(project_dir=args.output_dir)
     init_process_process_kwargs = InitProcessGroupKwargs()
     init_process_process_kwargs.timeout = timedelta(seconds=28800)
-    8f75801720d1540f03dd3a73e52f11d8ec74f395
     os.environ["WANDB_API_KEY"]="8f75801720d1540f03dd3a73e52f11d8ec74f395"
     accelerator = Accelerator(
         gradient_accumulation_steps=args.grad_accum_steps,
@@ -2167,13 +2163,26 @@ def main():
     )
     set_up_main_process_logger(accelerator, logger)
     set_seed(args.seed + accelerator.process_index)
+    # breakpoint recovery
     if accelerator.is_main_process:
+
         os.makedirs(args.output_dir, exist_ok=True)
         tracker_config = dict(vars(args))
+        if os.path.exists(checkpoint_dir):
+            state_file = os.path.join(checkpoint_dir, "training_state.json")
+            if os.path.exists(state_file):
+                with open(state_file, "r") as f:
+                    state = json.load(f)
+                run_id = state.get("run_id", 0)
+
         accelerator.init_trackers(
             args.tracker_project_name,
             tracker_config,
-            init_kwargs={"wandb": {"name": args.tag}}
+            init_kwargs={"wandb": {
+                "name": args.tag,
+                "resume": "allow" if args.resume else "never",
+                "id": run_id if run_id else None,
+            }}
         )
     if not args.no_tf32:
         torch.backends.cuda.matmul.allow_tf32 = True
@@ -2557,7 +2566,8 @@ def main():
             num_warmup_steps=steps_per_epoch * args.grad_accum_steps * args.warmup_epochs,
         )
     logger.info(f'lr scheduler with {steps_per_epoch} warmup steps')
-
+    # breakpoint recovery
+    accelerator.register_for_checkpointing(lr_scheduler)
     # lambda schedulers
     kl_loss_lambda_scheduler = LambdaScheduler(
         loss_lambda=args.kl_loss_lambda,
@@ -2601,6 +2611,36 @@ def main():
         optimizer,
         train_loader,
     )
+    # breakpoint recovery
+    resume_batch_idx = 0 
+    if os.path.exists(checkpoint_dir):
+        accelerator.print("Loading checkpoint from", checkpoint_dir)
+        accelerator.load_state(checkpoint_dir)
+        state_file = os.path.join(checkpoint_dir, "training_state.json")
+        if os.path.exists(state_file):
+            with open(state_file, "r") as f:
+                state = json.load(f)
+            resume_global_step = state.get("global_step", 0)
+            start_epoch = state.get("epoch", 0)
+            resume_batch_idx = state.get("batch_idx", 0)
+            run_id = state.get("run_id", 0)
+            global_step = 0
+        else:
+            resume_global_step = 0
+            global_step = 0
+            start_epoch = 0
+        accelerator.print(f"Resumed training from epoch {start_epoch}, global_step {resume_global_step}")
+        api = wandb.Api()
+        run = api.run(f"{wandb.run.entity}/{wandb.run.project}/{wandb.run.id}")
+
+        history = run.history()
+        print(history.head())
+        last_logged = history["_step"].max()
+    else:
+        resume_global_step = -1
+        global_step = 0
+        start_epoch = 0
+        last_logged = -1
     assert isinstance(model, (nn.Module, DistributedDataParallel))
     assert isinstance(prior_embeddings, (ProgramEmbeddings, DistributedDataParallel))
     assert isinstance(program_embeddings, (ProgramEmbeddings, DistributedDataParallel))
@@ -2692,6 +2732,9 @@ def main():
     epoch_to_eval_exact_acc = {}
 
     # train!
+    accelerator.print(f"Strat training from epoch {start_epoch}, resume_global_step {resume_global_step}, global step{global_step}")
+    global_step = resume_global_step
+    progress_bar.update(resume_global_step)
     for epoch in range(args.num_epochs):
         model.train()
         prior_embeddings.train()
@@ -2712,8 +2755,10 @@ def main():
         total_loss_accum = 0.0
         grad_norm_accum = 0.0
         ce_losses_accum = [0.0 for _ in range(args.max_num_pair - 1)]
-
-        for batch_data in train_loader:
+        # breakpoint recovery
+        for batch_idx, batch_data in enumerate(train_loader):
+            if epoch == start_epoch and batch_idx < resume_batch_idx:
+                continue
             input_ids = [x.to(accelerator.device) for x in batch_data["input_ids"]]
             attention_mask = [x.to(accelerator.device) for x in batch_data["attention_mask"]]
             label_ids = [x.to(accelerator.device) for x in batch_data["label_ids"]]
@@ -2778,6 +2823,11 @@ def main():
 
             if accelerator.sync_gradients:
                 global_step += 1
+                if global_step < resume_global_step:
+                    print(f'global_step {global_step}')
+                    if global_step % args.log_every == 0:
+                        progress_bar.update(args.log_every)
+                    continue
                 if global_step % args.log_every == 0:
                     progress_bar.update(args.log_every)
                     try:
@@ -2806,6 +2856,18 @@ def main():
                 total_loss_accum = 0.0
                 grad_norm_accum = 0.0
                 ce_losses_accum = [0.0 for _ in range(args.max_num_pair - 1)]
+
+                if global_step % args.save_every == 0 :
+                    
+                    if accelerator.is_main_process:
+                        if os.path.exists(checkpoint_dir):
+                            shutil.rmtree(checkpoint_dir) 
+                        os.makedirs(checkpoint_dir, exist_ok=True)
+                        accelerator.save_state(checkpoint_dir)
+                        state = {"global_step": global_step, "epoch": epoch,"batch_idx": batch_idx + 1,'run_id': wandb.run.id}
+                        with open(os.path.join(checkpoint_dir, "training_state.json"), "w") as f:
+                            json.dump(state, f)
+                        logger.info(f"Checkpoint saved at epoch {epoch}, global_step {global_step}")
 
         # Evaluate every N epochs
         if (epoch + 1) % args.eval_epochs == 0:
