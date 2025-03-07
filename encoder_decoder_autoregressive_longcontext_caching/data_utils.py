@@ -1385,6 +1385,7 @@ class TTTDataset(Dataset):
         aug_type: str,
         no_dim: bool,
         no_separate_color_tokens: bool,
+        max_seq_len: int,
     ):
         self.permute_n = permute_n
         self.tokenizer = tokenizer
@@ -1393,6 +1394,7 @@ class TTTDataset(Dataset):
         self.debug_no_aug = debug_no_aug
         self.no_dim = no_dim
         self.no_separate_color_tokens = no_separate_color_tokens
+        self.max_seq_len = max_seq_len
 
         # get all augmenters
         d8_augmenters = get_d8_augmenters(include_identity=False)
@@ -1427,20 +1429,20 @@ class TTTDataset(Dataset):
 
         # get data
         rng = np.random.RandomState(seed)
-        self.ttt_tasks = self.task_to_ttt_data(max_gen=max_samples_per_task)
+        self.ttt_tasks = self.task_to_ttt_filtered_data(max_gen=max_samples_per_task)
         rng.shuffle(self.ttt_tasks) # type: ignore
 
-    def task_to_ttt_data(self, max_gen: int) -> List[Task]:
+    def task_to_ttt_filtered_data(self, max_gen: int) -> List[Task]:
         # if leave 1 is enough, return it
-        leave_1_train_tasks = self.task_to_ttt_data_leave_n(leave_n=1, max_gen=max_gen)
+        leave_1_train_tasks = self.task_to_ttt_filtered_data_leave_n(leave_n=1, max_gen=max_gen)
         if len(leave_1_train_tasks) >= max_gen:
             return leave_1_train_tasks
         # else generate leave 2 and append to leave 1
         max_gen_leave_2 = max_gen - len(leave_1_train_tasks)
-        leave_1_train_tasks += self.task_to_ttt_data_leave_n(leave_n=2, max_gen=max_gen_leave_2)
+        leave_1_train_tasks += self.task_to_ttt_filtered_data_leave_n(leave_n=2, max_gen=max_gen_leave_2)
         return leave_1_train_tasks
 
-    def task_to_ttt_data_leave_n(self, leave_n: int, max_gen: int) -> List[Task]:
+    def task_to_ttt_filtered_data_leave_n(self, leave_n: int, max_gen: int) -> List[Task]:
         rng = np.random.RandomState(self.seed)
 
         # get leave_n tasks
@@ -1481,9 +1483,15 @@ class TTTDataset(Dataset):
 
         # format
         rng.shuffle(augmented_tasks)
-        return augmented_tasks[:max_gen]
+        filtered_tasks = []
+        for task in augmented_tasks:
+            if len(filtered_tasks) >= max_gen:
+                break
+            if self.format_and_filter(task) is not None:
+                filtered_tasks.append(task)
+        return filtered_tasks
 
-    def format(self, task: Task) -> Dict:
+    def format_and_filter(self, task: Task) -> Optional[Dict]:
         # big grids are filtered out during augmentation already
         assert task.max_height() <= 30 and task.max_width() <= 30
 
@@ -1506,12 +1514,9 @@ class TTTDataset(Dataset):
             )
             input_ids = torch.cat([input_grid_ids, output_grid_ids])
             attention_mask = torch.full(input_ids.shape, 1, dtype=torch.int64)
-            # label id for all except first pair
             label_ids = torch.full(input_grid_ids.shape, -100, dtype=torch.int64)
-            if pair_i == 0:
-                label_ids = torch.cat([label_ids, torch.full(output_grid_ids.shape, -100, dtype=torch.int64)])
-            else:
-                label_ids = torch.cat([label_ids, output_grid_ids])
+            label_ids = torch.cat([label_ids, output_grid_ids])
+            # append
             pair_idx_to_input_ids.append(input_ids)
             pair_idx_to_attention_mask.append(attention_mask)
             pair_idx_to_label_ids.append(label_ids)
@@ -1526,7 +1531,7 @@ class TTTDataset(Dataset):
         return len(self.ttt_tasks)
 
     def __getitem__(self, idx):
-        return self.format(self.ttt_tasks[idx])
+        return self.format_and_filter(self.ttt_tasks[idx])
 
 
 def collate_fn_ttt(batch: List[Dict], dataset: TTTDataset) -> Dict:

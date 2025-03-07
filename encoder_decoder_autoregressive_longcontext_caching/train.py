@@ -300,7 +300,7 @@ def get_predicted_program(
     embed_tokens = module.model.embed_tokens if hasattr(module.model, "embed_tokens") else module.model.model.embed_tokens
 
     # samples do not have to be the same number of pairs in evaluation, but try to parallelize it anyway
-    assert min(num_pairs) >= 2 # at least 2 train
+    # assert min(num_pairs) >= 2 # at least 2 train
     assert max(num_pairs) == len(input_ids)
 
     assert len(set(len(ids) for ids in input_ids)) == 1 # batch size uniform across pair_idx
@@ -517,7 +517,7 @@ def get_predicted_program(
             new_programs, _ = vae_projection(new_programs)
         # optionally use residual connection
         if not no_residual:
-            new_programs += prev_programs
+            new_programs = new_programs + prev_programs
         # optionally apply norm
         if program_norm is not None:
             new_programs = program_norm(new_programs)
@@ -573,6 +573,8 @@ def model_loss(
     token_weighted_loss: bool,
     weird_cast: bool,
     demonstration_dropout: bool,
+    reset_rope: bool,
+    loss_on_first: bool = False,
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, List[torch.Tensor]]:
 
     # debugging: make sure middle attention 0s do not affect hidden states -> works for both float32 and 16 on rtx8000 without flashattn
@@ -703,7 +705,7 @@ def model_loss(
     # all samples should have same number of pairs
     assert len(set(num_pairs)) == 1
     n_pairs = num_pairs[0]
-    assert n_pairs >= 3 # at least 2 train and 1 test
+    # assert n_pairs >= 3 # at least 2 train and 1 test
     assert n_pairs == len(input_ids) # input_ids
 
     assert len(set(len(ids) for ids in input_ids)) == 1 # batch size uniform across pair_idx
@@ -767,7 +769,7 @@ def model_loss(
             pad_side=pad_side,
             pad_id=0,
         )
-        if pair_i > 0:
+        if pair_i > 0 or loss_on_first:
             pair_label_ids = insert_based_on_sides(
                 data=pair_label_ids,
                 to_insert=torch.full((batch_size, ntokens), -100, device=device, dtype=dtype),
@@ -802,7 +804,7 @@ def model_loss(
                 pad_side=pad_side,
                 pad_id=0,
             )
-            if pair_i > 0:
+            if pair_i > 0 or loss_on_first:
                 pair_label_ids = insert_based_on_sides(
                     data=pair_label_ids,
                     to_insert=torch.full((batch_size, ntokens), -100, device=device, dtype=dtype),
@@ -815,7 +817,7 @@ def model_loss(
         # STEP 3: refine program (no output grid label for first pair)
 
         # attention mask should span to the past kvs
-        if pair_i > 0:
+        if pair_i > 0: # no loss on first here because we just keep pair_attention_mask
             assert prev_past_key_values is not None
             assert prev_past_key_values_attention_mask is not None
             assert prev_past_key_values_attention_mask.shape[1] == prev_past_key_values[0][0].shape[2]
@@ -828,10 +830,12 @@ def model_loss(
             "output_hidden_states": (pair_i < n_pairs - 1), # not the last pair
             "use_cache": True, # need to generate or use kv cache
         }
+        if pair_i > 0 or loss_on_first:
+            model_kwargs["labels"] = pair_label_ids
+
         if pair_i > 0:
             assert prev_past_key_values is not None
             model_kwargs["past_key_values"] = prev_past_key_values
-            model_kwargs["labels"] = pair_label_ids
 
             # program dropout just before passing into the model
             pair_attention_mask_with_dropout = pair_attention_mask.detach().clone()
@@ -845,8 +849,13 @@ def model_loss(
             model_kwargs["attention_mask"] = pair_attention_mask_with_dropout
 
             # build position ids (does NOT depend on dropout)
-            attention_mask_just_for_kv = pair_attention_mask[:, :prev_past_key_values[0][0].shape[2]]
-            attention_mask_after_kv = pair_attention_mask[:, prev_past_key_values[0][0].shape[2]:]
+            if reset_rope:
+                attention_mask_just_for_kv = pair_attention_mask_with_dropout[:, :prev_past_key_values[0][0].shape[2]]
+                attention_mask_after_kv = pair_attention_mask_with_dropout[:, prev_past_key_values[0][0].shape[2]:]
+            else:
+                attention_mask_just_for_kv = pair_attention_mask[:, :prev_past_key_values[0][0].shape[2]]
+                attention_mask_after_kv = pair_attention_mask[:, prev_past_key_values[0][0].shape[2]:]
+
             position_ids = []
             for mask_for_kv, mask_after_kv in zip(attention_mask_just_for_kv, attention_mask_after_kv):
                 sequence_position_ids = torch.zeros(pair_inputs_embeds.shape[1], device=device, dtype=dtype)
@@ -875,7 +884,7 @@ def model_loss(
         else:
             model_out = model(**model_kwargs)
 
-        if pair_i > 0:
+        if pair_i > 0 or loss_on_first:
             ce_losses.append(model_out.loss) # type: ignore
 
         # STEP 4: update kv
@@ -939,10 +948,10 @@ def model_loss(
             # dropout
             new_programs = program_dropout(new_programs)
             # inject noise
-            new_programs += program_noise_std * torch.randn_like(new_programs, dtype=new_programs.dtype, device=device)
+            new_programs = new_programs + program_noise_std * torch.randn_like(new_programs, dtype=new_programs.dtype, device=device)
             # use residual connection
             if not no_residual:
-                new_programs += prev_programs
+                new_programs = new_programs + prev_programs
             # apply norm
             if program_norm is not None:
                 new_programs = program_norm(new_programs)
@@ -972,7 +981,10 @@ def model_loss(
                     prev_program_logvars = new_program_logvars
 
     if token_weighted_loss:
-        token_weights = [(pair_label_ids != -100).sum().item() for pair_label_ids in label_ids[1:]]
+        if loss_on_first:
+            token_weights = [(pair_label_ids != -100).sum().item() for pair_label_ids in label_ids]
+        else:
+            token_weights = [(pair_label_ids != -100).sum().item() for pair_label_ids in label_ids[1:]]
         token_weights = torch.tensor(token_weights, device=device) / sum(token_weights)
         assert len(ce_losses) == len(token_weights)
         ce_loss = sum(ce_loss * token_weight for ce_loss, token_weight in zip(ce_losses, token_weights))
@@ -2008,6 +2020,8 @@ def main():
     parser.add_argument("--weird_cast", action="store_true")
     parser.add_argument("--no_tf32", action="store_true")
     parser.add_argument("--demonstration_dropout", type=float, default=0.0)
+    parser.add_argument("--reset_rope", action="store_true")
+    parser.add_argument("--loss_on_first", action="store_true")
 
     # long context
     parser.add_argument("--long_context_checkpointing_threshold", type=int, default=0)
@@ -2130,7 +2144,12 @@ def main():
         args.log_every = 1
     # breakpoint recovery
     if args.resume_debug:
-        args.save_every = 50
+        args.save_every = 2
+        args.tag = 'resume_test'
+        args.wandb = True
+        args.samples_per_epoch = 32
+        args.log_every = 2
+        
     run_id = None
     # check args
     if args.model_name == "nemo8b":
@@ -2613,34 +2632,25 @@ def main():
     )
     # breakpoint recovery
     resume_batch_idx = 0 
-    if os.path.exists(checkpoint_dir):
+    if os.path.exists(checkpoint_dir) and any(os.listdir(checkpoint_dir)):
         accelerator.print("Loading checkpoint from", checkpoint_dir)
         accelerator.load_state(checkpoint_dir)
+        for n, p in model.named_parameters(): print(n, p.dtype)
         state_file = os.path.join(checkpoint_dir, "training_state.json")
         if os.path.exists(state_file):
             with open(state_file, "r") as f:
                 state = json.load(f)
-            resume_global_step = state.get("global_step", 0)
+            global_step = state.get("global_step", 0)
             start_epoch = state.get("epoch", 0)
             resume_batch_idx = state.get("batch_idx", 0)
             run_id = state.get("run_id", 0)
-            global_step = 0
         else:
-            resume_global_step = 0
             global_step = 0
             start_epoch = 0
-        accelerator.print(f"Resumed training from epoch {start_epoch}, global_step {resume_global_step}")
-        api = wandb.Api()
-        run = api.run(f"{wandb.run.entity}/{wandb.run.project}/{wandb.run.id}")
-
-        history = run.history()
-        print(history.head())
-        last_logged = history["_step"].max()
+        accelerator.print(f"Resumed training from epoch {start_epoch}, global_step {global_step}")
     else:
-        resume_global_step = -1
         global_step = 0
         start_epoch = 0
-        last_logged = -1
     assert isinstance(model, (nn.Module, DistributedDataParallel))
     assert isinstance(prior_embeddings, (ProgramEmbeddings, DistributedDataParallel))
     assert isinstance(program_embeddings, (ProgramEmbeddings, DistributedDataParallel))
@@ -2732,9 +2742,9 @@ def main():
     epoch_to_eval_exact_acc = {}
 
     # train!
-    accelerator.print(f"Strat training from epoch {start_epoch}, resume_global_step {resume_global_step}, global step{global_step}")
-    global_step = resume_global_step
-    progress_bar.update(resume_global_step)
+    # breakpoint recovery
+    accelerator.print(f"Strat training from epoch {start_epoch}, global step{global_step}")
+    progress_bar.update(global_step)
     for epoch in range(args.num_epochs):
         model.train()
         prior_embeddings.train()
@@ -2754,7 +2764,11 @@ def main():
         perplexity_accum = 0.0
         total_loss_accum = 0.0
         grad_norm_accum = 0.0
-        ce_losses_accum = [0.0 for _ in range(args.max_num_pair - 1)]
+        if args.loss_on_first:
+            ce_losses_accum = [0.0 for _ in range(args.max_num_pair)]
+        else:
+            ce_losses_accum = [0.0 for _ in range(args.max_num_pair - 1)]
+
         # breakpoint recovery
         for batch_idx, batch_data in enumerate(train_loader):
             if epoch == start_epoch and batch_idx < resume_batch_idx:
@@ -2802,6 +2816,8 @@ def main():
                         token_weighted_loss=args.token_weighted_loss,
                         weird_cast=args.weird_cast,
                         demonstration_dropout=args.demonstration_dropout,
+                        reset_rope=args.reset_rope,
+                        loss_on_first=args.loss_on_first,
                     )
 
                 # only log one process
@@ -2823,11 +2839,6 @@ def main():
 
             if accelerator.sync_gradients:
                 global_step += 1
-                if global_step < resume_global_step:
-                    print(f'global_step {global_step}')
-                    if global_step % args.log_every == 0:
-                        progress_bar.update(args.log_every)
-                    continue
                 if global_step % args.log_every == 0:
                     progress_bar.update(args.log_every)
                     try:
@@ -2855,8 +2866,11 @@ def main():
                 perplexity_accum = 0.0
                 total_loss_accum = 0.0
                 grad_norm_accum = 0.0
-                ce_losses_accum = [0.0 for _ in range(args.max_num_pair - 1)]
-
+                if args.loss_on_first:
+                    ce_losses_accum = [0.0 for _ in range(args.max_num_pair)]
+                else:
+                    ce_losses_accum = [0.0 for _ in range(args.max_num_pair - 1)]
+                # breakpoint continue
                 if global_step % args.save_every == 0 :
                     
                     if accelerator.is_main_process:

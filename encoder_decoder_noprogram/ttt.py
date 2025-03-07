@@ -81,20 +81,24 @@ def save_model_ttt(
     logger.info(f"Saved model to {save_model_path}")
 
     # prior embeddings
-    save_prior_embeddings_path = os.path.join(output_dir, task_id, f"prior_embeddings_epoch_{epoch+1}.pt")
-    prior_embeddings_module = prior_embeddings
-    if isinstance(prior_embeddings, DistributedDataParallel):
-        prior_embeddings_module = prior_embeddings.module
-    torch.save(prior_embeddings_module, save_prior_embeddings_path)
-    logger.info(f"Saved prior embeddings to {save_prior_embeddings_path}")
+    save_prior_embeddings_path = None
+    if save_prior_embeddings_path is not None:
+        save_prior_embeddings_path = os.path.join(output_dir, task_id, f"prior_embeddings_epoch_{epoch+1}.pt")
+        prior_embeddings_module = prior_embeddings
+        if isinstance(prior_embeddings, DistributedDataParallel):
+            prior_embeddings_module = prior_embeddings.module
+        torch.save(prior_embeddings_module, save_prior_embeddings_path)
+        logger.info(f"Saved prior embeddings to {save_prior_embeddings_path}")
 
     # program embeddings
-    save_program_embeddings_path = os.path.join(output_dir, task_id, f"program_embeddings_epoch_{epoch+1}.pt")
-    program_embeddings_module = program_embeddings
-    if isinstance(program_embeddings, DistributedDataParallel):
-        program_embeddings_module = program_embeddings.module
-    torch.save(program_embeddings_module, save_program_embeddings_path)
-    logger.info(f"Saved program embeddings to {save_program_embeddings_path}")
+    save_program_embeddings_path = None
+    if save_program_embeddings_path is not None:
+        save_program_embeddings_path = os.path.join(output_dir, task_id, f"program_embeddings_epoch_{epoch+1}.pt")
+        program_embeddings_module = program_embeddings
+        if isinstance(program_embeddings, DistributedDataParallel):
+            program_embeddings_module = program_embeddings.module
+        torch.save(program_embeddings_module, save_program_embeddings_path)
+        logger.info(f"Saved program embeddings to {save_program_embeddings_path}")
 
 
 
@@ -135,8 +139,8 @@ def main():
     parser.add_argument("--weight_epoch", type=int, required=True)
 
     # Training
-    parser.add_argument("--grad_accum_steps", type=int, default=8)
-    parser.add_argument("--batch_size", type=int, default=2)
+    parser.add_argument("--grad_accum_steps", type=int, default=16)
+    parser.add_argument("--batch_size", type=int, default=1)
     parser.add_argument("--lr", type=float, default=2e-4)
     parser.add_argument("--weight_decay", type=float, default=0.0)
     parser.add_argument("--num_epochs", type=int, default=5)

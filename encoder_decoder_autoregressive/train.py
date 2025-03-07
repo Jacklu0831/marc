@@ -53,6 +53,7 @@ from data_utils import (
 )
 
 import os
+os.system('nvidia-smi')
 os.environ["TOKENIZERS_PARALLELISM"] = "false" # weird tokenizer issue
 os.environ["NCCL_TIMEOUT"] = "28800" # 4hr for evaluation time variance across gpus
 os.environ["NCCL_TIMEOUT_MS"] = "28800000"
@@ -317,7 +318,7 @@ def get_predicted_program(
     embed_tokens = module.model.embed_tokens if hasattr(module.model, "embed_tokens") else module.model.model.embed_tokens
 
     # samples do not have to be the same number of pairs in evaluation, but try to parallelize it anyway
-    assert min(num_pairs) >= 2 # at least 2 train
+    # assert min(num_pairs) >= 2 # at least 2 train
     assert max(num_pairs) == len(input_ids)
 
     assert len(set(len(ids) for ids in input_ids)) == 1 # batch size uniform across pair_idx
@@ -423,7 +424,7 @@ def get_predicted_program(
             new_programs, _ = vae_projection(new_programs)
         # optionally use residual connection
         if not no_residual:
-            new_programs += prev_programs
+            new_programs = new_programs + prev_programs
         # optionally apply norm
         if program_norm is not None:
             new_programs = program_norm(new_programs)
@@ -482,28 +483,9 @@ def model_loss(
     checkpointing_threshold: int,
     token_weighted_loss: bool,
     weird_cast: bool,
-) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, List[torch.Tensor]]:
-
-    def forward_with_checkpoint(model, inputs_embeds, attention_mask, output_hidden_states, labels=None):
-        def custom_forward(x, attn, output_hidden_states, lab=None):
-            if lab is None:
-                return model(
-                    inputs_embeds=x,
-                    attention_mask=attn,
-                    output_hidden_states=output_hidden_states,
-                )
-            else:
-                return model(
-                    inputs_embeds=x,
-                    attention_mask=attn,
-                    labels=lab,
-                    output_hidden_states=output_hidden_states,
-                )
-
-        if labels is None:
-            return checkpoint.checkpoint(custom_forward, inputs_embeds, attention_mask, output_hidden_states, use_reentrant=False)
-        else:
-            return checkpoint.checkpoint(custom_forward, inputs_embeds, attention_mask, output_hidden_states, labels, use_reentrant=False)
+    return_programs: bool = False,
+    loss_on_first: bool = False,
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, List[torch.Tensor], List[torch.Tensor]]:
 
     module = model.module if isinstance(model, DistributedDataParallel) else model
     embed_tokens = module.model.embed_tokens if hasattr(module.model, "embed_tokens") else module.model.model.embed_tokens
@@ -511,7 +493,7 @@ def model_loss(
     # all samples should have same number of pairs
     assert len(set(num_pairs)) == 1
     n_pairs = num_pairs[0]
-    assert n_pairs >= 3 # at least 2 train and 1 test
+    # assert n_pairs >= 3 # at least 2 train and 1 test
     assert n_pairs == len(input_ids) # input_ids
 
     assert len(set(len(ids) for ids in input_ids)) == 1 # batch size uniform across pair_idx
@@ -556,7 +538,7 @@ def model_loss(
 
     # save all programs for randomly selecting one for consistency loss
     saved_all_programs = []
-    if consistency_type != 'none':
+    if consistency_type != 'none' or return_programs:
         saved_all_programs = [prev_programs]
 
     for pair_i, (pair_inputs_embeds, pair_attention_mask, pair_label_ids, pair_input_ids_lens) in enumerate(zip(inputs_embeds, attention_mask, label_ids, input_ids_lens)):
@@ -579,7 +561,7 @@ def model_loss(
             pad_side=pad_side,
             pad_id=0,
         )
-        if pair_i > 0:
+        if pair_i > 0 or loss_on_first:
             pair_label_ids = insert_based_on_sides(
                 data=pair_label_ids,
                 to_insert=torch.full((batch_size, program_len), -100, device=device, dtype=dtype),
@@ -611,7 +593,7 @@ def model_loss(
                 pad_side=pad_side,
                 pad_id=0,
             )
-            if pair_i > 0:
+            if pair_i > 0 or loss_on_first:
                 pair_label_ids = insert_based_on_sides(
                     data=pair_label_ids,
                     to_insert=torch.full((batch_size, ntokens), -100, device=device, dtype=dtype),
@@ -628,31 +610,25 @@ def model_loss(
             assert torch.all(pair_attention_mask[:, :-1] >= pair_attention_mask[:, 1:])
 
         # STEP 4: refine program (no output grid label for first pair)
+        model_kwargs = {
+            "inputs_embeds": pair_inputs_embeds,
+            "attention_mask": pair_attention_mask,
+            "output_hidden_states": (pair_i < n_pairs - 1 or consistency_type != 'none'),
+        }
+        if pair_i > 0 or loss_on_first:
+            model_kwargs["labels"] = pair_label_ids
+
         can_checkpoint = inputs_embeds[pair_i].shape[1] > checkpointing_threshold
-        output_hidden_states = (pair_i < n_pairs - 1 or consistency_type != 'none')
-        if pair_i == 0:
-            if ar_gradient_checkpointing and can_checkpoint:
-                model_out = forward_with_checkpoint(model, pair_inputs_embeds, pair_attention_mask, output_hidden_states)
-            else:
-                model_out = model(
-                    inputs_embeds=pair_inputs_embeds,
-                    attention_mask=pair_attention_mask,
-                    output_hidden_states=output_hidden_states,
-                )
+        if ar_gradient_checkpointing and can_checkpoint:
+            model_out = checkpoint.checkpoint(model, **model_kwargs, use_reentrant=False)
         else:
-            if ar_gradient_checkpointing and can_checkpoint:
-                model_out = forward_with_checkpoint(model, pair_inputs_embeds, pair_attention_mask, output_hidden_states, pair_label_ids)
-            else:
-                model_out = model(
-                    inputs_embeds=pair_inputs_embeds,
-                    attention_mask=pair_attention_mask,
-                    labels=pair_label_ids,
-                    output_hidden_states=output_hidden_states,
-                )
+            model_out = model(**model_kwargs)
+
+        if pair_i > 0 or loss_on_first:
             ce_losses.append(model_out.loss) # type: ignore
 
         # STEP 5: projection then sample new program prediction for all pairs except the last
-        if output_hidden_states:
+        if pair_i < n_pairs - 1 or consistency_type != 'none':
             # extract and sample program
             hidden_states = model_out.hidden_states[-1] # (batch_size, seq_len, hidden_dim) # type: ignore
             new_programs = extract_program_from_right_side(
@@ -670,10 +646,10 @@ def model_loss(
             # dropout
             new_programs = program_dropout(new_programs)
             # inject noise
-            new_programs += program_noise_std * torch.randn_like(new_programs, dtype=new_programs.dtype, device=device)
+            new_programs = new_programs + program_noise_std * torch.randn_like(new_programs, dtype=new_programs.dtype, device=device)
             # use residual connection
             if not no_residual:
-                new_programs += prev_programs
+                new_programs = new_programs + prev_programs
             # apply norm
             if program_norm is not None:
                 new_programs = program_norm(new_programs)
@@ -688,7 +664,7 @@ def model_loss(
                 new_programs = torch.cat([prev_programs, new_programs], dim=1)
 
             # save and update new program
-            if consistency_type != 'none':
+            if consistency_type != 'none' or return_programs:
                 saved_all_programs.append(new_programs)
             prev_programs = new_programs
 
@@ -751,7 +727,7 @@ def model_loss(
             inputs_embeds=select_inputs_embeds,
             attention_mask=select_attention_mask,
             labels=select_label_ids,
-            output_hidden_states=True,
+            output_hidden_states=False,
         ).loss
         consistency_loss /= len(ce_losses) # normalize based on num pairs to not dominate
 
@@ -770,7 +746,7 @@ def model_loss(
 
     # logging perplexity for debugging vqvae
     perplexity = sum(perplexitys) / len(perplexitys) if len(perplexitys) > 0 else torch.tensor(0.0, device=device)
-    return ce_loss, kl_loss, codebook_loss, commitment_loss, perplexity, consistency_loss, total_loss, ce_losses # type: ignore
+    return ce_loss, kl_loss, codebook_loss, commitment_loss, perplexity, consistency_loss, total_loss, ce_losses, saved_all_programs # type: ignore
 
 def insert_based_on_sides(
         data: torch.Tensor,
@@ -1731,71 +1707,6 @@ def initialize_program_embeddings(
     return distribution.sample(sample_shape=(ntokens,)).to(device).to(dtype) # type: ignore
 
 
-def test_model_padding(model, pad_side):
-    # Set up a dummy sequence: a batch with one sequence of length 5.
-    batch_size = 2
-    seq_len = 128
-    hidden_dim = model.config.hidden_size
-    device = next(iter(model.parameters())).device
-    print(device)
-
-    # Create random embeddings for the actual tokens.
-    inputs_embeds_no_pad = torch.randn(batch_size, seq_len, hidden_dim)
-    attention_mask_no_pad = torch.ones(batch_size, seq_len, dtype=torch.long)
-
-    # Create a padded version by prepending 2 padding tokens (with zero embeddings)
-    padding_tokens = 2
-    padding_embeds = torch.randn(batch_size, padding_tokens, hidden_dim)
-    if pad_side == 'left':
-        inputs_embeds_with_pad = torch.cat([padding_embeds, inputs_embeds_no_pad], dim=1)
-        # Attention mask: 0 for padding tokens, 1 for actual tokens.
-        attention_mask_with_pad = torch.cat([
-            torch.zeros(batch_size, padding_tokens, dtype=torch.long),
-            torch.ones(batch_size, seq_len, dtype=torch.long)
-        ], dim=1)
-    else:
-        inputs_embeds_with_pad = torch.cat([inputs_embeds_no_pad, padding_embeds], dim=1)
-        # Attention mask: 0 for padding tokens, 1 for actual tokens.
-        attention_mask_with_pad = torch.cat([
-            torch.ones(batch_size, seq_len, dtype=torch.long),
-            torch.zeros(batch_size, padding_tokens, dtype=torch.long),
-        ], dim=1)
-
-    inputs_embeds_no_pad = inputs_embeds_no_pad.to(device)
-    attention_mask_no_pad = attention_mask_no_pad.to(device)
-    inputs_embeds_with_pad = inputs_embeds_with_pad.to(device)
-    attention_mask_with_pad = attention_mask_with_pad.to(device)
-
-    # Run both inputs through the model.
-    with torch.no_grad():
-        # For the non-padded version.
-        outputs_no_pad = model(
-            inputs_embeds=inputs_embeds_no_pad,
-            attention_mask=attention_mask_no_pad,
-            output_hidden_states=True,
-        )
-        # For the padded version.
-        outputs_with_pad = model(
-            inputs_embeds=inputs_embeds_with_pad,
-            attention_mask=attention_mask_with_pad,
-            output_hidden_states=True,
-        )
-
-    # Get the final hidden states (last layer) from both outputs.
-    # outputs.hidden_states is a tuple: (embeddings_output, hidden_state_layer1, ..., final_hidden_state)
-    hidden_states_no_pad = outputs_no_pad.hidden_states[-1]  # shape: (batch_size, seq_len, hidden_dim)
-    # For the padded input, extract the part corresponding to the actual tokens.
-    if pad_side == 'left':
-        hidden_states_with_pad = outputs_with_pad.hidden_states[-1][:, padding_tokens:, :]  # shape: (batch_size, seq_len, hidden_dim)
-    else:
-        hidden_states_with_pad = outputs_with_pad.hidden_states[-1][:, :-padding_tokens, :]  # shape: (batch_size, seq_len, hidden_dim)
-
-    # For further inspection, print the maximum difference.
-    difference = torch.abs(hidden_states_no_pad - hidden_states_with_pad)
-    print("Mean/Max difference:", difference.mean().item(), difference.max().item())
-    breakpoint()
-
-
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--tag", type=str, required=True)
@@ -2588,7 +2499,7 @@ def main():
 
             with accelerator.accumulate(model, prior_embeddings, program_embeddings, vae_projection, quantizer, program_norm):
                 with accelerator.autocast():
-                    ce_loss, kl_loss, codebook_loss, commitment_loss, perplexity, consistency_loss, total_loss, log_ce_losses = model_loss(
+                    ce_loss, kl_loss, codebook_loss, commitment_loss, perplexity, consistency_loss, total_loss, log_ce_losses, _ = model_loss(
                         # model
                         model=model,
                         prior_embeddings=prior_embeddings,
@@ -2624,6 +2535,95 @@ def main():
                         token_weighted_loss=args.token_weighted_loss,
                         weird_cast=args.weird_cast,
                     )
+
+                    # # DEBUG
+                    # pad_len = 7
+                    # dummy_input_ids = [x.detach().clone() for x in input_ids]
+                    # dummy_attention_mask = [x.detach().clone() for x in attention_mask]
+                    # dummy_label_ids = [x.detach().clone() for x in label_ids]
+                    # dummy_input_ids_lens = copy.deepcopy(input_ids_lens)
+                    # dummy_num_pairs = copy.deepcopy(num_pairs)
+                    # if args.train_pad_side == "right":
+                    #     dummy_input_ids_extra_pad = [
+                    #         torch.cat([x, torch.full((x.shape[0], pad_len), 18, device=x.device, dtype=x.dtype)], dim=1)
+                    #         for x in dummy_input_ids
+                    #     ]
+                    #     dummy_attention_mask_extra_pad = [
+                    #         torch.cat([x, torch.full((x.shape[0], pad_len), 0, device=x.device, dtype=x.dtype)], dim=1)
+                    #         for x in dummy_attention_mask
+                    #     ]
+                    #     dummy_label_ids_extra_pad = [
+                    #         torch.cat([x, torch.full((x.shape[0], pad_len), -100, device=x.device, dtype=x.dtype)], dim=1)
+                    #         for x in dummy_label_ids
+                    #     ]
+                    # else:
+                    #     dummy_input_ids_extra_pad = [
+                    #         torch.cat([torch.full((x.shape[0], pad_len), 18, device=x.device, dtype=x.dtype), x], dim=1)
+                    #         for x in dummy_input_ids
+                    #     ]
+                    #     dummy_attention_mask_extra_pad = [
+                    #         torch.cat([torch.full((x.shape[0], pad_len), 0, device=x.device, dtype=x.dtype), x], dim=1)
+                    #         for x in dummy_attention_mask
+                    #     ]
+                    #     dummy_label_ids_extra_pad = [
+                    #         torch.cat([torch.full((x.shape[0], pad_len), -100, device=x.device, dtype=x.dtype), x], dim=1)
+                    #         for x in dummy_label_ids
+                    #     ]
+
+                    # _, _, _, _, _, _, loss, _, programs = model_loss(
+                    #     # model
+                    #     model=model, prior_embeddings=prior_embeddings, program_embeddings=program_embeddings, vae_projection=vae_projection,
+                    #     quantizer=quantizer, program_norm=program_norm, program_dropout=program_dropout, tokenizer=tokenizer,
+                    #     # data
+                    #     input_ids=dummy_input_ids,
+                    #     attention_mask=dummy_attention_mask,
+                    #     label_ids=dummy_label_ids,
+                    #     input_ids_lens=dummy_input_ids_lens,
+                    #     num_pairs=dummy_num_pairs,
+                    #     # others
+                    #     ntokens=args.ntokens, pad_side=args.train_pad_side, kl_loss_lambda_scheduler=kl_loss_lambda_scheduler, codebook_loss_lambda_scheduler=codebook_loss_lambda_scheduler,
+                    #     commitment_loss_lambda_scheduler=commitment_loss_lambda_scheduler, consistency_loss_lambda_scheduler=consistency_loss_lambda_scheduler, global_step=global_step,
+                    #     no_residual=args.no_residual, no_discrete_prior=args.no_discrete_prior, consistency_type=args.consistency_type,
+                    #     concat_programs=args.concat_programs, train_codebook_only=train_codebook_only, ar_gradient_checkpointing=args.ar_gradient_checkpointing,
+                    #     program_noise_std=args.program_noise_std, subset_kl=args.subset_kl, checkpointing_threshold=args.checkpointing_threshold,
+                    #     token_weighted_loss=args.token_weighted_loss, weird_cast=args.weird_cast,
+                    #     return_programs=True,
+                    # )
+                    # _, _, _, _, _, _, loss_extra_pad, _, programs_extra_pad = model_loss(
+                    #     # model
+                    #     model=model, prior_embeddings=prior_embeddings, program_embeddings=program_embeddings, vae_projection=vae_projection,
+                    #     quantizer=quantizer, program_norm=program_norm, program_dropout=program_dropout, tokenizer=tokenizer,
+                    #     # data
+                    #     input_ids=dummy_input_ids_extra_pad,
+                    #     attention_mask=dummy_attention_mask_extra_pad,
+                    #     label_ids=dummy_label_ids_extra_pad,
+                    #     input_ids_lens=dummy_input_ids_lens,
+                    #     num_pairs=dummy_num_pairs,
+                    #     # others
+                    #     ntokens=args.ntokens, pad_side=args.train_pad_side, kl_loss_lambda_scheduler=kl_loss_lambda_scheduler, codebook_loss_lambda_scheduler=codebook_loss_lambda_scheduler,
+                    #     commitment_loss_lambda_scheduler=commitment_loss_lambda_scheduler, consistency_loss_lambda_scheduler=consistency_loss_lambda_scheduler, global_step=global_step,
+                    #     no_residual=args.no_residual, no_discrete_prior=args.no_discrete_prior, consistency_type=args.consistency_type,
+                    #     concat_programs=args.concat_programs, train_codebook_only=train_codebook_only, ar_gradient_checkpointing=args.ar_gradient_checkpointing,
+                    #     program_noise_std=args.program_noise_std, subset_kl=args.subset_kl, checkpointing_threshold=args.checkpointing_threshold,
+                    #     token_weighted_loss=args.token_weighted_loss, weird_cast=args.weird_cast,
+                    #     return_programs=True,
+                    # )
+
+                    # # relative difference
+                    # print('loss difference', (loss_extra_pad - loss).abs().item() / loss.item())
+                    # assert len(programs) == len(programs_extra_pad)
+                    # program_relative_diff = 0.0
+                    # for p, p_extra_pad in zip(programs, programs_extra_pad):
+                    #     program_relative_diff += (p_extra_pad - p).abs().mean() / p.abs().mean()
+                    # print('program difference', program_relative_diff.item() / len(programs))
+                    # # breakpoint()
+
+                    # # # print out for asserting left pad output equals right pad output -> around 1e-5
+                    # print(loss.item())
+                    # for p in programs: print(p)
+                    # breakpoint()
+
+
 
                 # only log one process
                 ce_loss_accum += ce_loss.item() / args.grad_accum_steps

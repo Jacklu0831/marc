@@ -654,44 +654,6 @@ def text_to_2d_grid(text: str) -> Tuple[Optional[List[List[int]]], bool]:
         return None, False
 
 
-@torch.no_grad()
-def save_train_model(
-        model: Union[nn.Module, DistributedDataParallel],
-        prior_embeddings: Optional[Union[ProgramEmbeddings, DistributedDataParallel]],
-        program_embeddings: Optional[Union[ProgramEmbeddings, DistributedDataParallel]],
-        output_dir: str,
-        epoch: int,
-    ) -> Tuple[str, Optional[str], Optional[str]]:
-
-    # model
-    save_model_path = os.path.join(output_dir, f"lora_epoch_{epoch+1}")
-    module = model.module if isinstance(model, DistributedDataParallel) else model
-    module.save_pretrained(save_model_path, save_embedding_layers=True)
-    logger.info(f"Saved model to {save_model_path}")
-
-    # prior embeddings
-    save_prior_embeddings_path = None
-    if prior_embeddings is not None:
-        save_prior_embeddings_path = os.path.join(output_dir, f"prior_embeddings_epoch_{epoch+1}.pt")
-        prior_embeddings_module = prior_embeddings
-        if isinstance(prior_embeddings, DistributedDataParallel):
-            prior_embeddings_module = prior_embeddings.module
-        torch.save(prior_embeddings_module, save_prior_embeddings_path)
-        logger.info(f"Saved prior embeddings to {save_prior_embeddings_path}")
-
-    # program embeddings
-    save_program_embeddings_path = None
-    if program_embeddings is not None:
-        save_program_embeddings_path = os.path.join(output_dir, f"program_embeddings_epoch_{epoch+1}.pt")
-        program_embeddings_module = program_embeddings
-        if isinstance(program_embeddings, DistributedDataParallel):
-            program_embeddings_module = program_embeddings.module
-        torch.save(program_embeddings_module, save_program_embeddings_path)
-        logger.info(f"Saved program embeddings to {save_program_embeddings_path}")
-
-    return save_model_path, save_prior_embeddings_path, save_program_embeddings_path
-
-
 def print_trainable_parameters(model):
     if hasattr(model, "print_trainable_parameters"):
         model.print_trainable_parameters()
@@ -882,6 +844,45 @@ def example_loss_function(logits, labels):
     loss = F.cross_entropy(logits_flat, labels_flat)
     return loss
 
+@torch.no_grad()
+def save_train_model(
+        model: Union[nn.Module, DistributedDataParallel],
+        prior_embeddings: Optional[Union[ProgramEmbeddings, DistributedDataParallel]],
+        program_embeddings: Optional[Union[ProgramEmbeddings, DistributedDataParallel]],
+        output_dir: str,
+        epoch: int,
+    ) -> Tuple[str, Optional[str], Optional[str]]:
+
+    # model
+    save_model_path = os.path.join(output_dir, f"lora_epoch_{epoch+1}")
+    module = model.module if isinstance(model, DistributedDataParallel) else model
+    module.save_pretrained(save_model_path, save_embedding_layers=True)
+    logger.info(f"Saved model to {save_model_path}")
+
+    # prior embeddings
+    save_prior_embeddings_path = None
+    if prior_embeddings is not None:
+        save_prior_embeddings_path = os.path.join(output_dir, f"prior_embeddings_epoch_{epoch+1}.pt")
+        prior_embeddings_module = prior_embeddings
+        if isinstance(prior_embeddings, DistributedDataParallel):
+            prior_embeddings_module = prior_embeddings.module
+        torch.save(prior_embeddings_module, save_prior_embeddings_path)
+        logger.info(f"Saved prior embeddings to {save_prior_embeddings_path}")
+
+    # program embeddings
+    save_program_embeddings_path = None
+    if program_embeddings is not None:
+        save_program_embeddings_path = os.path.join(output_dir, f"program_embeddings_epoch_{epoch+1}.pt")
+        program_embeddings_module = program_embeddings
+        if isinstance(program_embeddings, DistributedDataParallel):
+            program_embeddings_module = program_embeddings.module
+        torch.save(program_embeddings_module, save_program_embeddings_path)
+        logger.info(f"Saved program embeddings to {save_program_embeddings_path}")
+
+    return save_model_path, save_prior_embeddings_path, save_program_embeddings_path
+
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--tag", type=str, required=True)
@@ -994,9 +995,14 @@ def main():
         args.wandb = False
         args.samples_per_epoch = 32
         args.log_every = 1
-
+    # breakpoint recovery
     if args.resume_debug:
-        args.save_every = 50
+        args.save_every = 10
+        args.tag = 'test'
+        args.wandb = True
+        args.samples_per_epoch = 32
+        args.num_epochs = 5
+        args.log_every = 1
     #     import uuid
 
     #     run_id = run_id = str(uuid.uuid4())[:8]
@@ -1013,6 +1019,7 @@ def main():
         args.untrainable_nbit = args.trainable_nbit # untrainable become trainable
 
     args.output_dir = os.path.join(args.output_dir, args.tag)
+    # breakpoint recovery
     checkpoint_dir = os.path.join(args.output_dir, "checkpoint")
     
 
@@ -1030,6 +1037,7 @@ def main():
     )
     set_up_main_process_logger(accelerator, logger)
     set_seed(args.seed + accelerator.process_index)
+    # breakpoint recovery
     if accelerator.is_main_process:
 
         os.makedirs(args.output_dir, exist_ok=True)
@@ -1050,6 +1058,11 @@ def main():
                 "id": run_id if run_id else None,
             }}
         )
+    # print(f"WandB run ID: {wandb.run}")
+    if not args.wandb:
+        print("Warning: WandB logging is disabled!")
+
+    assert wandb.run is not None, "wandb.run is None, WandB initialization failed!"
     torch.backends.cuda.matmul.allow_tf32 = True
     logger.info("Accelerator and seed set up.")
 
@@ -1352,38 +1365,28 @@ def main():
         optimizer,
         train_loader,
     )
+    # for n, p in model.named_parameters(): print(n, p.dtype)
     # breakpoint recovery
     resume_batch_idx = 0 
-    if os.path.exists(checkpoint_dir):
+    if os.path.exists(checkpoint_dir) and any(os.listdir(checkpoint_dir)):
         accelerator.print("Loading checkpoint from", checkpoint_dir)
         accelerator.load_state(checkpoint_dir)
+        # for n, p in model.named_parameters(): print(n, p.dtype)
         state_file = os.path.join(checkpoint_dir, "training_state.json")
         if os.path.exists(state_file):
             with open(state_file, "r") as f:
                 state = json.load(f)
-            resume_global_step = state.get("global_step", 0)
+            global_step = state.get("global_step", 0)
             start_epoch = state.get("epoch", 0)
             resume_batch_idx = state.get("batch_idx", 0)
             run_id = state.get("run_id", 0)
-            global_step = 0
         else:
-            resume_global_step = 0
             global_step = 0
             start_epoch = 0
-        accelerator.print(f"Resumed training from epoch {start_epoch}, global_step {resume_global_step}")
-        api = wandb.Api()
-        run = api.run(f"{wandb.run.entity}/{wandb.run.project}/{wandb.run.id}")
-        # print(run.history().head())
-        print(run.history().columns.tolist())
-
-
-        history = run.history()
-        last_logged = history["_step"].max()
+        accelerator.print(f"Resumed training from epoch {start_epoch}, global_step {global_step}")
     else:
-        resume_global_step = -1
         global_step = 0
         start_epoch = 0
-        last_logged = -1
     assert isinstance(model, (nn.Module, DistributedDataParallel))
     if program_embeddings is not None:
         assert isinstance(program_embeddings, (ProgramEmbeddings, DistributedDataParallel))
@@ -1457,9 +1460,10 @@ def main():
     epoch_to_eval_exact_acc = {}
 
     # train!
-    accelerator.print(f"Strat training from epoch {start_epoch}, resume_global_step {resume_global_step}, global step{global_step}")
-    global_step = resume_global_step
-    progress_bar.update(resume_global_step)
+    # breakpoint recovery
+    accelerator.print(f"Strat training from epoch {start_epoch}, global step{global_step}")
+
+    progress_bar.update(global_step)
     for epoch in range(start_epoch,args.num_epochs):
         model.train()
         if prior_embeddings is not None:
@@ -1469,7 +1473,7 @@ def main():
 
         ce_loss_accum = 0.0
         grad_norm_accum = 0.0
-
+        # breakpoint recovery
         for batch_idx, batch_data in enumerate(train_loader):
             if epoch == start_epoch and batch_idx < resume_batch_idx:
                 continue
@@ -1509,11 +1513,6 @@ def main():
 
             if accelerator.sync_gradients:
                 global_step += 1
-                if global_step < resume_global_step:
-                    print(f'global_step {global_step}')
-                    if global_step % args.log_every == 0:
-                        progress_bar.update(args.log_every)
-                    continue
                 
                 if global_step % args.log_every == 0:
                     progress_bar.update(args.log_every)
@@ -1531,9 +1530,9 @@ def main():
 
                 ce_loss_accum = 0.0
                 grad_norm_accum = 0.0
-                
+                # breakpoint recovery
                 if global_step % args.save_every == 0 :
-                    # breakpoint continue
+                    
                     if accelerator.is_main_process:
                         if os.path.exists(checkpoint_dir):
                             shutil.rmtree(checkpoint_dir) 
@@ -1543,37 +1542,6 @@ def main():
                         with open(os.path.join(checkpoint_dir, "training_state.json"), "w") as f:
                             json.dump(state, f)
                         logger.info(f"Checkpoint saved at epoch {epoch}, global_step {global_step}")
-
-                        # if args.resume_debug:
-                        #     dummy_input_ids = torch.randint(0, 10, (args.train_batch_size, 32)).to(accelerator.device)
-                        #     dummy_attention_mask = torch.ones_like(dummy_input_ids).to(accelerator.device)
-                        #     dummy_labels = torch.randint(0, 2, (args.train_batch_size, 32)).to(accelerator.device)
-
-                        #     model.eval() 
-                        #     with torch.no_grad(), accelerator.autocast():
-                        #         original_output = model(dummy_input_ids, attention_mask=dummy_attention_mask)
-                        #         original_logits = original_output.logits
-                        #         original_loss = example_loss_function(original_logits, dummy_labels)  
-                        #     print("Before saving state:")
-                        #     print("Loss:", original_loss.item())
-
-                        #     accelerator.save_state(checkpoint_dir)
-
-                        #     accelerator.load_state(checkpoint_dir)
-                        #     model.eval() 
-
-                        #     with torch.no_grad(), accelerator.autocast():
-                        #         loaded_logits = model(dummy_input_ids, attention_mask=dummy_attention_mask)
-                        #         loaded_loss = example_loss_function(loaded_logits.logits, dummy_labels)
-                        #     print("After loading state:")
-                        #     print("Loss:", loaded_loss.item())
-
-                        #     if torch.allclose(original_loss, loaded_loss, atol=1e-6) and torch.allclose(original_logits, loaded_logits.logits, atol=1e-6):
-                        #         print("After checkpoint recovery, the output is consistent and the precision conversion status is retained correctly")
-                        #     else:
-                        #         print("the output is different after recovery, please check the breakpoint recovery logic")
-
-                        #     model.train()
 
         # Evaluate every N epochs
         if (epoch + 1) % args.eval_epochs == 0:
@@ -1664,15 +1632,14 @@ def main():
                     if (not epoch_to_eval_exact_acc) or eval_exact_acc >= max(epoch_to_eval_exact_acc.values()):
                         do_save_model = True
 
-                if do_save_model:
-                    if (not args.save_all_models) and (last_save_model_path is not None):
-                        save_model_path, save_prior_embeddings_path, save_program_embeddings_path = last_save_model_path
-                        rm_cmd = f"rm -rf {save_model_path}"
-                        if save_prior_embeddings_path is not None:
-                            rm_cmd += f" {save_prior_embeddings_path}"
-                        if save_program_embeddings_path is not None:
-                            rm_cmd += f" {save_program_embeddings_path}"
-                        os.system(rm_cmd)
+                if (not args.save_all_models) and (last_save_model_path is not None):
+                    save_model_path, save_prior_embeddings_path, save_program_embeddings_path = last_save_model_path
+                    rm_cmd = f"rm -rf {save_model_path}"
+                    if save_prior_embeddings_path is not None:
+                        rm_cmd += f" {save_prior_embeddings_path}"
+                    if save_program_embeddings_path is not None:
+                        rm_cmd += f" {save_program_embeddings_path}"
+                    os.system(rm_cmd)
                     last_save_model_path = save_train_model(
                         model=model,
                         prior_embeddings=prior_embeddings,

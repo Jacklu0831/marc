@@ -40,6 +40,7 @@ parser.add_argument('--sbatch_dir', type=str, help='bash file of commands', defa
 parser.add_argument('--sbatch_dir', type=str, help='bash file of commands', default='/scratch/yl11330/marc/sbatch_files')
 parser.add_argument('--burst', action='store_true')
 parser.add_argument('--multi_node', action='store_true')
+parser.add_argument('--rtx8000', action='store_true')
 
 >>>>>>> origin/main
 args = parser.parse_args()
@@ -64,7 +65,10 @@ else:
     template = template.replace("$REQUEUE", "")
     template = template.replace("$ACCOUNT", "")
     template = template.replace("$PARTITION", "")
-    template = template.replace("$CONSTRAINT", "#SBATCH --constraint='a100|h100'")
+    if args.rtx8000:
+        template = template.replace("$CONSTRAINT", "#SBATCH --constraint='rtx8000'")
+    else:
+        template = template.replace("$CONSTRAINT", "#SBATCH --constraint='a100|h100'")
 
 if args.multi_node:
     template = template.replace('$NODE', str(args.ngpu))

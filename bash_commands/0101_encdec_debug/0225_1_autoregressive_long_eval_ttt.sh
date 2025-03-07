@@ -1,7 +1,7 @@
 # try to save and load autoregressive model
 
 # overfit1
-accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder_autoregressive_0224/train.py \
+accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder_autoregressive/train.py \
     --tag test_long \
     --train_data_dir ./data/re-arc/train_data_debug_overfit/tasks \
     --eval_train_dir ./data/re-arc/arc_original_debug_overfit/training \
@@ -28,7 +28,7 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
     --long_context
 
 # evaluate the above
-accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder_autoregressive_0224/evaluate.py \
+accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder_autoregressive/evaluate.py \
     --tag test \
     --weight_dir test_long \
     --weight_epoch 4 \
@@ -36,7 +36,7 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
     --long_context
 
 # now ttt
-accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder_autoregressive_0224/ttt.py \
+accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder_autoregressive/ttt.py \
     --tag test \
     --weight_dir test_long \
     --weight_epoch 4 \
@@ -53,7 +53,8 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
     --long_context
 
 # ok now evaluate ttt (could NOT get any)
-accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder_autoregressive_0224/evaluate.py \
+# update: oh fk now i realize it's because i didnt add longcontext
+accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder_autoregressive/evaluate.py \
     --tag test \
     --weight_dir test_long \
     --weight_epoch 4 \

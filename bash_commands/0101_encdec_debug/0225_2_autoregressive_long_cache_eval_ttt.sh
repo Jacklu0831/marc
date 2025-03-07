@@ -1,7 +1,7 @@
 # try to save and load autoregressive model
 
 # overfit1
-accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder_autoregressive/train.py \
+accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder_autoregressive_longcontext_caching/train.py \
     --tag test \
     --train_data_dir ./data/re-arc/train_data_debug_overfit/tasks \
     --eval_train_dir ./data/re-arc/arc_original_debug_overfit/training \
@@ -25,17 +25,17 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
     --no_train_original \
     --log_every 1 \
     --grad_accum_steps 1 \
-    --debug_random_pad
+    --no_flash_attn
 
 # evaluate the above
-accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder_autoregressive/evaluate.py \
+accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder_autoregressive_longcontext_caching/evaluate.py \
     --tag test \
     --weight_dir test \
     --weight_epoch 1 \
     --data_dir ./data/re-arc/arc_original_debug_overfit/training
 
 # now ttt
-accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder_autoregressive/ttt.py \
+accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder_autoregressive_longcontext_caching/ttt.py \
     --tag test \
     --weight_dir test \
     --weight_epoch 1 \
@@ -45,16 +45,16 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
     --optimizer sgd \
     --debug_no_aug \
     --max_grad_norm 1e2 \
-    --lr 1e-2 \
-    --num_epochs 100 \
+    --lr 1e-3 \
+    --num_epochs 200 \
     --log_every 1 \
-    --save_epochs 100
+    --save_epochs 200
 
-# ok now evaluate ttt (only got 1 of them correct)
-accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder_autoregressive/evaluate.py \
+# ok now evaluate ttt (only gets 1 out of 2)
+accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder_autoregressive_longcontext_caching/evaluate.py \
     --tag test \
     --weight_dir test \
     --weight_epoch 1 \
     --ttt_weight_dir ttt_test_test \
-    --ttt_weight_epoch 100 \
+    --ttt_weight_epoch 200 \
     --data_dir ./data/re-arc/arc_original_debug_overfit2_ttt/training

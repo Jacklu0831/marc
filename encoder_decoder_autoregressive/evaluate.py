@@ -66,7 +66,7 @@ def main():
 
     # Model
     parser.add_argument("--model_name", type=str, default="llama1b")
-    parser.add_argument("--no_flash_attn", action="store_true")
+    parser.add_argument("--flash_attn", action="store_true")
     parser.add_argument("--untrainable_nbit", type=float, choices=[3.6, 4, 8, 16, 32], default=16)
     parser.add_argument("--trainable_nbit", type=float, choices=[16, 32], default=16)
     parser.add_argument("--no_residual", action="store_true")
@@ -91,7 +91,7 @@ def main():
     parser.add_argument("--ttt_weight_epoch", type=int, default=-1)
 
     # Evaluation
-    parser.add_argument("--batch_size", type=int, default=64)
+    parser.add_argument("--batch_size", type=int, default=16)
     parser.add_argument("--max_seq_len", type=int, default=8192)
     parser.add_argument("--max_num_pair", type=int, default=8) # includes test pair
     parser.add_argument("--extra_inference_pairs", type=int, default=0)
@@ -176,7 +176,7 @@ def main():
         "cache_dir": "./encoder_decoder_cache",
         "low_cpu_mem_usage": True,
     }
-    if not args.no_flash_attn:
+    if args.flash_attn:
         from_pretrained_kwargs["attn_implementation"] = "flash_attention_2"
     if args.untrainable_nbit in NBIT_TO_DTYPE:
         from_pretrained_kwargs["torch_dtype"] = NBIT_TO_DTYPE[args.untrainable_nbit]
@@ -449,7 +449,7 @@ def main():
         batch_size=args.batch_size,
         collate_fn=collate_fn,
         trainable_nbit=args.trainable_nbit,
-        no_flash_attn=args.no_flash_attn,
+        no_flash_attn=not args.flash_attn,
         dry_eval_run=False,
         gs_iters=args.gs_iters,
         gs_lr=args.gs_lr,

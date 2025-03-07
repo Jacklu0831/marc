@@ -154,7 +154,7 @@ def main():
 
     # Model
     parser.add_argument("--model_name", type=str, default="llama1b")
-    parser.add_argument("--no_flash_attn", action="store_true")
+    parser.add_argument("--flash_attn", action="store_true")
     parser.add_argument("--untrainable_nbit", type=float, choices=[3.6, 4, 8, 16, 32], default=16)
     parser.add_argument("--trainable_nbit", type=int, choices=[16, 32], default=16)
     parser.add_argument("--gradient_checkpointing", action="store_true")
@@ -190,9 +190,8 @@ def main():
     parser.add_argument("--weight_epoch", type=int, required=True)
 
     # Training
-    parser.add_argument("--grad_accum_steps", type=int, default=8)
-    parser.add_argument("--batch_size", type=int, default=2)
-    parser.add_argument("--eval_batch_size", type=int, default=64)
+    parser.add_argument("--grad_accum_steps", type=int, default=16)
+    parser.add_argument("--batch_size", type=int, default=1)
     parser.add_argument("--lr", type=float, default=2e-4)
     parser.add_argument("--weight_decay", type=float, default=0.0)
     parser.add_argument("--num_epochs", type=int, default=5)
@@ -286,7 +285,7 @@ def main():
         "cache_dir": "./encoder_decoder_cache",
         "low_cpu_mem_usage": True,
     }
-    if not args.no_flash_attn:
+    if args.flash_attn:
         from_pretrained_kwargs["attn_implementation"] = "flash_attention_2"
     if args.untrainable_nbit in NBIT_TO_DTYPE:
         from_pretrained_kwargs["torch_dtype"] = NBIT_TO_DTYPE[args.untrainable_nbit]
@@ -666,7 +665,7 @@ def main():
 
                 with accelerator.accumulate(model, prior_embeddings, program_embeddings, vae_projection, quantizer, program_norm):
                     with accelerator.autocast():
-                        _, _, _, _, _, _, total_loss, _ = model_loss(
+                        _, _, _, _, _, _, total_loss, _, _ = model_loss(
                                 # model
                                 model=model,
                                 prior_embeddings=prior_embeddings,
@@ -701,6 +700,7 @@ def main():
                                 checkpointing_threshold=args.checkpointing_threshold,
                                 token_weighted_loss=args.token_weighted_loss,
                                 weird_cast=args.weird_cast,
+                                loss_on_first=True,
                             )
 
                     accelerator.backward(total_loss)
