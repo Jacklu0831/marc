@@ -2130,7 +2130,6 @@ def main():
     parser.add_argument("--no_rslora", action='store_true')
 
     # Virtual tokens approach
-    parser.add_argument("--resume", action="store_true")
     parser.add_argument("--resume_debug", action="store_true")
     parser.add_argument("--ntokens", type=int, default=16)
     parser.add_argument("--seed", type=int, default=0)
@@ -2144,7 +2143,7 @@ def main():
         args.log_every = 1
     # breakpoint recovery
     if args.resume_debug:
-        args.save_every = 2
+        args.save_every = 10
         args.tag = 'resume_test'
         args.wandb = True
         args.samples_per_epoch = 32
@@ -2192,14 +2191,14 @@ def main():
             if os.path.exists(state_file):
                 with open(state_file, "r") as f:
                     state = json.load(f)
-                run_id = state.get("run_id", 0)
+                run_id = state.get("run_id")
 
         accelerator.init_trackers(
             args.tracker_project_name,
             tracker_config,
             init_kwargs={"wandb": {
                 "name": args.tag,
-                "resume": "allow" if args.resume else "never",
+                "resume": "allow" ,
                 "id": run_id if run_id else None,
             }}
         )
@@ -2640,10 +2639,10 @@ def main():
         if os.path.exists(state_file):
             with open(state_file, "r") as f:
                 state = json.load(f)
-            global_step = state.get("global_step", 0)
-            start_epoch = state.get("epoch", 0)
-            resume_batch_idx = state.get("batch_idx", 0)
-            run_id = state.get("run_id", 0)
+            global_step = state.get("global_step")
+            start_epoch = state.get("epoch")
+            resume_batch_idx = state.get("batch_idx")
+            run_id = state.get("run_id")
         else:
             global_step = 0
             start_epoch = 0
