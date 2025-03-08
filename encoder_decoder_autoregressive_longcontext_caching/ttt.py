@@ -19,6 +19,7 @@ from transformers import (
     AutoTokenizer,
     AutoModelForCausalLM,
     get_cosine_schedule_with_warmup,
+    get_constant_schedule_with_warmup,
 )
 from accelerate import Accelerator, InitProcessGroupKwargs
 from accelerate.logging import get_logger
@@ -38,6 +39,7 @@ from train import (
     set_up_main_process_logger,
     model_loss,
     initialize_program_embeddings,
+    ContrastiveLoss,
 )
 
 import os
@@ -166,6 +168,10 @@ def main():
     parser.add_argument("--weird_cast", action="store_true")
     parser.add_argument("--demonstration_dropout", type=float, default=0.0)
     parser.add_argument("--reset_rope", action="store_true")
+    parser.add_argument("--lr_scheduler", type=str, choices=["cosine", "constant"], default="cosine")
+
+    # program loss
+    parser.add_argument("--program_type", type=str, choices=["none", "random", "concat"], default="none")
 
     # long context
     parser.add_argument("--long_context_checkpointing_threshold", type=int, default=0)
@@ -200,6 +206,12 @@ def main():
     parser.add_argument("--save_epochs", type=int, default=-1)
 
     # scheduled extra losses
+    parser.add_argument("--consistency_loss_lambda", type=float, default=0.0)
+    parser.add_argument("--consistency_loss_offset_epochs", type=int, default=0)
+    parser.add_argument("--consistency_loss_linear_epochs", type=int, default=0)
+    parser.add_argument("--program_loss_lambda", type=float, default=1.0)
+    parser.add_argument("--program_loss_offset_epochs", type=int, default=0)
+    parser.add_argument("--program_loss_linear_epochs", type=int, default=0)
     parser.add_argument("--commitment_loss_lambda", type=float, default=0.1)
     parser.add_argument("--commitment_loss_offset_epochs", type=int, default=0)
     parser.add_argument("--commitment_loss_linear_epochs", type=int, default=0)
@@ -563,12 +575,17 @@ def main():
         # LR schedule
         steps_per_epoch = len(ttt_dataset) // (args.batch_size * args.grad_accum_steps * accelerator.num_processes)
         num_training_steps = steps_per_epoch * args.num_epochs
-        lr_scheduler = get_cosine_schedule_with_warmup(
-            optimizer,
-            num_warmup_steps=steps_per_epoch * args.grad_accum_steps * args.warmup_epochs,
-            num_training_steps=num_training_steps * args.grad_accum_steps * args.warmup_epochs
-        )
-        logger.info(f'lr scheduler with {num_training_steps} warmup steps')
+        if args.lr_scheduler == 'cosine':
+            lr_scheduler = get_cosine_schedule_with_warmup(
+                optimizer,
+                num_warmup_steps=steps_per_epoch * args.grad_accum_steps * args.warmup_epochs,
+                num_training_steps=num_training_steps * args.grad_accum_steps,
+            )
+        else:
+            lr_scheduler = get_constant_schedule_with_warmup(
+                optimizer=optimizer,
+                num_warmup_steps=steps_per_epoch * args.grad_accum_steps * args.warmup_epochs,
+            )
 
         # lambda schedulers
         kl_loss_lambda_scheduler = LambdaScheduler(
@@ -589,6 +606,27 @@ def main():
             linear_epochs=args.commitment_loss_linear_epochs,
             steps_per_epoch=steps_per_epoch,
         )
+        program_loss_lambda_scheduler = LambdaScheduler(
+            loss_lambda=args.program_loss_lambda,
+            start_epoch=args.program_loss_offset_epochs,
+            linear_epochs=args.program_loss_linear_epochs,
+            steps_per_epoch=steps_per_epoch,
+        )
+        consistency_loss_lambda_scheduler = LambdaScheduler(
+            loss_lambda=args.consistency_loss_lambda,
+            start_epoch=args.consistency_loss_offset_epochs,
+            linear_epochs=args.consistency_loss_linear_epochs,
+            steps_per_epoch=steps_per_epoch,
+        )
+        # dummy invar loss
+        invar_loss_lambda_scheduler = LambdaScheduler(
+            loss_lambda=0.0,
+            start_epoch=0,
+            linear_epochs=0,
+            steps_per_epoch=steps_per_epoch,
+        )
+
+        contrastive_loss = ContrastiveLoss(margin=0.5) # NOTIMPLEMENTED
 
         # Prepare with accelerator
         (
@@ -649,7 +687,7 @@ def main():
 
                 with accelerator.accumulate(model, prior_embeddings, program_embeddings, vae_projection, quantizer, program_norm):
                     with accelerator.autocast():
-                        _, _, _, _, _, total_loss, _ = model_loss(
+                        _, _, _, _, _, _, _, _, total_loss, _ = model_loss(
                             # model
                             model=model,
                             prior_embeddings=prior_embeddings,
@@ -669,12 +707,15 @@ def main():
                             ntokens=args.ntokens,
                             pad_side=args.pad_side,
                             kl_loss_lambda_scheduler=kl_loss_lambda_scheduler,
-
                             codebook_loss_lambda_scheduler=codebook_loss_lambda_scheduler,
                             commitment_loss_lambda_scheduler=commitment_loss_lambda_scheduler,
+                            program_loss_lambda_scheduler=program_loss_lambda_scheduler,
+                            consistency_loss_lambda_scheduler=consistency_loss_lambda_scheduler,
+                            invar_loss_lambda_scheduler=invar_loss_lambda_scheduler, # NOTIMPLEMENTED
                             global_step=global_step,
                             no_residual=args.no_residual,
                             no_discrete_prior=args.no_discrete_prior,
+                            program_type=args.program_type,
                             train_codebook_only=False,
                             ar_gradient_checkpointing=args.ar_gradient_checkpointing,
                             program_noise_std=args.program_noise_std,
@@ -685,6 +726,9 @@ def main():
                             loss_on_first=True,
                             demonstration_dropout=args.demonstration_dropout,
                             reset_rope=args.reset_rope,
+                            debug=False,
+                            contrastive_loss=contrastive_loss, # NOTIMPLEMENTED
+                            is_same=True, # NOTIMPLEMENTED
                         )
 
                     accelerator.backward(total_loss)

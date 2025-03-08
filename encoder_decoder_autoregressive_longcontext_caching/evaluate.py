@@ -89,7 +89,7 @@ def main():
     parser.add_argument("--ttt_weight_epoch", type=int, default=-1)
 
     # Evaluation
-    parser.add_argument("--batch_size", type=int, default=16)
+    parser.add_argument("--batch_size", type=int, default=2)
     parser.add_argument("--max_seq_len", type=int, default=8192)
     parser.add_argument("--max_num_pair", type=int, default=8) # includes test pair
     parser.add_argument("--extra_inference_pairs", type=int, default=0)

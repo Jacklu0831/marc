@@ -1,26 +1,33 @@
+# for eval, run rtx8000
 # python make_sbatch.py --ngpu 1 --time 48 --bash_files bash_commands/0222_noprogram/0224_2_ttt_padleft_augd8.sh --rtx8000
 
+# for ttt, run a100
+# python make_sbatch.py --ngpu 1 --time 24 --bash_files bash_commands/0222_noprogram/0224_2_ttt_padleft_augd8.sh
 
 
-# eval noprogram padleft epoch0
-accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder_noprogram/evaluate.py \
-    --tag epoch0 \
-    --weight_dir 0224_noprogram_padleft \
-    --weight_epoch 26 \
-    --select_tasks_path task_info_selected.csv
 
-# eval noprogram padleft epoch0 alltask
-accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder_noprogram/evaluate.py \
-    --tag epoch0_alltask \
-    --weight_dir 0224_noprogram_padleft \
-    --weight_epoch 26
+
+
+# # eval noprogram padleft epoch0
+# accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder_noprogram_0303/evaluate.py \
+#     --tag epoch0 \
+#     --weight_dir 0224_noprogram_padleft \
+#     --weight_epoch 26 \
+#     --select_tasks_path task_info_selected.csv
+
+# # eval noprogram padleft epoch0 alltask
+# accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder_noprogram_0303/evaluate.py \
+#     --tag epoch0_alltask \
+#     --weight_dir 0224_noprogram_padleft \
+#     --weight_epoch 26
 
 
 
 
 
 # ttt noprogram padleft augd8
-accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder_noprogram/ttt.py \
+accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder_noprogram_0303/ttt.py \
+    --lr_scheduler constant \
     --select_tasks_path task_info_selected.csv \
     --weight_dir 0224_noprogram_padleft \
     --weight_epoch 26 \
@@ -33,7 +40,7 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
 
 
 # # eval noprogram padleft augd8 epoch1
-# accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder_noprogram/evaluate.py \
+# accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder_noprogram_0303/evaluate.py \
 #     --tag epoch1 \
 #     --weight_dir 0224_noprogram_padleft \
 #     --weight_epoch 26 \
@@ -42,7 +49,7 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
 #     --select_tasks_path task_info_selected.csv
 
 # # eval noprogram padleft augd8 epoch2
-# accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder_noprogram/evaluate.py \
+# accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder_noprogram_0303/evaluate.py \
 #     --tag epoch2 \
 #     --weight_dir 0224_noprogram_padleft \
 #     --weight_epoch 26 \
@@ -51,7 +58,7 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
 #     --select_tasks_path task_info_selected.csv
 
 # # eval noprogram padleft augd8 epoch3
-# accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder_noprogram/evaluate.py \
+# accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder_noprogram_0303/evaluate.py \
 #     --tag epoch3 \
 #     --weight_dir 0224_noprogram_padleft \
 #     --weight_epoch 26 \
@@ -60,7 +67,7 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
 #     --select_tasks_path task_info_selected.csv
 
 # # eval noprogram padleft augd8 epoch4
-# accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder_noprogram/evaluate.py \
+# accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder_noprogram_0303/evaluate.py \
 #     --tag epoch4 \
 #     --weight_dir 0224_noprogram_padleft \
 #     --weight_epoch 26 \
@@ -69,7 +76,7 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
 #     --select_tasks_path task_info_selected.csv
 
 # # eval noprogram padleft augd8 epoch5
-# accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder_noprogram/evaluate.py \
+# accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder_noprogram_0303/evaluate.py \
 #     --tag epoch5 \
 #     --weight_dir 0224_noprogram_padleft \
 #     --weight_epoch 26 \
@@ -81,7 +88,7 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
 
 
 # EVALUATE BEST TTT WITH VOTING (can try different config for leave_ns)
-# accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder_noprogram/evaluate.py \
+# accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder_noprogram_0303/evaluate.py \
 #     --tag epoch5 \
 #     --weight_dir 0224_noprogram_padleft \
 #     --weight_epoch 26 \
@@ -100,3 +107,4 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
 # Submitted batch job 57709348 # subset of 80 tasks, seems like it's easier
 # Submitted batch job 57709349 # eval on all task matches the previous training run!
 # Submitted batch job 57709350 # OOM
+# Submitted batch job 57918007 # rerun ttt

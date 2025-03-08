@@ -18,6 +18,7 @@ from torch.utils.data import DataLoader
 from transformers import (
     AutoTokenizer,
     get_cosine_schedule_with_warmup,
+    get_constant_schedule_with_warmup,
 )
 from accelerate import Accelerator, InitProcessGroupKwargs
 from accelerate.logging import get_logger
@@ -34,6 +35,7 @@ from train import (
     model_loss,
     ProgramEmbeddings,
     initialize_program_embeddings,
+    LambdaScheduler,
 )
 
 import os
@@ -124,9 +126,16 @@ def main():
     parser.add_argument("--model_name", type=str, default="llama1b")
     parser.add_argument("--flash_attn", action="store_true")
     parser.add_argument("--untrainable_nbit", type=float, choices=[3.6, 4, 8, 16, 32], default=16)
-    parser.add_argument("--trainable_nbit", type=float, choices=[16, 32], default=16)
+    parser.add_argument("--trainable_nbit", type=int, choices=[16, 32], default=16)
     parser.add_argument("--gradient_checkpointing", action="store_true")
     parser.add_argument("--full_lora", action="store_true")
+    parser.add_argument("--lr_scheduler", type=str, choices=["cosine", "constant"], default="cosine")
+
+    # program loss
+    parser.add_argument("--program_type", type=str, choices=["none", "random", "concat"], default="none")
+    parser.add_argument("--program_loss_lambda", type=float, default=1.0)
+    parser.add_argument("--program_loss_offset_epochs", type=int, default=0)
+    parser.add_argument("--program_loss_linear_epochs", type=int, default=0)
 
     # Gist/thinking tokens
     parser.add_argument("--ntokens", type=int, default=-1)
@@ -459,12 +468,25 @@ def main():
         # LR schedule
         steps_per_epoch = len(ttt_dataset) // (args.batch_size * args.grad_accum_steps * accelerator.num_processes)
         num_training_steps = steps_per_epoch * args.num_epochs
-        lr_scheduler = get_cosine_schedule_with_warmup(
-            optimizer,
-            num_warmup_steps=steps_per_epoch * args.grad_accum_steps * args.warmup_epochs,
-            num_training_steps=num_training_steps * args.grad_accum_steps * args.warmup_epochs
+        if args.lr_scheduler == 'cosine':
+            lr_scheduler = get_cosine_schedule_with_warmup(
+                optimizer,
+                num_warmup_steps=steps_per_epoch * args.grad_accum_steps * args.warmup_epochs,
+                num_training_steps=num_training_steps * args.grad_accum_steps,
+            )
+        else:
+            lr_scheduler = get_constant_schedule_with_warmup(
+                optimizer=optimizer,
+                num_warmup_steps=steps_per_epoch * args.grad_accum_steps * args.warmup_epochs,
+            )
+
+        # lambda schedulers
+        program_loss_lambda_scheduler = LambdaScheduler(
+            loss_lambda=args.program_loss_lambda,
+            start_epoch=args.program_loss_offset_epochs,
+            linear_epochs=args.program_loss_linear_epochs,
+            steps_per_epoch=steps_per_epoch,
         )
-        logger.info(f'lr scheduler with {num_training_steps} warmup steps')
 
         # Prepare with accelerator
         (
@@ -514,7 +536,7 @@ def main():
 
                 with accelerator.accumulate(model, prior_embeddings, program_embeddings):
                     with accelerator.autocast():
-                        ce_loss = model_loss(
+                        _, _, total_loss = model_loss(
                             model=model,
                             tokenizer=tokenizer,
                             prior_embeddings=prior_embeddings,
@@ -526,19 +548,17 @@ def main():
                             pair_start_idxs=pair_start_idxs,
                             ntokens=args.ntokens,
                             pad_side=args.pad_side,
+                            program_loss_lambda_scheduler=program_loss_lambda_scheduler,
+                            global_step=global_step,
+                            program_type=args.program_type,
                             attention_cutoff=args.attention_cutoff,
                             attend_prev_programs=args.attend_prev_programs,
+                            debug_len=-1,
                         )
 
-                        ce_loss = model(
-                            input_ids=input_ids,
-                            attention_mask=attention_mask,
-                            labels=label_ids,
-                        ).loss
-
-                    accelerator.backward(ce_loss)
+                    accelerator.backward(total_loss)
                     if accelerator.sync_gradients:
-                        accelerator.clip_grad_norm_(all_params, args.max_grad_norm).item() / args.grad_accum_steps # type: ignore
+                        accelerator.clip_grad_norm_(all_params, args.max_grad_norm).item() # type: ignore
                     optimizer.step()
                     lr_scheduler.step()
                     optimizer.zero_grad()
@@ -563,6 +583,10 @@ def main():
         # zero grads
         optimizer.state.clear()
         model.zero_grad(set_to_none=True)
+        if prior_embeddings is not None:
+            prior_embeddings.zero_grad(set_to_none=True)
+        if program_embeddings is not None:
+            program_embeddings.zero_grad(set_to_none=True)
 
         # delete stuff
         del ttt_datasets[0], ttt_dataloader

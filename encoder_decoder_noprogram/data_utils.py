@@ -353,7 +353,6 @@ class TrainDataset(Dataset):
         num_workers: int,
         no_separate_color_tokens: bool,
         max_seq_len: int,
-        ntokens: int,
     ):
         self.re_arc_ratio = re_arc_ratio
         self.concept_arc_ratio = concept_arc_ratio
@@ -375,7 +374,6 @@ class TrainDataset(Dataset):
         self.debug_len = debug_len
         self.no_separate_color_tokens = no_separate_color_tokens
         self.max_seq_len = max_seq_len
-        self.ntokens = ntokens
 
         # setup args
         self.normalized_ratio = np.array([self.re_arc_ratio, self.concept_arc_ratio, self.arc_heavy_ratio])
@@ -949,7 +947,7 @@ def collate_fn_eval_dummy(batch: List[Dict], dataset: EvalDataset) -> Dict:
 
     gen_input_ids = torch.randint(0, 30, (batch_size, dataset.debug_len * 9 // 10 + 1), dtype=torch.int64, device='cpu')
     gen_attention_mask = torch.full((batch_size, dataset.debug_len * 9 // 10 + 1), 1, dtype=torch.int64, device='cpu')
-    gen_input_ids_lens = [dataset.debug_len // 10 + 1] * batch_size
+    gen_input_ids_lens = [dataset.debug_len * 9 // 10 + 1] * batch_size
 
     pair_start_idxs = [list(range(1, dataset.debug_len * 9 // 10, dataset.debug_len // 15))[:10] for _ in range(batch_size)]
 

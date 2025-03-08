@@ -24,3 +24,6 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
     --gradient_checkpointing \
     --long_context_repeat_demonstration \
     --wandb
+
+# Submitted batch job 57852971
+# Submitted batch job 57852972

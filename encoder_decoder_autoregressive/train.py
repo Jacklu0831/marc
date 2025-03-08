@@ -1,3 +1,5 @@
+import wandb
+import shutil
 import gc
 import torch.utils.checkpoint as checkpoint
 import matplotlib.pyplot as plt
@@ -701,7 +703,7 @@ def model_loss(
         # get consistency loss
         select_inputs_embeds = insert_based_on_sides(
             data=inputs_embeds[select_idx],
-            to_insert=select_programs,
+            to_insert=(select_programs.to(torch.bfloat16) if weird_cast else select_programs),
             lens=input_ids_lens[select_idx],
             insert_side="left",
             pad_side=pad_side,
@@ -1713,6 +1715,7 @@ def main():
     parser.add_argument("--wandb", action="store_true")
     parser.add_argument("--output_dir", type=str, default="./encoder_decoder/outputs")
     parser.add_argument("--log_every", type=int, default=10)
+    parser.add_argument("--save_every", type=int, default=250)
     parser.add_argument("--tracker_project_name", type=str, default="arc")
     parser.add_argument("--save_all_models", action="store_true") # otherwise save only best
 
@@ -1723,6 +1726,7 @@ def main():
     parser.add_argument("--debug_random_pad", action="store_true")
     parser.add_argument("--debug_pad_len", type=int, default=-1)
     parser.add_argument("--debug_train_data", action="store_true")
+    parser.add_argument("--debug_no_resume", action='store_true')
 
     # Model
     parser.add_argument("--model_name", type=str, default="llama1b")
@@ -1924,13 +1928,38 @@ def main():
     )
     set_up_main_process_logger(accelerator, logger)
     set_seed(args.seed + accelerator.process_index)
+
+    # recovery_state_file is only not none if it exists has the valid keys
+    # state file is saved after all accelerator state, so if state file is valid then so is everything before
+    recovery_checkpoint_dir = os.path.join(args.output_dir, "recovery_checkpoint")
+    recovery_state_file_path = os.path.join(recovery_checkpoint_dir, "training_state.json")
+    recovery_state_file = None
+    if not args.debug_no_resume:
+        try:
+            recovery_state_file = json.load(open(recovery_state_file_path, 'r'))
+            if args.wandb:
+                assert set(recovery_state_file.keys()) == {"run_id", "global_step", "batch_idx", "epoch"}
+            else:
+                assert set(recovery_state_file.keys()) == {"global_step", "batch_idx", "epoch"}
+            logger.info(f'loaded state from {recovery_state_file_path}')
+        except Exception as e:
+            recovery_state_file = None
+            logger.info(f'could not load state file due to {e}')
+
     if accelerator.is_main_process:
         os.makedirs(args.output_dir, exist_ok=True)
         tracker_config = dict(vars(args))
+
+        # recovery get runid
+        wandb_init_args = {"name": args.tag}
+        if (recovery_state_file is not None) and args.wandb:
+            wandb_init_args['id'] = recovery_state_file["run_id"]
+            wandb_init_args['resume'] = 'allow'
+
         accelerator.init_trackers(
             args.tracker_project_name,
             tracker_config,
-            init_kwargs={"wandb": {"name": args.tag}}
+            init_kwargs={"wandb": wandb_init_args}
         )
     if not args.no_tf32:
         torch.backends.cuda.matmul.allow_tf32 = True
@@ -2308,6 +2337,9 @@ def main():
         )
     logger.info(f'lr scheduler with {steps_per_epoch} warmup steps')
 
+    # lr scheduler is not automatically registered, do that
+    accelerator.register_for_checkpointing(lr_scheduler)
+
     # lambda schedulers
     kl_loss_lambda_scheduler = LambdaScheduler(
         loss_lambda=args.kl_loss_lambda,
@@ -2358,6 +2390,18 @@ def main():
         optimizer,
         train_loader,
     )
+
+    # recovery
+    start_epoch = 0
+    global_step = 0
+    resume_batch_idx = 0
+    if recovery_state_file is not None:
+        logger.info("Loading checkpoint from", recovery_checkpoint_dir)
+        accelerator.load_state(recovery_checkpoint_dir)
+        start_epoch = recovery_state_file["epoch"]
+        global_step = recovery_state_file["global_step"]
+        resume_batch_idx = recovery_state_file["batch_idx"]
+
     assert isinstance(model, (nn.Module, DistributedDataParallel))
     assert isinstance(prior_embeddings, (ProgramEmbeddings, DistributedDataParallel))
     assert isinstance(program_embeddings, (ProgramEmbeddings, DistributedDataParallel))
@@ -2439,7 +2483,6 @@ def main():
     logger.info(f'{three_commas(sum(p.numel() for p in all_params))} trainable params')
     logger.info(f'======= TRAINING INFO END =======\n')
 
-    global_step = 0
     progress_bar = tqdm(
         range(num_training_steps),
         desc="train",
@@ -2452,8 +2495,13 @@ def main():
     last_save_model_path = None
     epoch_to_eval_exact_acc = {}
 
+    # recovery
+    logger.info(f"start/resume training from epoch {start_epoch} global_step {global_step} batch {resume_batch_idx}")
+    if global_step > 0:
+        progress_bar.update(global_step)
+
     # train!
-    for epoch in range(args.num_epochs):
+    for epoch in range(start_epoch, args.num_epochs):
         model.train()
         prior_embeddings.train()
         program_embeddings.train()
@@ -2475,7 +2523,11 @@ def main():
         grad_norm_accum = 0.0
         ce_losses_accum = [0.0 for _ in range(args.max_num_pair - 1)]
 
-        for batch_data in train_loader:
+        for batch_idx, batch_data in enumerate(train_loader):
+            # skip batch idx if recovered run already encountered it
+            if batch_idx < resume_batch_idx:
+                continue
+
             input_ids = [x.to(accelerator.device) for x in batch_data["input_ids"]]
             attention_mask = [x.to(accelerator.device) for x in batch_data["attention_mask"]]
             label_ids = [x.to(accelerator.device) for x in batch_data["label_ids"]]
@@ -2662,6 +2714,27 @@ def main():
                 total_loss_accum = 0.0
                 grad_norm_accum = 0.0
                 ce_losses_accum = [0.0 for _ in range(args.max_num_pair - 1)]
+
+                # recovery
+                if global_step % args.save_every == 0:
+                    if accelerator.is_main_process:
+                        if os.path.exists(recovery_checkpoint_dir):
+                            shutil.rmtree(recovery_checkpoint_dir)
+                        os.makedirs(recovery_checkpoint_dir, exist_ok=True)
+                        accelerator.save_state(recovery_checkpoint_dir)
+                        # must save state AFTER everything else
+                        # we use it determine whether the save is valid (not interrupted in middle of saving)
+                        state = {
+                            "global_step": global_step,
+                            "epoch": epoch,
+                            "batch_idx": batch_idx + 1,
+                        }
+                        if args.wandb:
+                            assert wandb.run is not None
+                            state['run_id'] = wandb.run.id
+                        json.dump(state, open(recovery_state_file_path, "w"))
+                        logger.info(f"saved training at epoch {epoch} global_step {global_step} batch_idx {batch_idx + 1}")
+                        logger.info(f"saved state to {recovery_state_file_path}")
 
         # Evaluate every N epochs
         if (epoch + 1) % args.eval_epochs == 0:

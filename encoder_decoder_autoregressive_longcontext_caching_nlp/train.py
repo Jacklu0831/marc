@@ -1,13 +1,13 @@
 import shutil
 import wandb
+from datasets.arrow_dataset import Dataset
+from collections import Counter
 import gc
 import torch.utils.checkpoint as checkpoint
 import matplotlib.pyplot as plt
 from datetime import timedelta
-import arclib # required
-import numpy as np
 from collections import defaultdict
-from typing import Union, Callable, List, Tuple, Optional, Iterator, Dict, Set, Any
+from typing import Union, Callable, List, Tuple, Optional, Iterator, Any
 import pprint
 import math
 import json
@@ -46,8 +46,7 @@ from data_utils import (
     collate_fn_eval,
     collate_fn_train_dummy,
     collate_fn_eval_dummy,
-    ARCTokenizer,
-    pad_sequence_with_side,
+    pad_sequence_left,
 )
 
 import os
@@ -74,6 +73,30 @@ NBIT_TO_DTYPE = {
     16: torch.bfloat16,
     32: torch.float32,
 }
+
+HR_TASKS = set(["piqa", "hate_speech_offensive", "google_wellformed_query", "social_i_qa", "circa", "quoref",
+                    "glue-sst2", "scitail", "emo", "cosmos_qa", "freebase_qa", "ag_news", "art", "paws", "kilt_ay2",
+                    "glue-qnli", "quail", "ade_corpus_v2-classification", "sciq", "hatexplain", "emotion", "glue-qqp",
+                    "kilt_fever", "kilt_nq", "dbpedia_14", "kilt_zsre", "hellaswag", "squad-with_context", "hotpot_qa",
+                    "glue-mnli", "ropes", "squad-no_context", "kilt_hotpotqa", "discovery", "superglue-record",
+                    "race-middle", "race-high", "lama-trex", "swag", "gigaword", "amazon_polarity", "biomrc", "tab_fact",
+                    "tweet_eval-emoji", "tweet_eval-offensive", "tweet_eval-sentiment", "tweet_qa", "imdb",
+                    "lama-conceptnet", "liar", "anli", "wiki_qa", "kilt_trex", "wikisql", "wino_grande", "wiqa",
+                    "search_qa", "xsum", "yahoo_answers_topics", "yelp_polarity", "yelp_review_full"])
+LR_TASKS = set(["quarel", "financial_phrasebank", "openbookqa", "codah", "qasc", "glue-mrpc", "dream", "sick",
+                "commonsense_qa", "medical_questions_pairs", "quartz-with_knowledge", "poem_sentiment",
+                "quartz-no_knowledge", "glue-wnli", "climate_fever", "ethos-national_origin", "ethos-race",
+                "ethos-religion", "ai2_arc", "hate_speech18", "glue-rte", "superglue-cb", "superglue-copa",
+                "tweet_eval-hate", "tweet_eval-stance_atheism", "tweet_eval-stance_feminist"])
+CLASSIFICATION_TASKS = set(["superglue-rte", "tweet_eval-sentiment", "discovery", "glue-rte", "superglue-wsc",
+                            "glue-mrpc", "tweet_eval-stance_hillary", "tweet_eval-offensive", "emotion", "hatexplain",
+                            "glue-cola", "sick", "paws", "ethos-sexual_orientation", "glue-qqp", "tweet_eval-emotion",
+                            "sms_spam", "health_fact", "glue-mnli", "imdb", "ethos-disability", "glue-wnli", "scitail",
+                            "trec", "yahoo_answers_topics", "liar", "glue-sst2", "tweet_eval-stance_abortion", "circa",
+                            "tweet_eval-stance_climate", "glue-qnli", "tweet_eval-emoji", "ethos-directed_vs_generalized",
+                            "ade_corpus_v2-classification", "hate_speech_offensive", "superglue-wic",
+                            "google_wellformed_query", "tweet_eval-irony", "ethos-gender", "onestop_english", "trec",
+                            "rotten_tomatoes", "kilt_fever"])
 
 
 class ContrastiveLoss(nn.Module):
@@ -242,15 +265,9 @@ def set_up_main_process_logger(accelerator, logger):
         transformers.utils.logging.set_verbosity_error()
 
 
-def extract_program_from_right_side(data: torch.Tensor, lens: List[int], ntokens: int, pad_side: str):
+def extract_program_from_right_side(data: torch.Tensor, lens: List[int], ntokens: int):
     # extract program from the right side of data
-    if pad_side == "right":
-        program = []
-        for x, l in zip(data, lens):
-            program.append(x[l:l+ntokens])
-        return torch.stack(program)
-    else:
-        return data[:, -ntokens:, :]
+    return data[:, -ntokens:, :]
 
 
 def sample_from_vae(mu: torch.Tensor, logvar: torch.Tensor) -> torch.Tensor:
@@ -287,15 +304,14 @@ def get_predicted_program(
     vae_projection: Optional[Union[VaeProjection, DistributedDataParallel]],
     quantizer: Optional[Union[Quantizer, DistributedDataParallel]],
     program_norm: Optional[Union[LlamaRMSNorm, DistributedDataParallel]],
-    tokenizer: ARCTokenizer,
+    tokenizer: PreTrainedTokenizerFast,
     # data
     input_ids: List[torch.Tensor],
     attention_mask: List[torch.Tensor],
     input_ids_lens: List[List[int]],
-    num_pairs: List[int],
+    num_train_pair: int,
     # others
     ntokens: int,
-    pad_side: str,
     no_residual: bool,
     no_discrete_prior: bool,
     train_codebook_only: bool,
@@ -322,8 +338,7 @@ def get_predicted_program(
     embed_tokens = module.model.embed_tokens if hasattr(module.model, "embed_tokens") else module.model.model.embed_tokens
 
     # samples do not have to be the same number of pairs in evaluation, but try to parallelize it anyway
-    # assert min(num_pairs) >= 2 # at least 2 train
-    assert max(num_pairs) == len(input_ids)
+    assert num_train_pair == len(input_ids)
 
     assert len(set(len(ids) for ids in input_ids)) == 1 # batch size uniform across pair_idx
     batch_size = len(input_ids[0])
@@ -355,7 +370,8 @@ def get_predicted_program(
     for pair_i, (pair_inputs_embeds, pair_attention_mask, pair_input_ids_lens) in enumerate(zip(inputs_embeds, attention_mask, input_ids_lens)):
 
         # STEP 0: filter out samples that are not this many pairs (for eval)
-        avail_mask = torch.tensor([int(pair_i < n) for n in num_pairs], dtype=torch.bool)
+        # NOTE: this is not applicable to nlp but im too lazy to clean it up
+        avail_mask = torch.full((batch_size,), True, dtype=torch.bool)
         pair_inputs_embeds = pair_inputs_embeds[avail_mask]
         pair_attention_mask = pair_attention_mask[avail_mask]
         pair_input_ids_lens = [l for l, m in zip(pair_input_ids_lens, avail_mask) if m]
@@ -400,7 +416,6 @@ def get_predicted_program(
             to_insert=(prev_programs.to(torch.bfloat16) if weird_cast else prev_programs),
             lens=pair_input_ids_lens,
             insert_side="left",
-            pad_side=pad_side,
             pad_id=pad_embeds,
         )
         pair_attention_mask = insert_based_on_sides(
@@ -408,7 +423,6 @@ def get_predicted_program(
             to_insert=torch.full((n_avail, ntokens), 1, device=device, dtype=dtype),
             lens=pair_input_ids_lens,
             insert_side="left",
-            pad_side=pad_side,
             pad_id=0,
         )
 
@@ -425,7 +439,6 @@ def get_predicted_program(
             to_insert=(emb.to(torch.bfloat16) if weird_cast else emb),
             lens=pair_input_ids_lens,
             insert_side="right",
-            pad_side=pad_side,
             pad_id=pad_embeds,
         )
         pair_attention_mask = insert_based_on_sides(
@@ -433,7 +446,6 @@ def get_predicted_program(
             to_insert=torch.full((n_avail, ntokens), 1, device=device, dtype=dtype),
             lens=pair_input_ids_lens,
             insert_side="right",
-            pad_side=pad_side,
             pad_id=0,
         )
 
@@ -464,10 +476,7 @@ def get_predicted_program(
                 position_start = mask_for_kv.sum()
                 n_new_positions = mask_after_kv.sum()
                 new_positions = torch.tensor(range(position_start, position_start + n_new_positions), device=device, dtype=dtype)
-                if pad_side == "right":
-                    sequence_position_ids[:n_new_positions] = new_positions
-                else:
-                    sequence_position_ids[-n_new_positions:] = new_positions
+                sequence_position_ids[-n_new_positions:] = new_positions
                 position_ids.append(sequence_position_ids)
             position_ids = torch.stack(position_ids)
             model_kwargs["position_ids"] = position_ids
@@ -477,23 +486,13 @@ def get_predicted_program(
         assert model_out is not None
 
         # remove the end program of past key values
-        old_key_values_len = prev_past_key_values[0][0].shape[2] if prev_past_key_values is not None else 0
-        if pad_side == "right":
-            new_past_key_values = tuple(
-                (
-                    torch.stack([torch.cat([kv[:, :old_key_values_len+l], kv[:, old_key_values_len+l+ntokens:]], dim=1) for kv, l in zip(layer_kv[0], pair_input_ids_lens)]),
-                    torch.stack([torch.cat([kv[:, :old_key_values_len+l], kv[:, old_key_values_len+l+ntokens:]], dim=1) for kv, l in zip(layer_kv[1], pair_input_ids_lens)]),
-                )
-                for layer_kv in model_out.past_key_values
+        new_past_key_values = tuple(
+            (
+                layer_kv[0][:, :, :-ntokens, :],
+                layer_kv[1][:, :, :-ntokens, :],
             )
-        else:
-            new_past_key_values = tuple(
-                (
-                    layer_kv[0][:, :, :-ntokens, :],
-                    layer_kv[1][:, :, :-ntokens, :],
-                )
-                for layer_kv in model_out.past_key_values
-            )
+            for layer_kv in model_out.past_key_values
+        )
 
         # format kv to batchsize x numlayer x 2, (nhead, seqlen, hiddendim)
         new_past_key_values = [
@@ -522,7 +521,7 @@ def get_predicted_program(
         # check length
         for batch_i in range(batch_size):
             assert all_prev_past_key_values[batch_i][0][0].shape[1] == all_prev_past_key_values_attention_mask[batch_i].shape[0]
-            n_pair = min(pair_i + 1, num_pairs[batch_i])
+            n_pair = min(pair_i + 1, num_train_pair)
             assert all_prev_past_key_values[batch_i][0][0].shape[1] == n_pair * ntokens + sum(x[batch_i].shape[0] for x in inputs_embeds[:n_pair])
 
         # projection then sample new program prediction for all pairs except the last
@@ -532,7 +531,6 @@ def get_predicted_program(
             data=hidden_states,
             lens=pair_input_ids_lens,
             ntokens=ntokens,
-            pad_side=pad_side,
         )
         # vae projection (no sample in eval)
         if vae_projection is not None:
@@ -571,22 +569,20 @@ def model_loss(
     quantizer: Optional[Union[Quantizer, DistributedDataParallel]],
     program_norm: Optional[Union[LlamaRMSNorm, DistributedDataParallel]],
     program_dropout: nn.Dropout,
-    tokenizer: ARCTokenizer,
+    tokenizer: PreTrainedTokenizerFast,
     # data
     input_ids: List[torch.Tensor],
     attention_mask: List[torch.Tensor],
     label_ids: List[torch.Tensor],
     input_ids_lens: List[List[int]],
-    num_pairs: List[int],
     is_same: bool,
     # others
+    num_pair: int,
     ntokens: int,
-    pad_side: str,
     kl_loss_lambda_scheduler: LambdaScheduler,
     codebook_loss_lambda_scheduler: LambdaScheduler,
     commitment_loss_lambda_scheduler: LambdaScheduler,
     program_loss_lambda_scheduler: LambdaScheduler,
-    consistency_loss_lambda_scheduler: LambdaScheduler,
     invar_loss_lambda_scheduler: LambdaScheduler,
     global_step: int,
     no_residual: bool,
@@ -601,141 +597,13 @@ def model_loss(
     weird_cast: bool,
     demonstration_dropout: bool,
     reset_rope: bool,
-    loss_on_first: bool,
+    loss_type: str,
     debug: bool,
     contrastive_loss: ContrastiveLoss,
-) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, List[torch.Tensor]]:
-
-    # debugging: make sure middle attention 0s do not affect hidden states -> works for both float32 and 16 on rtx8000 without flashattn
-    # TODO: test this on a100 with flashattn when have one
-    # batch_size = len(input_ids[0])
-    # dtype, device = input_ids[0].dtype, input_ids[0].device
-
-    # dummy_inputs_embeds = torch.randn((batch_size, 5, 2048), dtype=torch.float32, device=device)
-    # dummy_attention_mask = torch.tensor([1, 1, 1, 0, 0], dtype=torch.long, device=device)[None, ...].expand(batch_size, -1)
-
-    # dummy_out1 = model(
-    #     inputs_embeds=dummy_inputs_embeds,
-    #     attention_mask=dummy_attention_mask,
-    #     output_hidden_states=True,
-    # )
-
-    # dummy_inputs_embeds[:, -2:, :] = torch.randn_like(dummy_inputs_embeds[:, -2:, :], dtype=torch.float32, device=device)
-    # dummy_out2 = model(
-    #     inputs_embeds=dummy_inputs_embeds,
-    #     attention_mask=dummy_attention_mask,
-    #     output_hidden_states=True,
-    # )
-    # print('right pad dummy1 vs dummy2 hidden diff', (dummy_out1.hidden_states[-1][:, :-2, :] - dummy_out2.hidden_states[-1][:, :-2, :]).abs().mean().item())
-
-    # dummy_inputs_embeds = dummy_inputs_embeds[:, :-2, :]
-    # dummy_attention_mask = torch.tensor([1, 1, 1], dtype=torch.long, device=device)[None, ...].expand(batch_size, -1)
-    # dummy_out3 = model(
-    #     inputs_embeds=dummy_inputs_embeds,
-    #     attention_mask=dummy_attention_mask,
-    #     output_hidden_states=True,
-    # )
-    # print('right pad dummy1 vs dummy3 hidden diff', (dummy_out1.hidden_states[-1][:, :-2, :] - dummy_out3.hidden_states[-1]).abs().mean().item())
-
-
-
-
-
-
-
-
-
-    # # debugging: make sure middle attention 0s do not affect hidden states -> works for both float32 and 16 on rtx8000 without flashattn
-    # # TODO: test this on a100 with flashattn when have one
-    # batch_size = len(input_ids[0])
-    # dtype, device = input_ids[0].dtype, input_ids[0].device
-
-    # dummy_inputs_embeds = torch.randn((batch_size, 5, 2048), dtype=torch.float32, device=device)
-    # dummy_attention_mask = torch.tensor([0, 0, 1, 1, 1], dtype=torch.long, device=device)[None, ...].expand(batch_size, -1)
-
-    # dummy_out1 = model(
-    #     inputs_embeds=dummy_inputs_embeds,
-    #     attention_mask=dummy_attention_mask,
-    #     output_hidden_states=True,
-    # )
-
-    # dummy_inputs_embeds[:, :2, :] = torch.randn_like(dummy_inputs_embeds[:, :2, :], dtype=torch.float32, device=device)
-    # dummy_out2 = model(
-    #     inputs_embeds=dummy_inputs_embeds,
-    #     attention_mask=dummy_attention_mask,
-    #     output_hidden_states=True,
-    # )
-    # print('left pad dummy1 vs dummy2 hidden diff', (dummy_out1.hidden_states[-1][:, 2:, :] - dummy_out2.hidden_states[-1][:, 2:, :]).abs().mean().item())
-
-    # dummy_inputs_embeds = dummy_inputs_embeds[:, 2:, :]
-    # dummy_attention_mask = torch.tensor([1, 1, 1], dtype=torch.long, device=device)[None, ...].expand(batch_size, -1)
-    # dummy_out3 = model(
-    #     inputs_embeds=dummy_inputs_embeds,
-    #     attention_mask=dummy_attention_mask,
-    #     output_hidden_states=True,
-    # )
-    # print('left pad dummy1 vs dummy3 hidden diff', (dummy_out1.hidden_states[-1][:, 2:, :] - dummy_out3.hidden_states[-1]).abs().mean().item())
-
-
-
-
-
-
-
-
-
-    # # debugging: make sure middle attention 0s do not affect hidden states -> works for both float32 and 16 on rtx8000 without flashattn
-    # # TODO: test this on a100 with flashattn when have one
-    # batch_size = len(input_ids[0])
-    # dtype, device = input_ids[0].dtype, input_ids[0].device
-
-    # dummy_inputs_embeds = torch.randn((batch_size, 5, 2048), dtype=torch.float32, device=device)
-    # dummy_attention_mask = torch.tensor([1, 0, 1, 0, 1], dtype=torch.long, device=device)[None, ...].expand(batch_size, -1)
-    # position_ids = torch.tensor([0, 0, 1, 0, 2], dtype=torch.long, device=device)[None, ...]
-
-    # dummy_out1 = model(
-    #     inputs_embeds=dummy_inputs_embeds,
-    #     attention_mask=dummy_attention_mask,
-    #     position_ids=position_ids,
-    #     output_hidden_states=True,
-    # )
-
-    # dummy_inputs_embeds[:, 1, :] = torch.randn_like(dummy_inputs_embeds[:, 1, :], dtype=torch.float32, device=device)
-    # dummy_inputs_embeds[:, 3, :] = torch.randn_like(dummy_inputs_embeds[:, 3, :], dtype=torch.float32, device=device)
-    # dummy_out2 = model(
-    #     inputs_embeds=dummy_inputs_embeds,
-    #     attention_mask=dummy_attention_mask,
-    #     position_ids=position_ids,
-    #     output_hidden_states=True,
-    # )
-    # print('mid pad dummy1 vs dummy2 hidden diff', (dummy_out1.hidden_states[-1][:, torch.tensor([0, 2, 4]), :] - dummy_out2.hidden_states[-1][:, torch.tensor([0, 2, 4]), :]).abs().mean().item())
-
-    # dummy_inputs_embeds = dummy_inputs_embeds[:, torch.tensor([0, 2, 4]), :]
-    # dummy_attention_mask = torch.tensor([1, 1, 1], dtype=torch.long, device=device)[None, ...].expand(batch_size, -1)
-    # dummy_out3 = model(
-    #     inputs_embeds=dummy_inputs_embeds,
-    #     attention_mask=dummy_attention_mask,
-    #     output_hidden_states=True,
-    # )
-    # print('mid pad dummy1 vs dummy3 hidden diff', (dummy_out1.hidden_states[-1][:, torch.tensor([0, 2, 4]), :] - dummy_out3.hidden_states[-1]).abs().mean().item())
-    # # finally ~1e-7
-
-
-
-
-
-
-
-
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
 
     module = model.module if isinstance(model, DistributedDataParallel) else model
     embed_tokens = module.model.embed_tokens if hasattr(module.model, "embed_tokens") else module.model.model.embed_tokens
-
-    # all samples should have same number of pairs
-    assert len(set(num_pairs)) == 1
-    n_pairs = num_pairs[0]
-    # assert n_pairs >= 3 # at least 2 train and 1 test
-    assert n_pairs == len(input_ids) # input_ids
 
     assert len(set(len(ids) for ids in input_ids)) == 1 # batch size uniform across pair_idx
     batch_size = len(input_ids[0])
@@ -757,7 +625,6 @@ def model_loss(
     codebook_loss_lambda = codebook_loss_lambda_scheduler.get_lambda(step=global_step)
     commitment_loss_lambda = commitment_loss_lambda_scheduler.get_lambda(step=global_step)
     program_loss_lambda = program_loss_lambda_scheduler.get_lambda(step=global_step)
-    consistency_loss_lambda = consistency_loss_lambda_scheduler.get_lambda(step=global_step)
     invar_loss_lambda = invar_loss_lambda_scheduler.get_lambda(step=global_step)
 
     # apply program norm to prior
@@ -781,19 +648,30 @@ def model_loss(
     prev_past_key_values_attention_mask = None
 
     # save all programs
-    do_save_programs = (debug or program_type != 'none' or invar_loss_lambda > 0.0 or consistency_loss_lambda > 0.0)
+    do_save_programs = (debug or program_type != 'none' or invar_loss_lambda > 0.0)
     saved_all_programs = []
     if do_save_programs:
         saved_all_programs = [prev_programs]
 
+    # pair indices that need losses
+    pairs_that_have_losses = []
+
     for pair_i, (pair_inputs_embeds, pair_attention_mask, pair_label_ids, pair_input_ids_lens) in enumerate(zip(inputs_embeds, attention_mask, label_ids, input_ids_lens)):
+        # check if we need to do losses
+        do_loss = True
+        if pair_i == 0 and loss_type == 'exclude_first':
+            do_loss = False
+        if pair_i < num_pair - 1 and loss_type == 'only_last':
+            do_loss = False
+        if do_loss:
+            pairs_that_have_losses.append(pair_i)
+
         # STEP 1: prepend the last predicted program for all pairs except the first
         pair_inputs_embeds = insert_based_on_sides(
             data=pair_inputs_embeds,
             to_insert=(prev_programs.to(torch.bfloat16) if weird_cast else prev_programs),
             lens=pair_input_ids_lens,
             insert_side="left",
-            pad_side=pad_side,
             pad_id=pad_embeds,
         )
         pair_attention_mask = insert_based_on_sides(
@@ -801,16 +679,14 @@ def model_loss(
             to_insert=torch.full((batch_size, ntokens), 1, device=device, dtype=dtype),
             lens=pair_input_ids_lens,
             insert_side="left",
-            pad_side=pad_side,
             pad_id=0,
         )
-        if pair_i > 0 or loss_on_first:
+        if do_loss:
             pair_label_ids = insert_based_on_sides(
                 data=pair_label_ids,
                 to_insert=torch.full((batch_size, ntokens), -100, device=device, dtype=dtype),
                 lens=pair_input_ids_lens,
                 insert_side="left",
-                pad_side=pad_side,
                 pad_id=-100,
             )
 
@@ -821,14 +697,13 @@ def model_loss(
         pair_attention_mask_no_program_embed = pair_attention_mask.detach().clone()
 
         # STEP 2: append new program input to the right for all pairs except the last
-        if pair_i < n_pairs - 1:
+        if pair_i < num_pair - 1:
             emb = program_embeddings("dummy")[None, ...].expand(batch_size, -1, -1)
             pair_inputs_embeds = insert_based_on_sides(
                 data=pair_inputs_embeds,
                 to_insert=(emb.to(torch.bfloat16) if weird_cast else emb),
                 lens=pair_input_ids_lens,
                 insert_side="right",
-                pad_side=pad_side,
                 pad_id=pad_embeds,
             )
             pair_attention_mask = insert_based_on_sides(
@@ -836,16 +711,14 @@ def model_loss(
                 to_insert=torch.full((batch_size, ntokens), 1, device=device, dtype=dtype),
                 lens=pair_input_ids_lens,
                 insert_side="right",
-                pad_side=pad_side,
                 pad_id=0,
             )
-            if pair_i > 0 or loss_on_first:
+            if do_loss:
                 pair_label_ids = insert_based_on_sides(
                     data=pair_label_ids,
                     to_insert=torch.full((batch_size, ntokens), -100, device=device, dtype=dtype),
                     lens=pair_input_ids_lens,
                     insert_side="right",
-                    pad_side=pad_side,
                     pad_id=-100,
                 )
 
@@ -862,10 +735,10 @@ def model_loss(
         model_kwargs = {
             "inputs_embeds": pair_inputs_embeds,
             "attention_mask": pair_attention_mask,
-            "output_hidden_states": (pair_i < n_pairs - 1), # not the last pair
+            "output_hidden_states": (pair_i < num_pair - 1), # not the last pair
             "use_cache": True, # need to generate or use kv cache
         }
-        if pair_i > 0 or loss_on_first:
+        if do_loss:
             model_kwargs["labels"] = pair_label_ids
 
         if pair_i > 0:
@@ -897,20 +770,10 @@ def model_loss(
                 position_start = mask_for_kv.sum()
                 n_new_positions = mask_after_kv.sum()
                 new_positions = torch.tensor(range(position_start, position_start + n_new_positions), device=device, dtype=dtype)
-                if pad_side == "right":
-                    sequence_position_ids[:n_new_positions] = new_positions
-                else:
-                    sequence_position_ids[-n_new_positions:] = new_positions
+                sequence_position_ids[-n_new_positions:] = new_positions
                 position_ids.append(sequence_position_ids)
             position_ids = torch.stack(position_ids)
             model_kwargs["position_ids"] = position_ids
-
-        # print(f'$$$ model forward {pair_i}')
-        # print('inputs_embeds', pair_inputs_embeds.shape)
-        # print('attention_mask', pair_attention_mask.shape)
-        # if prev_past_key_values is not None:
-        #     print('prev_past_key_values', prev_past_key_values[0][0].shape)
-        # print()
 
         can_checkpoint = sum(x.shape[1] for x in inputs_embeds[:pair_i+1]) > long_context_checkpointing_threshold
         if ar_gradient_checkpointing and can_checkpoint:
@@ -918,39 +781,23 @@ def model_loss(
         else:
             model_out = model(**model_kwargs)
 
-        if pair_i > 0 or loss_on_first:
+        if do_loss:
             ce_losses.append(model_out.loss) # type: ignore
 
         # STEP 4: update kv
-        if pair_i < n_pairs - 1:
+        if pair_i < num_pair - 1:
             assert model_out is not None
             # remove end program from kv cache
-            old_key_values_len = prev_past_key_values[0][0].shape[2] if prev_past_key_values is not None else 0
-            if pad_side == "right":
-                new_past_key_values = tuple(
-                    (
-                        torch.stack([torch.cat([kv[:, :old_key_values_len+l], kv[:, old_key_values_len+l+ntokens:]], dim=1) for kv, l in zip(layer_kv[0], pair_input_ids_lens)]),
-                        torch.stack([torch.cat([kv[:, :old_key_values_len+l], kv[:, old_key_values_len+l+ntokens:]], dim=1) for kv, l in zip(layer_kv[1], pair_input_ids_lens)]),
-                    )
-                    for layer_kv in model_out.past_key_values
+            new_past_key_values = tuple(
+                (
+                    layer_kv[0][:, :, :-ntokens, :],
+                    layer_kv[1][:, :, :-ntokens, :],
                 )
-            else:
-                new_past_key_values = tuple(
-                    (
-                        layer_kv[0][:, :, :-ntokens, :],
-                        layer_kv[1][:, :, :-ntokens, :],
-                    )
-                    for layer_kv in model_out.past_key_values
-                )
+                for layer_kv in model_out.past_key_values
+            )
             # update kv cache
             if prev_past_key_values is not None:
                 assert prev_past_key_values[0][0].shape[2] + inputs_embeds[pair_i].shape[1] + ntokens == new_past_key_values[0][0].shape[2]
-                # debugging: check if past key values are changed
-                # seq_len_to_check = prev_past_key_values[0][0].shape[2]
-                # mean_kv_relative_diff = 0.0
-                # for i in range(len(prev_past_key_values)):
-                #     for j in range(2):
-                #         assert torch.equal(prev_past_key_values[i][j], new_past_key_values[i][j][:, :, :seq_len_to_check, :])
 
             prev_past_key_values = new_past_key_values
             # update attention mask
@@ -964,14 +811,13 @@ def model_loss(
             assert prev_past_key_values[0][0].shape[2] == (pair_i + 1) * ntokens + sum(x.shape[1] for x in inputs_embeds[:pair_i+1])
 
         # STEP 5: projection then sample new program prediction for all pairs except the last
-        if pair_i < n_pairs - 1:
+        if pair_i < num_pair - 1:
             # extract and sample program
             hidden_states = model_out.hidden_states[-1] # (batch_size, seq_len, hidden_dim) # type: ignore
             new_programs = extract_program_from_right_side(
                 data=hidden_states,
                 lens=pair_input_ids_lens,
                 ntokens=ntokens,
-                pad_side=pad_side,
             )
 
             # vae projection (no sample in eval)
@@ -1019,17 +865,17 @@ def model_loss(
     program_loss = torch.tensor(0.0, device=device)
     if program_type != 'none':
         # e.g., p0 x0 y0 p1 x1 y1 p2 x2 y2 (n_pairs=3)
-        assert len(saved_all_programs) == n_pairs and len(saved_all_programs) >= 2
+        assert len(saved_all_programs) == num_pair and len(saved_all_programs) >= 2
         # select program and pair
         if program_type == 'concat':
             # concatenate all programs and a random pair
             select_program = torch.cat(saved_all_programs, dim=1)
-            select_idx = int(torch.randint(low=0, high=n_pairs, size=(1,)).item())
+            select_idx = int(torch.randint(low=0, high=num_pair, size=(1,)).item())
         else:
             # select random program and a random pair AFTER it
-            program_idx = int(torch.randint(low=2, high=n_pairs, size=(1,)).item()) # do not select the first two
+            program_idx = int(torch.randint(low=2, high=num_pair, size=(1,)).item()) # do not select the first two
             select_program = saved_all_programs[program_idx]
-            select_idx = int(torch.randint(low=program_idx, high=n_pairs, size=(1,)).item())
+            select_idx = int(torch.randint(low=program_idx, high=num_pair, size=(1,)).item())
         # insert program
         program_len = select_program.shape[1]
         select_inputs_embeds = insert_based_on_sides(
@@ -1037,7 +883,6 @@ def model_loss(
             to_insert=(select_program.to(torch.bfloat16) if weird_cast else select_program),
             lens=input_ids_lens[select_idx],
             insert_side="left",
-            pad_side=pad_side,
             pad_id=pad_embeds,
         )
         select_attention_mask = insert_based_on_sides(
@@ -1045,7 +890,6 @@ def model_loss(
             to_insert=torch.full((batch_size, program_len), 1, device=device, dtype=dtype),
             lens=input_ids_lens[select_idx],
             insert_side="left",
-            pad_side=pad_side,
             pad_id=0,
         )
         select_label_ids = insert_based_on_sides(
@@ -1053,7 +897,6 @@ def model_loss(
             to_insert=torch.full((batch_size, program_len), -100, device=device, dtype=dtype),
             lens=input_ids_lens[select_idx],
             insert_side="left",
-            pad_side=pad_side,
             pad_id=-100,
         )
         # get program_loss (no checkpointing for now)
@@ -1066,16 +909,6 @@ def model_loss(
         program_loss = model_out.loss
         program_loss /= len(ce_losses) # normalize based on num pairs to not dominate
 
-    # consistency loss
-    consistency_loss = torch.tensor(0.0, device=device)
-    if consistency_loss_lambda > 0.0:
-        for batch_i in range(batch_size):
-            task_programs = torch.stack([x[batch_i] for x in saved_all_programs[1:]]) # ignore prior program
-            task_programs = task_programs.flatten(start_dim=1) # (nprogram, program numel)
-            task_mean_program = task_programs.mean(dim=0)[None, ...]
-            cos_sim = torch.cosine_similarity(task_programs, task_mean_program, dim=-1)
-            consistency_loss += (1.0 - cos_sim).mean() / batch_size
-
     # invar loss
     invar_loss = torch.tensor(0.0, device=device)
     if invar_loss_lambda > 0.0:
@@ -1086,10 +919,8 @@ def model_loss(
 
     # ce loss might be token weighted
     if token_weighted_loss:
-        if loss_on_first:
-            token_weights = [(pair_label_ids != -100).sum().item() for pair_label_ids in label_ids]
-        else:
-            token_weights = [(pair_label_ids != -100).sum().item() for pair_label_ids in label_ids[1:]]
+        label_ids_with_losses = [label_ids[pair_i] for pair_i in pairs_that_have_losses]
+        token_weights = [(pair_label_ids != -100).sum().item() for pair_label_ids in label_ids_with_losses]
         token_weights = torch.tensor(token_weights, device=device) / sum(token_weights)
         assert len(ce_losses) == len(token_weights)
         ce_loss = sum(ce_loss * token_weight for ce_loss, token_weight in zip(ce_losses, token_weights))
@@ -1100,241 +931,12 @@ def model_loss(
     kl_loss = sum(kl_losses) / len(kl_losses) if len(kl_losses) > 0 else torch.tensor(0.0, device=device)
     codebook_loss = sum(codebook_losses) / len(codebook_losses) if len(codebook_losses) > 0 else torch.tensor(0.0, device=device)
     commitment_loss = sum(commitment_losses) / len(commitment_losses) if len(commitment_losses) > 0 else torch.tensor(0.0, device=device)
-    total_loss = ce_loss + kl_loss_lambda * kl_loss + codebook_loss * codebook_loss_lambda + commitment_loss_lambda * commitment_loss + program_loss_lambda * program_loss + invar_loss_lambda * invar_loss + consistency_loss_lambda * consistency_loss
+    total_loss = ce_loss + kl_loss_lambda * kl_loss + codebook_loss * codebook_loss_lambda + commitment_loss_lambda * commitment_loss + program_loss_lambda * program_loss + invar_loss_lambda * invar_loss
 
     # logging perplexity for debugging vqvae
     perplexity = sum(perplexitys) / len(perplexitys) if len(perplexitys) > 0 else torch.tensor(0.0, device=device)
 
-
-
-    # # we do a little debugging, nvm oh my god its a lot
-    # include_last_pair = True # set to true to compare loss
-    # assert len(saved_all_programs) == len(inputs_embeds) == len(attention_mask) == len(label_ids)
-    # single_inputs_embeds = []
-    # single_attention_mask = []
-    # single_label_ids = []
-    # for pair_i, (predicted_program, pair_inputs_embeds, pair_attention_mask, pair_label_ids, pair_input_ids_lens) in enumerate(zip(saved_all_programs, inputs_embeds, attention_mask, label_ids, input_ids_lens)):
-    #     if pair_i == len(inputs_embeds) - 1 and not include_last_pair:
-    #         continue
-    #     single_inputs_embeds.append(insert_based_on_sides(
-    #         data=pair_inputs_embeds,
-    #         to_insert=predicted_program,
-    #         lens=pair_input_ids_lens,
-    #         insert_side="left",
-    #         pad_side=pad_side,
-    #         pad_id=pad_embeds,
-    #     ))
-    #     single_attention_mask.append(insert_based_on_sides(
-    #         data=pair_attention_mask,
-    #         to_insert=torch.full((batch_size, ntokens), 1, device=device, dtype=dtype),
-    #         lens=pair_input_ids_lens,
-    #         insert_side="left",
-    #         pad_side=pad_side,
-    #         pad_id=0,
-    #     ))
-    #     if pair_i == 0:
-    #         pair_label_ids = torch.full(pair_label_ids.shape, -100, dtype=dtype, device=device)
-    #     single_label_ids.append(insert_based_on_sides(
-    #         data=pair_label_ids,
-    #         to_insert=torch.full((batch_size, ntokens), -100, device=device, dtype=dtype),
-    #         lens=pair_input_ids_lens,
-    #         insert_side="left",
-    #         pad_side=pad_side,
-    #         pad_id=-100,
-    #     ))
-
-    # single_inputs_embeds = torch.cat(single_inputs_embeds, dim=1)
-    # single_attention_mask = torch.cat(single_attention_mask, dim=1)
-    # single_label_ids = torch.cat(single_label_ids, dim=1)
-    # assert single_inputs_embeds.shape[:2] == single_attention_mask.shape[:2] == single_label_ids.shape[:2]
-
-    # assert prev_past_key_values is not None
-    # assert prev_past_key_values_attention_mask is not None
-
-    # # assertions
-    # seq_len_to_check = prev_past_key_values_attention_mask.shape[1] # does not have final pair
-    # assert seq_len_to_check == sum(x.shape[1] for x in inputs_embeds[:-1]) + (len(inputs_embeds) - 1) * ntokens
-    # assert prev_past_key_values[0][0].shape[2] == seq_len_to_check
-    # assert torch.equal(single_attention_mask[:, :seq_len_to_check], prev_past_key_values_attention_mask)
-
-    # # construct position ids
-    # position_ids = []
-    # for m in single_attention_mask:
-    #     sequence_position_ids = torch.cumsum(m, dim=0) - 1
-    #     position_ids.append(sequence_position_ids)
-    # position_ids = torch.stack(position_ids)
-    # assert position_ids.shape == single_attention_mask.shape
-
-    # # single model forward
-    # model_out = model(
-    #     inputs_embeds=single_inputs_embeds,
-    #     attention_mask=single_attention_mask,
-    #     labels=single_label_ids,
-    #     position_ids=position_ids,
-    #     output_hidden_states=True,
-    # )
-    # single_past_key_values = model_out.past_key_values
-    # if include_last_pair:
-    #     assert seq_len_to_check + inputs_embeds[-1].shape[1] + ntokens == single_past_key_values[0][0].shape[2]
-    # else:
-    #     assert seq_len_to_check == single_past_key_values[0][0].shape[2]
-
-    # mean_kv_relative_diff = 0.0
-    # for i in range(len(prev_past_key_values)):
-    #     for j in range(2):
-    #         old_kv = prev_past_key_values[i][j]
-    #         new_kv = single_past_key_values[i][j][:, :, :seq_len_to_check, :]
-    #         old_kv = old_kv.masked_select(prev_past_key_values_attention_mask.bool()[:, None, :, None])
-    #         new_kv = new_kv.masked_select(prev_past_key_values_attention_mask.bool()[:, None, :, None])
-    #         mean_kv_relative_diff += (new_kv - old_kv).abs().mean() / prev_past_key_values[i][j].abs().mean()
-    # print('kv diff relative', mean_kv_relative_diff / len(prev_past_key_values) / 2)
-    # print('loss diff relative', (model_out.loss - ce_loss).abs() / ce_loss.abs())
-    # # # NOTE: kv 0 and model loss ~1e-7 diff
-
-
-
-
-
-
-    # # we do a little MORE debugging
-    # assert len(saved_all_programs) == len(input_ids) == len(attention_mask) == len(label_ids)
-    # single_inputs_embeds = []
-    # single_attention_mask = []
-    # single_label_ids = []
-
-    # new_program_idxs = [[] for _ in range(batch_size)]
-    # for batch_i in range(batch_size):
-    #     # get programs and inputs for task
-    #     task_programs = [x[batch_i] for x in saved_all_programs]
-    #     task_input_ids = [x[batch_i] for x in input_ids]
-    #     task_attention_mask = [x[batch_i] for x in attention_mask]
-    #     task_label_ids = [x[batch_i] for x in label_ids]
-    #     task_input_ids_lens = [x[batch_i] for x in input_ids_lens]
-    #     assert len(task_programs) == len(task_input_ids) == len(task_attention_mask) == len(task_label_ids) == len(task_input_ids_lens) == n_pairs
-    #     assert sum(x.shape[0] for x in task_input_ids) == sum(x.shape[0] for x in task_attention_mask)
-
-    #     # no loss on first
-    #     label1 = task_label_ids[0]
-    #     task_label_ids[0] = torch.full(label1.shape, -100, dtype=label1.dtype, device=label1.device)
-
-    #     # strip individual train paddings (make sure they actually are paddings)
-    #     if pad_side == 'right':
-    #         input_ids_pads = torch.cat([x[l:] for x, l in zip(task_input_ids, task_input_ids_lens)])
-    #         assert set(input_ids_pads.tolist()).issubset({tokenizer.pad_token_id})
-    #         attention_mask_pads = torch.cat([x[l:] for x, l in zip(task_attention_mask, task_input_ids_lens)])
-    #         assert set(attention_mask_pads.tolist()).issubset({0})
-    #         label_ids_pads = torch.cat([x[l:] for x, l in zip(task_label_ids, task_input_ids_lens)])
-    #         assert set(label_ids_pads.tolist()).issubset({-100})
-    #         task_input_ids = [x[:l] for x, l in zip(task_input_ids, task_input_ids_lens)]
-    #         task_attention_mask = [x[:l] for x, l in zip(task_attention_mask, task_input_ids_lens)]
-    #         task_label_ids = [x[:l] for x, l in zip(task_label_ids, task_input_ids_lens)]
-    #     else:
-    #         input_ids_pads = torch.cat([x[:-l] for x, l in zip(task_input_ids, task_input_ids_lens)])
-    #         assert set(input_ids_pads.tolist()).issubset({tokenizer.pad_token_id})
-    #         attention_mask_pads = torch.cat([x[:-l] for x, l in zip(task_attention_mask, task_input_ids_lens)])
-    #         assert set(attention_mask_pads.tolist()).issubset({0})
-    #         label_ids_pads = torch.cat([x[:-l] for x, l in zip(task_label_ids, task_input_ids_lens)])
-    #         assert set(label_ids_pads.tolist()).issubset({-100})
-    #         task_input_ids = [x[-l:] for x, l in zip(task_input_ids, task_input_ids_lens)]
-    #         task_attention_mask = [x[-l:] for x, l in zip(task_attention_mask, task_input_ids_lens)]
-    #         task_label_ids = [x[-l:] for x, l in zip(task_label_ids, task_input_ids_lens)]
-    #     assert all(x.shape == y.shape == z.shape for x, y, z in zip(task_input_ids, task_attention_mask, task_label_ids))
-
-    #     # get task embeds
-    #     task_inputs_embeds = [embed_tokens(x) for x in task_input_ids]
-
-    #     # finally now without padding, concat
-    #     k = 0
-    #     for x in task_inputs_embeds:
-    #         new_program_idxs[batch_i].append(k)
-    #         k += ntokens + x.shape[0]
-
-    #     # interleave programs and pad 1 attention
-    #     assert len(task_programs) == len(task_inputs_embeds) == len(task_attention_mask) == len(task_label_ids)
-    #     program_attentions = [torch.full((ntokens,), 1, device=x.device, dtype=x.dtype) for x in task_attention_mask]
-    #     program_label_ids = [torch.full((ntokens,), -100, device=x.device, dtype=x.dtype) for x in task_label_ids]
-    #     task_inputs_embeds = [item for pair in zip(task_programs, task_inputs_embeds) for item in pair]
-    #     task_attention_mask = [item for pair in zip(program_attentions, task_attention_mask) for item in pair]
-    #     task_label_ids = [item for pair in zip(program_label_ids, task_label_ids) for item in pair]
-    #     assert len(task_inputs_embeds) == len(task_attention_mask) == len(task_label_ids) == 2 * n_pairs
-
-    #     task_inputs_embeds = torch.cat(task_inputs_embeds)
-    #     task_attention_mask = torch.cat(task_attention_mask)
-    #     task_label_ids = torch.cat(task_label_ids)
-    #     assert task_inputs_embeds.shape[:1] == task_attention_mask.shape == task_label_ids.shape
-    #     assert (task_attention_mask == 1).sum() == task_attention_mask.numel() # no padding so full attention
-    #     assert len(task_inputs_embeds) == ntokens * n_pairs + sum(task_input_ids_lens)
-
-    #     single_inputs_embeds.append(task_inputs_embeds)
-    #     single_attention_mask.append(task_attention_mask)
-    #     single_label_ids.append(task_label_ids)
-
-    # # now pad based on gen pad side
-    # single_attention_mask = pad_sequence_with_side(single_attention_mask, padding_value=0, side=pad_side)
-    # single_label_ids = pad_sequence_with_side(single_label_ids, padding_value=-100, side=pad_side)
-    # assert single_attention_mask.shape == single_label_ids.shape
-
-    # # pad single_inputs_embeds batchsize x (task-seqlen, hiddendim)
-    # max_task_len = max(x.shape[0] for x in single_inputs_embeds)
-    # for i, x in enumerate(single_inputs_embeds):
-    #     if max_task_len > x.shape[0]:
-    #         task_pad_embeds = pad_embeds.unsqueeze(0).expand(max_task_len - x.shape[0], -1)
-    #         if pad_side == 'left':
-    #             single_inputs_embeds[i] = torch.cat([task_pad_embeds, single_inputs_embeds[i]])
-    #         else:
-    #             single_inputs_embeds[i] = torch.cat([single_inputs_embeds[i], task_pad_embeds])
-    # single_inputs_embeds = torch.stack(single_inputs_embeds)
-    # assert single_inputs_embeds.shape[:2] == single_label_ids.shape
-
-    # assert prev_past_key_values is not None
-    # assert prev_past_key_values_attention_mask is not None
-
-    # # single model forward
-    # model_out = model(
-    #     inputs_embeds=single_inputs_embeds,
-    #     attention_mask=single_attention_mask,
-    #     labels=single_label_ids,
-    #     output_hidden_states=True,
-    # )
-    # single_past_key_values = model_out.past_key_values
-
-    # # compare
-    # mean_kv_relative_diff = 0.0
-    # for i in range(len(prev_past_key_values)):
-    #     for j in range(2):
-    #         old_kv = prev_past_key_values[i][j].detach().clone()
-    #         new_kv = single_past_key_values[i][j].detach().clone()
-    #         assert old_kv.shape[:2] == new_kv.shape[:2] and old_kv.shape[3] == new_kv.shape[3]
-    #         assert prev_past_key_values_attention_mask.shape[0] == single_attention_mask.shape[0] == batch_size
-    #         assert prev_past_key_values_attention_mask.shape[1] == old_kv.shape[2] and single_attention_mask.shape[1] == new_kv.shape[2]
-    #         for batch_i, (task_old_kv, task_new_kv, task_old_mask, task_new_mask, task_new_program_idxs) in enumerate(zip(old_kv, new_kv, prev_past_key_values_attention_mask, single_attention_mask, new_program_idxs)):
-    #             task_input_ids_lens = [x[batch_i] for x in input_ids_lens]
-    #             # # remove program from old
-    #             # assert task_old_kv.shape[1] == sum(x.shape[1] for x in inputs_embeds[:-1]) + ntokens * (len(inputs_embeds) - 1)
-    #             # k = 0
-    #             # for task_inputs_embeds in inputs_embeds[:-1]:
-    #             #     task_old_kv[:, k: k+ntokens, :] = 0.0
-    #             #     k += task_inputs_embeds.shape[1] + ntokens
-    #             # # remove programs from new
-    #             # for k in task_new_program_idxs:
-    #             #     task_new_kv[:, k: k+ntokens, :] = 0.0
-    #             # remove paddings
-    #             task_old_kv = task_old_kv[:, task_old_mask.bool(), :]
-    #             task_new_kv = task_new_kv[:, task_new_mask.bool(), :][:, :task_old_kv.shape[1], :]
-    #             # n_is_zero = 0
-    #             # for l in range(task_old_kv.shape[1]):
-    #             #     old_is_zero = task_old_kv[:, l, :].abs().sum() == 0
-    #             #     new_is_zero = task_new_kv[:, l, :].abs().sum() == 0
-    #             #     assert old_is_zero == new_is_zero
-    #             #     n_is_zero += old_is_zero
-    #             # assert n_is_zero == ntokens * (len(inputs_embeds) - 1)
-    #             assert task_old_kv.shape[1] == task_new_kv.shape[1] == sum(task_input_ids_lens[:-1]) + (n_pairs - 1) * ntokens
-    #             mean_kv_relative_diff += (task_old_kv - task_new_kv).abs().mean() / task_old_kv.abs().mean()
-
-    # print('kv diff relative', mean_kv_relative_diff / len(prev_past_key_values) / 2 / batch_size)
-    # print('loss diff relative', (model_out.loss - ce_loss).abs() / ce_loss.abs()) # type: ignore
-
-    return ce_loss, kl_loss, codebook_loss, commitment_loss, perplexity, program_loss, consistency_loss, invar_loss, total_loss, ce_losses # type: ignore
+    return ce_loss, kl_loss, codebook_loss, commitment_loss, perplexity, program_loss, invar_loss, total_loss # type: ignore
 
 
 def insert_based_on_sides(
@@ -1342,36 +944,21 @@ def insert_based_on_sides(
         to_insert: torch.Tensor,
         lens: List[int],
         insert_side: str,
-        pad_side: str,
         pad_id: Union[int, torch.Tensor],
     ) -> torch.Tensor:
 
-    if pad_side == "right":
-        if insert_side == "left":
-            return torch.cat([to_insert, data], dim=1)
-        else:
-            data_new = []
-            for x, m, l in zip(data, to_insert, lens):
-                if isinstance(pad_id, int):
-                    assert torch.equal(x[l:], torch.full(x[l:].shape, pad_id, device=x[l:].device)), x[l:]
-                else:
-                    assert torch.equal(x[l:], pad_id.unsqueeze(0).expand(x[l:].shape[0], -1)), x[l:]
-                x = torch.cat([x[:l], m, x[l:]])
-                data_new.append(x)
-            return torch.stack(data_new)
+    if insert_side == "left":
+        data_new = []
+        for x, m, l in zip(data, to_insert, lens):
+            if isinstance(pad_id, int):
+                assert torch.equal(x[:-l], torch.full(x[:-l].shape, pad_id, device=x[:-l].device)), x[:-l]
+            else:
+                assert torch.equal(x[:-l], pad_id.unsqueeze(0).expand(x[:-l].shape[0], -1)), x[:-l]
+            x = torch.cat([x[:-l], m, x[-l:]])
+            data_new.append(x)
+        return torch.stack(data_new)
     else:
-        if insert_side == "left":
-            data_new = []
-            for x, m, l in zip(data, to_insert, lens):
-                if isinstance(pad_id, int):
-                    assert torch.equal(x[:-l], torch.full(x[:-l].shape, pad_id, device=x[:-l].device)), x[:-l]
-                else:
-                    assert torch.equal(x[:-l], pad_id.unsqueeze(0).expand(x[:-l].shape[0], -1)), x[:-l]
-                x = torch.cat([x[:-l], m, x[-l:]])
-                data_new.append(x)
-            return torch.stack(data_new)
-        else:
-            return torch.cat([data, to_insert], dim=1)
+        return torch.cat([data, to_insert], dim=1)
 
 
 def chunks(lst: List[int], n: int) -> Iterator[List[int]]:
@@ -1379,39 +966,23 @@ def chunks(lst: List[int], n: int) -> Iterator[List[int]]:
         yield lst[i:i + n]
 
 
-def chunks_uniform_batch(task_ids: List[str], data_idxs: List[int], n: int) -> Iterator[List[int]]:
-    assert len(task_ids) == len(data_idxs)
-    # group by first item in tuple (task_id)
-    task_id_to_data_idx = defaultdict(list)
-    for task_id, data_idx in zip(task_ids, data_idxs):
-        task_id_to_data_idx[task_id].append(data_idx)
-    # for each task_id, yield chunks of data idxs
-    for task_id, data_idxs in task_id_to_data_idx.items():
-        yield from chunks(data_idxs, n)
+def macro_f1_score(generated: torch.Tensor, groundtruth: torch.Tensor) -> float:
+    gen_counter = Counter(generated.tolist())
+    gt_counter = Counter(groundtruth.tolist())
+    all_tokens = set(gen_counter.keys()).union(set(gt_counter.keys()))
 
+    f1_scores = []
+    for token in all_tokens:
+        tp = min(gen_counter.get(token, 0), gt_counter.get(token, 0)) # true positive
+        fp = gen_counter.get(token, 0) - tp # false positive
+        fn = gt_counter.get(token, 0) - tp # false negative
+        precision = tp / (tp + fp) if (tp + fp) > 0 else 0.0
+        recall = tp / (tp + fn) if (tp + fn) > 0 else 0.0
+        f1 = 2 * precision * recall / (precision + recall) if (precision + recall) > 0 else 0.0
+        f1_scores.append(f1)
 
-def best_match_count(s1, s2):
-    # Ensure s1 is the longer string
-    if len(s1) < len(s2):
-        s1, s2 = s2, s1
-
-    L, S = len(s1), len(s2)
-    max_matches = 0
-
-    # Slide s2 over s1.
-    # Range of shifts: from -S+1 (s2 shifted so its end aligns with the start of s1)
-    # to L-1 (s2 shifted so its start aligns with the end of s1)
-    for shift in range(-S + 1, L):
-        matches = 0
-        # Loop over each index of the shorter string
-        for i in range(S):
-            j = i + shift  # corresponding index in s1
-            # Only count if within bounds of s1
-            if 0 <= j < L and s2[i] == s1[j]:
-                matches += 1
-        max_matches = max(max_matches, matches)
-
-    return max_matches
+    macro_f1 = sum(f1_scores) / len(f1_scores) if f1_scores else 0.0
+    return macro_f1
 
 
 ################################################
@@ -1420,8 +991,6 @@ def best_match_count(s1, s2):
 @torch.no_grad()
 def evaluate(
     desc: str,
-    task_to_ttt_path: Optional[Dict[str, Tuple[str, str, str, Optional[str], Optional[str], Optional[str]]]],
-    ttt_param_names: Optional[Set[str]],
     model: Union[nn.Module, DistributedDataParallel],
     prior_embeddings: Union[ProgramEmbeddings, DistributedDataParallel],
     program_embeddings: Union[ProgramEmbeddings, DistributedDataParallel],
@@ -1437,10 +1006,10 @@ def evaluate(
     dry_eval_run: bool,
     no_residual: bool,
     no_discrete_prior: bool,
-    output_dir: str,
     no_codebook: bool,
     weird_cast: bool,
 ):
+
     model.eval()
     prior_embeddings.eval()
     program_embeddings.eval()
@@ -1455,69 +1024,13 @@ def evaluate(
     module = model.module if isinstance(model, DistributedDataParallel) else model
     embed_tokens = module.model.embed_tokens if hasattr(module.model, "embed_tokens") else module.model.model.embed_tokens
 
-    # if ttt provided, same model weights for the missing ttt task weights
-    cached_model_weights_path = None
-    cached_prior_embeddings_weights_path = None
-    cached_program_embeddings_weights_path = None
-    cached_vae_projection_weights_path = None
-    cached_quantizer_weights_path = None
-    cached_program_norm_weights_path = None
-    curr_ttt_task_name = None
-    if task_to_ttt_path is not None: # run on both processes
-        # save model for default when ttt is missing
-        cached_model_weights_path = os.path.join(output_dir, f"process{accelerator.process_index}_cache.pt")
-        assert isinstance(ttt_param_names, set)
-        names = set(name for name, _ in module.named_parameters())
-        assert all(name in names for name in ttt_param_names), f"process{accelerator.process_index}\n\n{ttt_param_names}\n\n{names}"
-        cache_weights = {name: param for name, param in module.named_parameters() if name in ttt_param_names}
-        torch.save(cache_weights, cached_model_weights_path)
-        logger.info(f"ttt provided, cached {len(cache_weights)} model weights to {cached_model_weights_path}")
-        # save prior embeddings
-        cached_prior_embeddings_weights_path = os.path.join(output_dir, f"process{accelerator.process_index}_prior_embeddings_cache.pt")
-        torch.save(prior_embeddings, cached_prior_embeddings_weights_path)
-        logger.info(f"ttt provided, cached prior embeddings weights to {cached_prior_embeddings_weights_path}")
-        # save program embeddings
-        cached_program_embeddings_weights_path = os.path.join(output_dir, f"process{accelerator.process_index}_program_embeddings_cache.pt")
-        torch.save(program_embeddings, cached_program_embeddings_weights_path)
-        logger.info(f"ttt provided, cached program embeddings weights to {cached_program_embeddings_weights_path}")
-        # save vae projection
-        if vae_projection is not None:
-            cached_vae_projection_weights_path = os.path.join(output_dir, f"process{accelerator.process_index}_vae_projection_cache.pt")
-            torch.save(vae_projection, cached_vae_projection_weights_path)
-            logger.info(f"ttt provided, cached vae projection weights to {cached_vae_projection_weights_path}")
-        # save quantizer
-        if quantizer is not None:
-            cached_quantizer_weights_path = os.path.join(output_dir, f"process{accelerator.process_index}_quantizer_cache.pt")
-            torch.save(quantizer, cached_quantizer_weights_path)
-            logger.info(f"ttt provided, cached quantizer weights to {cached_quantizer_weights_path}")
-        # save program norm
-        if program_norm is not None:
-            cached_program_norm_weights_path = os.path.join(output_dir, f"process{accelerator.process_index}_program_norm_cache.pt")
-            torch.save(program_norm, cached_program_norm_weights_path)
-            logger.info(f"ttt provided, cached program norm weights to {cached_program_norm_weights_path}")
-        # save default to model paths and set current ttt weights to default
-        task_to_ttt_path["default"] = (
-            cached_model_weights_path,
-            cached_prior_embeddings_weights_path,
-            cached_program_embeddings_weights_path,
-            cached_vae_projection_weights_path,
-            cached_quantizer_weights_path,
-            cached_program_norm_weights_path,
-        )
-        curr_ttt_task_name = "default"
-
     # setup terminators and suppress warning
     module.generation_config.pad_token_id = dataset.tokenizer.pad_token_id
 
     distributed_state = PartialState()
-    task_id_and_text_list = []
-    task_id_and_inverter_grids = []
-    exact_acc_list = []
-    valid_grid_list = []
-    correct_grid_dim_list = []
-    token_acc_list = []
-    relaxed_token_acc_list = []
-    ttt_provided_list = []
+    output_list = []
+    macro_f1_list = []
+    accuracy_list = []
 
     data_idxs = list(range(len(dataset)))
     assert len(data_idxs) >= accelerator.num_processes # avoid padding issue
@@ -1525,74 +1038,10 @@ def evaluate(
     with distributed_state.split_between_processes(data_idxs) as process_data_idxs:
         assert isinstance(process_data_idxs, list)
         n_batches = math.ceil(len(process_data_idxs) / batch_size)
-
-        # if ttt provided, make sure all batches are of the same task name
-        if task_to_ttt_path is not None:
-            # tackle tasks in orderly fashion
-            task_names = [dataset.eval_tasks[idx].name for idx in process_data_idxs] # type: ignore
-            task_ids = [task_name.split('-')[0] for task_name in task_names]
-            n_batches = len(list(chunks_uniform_batch(task_ids, process_data_idxs, batch_size)))
-            data_idx_iterator = tqdm(chunks_uniform_batch(task_ids, process_data_idxs, batch_size), total=n_batches, desc=desc) # type: ignore
-        else:
-            data_idx_iterator = tqdm(chunks(process_data_idxs, batch_size), total=n_batches, desc=desc)  # type: ignore
+        data_idx_iterator = tqdm(chunks(process_data_idxs, batch_size), total=n_batches, desc=desc)  # type: ignore
 
         for batch_idxs in data_idx_iterator:
             bs = len(batch_idxs)
-
-            # optionally load ttt lora
-            ttt_provided = [0] * bs
-            if task_to_ttt_path is not None:
-                # make sure task name is unique and set to default is missing
-                task_names = [dataset.eval_tasks[idx].name.split('-')[0] for idx in batch_idxs]
-                assert len(set(task_names)) == 1 # have to be the same task
-                task_name = task_names[0]
-                if task_name not in task_to_ttt_path:
-                    task_name = "default"
-                ttt_provided = [int(task_name != "default")] * bs
-                # load ttt if necessary
-                if task_name != curr_ttt_task_name:
-                    (
-                        ttt_model_weights_path,
-                        ttt_prior_embeddings_weights_path,
-                        ttt_program_embeddings_weights_path,
-                        ttt_vae_projection_weights_path,
-                        ttt_quantizer_weights_path,
-                        ttt_program_norm_weights_path,
-                    ) = task_to_ttt_path[task_name]
-                    # load model
-                    model_ttt_state_dict = torch.load(
-                        ttt_model_weights_path,
-                        weights_only=True,
-                        map_location=accelerator.device
-                    )
-                    assert set(model_ttt_state_dict.keys()) == ttt_param_names
-                    module.load_state_dict(model_ttt_state_dict, strict=False)
-                    del model_ttt_state_dict
-                    # load prior embeddings
-                    prior_embeddings = torch.load(ttt_prior_embeddings_weights_path, weights_only=False, map_location=accelerator.device)
-                    # load program embeddings
-                    program_embeddings = torch.load(ttt_program_embeddings_weights_path, weights_only=False, map_location=accelerator.device)
-                    # load vae projection
-                    if ttt_vae_projection_weights_path is not None:
-                        vae_projection = torch.load(ttt_vae_projection_weights_path, weights_only=False, map_location=accelerator.device)
-                    # load quantizer
-                    if ttt_quantizer_weights_path is not None:
-                        quantizer = torch.load(ttt_quantizer_weights_path, weights_only=False, map_location=accelerator.device)
-                    # load program norm
-                    if ttt_program_norm_weights_path is not None:
-                        program_norm = torch.load(ttt_program_norm_weights_path, weights_only=False, map_location=accelerator.device)
-                    curr_ttt_task_name = task_name # set current task name
-                    model.eval() # another eval after loading weight just in case
-                    prior_embeddings.eval()
-                    program_embeddings.eval()
-                    if vae_projection is not None:
-                        vae_projection.eval()
-                    if quantizer is not None:
-                        quantizer.eval()
-                    if program_norm is not None:
-                        program_norm.eval()
-            ttt_provided_list += ttt_provided
-
             batch_data = [dataset[i] for i in batch_idxs]
             batch = collate_fn(batch_data)
 
@@ -1601,16 +1050,14 @@ def evaluate(
 
             # get tensors
             task_ids = batch["task_ids"]
-            inverters = batch["inverters"]
             input_ids = [x.to(accelerator.device) for x in batch["input_ids"]]
             attention_mask = [x.to(accelerator.device) for x in batch["attention_mask"]]
             gen_input_ids = batch["gen_input_ids"].to(accelerator.device)
+            gen_output_ids = [x.to(accelerator.device) for x in batch["gen_output_ids"]]
             gen_attention_mask = batch["gen_attention_mask"].to(accelerator.device)
             out_token_length = batch["out_token_length"]
-            label_texts = batch["label_texts"]
             input_ids_lens = batch["input_ids_lens"]
             gen_input_ids_lens = batch["gen_input_ids_lens"]
-            num_pairs = batch["num_pairs"] # not including test pair
 
             with accelerator.autocast():
                 # STEP 1: get all the programs
@@ -1627,17 +1074,16 @@ def evaluate(
                     input_ids=input_ids,
                     attention_mask=attention_mask,
                     input_ids_lens=input_ids_lens,
-                    num_pairs=num_pairs,
+                    num_train_pair=dataset.num_pair - 1,
                     # others
                     ntokens=dataset.ntokens,
-                    pad_side=dataset.train_pad_side,
                     no_residual=no_residual,
                     no_discrete_prior=no_discrete_prior,
                     train_codebook_only=no_codebook,
                     weird_cast=weird_cast,
                 )
                 assert len(all_intermediate_programs) == bs
-                assert all(len(x) == y + 1 for x, y in zip(all_intermediate_programs, num_pairs)) # one more program than num (train) pair
+                assert all(len(x) == dataset.num_pair for x in all_intermediate_programs) # include prior and last output programs
 
                 # STEP 2: single long context for each task (e.g., p0 x1 y1 p1 x2 y2 p2 x3), ensure no middle padding
                 single_inputs_embeds = []
@@ -1647,42 +1093,29 @@ def evaluate(
                 for batch_i in range(bs):
                     # get programs and train + gen inputs for task
                     task_programs = all_intermediate_programs[batch_i]
-                    task_input_ids = [x[batch_i] for x in input_ids[:num_pairs[batch_i]]]
-                    task_attention_mask = [x[batch_i] for x in attention_mask[:num_pairs[batch_i]]]
-                    task_input_ids_lens = [x[batch_i] for x in input_ids_lens[:num_pairs[batch_i]]]
-                    assert len(task_input_ids) == len(task_attention_mask) == len(task_input_ids_lens) == num_pairs[batch_i]
+                    task_input_ids = [x[batch_i] for x in input_ids]
+                    task_attention_mask = [x[batch_i] for x in attention_mask]
+                    task_input_ids_lens = [x[batch_i] for x in input_ids_lens]
+                    assert len(task_input_ids) == len(task_attention_mask) == len(task_input_ids_lens) == dataset.num_pair - 1
                     assert sum(x.shape[0] for x in task_input_ids) == sum(x.shape[0] for x in task_attention_mask)
 
                     # strip individual train paddings (make sure they actually are paddings)
-                    if dataset.train_pad_side == 'right':
-                        input_ids_pads = torch.cat([x[l:] for x, l in zip(task_input_ids, task_input_ids_lens)])
-                        assert set(input_ids_pads.tolist()).issubset({dataset.tokenizer.pad_token_id})
-                        attention_mask_pads = torch.cat([x[l:] for x, l in zip(task_attention_mask, task_input_ids_lens)])
-                        assert set(attention_mask_pads.tolist()).issubset({0})
-                        task_input_ids = [x[:l] for x, l in zip(task_input_ids, task_input_ids_lens)]
-                        task_attention_mask = [x[:l] for x, l in zip(task_attention_mask, task_input_ids_lens)]
-                    else:
-                        input_ids_pads = torch.cat([x[:-l] for x, l in zip(task_input_ids, task_input_ids_lens)])
-                        assert set(input_ids_pads.tolist()).issubset({dataset.tokenizer.pad_token_id})
-                        attention_mask_pads = torch.cat([x[:-l] for x, l in zip(task_attention_mask, task_input_ids_lens)])
-                        assert set(attention_mask_pads.tolist()).issubset({0})
-                        task_input_ids = [x[-l:] for x, l in zip(task_input_ids, task_input_ids_lens)]
-                        task_attention_mask = [x[-l:] for x, l in zip(task_attention_mask, task_input_ids_lens)]
+                    input_ids_pads = torch.cat([x[:-l] for x, l in zip(task_input_ids, task_input_ids_lens)])
+                    assert set(input_ids_pads.tolist()).issubset({dataset.tokenizer.pad_token_id}) # type: ignore
+                    attention_mask_pads = torch.cat([x[:-l] for x, l in zip(task_attention_mask, task_input_ids_lens)])
+                    assert set(attention_mask_pads.tolist()).issubset({0})
+                    task_input_ids = [x[-l:] for x, l in zip(task_input_ids, task_input_ids_lens)]
+                    task_attention_mask = [x[-l:] for x, l in zip(task_attention_mask, task_input_ids_lens)]
 
                     # strip gen paddings (make sure they actually are paddings)
                     task_gen_input_ids = gen_input_ids[batch_i]
                     task_gen_attention_mask = gen_attention_mask[batch_i]
                     task_gen_input_ids_len = gen_input_ids_lens[batch_i]
-                    if dataset.gen_pad_side == 'right':
-                        assert set(task_gen_input_ids[task_gen_input_ids_len:].tolist()).issubset({dataset.tokenizer.pad_token_id})
-                        assert set(task_gen_attention_mask[task_gen_input_ids_len:].tolist()).issubset({0})
-                        task_gen_input_ids = task_gen_input_ids[:task_gen_input_ids_len]
-                        task_gen_attention_mask = task_gen_attention_mask[:task_gen_input_ids_len]
-                    else:
-                        assert set(task_gen_input_ids[:-task_gen_input_ids_len].tolist()).issubset({dataset.tokenizer.pad_token_id})
-                        assert set(task_gen_attention_mask[:-task_gen_input_ids_len].tolist()).issubset({0})
-                        task_gen_input_ids = task_gen_input_ids[-task_gen_input_ids_len:]
-                        task_gen_attention_mask = task_gen_attention_mask[-task_gen_input_ids_len:]
+
+                    assert set(task_gen_input_ids[:-task_gen_input_ids_len].tolist()).issubset({dataset.tokenizer.pad_token_id}) # type: ignore
+                    assert set(task_gen_attention_mask[:-task_gen_input_ids_len].tolist()).issubset({0})
+                    task_gen_input_ids = task_gen_input_ids[-task_gen_input_ids_len:]
+                    task_gen_attention_mask = task_gen_attention_mask[-task_gen_input_ids_len:]
 
                     # add gen to train
                     task_input_ids.append(task_gen_input_ids)
@@ -1697,20 +1130,20 @@ def evaluate(
                     program_attentions = [torch.full((dataset.ntokens,), 1, device=x.device, dtype=x.dtype) for x in task_attention_mask]
                     task_inputs_embeds = [item for pair in zip(task_programs, task_inputs_embeds) for item in pair]
                     task_attention_mask = [item for pair in zip(program_attentions, task_attention_mask) for item in pair]
-                    assert len(task_inputs_embeds) == len(task_attention_mask) == 2 * (num_pairs[batch_i] + 1)
+                    assert len(task_inputs_embeds) == len(task_attention_mask) == 2 * dataset.num_pair
 
                     # finally now without padding, concat
                     task_inputs_embeds = torch.cat(task_inputs_embeds)
                     task_attention_mask = torch.cat(task_attention_mask)
                     assert task_inputs_embeds.shape[:1] == task_attention_mask.shape
                     assert (task_attention_mask == 1).sum() == task_attention_mask.numel() # no padding so full attention
-                    assert len(task_inputs_embeds) == dataset.ntokens * (num_pairs[batch_i] + 1) + sum(task_input_ids_lens) + task_gen_input_ids_len
+                    assert len(task_inputs_embeds) == dataset.ntokens * dataset.num_pair + sum(task_input_ids_lens) + task_gen_input_ids_len
 
                     single_inputs_embeds.append(task_inputs_embeds)
                     single_attention_mask.append(task_attention_mask)
 
                 # now pad based on gen pad side
-                single_attention_mask = pad_sequence_with_side(single_attention_mask, padding_value=0, side=dataset.gen_pad_side)
+                single_attention_mask = pad_sequence_left(single_attention_mask, padding_value=0)
 
                 # pad single_inputs_embeds batchsize x (task-seqlen, hiddendim)
                 pad_embeds = embed_tokens(torch.tensor(dataset.tokenizer.pad_token_id, device=single_inputs_embeds[0].device))
@@ -1718,10 +1151,7 @@ def evaluate(
                 for i, x in enumerate(single_inputs_embeds):
                     if max_task_len > x.shape[0]:
                         task_pad_embeds = pad_embeds.unsqueeze(0).expand(max_task_len - x.shape[0], -1)
-                        if dataset.gen_pad_side == 'left':
-                            single_inputs_embeds[i] = torch.cat([task_pad_embeds, single_inputs_embeds[i]])
-                        else:
-                            single_inputs_embeds[i] = torch.cat([single_inputs_embeds[i], task_pad_embeds])
+                        single_inputs_embeds[i] = torch.cat([task_pad_embeds, single_inputs_embeds[i]])
                 single_inputs_embeds = torch.stack(single_inputs_embeds)
                 assert single_inputs_embeds.shape[:2] == single_attention_mask.shape
 
@@ -1730,7 +1160,7 @@ def evaluate(
 
                 # generate (limit generation length but also prevent information leak)
                 arbitrary_increase = 5
-                gen_tokens = module.generate(
+                gen_tokens_padded = module.generate(
                     inputs_embeds=single_inputs_embeds,
                     attention_mask=single_attention_mask,
                     max_new_tokens=max(out_token_length) + arbitrary_increase,
@@ -1740,247 +1170,61 @@ def evaluate(
                     do_sample=False,
                     eos_token_id=[dataset.tokenizer.eos_token_id],
                 )
-                assert len(gen_tokens) == len(out_token_length)
-                for t, l in zip(gen_tokens, out_token_length):
-                    t[l + arbitrary_increase:] = dataset.tokenizer.pad_token_id
-                gen_texts = dataset.tokenizer.batch_decode(
-                    gen_tokens,
-                    skip_special_tokens=True,
-                    no_separate_color_tokens=dataset.no_separate_color_tokens,
-                )
+                assert len(gen_tokens_padded) == len(out_token_length)
 
-            # Compare each gen_text with label_texts
-            assert len(task_ids) == len(inverters) == bs, (len(task_ids), len(inverters), bs)
-            assert len(gen_texts) == len(label_texts) == bs, (len(gen_texts), len(label_texts), bs)
+                # remove pads
+                gen_tokens = []
+                for t, l in zip(gen_tokens_padded, out_token_length):
+                    gen_tokens.append(t[:l + arbitrary_increase])
 
-            for task_id, inverter, gen_text, label_text in zip(task_ids, inverters, gen_texts, label_texts):
-                relaxed_token_acc_list.append(best_match_count(gen_text, label_text) / len(label_text))
-                # is valid grid
-                gen_grid, gen_is_grid = text_to_2d_grid(text=gen_text, no_dim=dataset.no_dim)
-                label_grid, label_is_grid = text_to_2d_grid(text=label_text, no_dim=dataset.no_dim)
-                assert label_is_grid
-                valid_grid_list.append(int(gen_is_grid))
-                if not gen_is_grid:
-                    task_id_and_text_list.append((task_id, gen_text, label_text))
-                    exact_acc_list.append(0)
-                    correct_grid_dim_list.append(0)
-                    token_acc_list.append(0)
-                    continue
-                assert isinstance(gen_grid, list)
-                assert isinstance(label_grid, list)
-                # now we know it's a valid grid
-                gen_text = grid_2d_to_text(gen_grid, no_dim=dataset.no_dim)
-                task_id_and_text_list.append((task_id, gen_text, label_text))
-                gen_grid, label_grid = list2d_to_tuple(gen_grid), list2d_to_tuple(label_grid)
-                # exact acc
-                exact_acc_list.append(int(gen_grid == label_grid))
-                # save gen and gt grid
-                task_id_and_inverter_grids.append((task_id, inverter, gen_grid, label_grid))
-                # correct grid dim
-                is_correct_grid_dim = (len(gen_grid) == len(label_grid) and len(gen_grid[0]) == len(label_grid[0]))
-                correct_grid_dim_list.append(int(is_correct_grid_dim))
-                if not is_correct_grid_dim:
-                    token_acc_list.append(0)
-                    continue
-                # token acc
-                grid_size = len(label_grid) * len(label_grid[0])
-                num_token_correct = 0
-                for gen_row, label_row in zip(gen_grid, label_grid):
-                    for gen_x, label_x in zip(gen_row, label_row):
-                        num_token_correct += int(gen_x == label_x)
-                token_acc_list.append(num_token_correct / grid_size)
+            # compute metrics
+            assert len(gen_tokens) == len(gen_output_ids) == len(task_ids)
+            for task, gen, gt in zip(task_ids, gen_tokens, gen_output_ids):
+                # metric
+                if task in CLASSIFICATION_TASKS:
+                    accuracy = int(gen.tolist() == gt[:-1].tolist()) # gt includes eos
+                    macro_f1_list.append(-1.0)
+                    accuracy_list.append(accuracy)
+                else:
+                    macro_f1 = macro_f1_score(gen, gt[:-1]) # gt includes eos
+                    assert 0 <= macro_f1 <= 1
+                    macro_f1_list.append(macro_f1)
+                    accuracy_list.append(-1.0)
+
+            # log output
+            gen_texts = dataset.tokenizer.batch_decode(gen_tokens, skip_special_tokens=True)
+            gt_texts = dataset.tokenizer.batch_decode(gen_output_ids, skip_special_tokens=True)
+            assert len(gen_texts) == len(gt_texts) == len(task_ids)
+            for gen_text, gt_text, task_id in zip(gen_texts, gt_texts, task_ids):
+                output_list.append({
+                    'task_id': task_id,
+                    'gen_text': gen_text,
+                    'gt_text': gt_text,
+                })
 
     distributed_state.wait_for_everyone()
     # results
-    task_id_and_text_list = gather_object(task_id_and_text_list)
-    task_id_and_inverter_grids = gather_object(task_id_and_inverter_grids) # likely diff len from dataset
-    # accuracies
-    exact_acc_list = gather_object(exact_acc_list)
-    valid_grid_list = gather_object(valid_grid_list)
-    correct_grid_dim_list = gather_object(correct_grid_dim_list)
-    token_acc_list = gather_object(token_acc_list)
-    relaxed_token_acc_list = gather_object(relaxed_token_acc_list)
-    # ttt
-    ttt_provided_list = gather_object(ttt_provided_list)
+    output_list = gather_object(output_list)
+    macro_f1_list = gather_object(macro_f1_list)
+    accuracy_list = gather_object(accuracy_list)
 
-    assert len(task_id_and_text_list) == len(dataset), (len(task_id_and_text_list), len(dataset))
-    assert len(exact_acc_list) == len(dataset), (len(exact_acc_list), len(dataset))
-    assert len(valid_grid_list) == len(dataset), (len(valid_grid_list), len(dataset))
-    assert len(correct_grid_dim_list) == len(dataset), (len(correct_grid_dim_list), len(dataset))
-    assert len(token_acc_list) == len(dataset), (len(token_acc_list), len(dataset))
-    assert len(relaxed_token_acc_list) == len(dataset), (len(relaxed_token_acc_list), len(dataset))
-    assert len(ttt_provided_list) == len(dataset), (len(ttt_provided_list), len(dataset))
+    assert len(output_list) == len(dataset), (len(output_list), len(dataset))
+    assert len(macro_f1_list) == len(dataset), (len(macro_f1_list), len(dataset))
+    assert len(accuracy_list) == len(dataset), (len(accuracy_list), len(dataset))
 
     # average metrics
-    # note these are all computed without accounting for skipped eval grids
-    exact_acc = sum(exact_acc_list) / len(dataset)
-    valid_grid = sum(valid_grid_list) / len(dataset)
-    correct_grid_dim = sum(correct_grid_dim_list) / len(dataset)
-    token_acc = sum(token_acc_list) / len(dataset)
-    relaxed_token_acc = sum(relaxed_token_acc_list) / len(dataset)
-    ttt_provided = sum(ttt_provided_list) / len(dataset)
+    macro_f1_list = [x for x in macro_f1_list if x != -1.0]
+    accuracy_list = [x for x in accuracy_list if x != -1.0]
+    assert len(macro_f1_list) + len(accuracy_list) == len(dataset)
+    macro_f1 = sum(macro_f1_list) / len(macro_f1_list) if len(macro_f1_list) > 0 else 0
+    accuracy = sum(accuracy_list) / len(accuracy_list) if len(accuracy_list) > 0 else 0
 
     # grab all results
     task_id_to_texts = defaultdict(list)
-    for task_id, gen_text, label_text in task_id_and_text_list:
-        task_id_to_texts[task_id].append((gen_text, label_text))
+    for output in output_list:
+        task_id_to_texts[output['task_id']].append((output['gen_text'], output['gt_text']))
 
-    # voting
-    votes = {}
-    for task_id in dataset.task_id_to_gt:
-        # get 2 vote results
-        inverters_and_gen_grids = [(x[1], list2d_to_tuple(x[2])) for x in task_id_and_inverter_grids if x[0] == task_id]
-        votes[task_id] = [[[0]], [[0]]]
-        if len(inverters_and_gen_grids) > 0:
-            attempt1, attempt2, _ = invert_and_vote(inverters_and_gen_grids)
-            votes[task_id] = [attempt1, attempt2]
-        # assert all label grids are the same after invert augmentation
-        inverters_and_label_grids = [(x[1], list2d_to_tuple(x[3])) for x in task_id_and_inverter_grids if x[0] == task_id]
-        if len(inverters_and_label_grids) > 0:
-            _, _, inverted_labels = invert_and_vote(inverters_and_label_grids)
-            assert len(set(inverted_labels)) == 1
-
-    # competition evaluation
-    task_name_to_corrects = defaultdict(list)
-    for task_id, gt in dataset.task_id_to_gt.items():
-        correct = list2d_to_tuple(gt) in votes[task_id]
-        task_name = task_id.split('-')[0]
-        task_name_to_corrects[task_name].append(correct)
-
-    competition_sub_correct = sum(sum(corrects) for corrects in task_name_to_corrects.values())
-    competition_all_correct = sum(all(corrects) for corrects in task_name_to_corrects.values())
-    competition_sub_acc = competition_sub_correct / sum(len(corrects) for corrects in task_name_to_corrects.values())
-    competition_all_acc = competition_all_correct / len(task_name_to_corrects)
-
-    if cached_model_weights_path is not None:
-        os.remove(cached_model_weights_path)
-    if cached_prior_embeddings_weights_path is not None:
-        os.remove(cached_prior_embeddings_weights_path)
-    if cached_program_embeddings_weights_path is not None:
-        os.remove(cached_program_embeddings_weights_path)
-    if cached_vae_projection_weights_path is not None:
-        os.remove(cached_vae_projection_weights_path)
-    if cached_quantizer_weights_path is not None:
-        os.remove(cached_quantizer_weights_path)
-    if cached_program_norm_weights_path is not None:
-        os.remove(cached_program_norm_weights_path)
-
-    return exact_acc, valid_grid, correct_grid_dim, token_acc, relaxed_token_acc, task_id_to_texts, votes, competition_sub_acc, competition_all_acc, ttt_provided
-
-
-def list2d_to_tuple(l: List[List[int]]) -> Tuple[Tuple[int]]:
-    return tuple(tuple(row) for row in l) # type: ignore
-
-
-def row_base_majority_voting(
-        grids: List[Tuple[Tuple[int]]],
-        transpose: bool = False,
-    ) -> Tuple[Tuple[int]]:
-    # transpose if needed
-    if transpose:
-        grids = [list2d_to_tuple((np.array(grid).T).tolist()) for grid in grids] # type: ignore
-    # get most common shape
-    shapes = [np.array(grid).shape for grid in grids]
-    most_common_n_row, most_common_n_col = max(set(shapes), key=shapes.count)
-    # for each row, find all grids with same number of column that also contain this row
-    grid_rows = []
-    for row_i in range(most_common_n_row):
-        all_rows = [
-            grid[row_i]
-            for grid in grids
-            if len(grid) > row_i and len(grid[row_i]) == most_common_n_col
-        ]
-        most_common_row = max(set(all_rows), key=all_rows.count)
-        grid_rows.append(most_common_row)
-    # transpose back if needed
-    grid = np.array(grid_rows).T if transpose else np.array(grid_rows)
-    return list2d_to_tuple(grid.tolist())
-
-
-def get_three_votes(grids: List[Tuple[Tuple[int]]]) -> List[Tuple[Tuple[int]]]:
-    unique_grids = list(set(grids))
-    counts = [grids.count(grid) for grid in unique_grids]
-    common1 = unique_grids[np.argmax(counts)]
-    common2 = common1
-    common3 = common1
-    # assign common2 and common3
-    if len(unique_grids) > 2:
-        common2 = unique_grids[np.argsort(counts)[-2]]
-        common3 = unique_grids[np.argsort(counts)[-3]]
-    elif len(unique_grids) > 1:
-        common2 = unique_grids[np.argsort(counts)[-2]]
-    # break tie for common2 and common3
-    row_based_majority = row_base_majority_voting(grids, transpose=False)
-    col_based_majority = row_base_majority_voting(grids, transpose=True)
-    if common2 == common1:
-        common2 = (
-            row_based_majority
-            if row_based_majority != common1
-            else col_based_majority
-        )
-    if common3 in [common1, common2]:
-        common3 = (
-            row_based_majority
-            if row_based_majority not in (common1, common2)
-            else col_based_majority
-        )
-    return [common1, common2, common3]
-
-
-def invert_and_vote(inverters_and_grids: List[Tuple[str, Tuple[Tuple[int]]]]):
-    # collect inverted grids by augmentation
-    category_to_grids = defaultdict(list)
-    for inverter, grid in inverters_and_grids:
-        inverter_fn = lambda x: x
-        if inverter != "":
-            inverter_fn = eval("arclib.augmenters." + inverter)
-        grid = list2d_to_tuple(inverter_fn(np.array(grid)).tolist())
-        category_to_grids[inverter].append(grid)
-    # add all grids as a category
-    grids_all = []
-    for key in category_to_grids:
-        grids_all += category_to_grids[key]
-    category_to_grids["all"] = grids_all
-    # first voting round
-    candidates = []
-    for grids in category_to_grids.values():
-        candidates += get_three_votes(grids)
-    # second voting round
-    c1, c2, c3 = get_three_votes(candidates)
-    # break tie between c2 and c3
-    if candidates.count(c2) == candidates.count(c3):
-        if "identity" in category_to_grids:
-            if category_to_grids["identity"].count(c2) < category_to_grids["identity"].count(c3):
-                c2 = c3
-    return c1, c2, grids_all
-
-
-def grid_2d_to_text(grid: list[List[int]], no_dim: bool):
-    height, width = len(grid), len(grid[0])
-    lines = [] if no_dim else [f"{str(height)}{str(width)}"]
-    for row in grid:
-        lines.append("".join([str(x) for x in row]))
-    return "\n".join(lines)
-
-
-def text_to_2d_grid(text: str, no_dim: bool) -> Tuple[Optional[List[List[int]]], bool]:
-    try:
-        text = text.strip() # label is appended by \n
-        grid_lines = text.split('\n')
-        grid = []
-        row_lens = []
-        if not no_dim:
-            grid_lines = grid_lines[1:]
-        for l in grid_lines: # skip dimensions
-            row = [int(x) for x in l]
-            grid.append(row)
-            row_lens.append(len(row))
-            assert all(0 <= x and x < 10 for x in row)
-        assert len(set(row_lens)) == 1 # so the grid is not empty
-        assert row_lens[0] > 0
-        return grid, True
-    except:
-        return None, False
+    return macro_f1, accuracy, task_id_to_texts
 
 
 @torch.no_grad()
@@ -2102,16 +1346,14 @@ def main():
     parser.add_argument("--output_dir", type=str, default="./encoder_decoder/outputs")
     parser.add_argument("--log_every", type=int, default=10)
     parser.add_argument("--save_every", type=int, default=250)
-    parser.add_argument("--tracker_project_name", type=str, default="arc")
+    parser.add_argument("--tracker_project_name", type=str, default="metaicl")
     parser.add_argument("--save_all_models", action="store_true") # otherwise save only best
 
     # Debug
     parser.add_argument("--debug", action='store_true')
-    parser.add_argument("--debug_len", type=int, default=-1) # two grid -> 1867
-    parser.add_argument("--debug_fixed_order", action="store_true")
+    parser.add_argument("--debug_len", type=int, default=-1)
     parser.add_argument("--debug_random_pad", action="store_true")
     parser.add_argument("--debug_pad_len", type=int, default=-1)
-    parser.add_argument("--debug_train_data", action="store_true")
     parser.add_argument("--debug_no_resume", action='store_true')
 
     # Model
@@ -2121,7 +1363,7 @@ def main():
     parser.add_argument("--trainable_nbit", type=int, choices=[16, 32], default=16)
     parser.add_argument("--gradient_checkpointing", action="store_true")
     parser.add_argument("--ar_gradient_checkpointing", action="store_true")
-    parser.add_argument("--no_lora", action="store_true")
+    parser.add_argument("--lora", action="store_true")
     parser.add_argument("--no_residual", action="store_true")
     parser.add_argument("--no_normalize", action="store_true")
     parser.add_argument("--token_weighted_loss", action="store_true")
@@ -2129,7 +1371,8 @@ def main():
     parser.add_argument("--no_tf32", action="store_true")
     parser.add_argument("--demonstration_dropout", type=float, default=0.0)
     parser.add_argument("--reset_rope", action="store_true")
-    parser.add_argument("--loss_on_first", action="store_true")
+    parser.add_argument("--loss_type", type=str, choices=['only_last', 'all', 'exclude_first'], default='exclude_first')
+    parser.add_argument("--lr_scheduler", type=str, choices=["cosine", "constant"], default="cosine")
 
     # invar loss
     parser.add_argument("--invar_loss_margin", type=float, default=0.5)
@@ -2151,36 +1394,27 @@ def main():
     parser.add_argument("--mlp_factor", type=int, default=4)
 
     # Training
-    parser.add_argument("--grad_accum_steps", type=int, default=8)
-    parser.add_argument("--train_batch_size", type=int, default=2)
-    parser.add_argument("--eval_batch_size", type=int, default=4)
-    parser.add_argument("--lr_embedding", type=float, default=2e-5)
-    parser.add_argument("--lr_program", type=float, default=2e-4)
-    parser.add_argument("--lr_prior", type=float, default=2e-4)
-    parser.add_argument("--lr_other", type=float, default=2e-4)
+    parser.add_argument("--grad_accum_steps", type=int, default=4)
+    parser.add_argument("--train_batch_size", type=int, default=16)
+    parser.add_argument("--eval_batch_size", type=int, default=64)
+    parser.add_argument("--lr_embedding", type=float, default=1e-6)
+    parser.add_argument("--lr_program", type=float, default=1e-5)
+    parser.add_argument("--lr_prior", type=float, default=1e-5)
+    parser.add_argument("--lr_other", type=float, default=1e-5)
     parser.add_argument("--weight_decay", type=float, default=0.01)
     parser.add_argument("--num_epochs", type=int, default=10000)
     parser.add_argument("--samples_per_epoch", type=int, default=20000)
-    parser.add_argument("--eval_epochs", type=int, default=2)
+    parser.add_argument("--eval_epochs", type=int, default=4)
     parser.add_argument("--max_grad_norm", default=1.0, type=float, help="Max gradient norm.")
     parser.add_argument("--optimizer", type=str, choices=["adamw8bit", "adamw", "sgd"], default="adamw")
     parser.add_argument("--dry_train_run", action="store_true")
     parser.add_argument("--dry_eval_run", action="store_true")
-    parser.add_argument("--warmup_epochs", type=int, default=1)
-    parser.add_argument("--max_seq_len", type=int, default=8192)
+    parser.add_argument("--warmup_epochs", type=int, default=0)
     parser.add_argument("--attention_dropout", type=float, default=0.0)
     parser.add_argument("--program_dropout", type=float, default=0.0)
     parser.add_argument("--program_noise_std", type=float, default=0.0)
 
-    # Evaluation
-    parser.add_argument("--extra_inference_pairs", type=int, default=0)
-    parser.add_argument("--limit_inference_pairs", action='store_true')
-    parser.add_argument("--limit_inference_pairs_strict", action='store_true') # overrides limit_inference_pairs
-
     # scheduled extra losses
-    parser.add_argument("--consistency_loss_lambda", type=float, default=0.0)
-    parser.add_argument("--consistency_loss_offset_epochs", type=int, default=0)
-    parser.add_argument("--consistency_loss_linear_epochs", type=int, default=0)
     parser.add_argument("--invar_loss_lambda", type=float, default=0.0)
     parser.add_argument("--invar_loss_offset_epochs", type=int, default=0)
     parser.add_argument("--invar_loss_linear_epochs", type=int, default=0)
@@ -2198,51 +1432,11 @@ def main():
     parser.add_argument("--kl_loss_linear_epochs", type=int, default=0)
 
     # both data
+    parser.add_argument("--delimiter", type=str, default=' ')
     parser.add_argument("--num_workers", type=int, default=8)
-    parser.add_argument("--min_num_pair", type=int, default=8) # includes test pair
-    parser.add_argument("--max_num_pair", type=int, default=8) # includes test pair
-    parser.add_argument("--train_pad_side", type=str, choices=["left", "right"], default="right")
-    parser.add_argument("--gen_pad_side", type=str, choices=["left", "right"], default="left")
-    parser.add_argument("--curriculum_iters", type=int, default=-1) # grow from min_num_pair to max_num_pair
-    parser.add_argument("--no_dim", action='store_true')
-    parser.add_argument("--no_separate_color_tokens", action='store_true')
-    parser.add_argument("--no_color_permute", action="store_true")
-    parser.add_argument("--no_pair_permute", action="store_true")
-    parser.add_argument("--no_d8", action="store_true")
-    parser.add_argument("--lr_scheduler", type=str, choices=["cosine", "constant"], default="cosine")
-
-    # re-arc train data
-    parser.add_argument("--train_data_dir", type=str, default="./data/re-arc/train_data/tasks")
-    parser.add_argument("--verifier_file", type=str, default="./data/re-arc/verifiers.py") # for re-arc and train-original invar loss
-    parser.add_argument("--no_train_original", action="store_true")
-    parser.add_argument("--only_train_original", action="store_true")
-
-    # extra train data
-    parser.add_argument("--re_arc_ratio", type=float, default=1.0)
-    parser.add_argument("--concept_arc_ratio", type=float, default=0.0)
-    parser.add_argument("--arc_heavy_ratio", type=float, default=0.0)
-
-    # augmentation
-    parser.add_argument("--extra_augment_ratio", type=float, default=0.0)
-    parser.add_argument("--extra_augment_single_grid", action="store_true")
-
-    # eval train data
-    parser.add_argument("--eval_train_dir", type=str, default="./data/re-arc/arc_original/training")
-    parser.add_argument("--eval_train_select_tasks_path", type=str, default=None)
-    parser.add_argument("--eval_train_leave_ns", type=int, nargs="+", default=[0])
-    parser.add_argument("--eval_train_leave_ns_inc", action="store_true")
-    parser.add_argument("--eval_train_permute_n", type=int, default=0)
-    parser.add_argument("--eval_train_augment_n", type=int, default=0)
-    parser.add_argument("--eval_train_permute_iters", type=int, default=0)
-
-    # eval eval data (mirror eval train data)
-    parser.add_argument("--eval_eval_dir", type=str, default="./data/re-arc/arc_original/evaluation")
-    parser.add_argument("--eval_eval_select_tasks_path", type=str, default=None)
-    parser.add_argument("--eval_eval_leave_ns", type=int, nargs="+", default=[0])
-    parser.add_argument("--eval_eval_leave_ns_inc", action="store_true")
-    parser.add_argument("--eval_eval_permute_n", type=int, default=0)
-    parser.add_argument("--eval_eval_augment_n", type=int, default=0)
-    parser.add_argument("--eval_eval_permute_iters", type=int, default=0)
+    parser.add_argument("--num_pair", type=int, default=4) # includes test pair
+    parser.add_argument("--eval_n_sample_per_task", type=int, default=250)
+    parser.add_argument("--max_seq_len", type=int, default=512)
 
     # Lora
     parser.add_argument("--lora_rank", type=int, default=256)
@@ -2266,17 +1460,11 @@ def main():
         args.log_every = 1
 
     # check args
-    if args.model_name == "nemo8b":
-        assert args.train_pad_side == args.gen_pad_side == "left"
-    assert not (args.no_train_original and args.only_train_original)
-    assert args.min_num_pair >= 3
     if args.warmup_cookbook_only_epochs:
         assert args.codebook_loss_offset_epochs == 0
         assert args.codebook_loss_linear_epochs == 0
     assert args.commitment_loss_offset_epochs >= args.warmup_cookbook_only_epochs
-    assert args.extra_inference_pairs == 0
-
-    if args.no_lora:
+    if not args.lora:
         args.untrainable_nbit = args.trainable_nbit # untrainable become trainable
 
     args.output_dir = os.path.join(args.output_dir, args.tag)
@@ -2342,6 +1530,8 @@ def main():
     assert isinstance(tokenizer, PreTrainedTokenizerFast)
     assert tokenizer.pad_token is None
     assert isinstance(tokenizer.bos_token, str)
+    tokenizer.pad_token = tokenizer.eos_token
+    tokenizer.padding_side = 'left'
     logger.info("Tokenizers loaded and pad tokens handled.")
 
     # Build base models
@@ -2436,75 +1626,9 @@ def main():
         # )
         logger.info("Codebook initialized.")
 
-    # only keep these tokens, resize model embedding (eos == pad)
-    # we do not include program tokens here, those are added later during training and inference
-    if not args.no_separate_color_tokens:
-        keep_tokens = [str(i) for i in range(31)]
-        if args.no_dim:
-            keep_tokens = []
-    else:
-        keep_tokens = [str(i) for i in range(31)]
-        if args.no_dim:
-            keep_tokens = [str(i) for i in range(10)]
-    keep_tokens += [tokenizer.bos_token, tokenizer.eos_token, "\n", "input", "output", "pad"]
-    assert len(set(keep_tokens)) == len(keep_tokens)
-
-    keep_token_ids = []
-    for token in keep_tokens:
-        token_id = tokenizer(token)["input_ids"] # type: ignore
-        assert isinstance(token_id, list) and len(token_id) == 2 # with start token
-        keep_token_ids.append(token_id[1])
-    assert len(set(keep_token_ids)) == len(keep_token_ids)
-
-    color_embeddings = None
-    if not args.no_separate_color_tokens:
-        color_embeddings = initialize_program_embeddings(
-            base_model.model.embed_tokens.weight.data.detach().clone(),
-            accelerator,
-            ntokens=10,
-            cov_scale=1.0,
-        )
-
-    # this breaks embedding tying, but whatever
-    with torch.no_grad():
-        # subset embeddings and lmheads
-        assert base_model.model.embed_tokens.weight.shape == base_model.lm_head.weight.shape
-        base_model.model.embed_tokens.weight = nn.Parameter(base_model.model.embed_tokens.weight[keep_token_ids])
-        base_model.model.embed_tokens.num_embeddings = len(keep_token_ids)
-        assert base_model.lm_head.bias is None
-        base_model.lm_head.weight = nn.Parameter(base_model.lm_head.weight[keep_token_ids])
-        base_model.lm_head.out_features = len(keep_token_ids)
-        base_model.config.tie_word_embeddings = False
-
-        if not args.no_separate_color_tokens:
-            assert isinstance(color_embeddings, torch.Tensor)
-            base_model.model.embed_tokens.weight = nn.Parameter(torch.cat([color_embeddings, base_model.model.embed_tokens.weight]))
-            base_model.model.embed_tokens.num_embeddings += 10
-            base_model.lm_head.weight = nn.Parameter(torch.cat([color_embeddings, base_model.lm_head.weight]))
-            base_model.lm_head.out_features += 10
-
-    if not args.no_separate_color_tokens:
-        keep_tokens = [f"c{c}" for c in range(10)] + keep_tokens
-
-    # update configs
-    assert base_model.config.vocab_size and base_model.config.bos_token_id and base_model.config.eos_token_id
-    base_model.config.vocab_size = len(keep_token_ids) + (0 if args.no_separate_color_tokens else 10)
-    base_model.config.bos_token_id = keep_tokens.index(tokenizer.bos_token) # type: ignore
-    base_model.config.eos_token_id = keep_tokens.index(tokenizer.eos_token) # type: ignore
-
-    # create custom tokenizer
-    arc_tokenizer = ARCTokenizer(
-        tokens=keep_tokens, # type: ignore
-        bos_token=tokenizer.bos_token,
-        eos_token=tokenizer.eos_token, # type: ignore
-        pad_token="pad",
-    )
-    del tokenizer
-    tokenizer = arc_tokenizer
-
     # lora
     model = None
-    if args.no_lora:
+    if not args.lora:
         model = base_model
     else:
         peft_config = LoraConfig(
@@ -2600,41 +1724,39 @@ def main():
     if program_norm is not None:
         logger.info(f'program norm size {round(get_memory_footprint(program_norm) / 1024 ** 3, 2)}GB')
 
+    # load dataset and figure out splits
+    dataset = datasets.load_dataset("bigheiniuJ/EvalMetaICLAll")
+    train_split: Dataset = dataset['meta_train'] # type: ignore
+    test_split: Dataset = dataset['meta_eval_100shot'] # type: ignore
+    assert not set(HR_TASKS).intersection(set(LR_TASKS))
+    # filter and remove useless columns
+    train_split = train_split.filter(lambda example: example["task"] in HR_TASKS)
+    test_split = test_split.filter(lambda example: example["task"] in LR_TASKS)
+    train_split = train_split.remove_columns(["seed", "split"])
+    test_split = test_split.remove_columns(["split"])
+    # # print counts
+    # logger.info('train task sample count')
+    # logger.info(f"{pprint.pformat(Counter(train_split['task']), indent=4)}")
+    # logger.info('')
+    # logger.info('test task sample count')
+    # logger.info(f"{pprint.pformat(Counter(test_split['task']), indent=4)}")
+    # logger.info('')
+
     # Build training dataset
-    global_batch_size = args.train_batch_size * args.grad_accum_steps * accelerator.num_processes
     train_dataset = TrainDataset(
-        train_data_dir=args.train_data_dir,
-        eval_train_dir=args.eval_train_dir,
-        verifier_file=args.verifier_file,
-        re_arc_ratio=args.re_arc_ratio,
-        concept_arc_ratio=args.concept_arc_ratio,
-        arc_heavy_ratio=args.arc_heavy_ratio,
+        data=train_split, # type: ignore
         tokenizer=tokenizer,
         total_steps=args.samples_per_epoch,
-        extra_augment_ratio=args.extra_augment_ratio,
-        extra_augment_single_grid=args.extra_augment_single_grid,
         seed=args.seed,
         process_index=accelerator.process_index,
         ntokens=args.ntokens,
-        debug_fixed_order=args.debug_fixed_order,
-        debug_random_pad=args.debug_random_pad,
-        debug_pad_len=args.debug_pad_len,
-        train_pad_side=args.train_pad_side,
-        debug_train_data=args.debug_train_data,
-        no_color_permute=args.no_color_permute,
-        no_pair_permute=args.no_pair_permute,
-        no_d8=args.no_d8,
-        min_num_pair=args.min_num_pair,
-        max_num_pair=args.max_num_pair,
-        no_train_original=args.no_train_original,
-        only_train_original=args.only_train_original,
-        debug_len=args.debug_len,
+        num_pair=args.num_pair,
         num_workers=args.num_workers,
-        curriculum_iters=args.curriculum_iters,
-        global_batch_size=global_batch_size,
-        no_dim=args.no_dim,
-        no_separate_color_tokens=args.no_separate_color_tokens,
         max_seq_len=args.max_seq_len,
+        delimiter=args.delimiter,
+        debug_random_pad=args.debug_random_pad,
+        debug_len=args.debug_len,
+        debug_pad_len=args.debug_pad_len,
     )
     train_collate_fn = partial(collate_fn_train, dataset=train_dataset)
     if args.invar_loss_lambda > 0.0:
@@ -2651,11 +1773,6 @@ def main():
     )
     logger.info(f"len(train_dataset) = {len(train_dataset)}")
     logger.info(f"len(train_loader) = {len(train_loader)}")
-
-    if args.debug_train_data:
-        os.system("rm -rf ./debug_train_data")
-        os.makedirs("./debug_train_data")
-        os.system("chmod -R 777 ./debug_train_data")
 
     # Param groups for LoRA
     embedding_params = []
@@ -2698,7 +1815,7 @@ def main():
     logger.info(f"Optimizer with {len(other_params)} other-params lr={args.lr_other}")
 
     # LR schedule
-    steps_per_epoch = args.samples_per_epoch // global_batch_size
+    steps_per_epoch = args.samples_per_epoch // (args.train_batch_size * args.grad_accum_steps * accelerator.num_processes)
     num_training_steps = steps_per_epoch * args.num_epochs
     if args.lr_scheduler == 'cosine':
         lr_scheduler = get_cosine_schedule_with_warmup(
@@ -2740,12 +1857,6 @@ def main():
         linear_epochs=args.program_loss_linear_epochs,
         steps_per_epoch=steps_per_epoch,
     )
-    consistency_loss_lambda_scheduler = LambdaScheduler(
-        loss_lambda=args.consistency_loss_lambda,
-        start_epoch=args.consistency_loss_offset_epochs,
-        linear_epochs=args.consistency_loss_linear_epochs,
-        steps_per_epoch=steps_per_epoch,
-    )
     invar_loss_lambda_scheduler = LambdaScheduler(
         loss_lambda=args.invar_loss_lambda,
         start_epoch=args.invar_loss_offset_epochs,
@@ -2756,7 +1867,6 @@ def main():
     # codebook_loss_lambda_scheduler.visualize(num_training_steps, 'codebook.jpg')
     # commitment_loss_lambda_scheduler.visualize(num_training_steps, 'commitment.jpg')
     # program_loss_lambda_scheduler.visualize(num_training_steps, 'program.jpg')
-    # consistency_loss_lambda_scheduler.visualize(num_training_steps, 'consistency.jpg')
     # invar_loss_lambda_scheduler.visualize(num_training_steps, 'invar.jpg')
 
     contrastive_loss = ContrastiveLoss(margin=args.invar_loss_margin)
@@ -2809,57 +1919,31 @@ def main():
         exit()
 
     # Build evaluation datasets
-    eval_train_dataset = EvalDataset(
-        args.eval_train_dir,
-        select_tasks_path=args.eval_train_select_tasks_path,
-        leave_ns=args.eval_train_leave_ns,
-        leave_ns_inc=args.eval_train_leave_ns_inc,
-        permute_n=args.eval_train_permute_n,
-        augment_n=args.eval_train_augment_n,
-        permute_iters=args.eval_train_permute_iters,
-        seed=args.seed,
-        tokenizer=tokenizer,
-        ntokens=args.ntokens,
-        debug_random_pad=args.debug_random_pad,
-        debug_pad_len=args.debug_pad_len,
-        train_pad_side=args.train_pad_side,
-        gen_pad_side=args.gen_pad_side,
-        debug_len=args.debug_len,
-        no_dim=args.no_dim,
-        no_separate_color_tokens=args.no_separate_color_tokens,
-        extra_inference_pairs=args.extra_inference_pairs,
-        limit_inference_pairs=args.limit_inference_pairs,
-        limit_inference_pairs_strict=args.limit_inference_pairs_strict,
-        max_num_train_pair=args.max_num_pair - 1,
-        max_seq_len=args.max_seq_len,
-    )
-    eval_eval_dataset = EvalDataset(
-        eval_dir=args.eval_eval_dir,
-        select_tasks_path=args.eval_eval_select_tasks_path,
-        leave_ns=args.eval_eval_leave_ns,
-        leave_ns_inc=args.eval_eval_leave_ns_inc,
-        permute_n=args.eval_eval_permute_n,
-        augment_n=args.eval_eval_augment_n,
-        permute_iters=args.eval_eval_permute_iters,
-        seed=args.seed,
-        tokenizer=tokenizer,
-        ntokens=args.ntokens,
-        debug_random_pad=args.debug_random_pad,
-        debug_pad_len=args.debug_pad_len,
-        train_pad_side=args.train_pad_side,
-        gen_pad_side=args.gen_pad_side,
-        debug_len=args.debug_len,
-        no_dim=args.no_dim,
-        no_separate_color_tokens=args.no_separate_color_tokens,
-        extra_inference_pairs=args.extra_inference_pairs,
-        limit_inference_pairs=args.limit_inference_pairs,
-        limit_inference_pairs_strict=args.limit_inference_pairs_strict,
-        max_num_train_pair=args.max_num_pair - 1,
-        max_seq_len=args.max_seq_len,
-    )
-    eval_collate_fn = partial(collate_fn_eval, dataset=eval_train_dataset) # only use tokenizer, padding info
+    seeds = sorted(set(test_split['seed']))
+    seed_to_test_split = [(seed, test_split.filter(lambda example: example['seed'] == seed).remove_columns('seed'))
+                          for seed in seeds]
+    eval_datasets = [
+        EvalDataset(
+            data=data, # type: ignore
+            seed=args.seed,
+            split_name=split_name,
+            tokenizer=tokenizer,
+            ntokens=args.ntokens,
+            num_pair=args.num_pair,
+            max_seq_len=args.max_seq_len,
+            delimiter=args.delimiter,
+            eval_n_sample_per_task=args.eval_n_sample_per_task,
+            debug_len=args.debug_len,
+            debug_random_pad=args.debug_random_pad,
+            debug_pad_len=args.debug_pad_len,
+        )
+        for split_name, data in seed_to_test_split
+    ]
+    assert len(set(tuple(sorted(data.task_to_indices.keys())) for data in eval_datasets)) == 1 # all eval splits same tasks
+
+    eval_collate_fn = partial(collate_fn_eval, dataset=eval_datasets[0]) # only use tokenizer, padding info
     if args.debug_len > 0:
-        eval_collate_fn = partial(collate_fn_eval_dummy, dataset=eval_train_dataset)
+        eval_collate_fn = partial(collate_fn_eval_dummy, dataset=eval_datasets[0])
 
     logger.info(f'======= TRAINING INFO START =======')
     logger.info(f'num_epochs={args.num_epochs}')
@@ -2880,7 +1964,7 @@ def main():
 
     # model saving
     last_save_model_path = None
-    epoch_to_eval_exact_acc = {}
+    epoch_to_total_score = {}
 
     # recovery
     logger.info(f"start/resume training from epoch {start_epoch} global_step {global_step} batch {resume_batch_idx}")
@@ -2906,14 +1990,9 @@ def main():
         commitment_loss_accum = 0.0
         perplexity_accum = 0.0
         program_loss_accum = 0.0
-        consistency_loss_accum = 0.0
         invar_loss_accum = 0.0
         total_loss_accum = 0.0
         grad_norm_accum = 0.0
-        if args.loss_on_first:
-            ce_losses_accum = [0.0 for _ in range(args.max_num_pair)]
-        else:
-            ce_losses_accum = [0.0 for _ in range(args.max_num_pair - 1)]
 
         for batch_idx, batch_data in enumerate(train_loader):
             # skip batch idx if recovered run already encountered it
@@ -2924,14 +2003,15 @@ def main():
             attention_mask = [x.to(accelerator.device) for x in batch_data["attention_mask"]]
             label_ids = [x.to(accelerator.device) for x in batch_data["label_ids"]]
             input_ids_lens = batch_data["input_ids_lens"]
-            num_pairs = batch_data["num_pairs"]
             is_same = batch_data["is_same"]
+            assert len(input_ids) == len(attention_mask) == len(label_ids) == len(input_ids_lens) == args.num_pair
+            assert set(len(x) for x in input_ids_lens) == {args.train_batch_size}
 
             train_codebook_only = (global_step < args.warmup_cookbook_only_epochs * steps_per_epoch)
 
             with accelerator.accumulate(model, prior_embeddings, program_embeddings, vae_projection, quantizer, program_norm):
                 with accelerator.autocast():
-                    ce_loss, kl_loss, codebook_loss, commitment_loss, perplexity, program_loss, consistency_loss, invar_loss, total_loss, log_ce_losses = model_loss(
+                    ce_loss, kl_loss, codebook_loss, commitment_loss, perplexity, program_loss, invar_loss, total_loss = model_loss(
                         # model
                         model=model,
                         prior_embeddings=prior_embeddings,
@@ -2946,15 +2026,14 @@ def main():
                         attention_mask=attention_mask,
                         label_ids=label_ids,
                         input_ids_lens=input_ids_lens,
-                        num_pairs=num_pairs,
+                        is_same=is_same,
                         # others
+                        num_pair=args.num_pair,
                         ntokens=args.ntokens,
-                        pad_side=args.train_pad_side,
                         kl_loss_lambda_scheduler=kl_loss_lambda_scheduler,
                         codebook_loss_lambda_scheduler=codebook_loss_lambda_scheduler,
                         commitment_loss_lambda_scheduler=commitment_loss_lambda_scheduler,
                         program_loss_lambda_scheduler=program_loss_lambda_scheduler,
-                        consistency_loss_lambda_scheduler=consistency_loss_lambda_scheduler,
                         invar_loss_lambda_scheduler=invar_loss_lambda_scheduler,
                         global_step=global_step,
                         no_residual=args.no_residual,
@@ -2969,10 +2048,9 @@ def main():
                         weird_cast=args.weird_cast,
                         demonstration_dropout=args.demonstration_dropout,
                         reset_rope=args.reset_rope,
-                        loss_on_first=args.loss_on_first,
+                        loss_type=args.loss_type,
                         debug=args.debug,
                         contrastive_loss=contrastive_loss,
-                        is_same=is_same,
                     )
 
                 # only log one process
@@ -2982,11 +2060,8 @@ def main():
                 commitment_loss_accum += commitment_loss.item() / args.grad_accum_steps
                 perplexity_accum += perplexity.item() / args.grad_accum_steps
                 program_loss_accum += program_loss.item() / args.grad_accum_steps
-                consistency_loss_accum += consistency_loss.item() / args.grad_accum_steps
                 invar_loss_accum += invar_loss.item() / args.grad_accum_steps
                 total_loss_accum += total_loss.item() / args.grad_accum_steps
-                for pair_i, pair_ce_loss in enumerate(log_ce_losses):
-                    ce_losses_accum[pair_i] += pair_ce_loss.item() / args.grad_accum_steps
 
                 accelerator.backward(total_loss)
                 if accelerator.sync_gradients:
@@ -3007,7 +2082,6 @@ def main():
                             "train/commitment_loss": commitment_loss_accum,
                             "train/perplexity_accum": perplexity_accum,
                             "train/program_loss_accum": program_loss_accum,
-                            "train/consistency_loss_accum": consistency_loss_accum,
                             "train/invar_loss_accum": invar_loss_accum,
                             "train/total_loss": total_loss_accum,
                             "train/grad_norm": grad_norm_accum,
@@ -3015,7 +2089,6 @@ def main():
                             "train/lr_prior": lr_scheduler.get_last_lr()[1],
                             "train/lr_program": lr_scheduler.get_last_lr()[2],
                             "train/lr_other": lr_scheduler.get_last_lr()[3],
-                            **{f"train/ce_loss_pair_{pair_i}": pair_ce_loss_accum for pair_i, pair_ce_loss_accum in enumerate(ce_losses_accum)},
                         }, step=global_step)
                     except:
                         logger.info(f"wandb failed on process {accelerator.process_index}, skipping the error")
@@ -3026,14 +2099,9 @@ def main():
                 commitment_loss_accum = 0.0
                 perplexity_accum = 0.0
                 program_loss_accum = 0.0
-                consistency_loss_accum = 0.0
                 invar_loss_accum = 0.0
                 total_loss_accum = 0.0
                 grad_norm_accum = 0.0
-                if args.loss_on_first:
-                    ce_losses_accum = [0.0 for _ in range(args.max_num_pair)]
-                else:
-                    ce_losses_accum = [0.0 for _ in range(args.max_num_pair - 1)]
 
                 # recovery
                 if global_step % args.save_every == 0:
@@ -3063,74 +2131,55 @@ def main():
 
             no_codebook = epoch < args.warmup_cookbook_only_epochs
 
-            train_exact_acc, train_valid_grid, train_correct_grid_dim, train_token_acc, train_relaxed_token_acc, train_texts, \
-                train_votes, train_competition_sub_acc, train_competition_all_acc, _ = evaluate(
-                desc="eval_train",
-                task_to_ttt_path=None,
-                ttt_param_names=None,
-                model=model,
-                prior_embeddings=prior_embeddings,
-                program_embeddings=program_embeddings,
-                vae_projection=vae_projection,
-                quantizer=quantizer,
-                program_norm=program_norm,
-                dataset=eval_train_dataset,
-                accelerator=accelerator,
-                batch_size=args.eval_batch_size,
-                collate_fn=eval_collate_fn,
-                trainable_nbit=args.trainable_nbit,
-                no_flash_attn=args.no_flash_attn,
-                dry_eval_run=args.dry_eval_run,
-                no_residual=args.no_residual,
-                no_discrete_prior=args.no_discrete_prior,
-                output_dir=args.output_dir,
-                no_codebook=no_codebook,
-                weird_cast=args.weird_cast,
-            )
-            eval_exact_acc, eval_valid_grid, eval_correct_grid_dim, eval_token_acc, eval_relaxed_token_acc, eval_texts, \
-                eval_votes, eval_competition_sub_acc, eval_competition_all_acc, _ = evaluate(
-                desc="eval_eval",
-                task_to_ttt_path=None,
-                ttt_param_names=None,
-                model=model,
-                prior_embeddings=prior_embeddings,
-                program_embeddings=program_embeddings,
-                vae_projection=vae_projection,
-                quantizer=quantizer,
-                program_norm=program_norm,
-                dataset=eval_eval_dataset,
-                accelerator=accelerator,
-                batch_size=args.eval_batch_size,
-                collate_fn=eval_collate_fn,
-                trainable_nbit=args.trainable_nbit,
-                no_flash_attn=args.no_flash_attn,
-                dry_eval_run=args.dry_eval_run,
-                no_residual=args.no_residual,
-                no_discrete_prior=args.no_discrete_prior,
-                output_dir=args.output_dir,
-                no_codebook=no_codebook,
-                weird_cast=args.weird_cast,
-            )
+            macro_f1s, accuracys, total_scores = [], [], []
+            all_task_id_to_texts = defaultdict(list)
+            for eval_dataset in eval_datasets:
+                macro_f1, accuracy, task_id_to_texts = evaluate(
+                    desc="eval",
+                    model=model,
+                    prior_embeddings=prior_embeddings,
+                    program_embeddings=program_embeddings,
+                    vae_projection=vae_projection,
+                    quantizer=quantizer,
+                    program_norm=program_norm,
+                    dataset=eval_dataset,
+                    accelerator=accelerator,
+                    batch_size=args.eval_batch_size,
+                    collate_fn=eval_collate_fn,
+                    trainable_nbit=args.trainable_nbit,
+                    no_flash_attn=args.no_flash_attn,
+                    dry_eval_run=args.dry_eval_run,
+                    no_residual=args.no_residual,
+                    no_discrete_prior=args.no_discrete_prior,
+                    no_codebook=no_codebook,
+                    weird_cast=args.weird_cast,
+                )
+                total_score = (macro_f1 + accuracy) / 2.0
+                # aggregate
+                macro_f1s.append(macro_f1)
+                accuracys.append(accuracy)
+                total_scores.append(total_score)
+                for task_id, texts in task_id_to_texts.items():
+                    texts = [(eval_dataset.split_name, t[0], t[1]) for t in texts]
+                    all_task_id_to_texts[task_id] += texts
 
-            torch.cuda.empty_cache()
-            gc.collect()
+                torch.cuda.empty_cache()
+                gc.collect()
+
+            # print for debugging
+            logger.info(f"macro_f1s: {macro_f1s}")
+            logger.info(f"accuracys: {accuracys}")
+            logger.info(f"total_scores: {total_scores}")
+
+            macro_f1 = sum(macro_f1s) / len(macro_f1s)
+            accuracy = sum(accuracys) / len(accuracys)
+            total_score = sum(total_scores) / len(total_scores)
 
             if accelerator.is_main_process:
                 eval_metric_dict = {
-                    "eval/train_exact_acc": train_exact_acc,
-                    "eval/train_valid_grid": train_valid_grid,
-                    "eval/train_correct_grid_dim": train_correct_grid_dim,
-                    "eval/train_token_acc": train_token_acc,
-                    "eval/train_relaxed_token_acc": train_relaxed_token_acc,
-                    "eval/train_competition_sub_acc": train_competition_sub_acc,
-                    "eval/train_competition_all_acc": train_competition_all_acc,
-                    "eval/eval_exact_acc": eval_exact_acc,
-                    "eval/eval_valid_grid": eval_valid_grid,
-                    "eval/eval_correct_grid_dim": eval_correct_grid_dim,
-                    "eval/eval_token_acc": eval_token_acc,
-                    "eval/eval_relaxed_token_acc": eval_relaxed_token_acc,
-                    "eval/eval_competition_sub_acc": eval_competition_sub_acc,
-                    "eval/eval_competition_all_acc": eval_competition_all_acc,
+                    "eval/macro_f1": macro_f1,
+                    "eval/accuracy": accuracy,
+                    "eval/total_score": total_score,
                 }
                 logger.info(f'Evaluation results:\n{pprint.pformat(eval_metric_dict, indent=4)}')
                 try:
@@ -3138,30 +2187,16 @@ def main():
                 except:
                     logger.info(f"wandb failed on process {accelerator.process_index}, skipping the error")
 
-                # Save outputs
-                save_eval_train_pred_gt_path = os.path.join(args.output_dir, f"eval_train_{epoch+1}_pred_gt.json")
-                save_eval_eval_pred_gt_path = os.path.join(args.output_dir, f"eval_eval_{epoch+1}_pred_gt.json")
-                with open(save_eval_train_pred_gt_path, 'w') as f:
-                    json.dump(train_texts, f)
-                with open(save_eval_eval_pred_gt_path, 'w') as f:
-                    json.dump(eval_texts, f)
-                logger.info(f"Saved eval train pred gt to {save_eval_train_pred_gt_path}")
-                logger.info(f"Saved eval eval pred gt to {save_eval_eval_pred_gt_path}")
-
-                # save votes
-                save_eval_train_vote_path = os.path.join(args.output_dir, f"eval_train_{epoch+1}_vote.json")
-                save_eval_eval_vote_path = os.path.join(args.output_dir, f"eval_eval_{epoch+1}_vote.json")
-                with open(save_eval_train_vote_path, 'w') as f:
-                    json.dump(train_votes, f)
-                with open(save_eval_eval_vote_path, 'w') as f:
-                    json.dump(eval_votes, f)
-                logger.info(f"Saved eval train vote to {save_eval_train_vote_path}")
-                logger.info(f"Saved eval eval vote to {save_eval_eval_vote_path}")
+                # merge and save outputs
+                output_dict_path = os.path.join(args.output_dir, f"{epoch+1}_output_list.json")
+                with open(output_dict_path, 'w') as f:
+                    json.dump(all_task_id_to_texts, f)
+                logger.info(f"Saved output list to {output_dict_path}")
 
                 # Save model
                 do_save_model = args.save_all_models
                 if not args.save_all_models:
-                    if (not epoch_to_eval_exact_acc) or eval_exact_acc >= max(epoch_to_eval_exact_acc.values()):
+                    if (not epoch_to_total_score) or total_score >= max(epoch_to_total_score.values()):
                         do_save_model = True
 
                 if do_save_model:
@@ -3187,7 +2222,7 @@ def main():
                         output_dir=args.output_dir,
                         epoch=epoch,
                     )
-                epoch_to_eval_exact_acc[epoch] = eval_exact_acc
+                epoch_to_total_score[epoch] = total_score
 
     accelerator.end_training()
     logger.info("All done training.")
