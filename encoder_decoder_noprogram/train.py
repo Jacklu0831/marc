@@ -1124,7 +1124,7 @@ def main():
 
     # both data
     parser.add_argument("--num_workers", type=int, default=8)
-    parser.add_argument("--min_num_pair", type=int, default=3) # includes test pair
+    parser.add_argument("--min_num_pair", type=int, default=8) # includes test pair
     parser.add_argument("--max_num_pair", type=int, default=8) # includes test pair
     parser.add_argument("--max_seq_len", type=int, default=8192)
     parser.add_argument("--pad_side", type=str, choices=["left", "right"], default="left")
