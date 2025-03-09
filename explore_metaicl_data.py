@@ -1,3 +1,4 @@
+import json
 import os
 import matplotlib.pyplot as plt
 from functools import partial
@@ -10,55 +11,51 @@ from collections import Counter, defaultdict
 from datasets import load_dataset
 
 
+hr_lr_split = json.load(open('metaicl_config/hr_to_lr.json'))
+HR_TASKS = set(hr_lr_split['train'])
+LR_TASKS = set(hr_lr_split['test'])
+HR_TASKS.remove('gigaword')
+
 # load dataset
 dataset = load_dataset("bigheiniuJ/EvalMetaICLAll")
 train_split = dataset['meta_train']
 test_split = dataset['meta_eval_100shot']
 train_tasks = set(list(train_split['task']))
 test_tasks = set(list(test_split['task']))
-assert train_tasks.issubset(test_tasks)
+assert HR_TASKS.issubset(train_tasks)
+assert LR_TASKS.issubset(test_tasks)
 
+# get classification tasks
+task_to_is_classification = {}
+for task in test_tasks:
+    path = os.path.join(f'metaicl_config/tasks/{task}.json')
+    is_classification = json.load(open(path, 'r'))['task_type'] == 'classification'
+    task_to_is_classification[task] = is_classification
 
-
-
-# check classification tasks
-classification_tasks = ["superglue-rte", "tweet_eval-sentiment", "discovery", "glue-rte", "superglue-wsc", "glue-mrpc", "tweet_eval-stance_hillary", "tweet_eval-offensive", "emotion", "hatexplain", "glue-cola", "sick", "paws", "ethos-sexual_orientation", "glue-qqp", "tweet_eval-emotion", "sms_spam", "health_fact", "glue-mnli", "imdb", "ethos-disability", "glue-wnli", "scitail", "trec", "yahoo_answers_topics", "liar", "glue-sst2", "tweet_eval-stance_abortion", "circa", "tweet_eval-stance_climate", "glue-qnli", "tweet_eval-emoji", "ethos-directed_vs_generalized", "ade_corpus_v2-classification", "hate_speech_offensive", "superglue-wic", "google_wellformed_query", "tweet_eval-irony", "ethos-gender", "onestop_english", "trec", "rotten_tomatoes", "kilt_fever"]
-assert set(classification_tasks).issubset(test_tasks)
-
+# check if classification tasks have options
 task_to_indices = defaultdict(list)
 for idx, task in enumerate(test_split['task']):
     task_to_indices[task].append(idx)
 
 def check_data_i(i):
     data_i = test_split[i]
-    if data_i['task'] in classification_tasks:
-        assert len(data_i['options']) > 1, data_i['task']
-    # else:
-    #     assert len(data_i['options']) == 0, (data_i['task'], data_i['task'] in classification_tasks, data_i['options'])
+    assert len(data_i['options']) > 1
 
 for task in test_tasks:
-    print('making sure classification task', task, 'has options and otherwise not')
-    with Pool(32) as p:
-        task_lens = p.map(check_data_i, task_to_indices[task])
+    if task_to_is_classification[task]:
+        with Pool(32) as p:
+            task_lens = p.map(check_data_i, task_to_indices[task])
+
+# finally, filter train and test split to HR and LR tasks
+train_split = train_split.filter(lambda example: example["task"] in HR_TASKS)
+test_split = test_split.filter(lambda example: example["task"] in LR_TASKS)
 
 
 
-# hr to lr
-hr_tasks = set(["piqa", "hate_speech_offensive", "google_wellformed_query", "social_i_qa", "circa", "quoref", "glue-sst2", "scitail", "emo", "cosmos_qa", "freebase_qa", "ag_news", "art", "paws", "kilt_ay2", "glue-qnli", "quail", "ade_corpus_v2-classification", "sciq", "hatexplain", "emotion", "glue-qqp", "kilt_fever", "kilt_nq", "dbpedia_14", "kilt_zsre", "hellaswag", "squad-with_context", "hotpot_qa", "glue-mnli", "ropes", "squad-no_context", "kilt_hotpotqa", "discovery", "superglue-record", "race-middle", "race-high", "lama-trex", "swag", "gigaword", "amazon_polarity", "biomrc", "tab_fact", "tweet_eval-emoji", "tweet_eval-offensive", "tweet_eval-sentiment", "tweet_qa", "imdb", "lama-conceptnet", "liar", "anli", "wiki_qa", "kilt_trex", "wikisql", "wino_grande", "wiqa", "search_qa", "xsum", "yahoo_answers_topics", "yelp_polarity", "yelp_review_full"])
-lr_tasks = set(["quarel", "financial_phrasebank", "openbookqa", "codah", "qasc", "glue-mrpc", "dream", "sick", "commonsense_qa", "medical_questions_pairs", "quartz-with_knowledge", "poem_sentiment", "quartz-no_knowledge", "glue-wnli", "climate_fever", "ethos-national_origin", "ethos-race", "ethos-religion", "ai2_arc", "hate_speech18", "glue-rte", "superglue-cb", "superglue-copa", "tweet_eval-hate", "tweet_eval-stance_atheism", "tweet_eval-stance_feminist"])
-assert not set(hr_tasks).intersection(set(lr_tasks))
-print('number of hr tasks', len(hr_tasks))
-print('number of lr tasks', len(lr_tasks))
-for t in hr_tasks:
-    if t not in train_tasks:
-        print('missing hr', t)
-for t in lr_tasks:
-    if t not in test_tasks:
-        print('missing lr', t)
 
-# partition by task
-train_split = train_split.filter(lambda example: example["task"] in hr_tasks)
-test_split = test_split.filter(lambda example: example["task"] in lr_tasks)
+
+
+
 
 # only keep test split's one of five seeds
 test_split = test_split.filter(lambda example: example['seed'] == '100')

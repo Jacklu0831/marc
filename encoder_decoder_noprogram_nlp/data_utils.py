@@ -67,6 +67,7 @@ class TrainDataset(Dataset):
         debug_len: int,
         debug_pad_len: int,
         loss_type: str,
+        debug_overfit: bool,
     ):
         self.data = data
         self.tokenizer = tokenizer
@@ -79,6 +80,7 @@ class TrainDataset(Dataset):
         self.debug_len = debug_len
         self.debug_pad_len = debug_pad_len
         self.loss_type = loss_type
+        self.debug_overfit = debug_overfit
 
         # get a customizable delimiter, use whitespace by default
         self.delimiter = delimiter
@@ -124,7 +126,11 @@ def collate_fn_train(batch: List[int], dataset: TrainDataset) -> Dict:
         # choose task and indices
         task = rng.choice(list(dataset.task_to_indices)) # type: ignore
         indices = dataset.task_to_indices[task]
-        chosen_indices = rng.choice(indices, size=dataset.num_pair, replace=False).tolist() # type: ignore
+
+        if dataset.debug_overfit:
+            chosen_indices = indices[:dataset.num_pair]
+        else:
+            chosen_indices = rng.choice(indices, size=dataset.num_pair, replace=False).tolist() # type: ignore
 
         # compute input_ids, attention_mask, label_ids for each pair
         input_ids_of_each_pair = []
@@ -266,10 +272,11 @@ class EvalDataset:
         num_pair: int,
         max_seq_len: int,
         delimiter: str,
-        eval_n_sample_per_task: int,
+        eval_per_task: int,
         debug_len: int,
         debug_random_pad: bool,
         debug_pad_len: int,
+        debug_overfit: bool,
     ):
         self.data = data
         self.split_name = split_name
@@ -281,7 +288,7 @@ class EvalDataset:
         self.debug_len = debug_len
         self.debug_random_pad = debug_random_pad
         self.debug_pad_len = debug_pad_len
-        self.eval_n_sample_per_task = eval_n_sample_per_task
+        self.eval_per_task = eval_per_task
 
         # get a customizable delimiter, use whitespace by default
         self.delimiter = delimiter
@@ -299,11 +306,12 @@ class EvalDataset:
         rng = np.random.RandomState(seed)
         chosen_indices_and_task_ids = []
         for task, indices in self.task_to_indices.items():
-            for sample_i in range(self.eval_n_sample_per_task):
-                # task_id = f"{split_name}_{task}_{sample_i}"
-                task_id = task
-                chosen_indices = rng.choice(indices, size=num_pair, replace=False).tolist() # type: ignore
-                chosen_indices_and_task_ids.append((chosen_indices, task_id))
+            for _ in range(self.eval_per_task):
+                if debug_overfit:
+                    chosen_indices = indices[:num_pair]
+                else:
+                    chosen_indices = rng.choice(indices, size=num_pair, replace=False).tolist() # type: ignore
+                chosen_indices_and_task_ids.append((chosen_indices, task))
 
         # preset chosen task ids
         self.chosen_indices_and_task_ids = []

@@ -1,3 +1,4 @@
+from sklearn.metrics import f1_score, accuracy_score
 import shutil
 import wandb
 from datasets.arrow_dataset import Dataset
@@ -7,7 +8,7 @@ import torch.utils.checkpoint as checkpoint
 import matplotlib.pyplot as plt
 from datetime import timedelta
 from collections import defaultdict
-from typing import Union, Callable, List, Tuple, Optional, Iterator, Any
+from typing import Union, Callable, List, Tuple, Optional, Iterator, Any, Dict
 import pprint
 import math
 import json
@@ -73,30 +74,6 @@ NBIT_TO_DTYPE = {
     16: torch.bfloat16,
     32: torch.float32,
 }
-
-HR_TASKS = set(["piqa", "hate_speech_offensive", "google_wellformed_query", "social_i_qa", "circa", "quoref",
-                    "glue-sst2", "scitail", "emo", "cosmos_qa", "freebase_qa", "ag_news", "art", "paws", "kilt_ay2",
-                    "glue-qnli", "quail", "ade_corpus_v2-classification", "sciq", "hatexplain", "emotion", "glue-qqp",
-                    "kilt_fever", "kilt_nq", "dbpedia_14", "kilt_zsre", "hellaswag", "squad-with_context", "hotpot_qa",
-                    "glue-mnli", "ropes", "squad-no_context", "kilt_hotpotqa", "discovery", "superglue-record",
-                    "race-middle", "race-high", "lama-trex", "swag", "gigaword", "amazon_polarity", "biomrc", "tab_fact",
-                    "tweet_eval-emoji", "tweet_eval-offensive", "tweet_eval-sentiment", "tweet_qa", "imdb",
-                    "lama-conceptnet", "liar", "anli", "wiki_qa", "kilt_trex", "wikisql", "wino_grande", "wiqa",
-                    "search_qa", "xsum", "yahoo_answers_topics", "yelp_polarity", "yelp_review_full"])
-LR_TASKS = set(["quarel", "financial_phrasebank", "openbookqa", "codah", "qasc", "glue-mrpc", "dream", "sick",
-                "commonsense_qa", "medical_questions_pairs", "quartz-with_knowledge", "poem_sentiment",
-                "quartz-no_knowledge", "glue-wnli", "climate_fever", "ethos-national_origin", "ethos-race",
-                "ethos-religion", "ai2_arc", "hate_speech18", "glue-rte", "superglue-cb", "superglue-copa",
-                "tweet_eval-hate", "tweet_eval-stance_atheism", "tweet_eval-stance_feminist"])
-CLASSIFICATION_TASKS = set(["superglue-rte", "tweet_eval-sentiment", "discovery", "glue-rte", "superglue-wsc",
-                            "glue-mrpc", "tweet_eval-stance_hillary", "tweet_eval-offensive", "emotion", "hatexplain",
-                            "glue-cola", "sick", "paws", "ethos-sexual_orientation", "glue-qqp", "tweet_eval-emotion",
-                            "sms_spam", "health_fact", "glue-mnli", "imdb", "ethos-disability", "glue-wnli", "scitail",
-                            "trec", "yahoo_answers_topics", "liar", "glue-sst2", "tweet_eval-stance_abortion", "circa",
-                            "tweet_eval-stance_climate", "glue-qnli", "tweet_eval-emoji", "ethos-directed_vs_generalized",
-                            "ade_corpus_v2-classification", "hate_speech_offensive", "superglue-wic",
-                            "google_wellformed_query", "tweet_eval-irony", "ethos-gender", "onestop_english", "trec",
-                            "rotten_tomatoes", "kilt_fever"])
 
 
 class ContrastiveLoss(nn.Module):
@@ -265,8 +242,10 @@ def set_up_main_process_logger(accelerator, logger):
         transformers.utils.logging.set_verbosity_error()
 
 
-def extract_program_from_right_side(data: torch.Tensor, lens: List[int], ntokens: int):
+def extract_program_from_right_side(data: torch.Tensor, ntokens: int):
     # extract program from the right side of data
+    if ntokens == 0:
+        return data[:, 0:0, :]
     return data[:, -ntokens:, :]
 
 
@@ -486,13 +465,16 @@ def get_predicted_program(
         assert model_out is not None
 
         # remove the end program of past key values
-        new_past_key_values = tuple(
-            (
-                layer_kv[0][:, :, :-ntokens, :],
-                layer_kv[1][:, :, :-ntokens, :],
+        if ntokens == 0:
+            new_past_key_values = model_out.past_key_values
+        else:
+            new_past_key_values = tuple(
+                (
+                    layer_kv[0][:, :, :-ntokens, :],
+                    layer_kv[1][:, :, :-ntokens, :],
+                )
+                for layer_kv in model_out.past_key_values
             )
-            for layer_kv in model_out.past_key_values
-        )
 
         # format kv to batchsize x numlayer x 2, (nhead, seqlen, hiddendim)
         new_past_key_values = [
@@ -529,7 +511,6 @@ def get_predicted_program(
         hidden_states = model_out.hidden_states[-1] # (batch_size, seq_len, hidden_dim)
         new_programs = extract_program_from_right_side(
             data=hidden_states,
-            lens=pair_input_ids_lens,
             ntokens=ntokens,
         )
         # vae projection (no sample in eval)
@@ -788,13 +769,16 @@ def model_loss(
         if pair_i < num_pair - 1:
             assert model_out is not None
             # remove end program from kv cache
-            new_past_key_values = tuple(
-                (
-                    layer_kv[0][:, :, :-ntokens, :],
-                    layer_kv[1][:, :, :-ntokens, :],
+            if ntokens == 0:
+                new_past_key_values = model_out.past_key_values
+            else:
+                new_past_key_values = tuple(
+                    (
+                        layer_kv[0][:, :, :-ntokens, :],
+                        layer_kv[1][:, :, :-ntokens, :],
+                    )
+                    for layer_kv in model_out.past_key_values
                 )
-                for layer_kv in model_out.past_key_values
-            )
             # update kv cache
             if prev_past_key_values is not None:
                 assert prev_past_key_values[0][0].shape[2] + inputs_embeds[pair_i].shape[1] + ntokens == new_past_key_values[0][0].shape[2]
@@ -816,7 +800,6 @@ def model_loss(
             hidden_states = model_out.hidden_states[-1] # (batch_size, seq_len, hidden_dim) # type: ignore
             new_programs = extract_program_from_right_side(
                 data=hidden_states,
-                lens=pair_input_ids_lens,
                 ntokens=ntokens,
             )
 
@@ -966,25 +949,6 @@ def chunks(lst: List[int], n: int) -> Iterator[List[int]]:
         yield lst[i:i + n]
 
 
-def macro_f1_score(generated: torch.Tensor, groundtruth: torch.Tensor) -> float:
-    gen_counter = Counter(generated.tolist())
-    gt_counter = Counter(groundtruth.tolist())
-    all_tokens = set(gen_counter.keys()).union(set(gt_counter.keys()))
-
-    f1_scores = []
-    for token in all_tokens:
-        tp = min(gen_counter.get(token, 0), gt_counter.get(token, 0)) # true positive
-        fp = gen_counter.get(token, 0) - tp # false positive
-        fn = gt_counter.get(token, 0) - tp # false negative
-        precision = tp / (tp + fp) if (tp + fp) > 0 else 0.0
-        recall = tp / (tp + fn) if (tp + fn) > 0 else 0.0
-        f1 = 2 * precision * recall / (precision + recall) if (precision + recall) > 0 else 0.0
-        f1_scores.append(f1)
-
-    macro_f1 = sum(f1_scores) / len(f1_scores) if f1_scores else 0.0
-    return macro_f1
-
-
 ################################################
 # Evaluate with cross-entropy + exact-match
 ################################################
@@ -1008,6 +972,7 @@ def evaluate(
     no_discrete_prior: bool,
     no_codebook: bool,
     weird_cast: bool,
+    task_to_is_classification: Dict[str, bool],
 ):
 
     model.eval()
@@ -1029,8 +994,6 @@ def evaluate(
 
     distributed_state = PartialState()
     output_list = []
-    macro_f1_list = []
-    accuracy_list = []
 
     data_idxs = list(range(len(dataset)))
     assert len(data_idxs) >= accelerator.num_processes # avoid padding issue
@@ -1179,17 +1142,6 @@ def evaluate(
 
             # compute metrics
             assert len(gen_tokens) == len(gen_output_ids) == len(task_ids)
-            for task, gen, gt in zip(task_ids, gen_tokens, gen_output_ids):
-                # metric
-                if task in CLASSIFICATION_TASKS:
-                    accuracy = int(gen.tolist() == gt[:-1].tolist()) # gt includes eos
-                    macro_f1_list.append(-1.0)
-                    accuracy_list.append(accuracy)
-                else:
-                    macro_f1 = macro_f1_score(gen, gt[:-1]) # gt includes eos
-                    assert 0 <= macro_f1 <= 1
-                    macro_f1_list.append(macro_f1)
-                    accuracy_list.append(-1.0)
 
             # log output
             gen_texts = dataset.tokenizer.batch_decode(gen_tokens, skip_special_tokens=True)
@@ -1205,24 +1157,25 @@ def evaluate(
     distributed_state.wait_for_everyone()
     # results
     output_list = gather_object(output_list)
-    macro_f1_list = gather_object(macro_f1_list)
-    accuracy_list = gather_object(accuracy_list)
-
     assert len(output_list) == len(dataset), (len(output_list), len(dataset))
-    assert len(macro_f1_list) == len(dataset), (len(macro_f1_list), len(dataset))
-    assert len(accuracy_list) == len(dataset), (len(accuracy_list), len(dataset))
-
-    # average metrics
-    macro_f1_list = [x for x in macro_f1_list if x != -1.0]
-    accuracy_list = [x for x in accuracy_list if x != -1.0]
-    assert len(macro_f1_list) + len(accuracy_list) == len(dataset)
-    macro_f1 = sum(macro_f1_list) / len(macro_f1_list) if len(macro_f1_list) > 0 else 0
-    accuracy = sum(accuracy_list) / len(accuracy_list) if len(accuracy_list) > 0 else 0
 
     # grab all results
     task_id_to_texts = defaultdict(list)
     for output in output_list:
         task_id_to_texts[output['task_id']].append((output['gen_text'], output['gt_text']))
+
+    # average metrics over each task
+    accuracies = []
+    macro_f1s = []
+    for task, gen_and_gt in task_id_to_texts.items():
+        gens = [x[0] for x in gen_and_gt]
+        gts = [x[1] for x in gen_and_gt]
+        if task_to_is_classification[task]:
+            macro_f1s.append(f1_score(gens, gts, average='macro'))
+        else:
+            accuracies.append(accuracy_score(gens, gts))
+    macro_f1 = sum(macro_f1s) / len(macro_f1s) if len(macro_f1s) > 0 else 0.0
+    accuracy = sum(accuracies) / len(accuracies) if len(accuracies) > 0 else 0.0
 
     return macro_f1, accuracy, task_id_to_texts
 
@@ -1345,7 +1298,7 @@ def main():
     parser.add_argument("--wandb", action="store_true")
     parser.add_argument("--output_dir", type=str, default="./encoder_decoder/outputs")
     parser.add_argument("--log_every", type=int, default=10)
-    parser.add_argument("--save_every", type=int, default=250)
+    parser.add_argument("--save_every", type=int, default=500)
     parser.add_argument("--tracker_project_name", type=str, default="metaicl")
     parser.add_argument("--save_all_models", action="store_true") # otherwise save only best
 
@@ -1355,6 +1308,8 @@ def main():
     parser.add_argument("--debug_random_pad", action="store_true")
     parser.add_argument("--debug_pad_len", type=int, default=-1)
     parser.add_argument("--debug_no_resume", action='store_true')
+    parser.add_argument("--debug_overfit_noclf", type=int, default=0)
+    parser.add_argument("--debug_overfit_clf", type=int, default=0)
 
     # Model
     parser.add_argument("--model_name", type=str, default="llama1b")
@@ -1435,7 +1390,7 @@ def main():
     parser.add_argument("--delimiter", type=str, default=' ')
     parser.add_argument("--num_workers", type=int, default=8)
     parser.add_argument("--num_pair", type=int, default=4) # includes test pair
-    parser.add_argument("--eval_n_sample_per_task", type=int, default=250)
+    parser.add_argument("--eval_per_task", type=int, default=250)
     parser.add_argument("--max_seq_len", type=int, default=512)
 
     # Lora
@@ -1725,22 +1680,55 @@ def main():
         logger.info(f'program norm size {round(get_memory_footprint(program_norm) / 1024 ** 3, 2)}GB')
 
     # load dataset and figure out splits
+    hr_lr_split = json.load(open('metaicl_config/hr_to_lr.json'))
+    HR_TASKS = set(hr_lr_split['train'])
+    LR_TASKS = set(hr_lr_split['test'])
+    HR_TASKS.remove('gigaword') # missing for some reason
+
+    # load dataset
     dataset = datasets.load_dataset("bigheiniuJ/EvalMetaICLAll")
-    train_split: Dataset = dataset['meta_train'] # type: ignore
-    test_split: Dataset = dataset['meta_eval_100shot'] # type: ignore
-    assert not set(HR_TASKS).intersection(set(LR_TASKS))
-    # filter and remove useless columns
-    train_split = train_split.filter(lambda example: example["task"] in HR_TASKS)
-    test_split = test_split.filter(lambda example: example["task"] in LR_TASKS)
-    train_split = train_split.remove_columns(["seed", "split"])
-    test_split = test_split.remove_columns(["split"])
-    # # print counts
+    train_split = dataset['meta_train'] # type: ignore
+    test_split = dataset['meta_eval_100shot'] # type: ignore
+    train_tasks = set(list(train_split['task'])) # type: ignore
+    test_tasks = set(list(test_split['task'])) # type: ignore
+    assert HR_TASKS.issubset(train_tasks)
+    assert LR_TASKS.issubset(test_tasks)
+
+    # get classification tasks
+    task_to_is_classification = {}
+    for task in test_tasks:
+        path = os.path.join(f'metaicl_config/tasks/{task}.json')
+        is_classification = json.load(open(path, 'r'))['task_type'] == 'classification'
+        task_to_is_classification[task] = is_classification
+
+    # finally, filter train and test split to HR and LR tasks
+    train_split = train_split.filter(lambda example: example["task"] in HR_TASKS) # type: ignore
+    test_split = test_split.filter(lambda example: example["task"] in LR_TASKS) # type: ignore
+    train_split = train_split.remove_columns(['seed', 'split'])
+    test_split = test_split.remove_columns(['split'])
+    # print counts
     # logger.info('train task sample count')
     # logger.info(f"{pprint.pformat(Counter(train_split['task']), indent=4)}")
     # logger.info('')
     # logger.info('test task sample count')
     # logger.info(f"{pprint.pformat(Counter(test_split['task']), indent=4)}")
     # logger.info('')
+
+    if args.debug_overfit_clf > 0 or args.debug_overfit_noclf > 0:
+        test_split = test_split.filter(lambda example: example['seed'] == "100")
+        test_tasks = sorted(set(test_split['task']))
+        clf_test_tasks = [t for t in test_tasks if task_to_is_classification[t]]
+        noclf_test_tasks = [t for t in test_tasks if not task_to_is_classification[t]]
+        # select tasks
+        select_test_tasks = []
+        if args.debug_overfit_clf > 0:
+            select_test_tasks += clf_test_tasks[:args.debug_overfit_clf]
+        if args.debug_overfit_noclf > 0:
+            select_test_tasks += noclf_test_tasks[:args.debug_overfit_noclf]
+        select_test_tasks = set(select_test_tasks)
+        # for each task, select indices
+        test_split = test_split.filter(lambda e: e['task'] in select_test_tasks)
+        train_split = test_split.remove_columns('seed')
 
     # Build training dataset
     train_dataset = TrainDataset(
@@ -1757,6 +1745,7 @@ def main():
         debug_random_pad=args.debug_random_pad,
         debug_len=args.debug_len,
         debug_pad_len=args.debug_pad_len,
+        debug_overfit=(args.debug_overfit_clf > 0 or args.debug_overfit_noclf > 0),
     )
     train_collate_fn = partial(collate_fn_train, dataset=train_dataset)
     if args.invar_loss_lambda > 0.0:
@@ -1932,10 +1921,11 @@ def main():
             num_pair=args.num_pair,
             max_seq_len=args.max_seq_len,
             delimiter=args.delimiter,
-            eval_n_sample_per_task=args.eval_n_sample_per_task,
+            eval_per_task=args.eval_per_task,
             debug_len=args.debug_len,
             debug_random_pad=args.debug_random_pad,
             debug_pad_len=args.debug_pad_len,
+            debug_overfit=(args.debug_overfit_clf > 0 or args.debug_overfit_noclf > 0),
         )
         for split_name, data in seed_to_test_split
     ]
@@ -2153,6 +2143,7 @@ def main():
                     no_discrete_prior=args.no_discrete_prior,
                     no_codebook=no_codebook,
                     weird_cast=args.weird_cast,
+                    task_to_is_classification=task_to_is_classification,
                 )
                 total_score = (macro_f1 + accuracy) / 2.0
                 # aggregate
