@@ -13,27 +13,32 @@ from accelerate.logging import get_logger
 logger = get_logger(__name__, log_level="INFO")
 
 
-def pad_sequence_left(sequences: List[torch.Tensor], padding_value: int) -> torch.Tensor:
-    reversed_sequences = [seq.flip(0) for seq in sequences]
-    padded_reversed = pad_sequence(reversed_sequences, batch_first=True, padding_value=padding_value)
-    return padded_reversed.flip(1)
+def pad_sequence_with_side(sequences: List[torch.Tensor], padding_value: int, side: str) -> torch.Tensor:
+    if side == 'right':
+        return pad_sequence(sequences, batch_first=True, padding_value=padding_value)
+    else:
+        reversed_sequences = [seq.flip(0) for seq in sequences]
+        padded_reversed = pad_sequence(reversed_sequences, batch_first=True, padding_value=padding_value)
+        return padded_reversed.flip(1)
 
 
 def debug_extra_pad_tensors(
         tensors: List[torch.Tensor],
         padding_values: List[int],
         pad_len: int,
+        side: str,
     ) -> List[torch.Tensor]:
-
-    # left padding
     assert len(tensors) == len(padding_values)
     assert all(t.dim() == 2 for t in tensors)
     if pad_len == -1:
-        pad_len = random.randint(0, 15) # arbitrary
+        pad_len = random.randint(1, 15) # arbitrary
     padded_tensors = []
     for arg, padding_value in zip(tensors, padding_values):
         pad = torch.full((arg.shape[0], pad_len), padding_value, device=arg.device, dtype=arg.dtype)
-        padded_tensor = torch.cat([pad, arg], dim=-1)
+        if side == 'right':
+            padded_tensor = torch.cat([arg, pad], dim=-1)
+        else:
+            padded_tensor = torch.cat([pad, arg], dim=-1)
         padded_tensors.append(padded_tensor)
     return padded_tensors
 
@@ -63,6 +68,8 @@ class TrainDataset(Dataset):
         num_workers: int,
         max_seq_len: int,
         delimiter: str,
+        train_pad_side: str,
+        no_bos: bool,
         debug_random_pad: bool,
         debug_len: int,
         debug_pad_len: int,
@@ -75,6 +82,8 @@ class TrainDataset(Dataset):
         self.num_pair = num_pair
         self.num_workers = num_workers if num_workers > 0 else 1
         self.max_seq_len = max_seq_len
+        self.train_pad_side = train_pad_side
+        self.no_bos = no_bos
         self.debug_random_pad = debug_random_pad
         self.debug_len = debug_len
         self.debug_pad_len = debug_pad_len
@@ -83,8 +92,7 @@ class TrainDataset(Dataset):
         # get a customizable delimiter, use whitespace by default
         self.delimiter = delimiter
         delimiter_token_id = tokenizer(delimiter, return_tensors='pt')['input_ids'][0] # type: ignore
-        assert len(delimiter_token_id) == 2 # bos, single token of interest
-        self.delimiter_token_id = delimiter_token_id[1][None, ...] # (1,)
+        self.delimiter_token_id = delimiter_token_id[1:] # remove bos
 
         # seed and process_index
         if num_workers == 0:
@@ -146,18 +154,13 @@ def collate_fn_train(batch: List[int], dataset: TrainDataset) -> Dict:
             dtype = input_input_ids.dtype
 
             # only keep bos for the first input
-            if example_i > 0:
+            if example_i > 0 or dataset.no_bos:
                 input_input_ids = input_input_ids[1:]
             output_input_ids = output_input_ids[1:]
 
-            # add whitespace at end of all inputs and outputs, except the last output
-            input_input_ids = torch.cat([input_input_ids, torch.tensor([dataset.delimiter_token_id])])
-            if example_i < len(examples) - 1:
-                output_input_ids = torch.cat([output_input_ids, torch.tensor([dataset.delimiter_token_id])])
-
-            # add eos at end of last output
-            if example_i == len(examples) - 1:
-                output_input_ids = torch.cat([output_input_ids, torch.tensor([dataset.tokenizer.eos_token_id])])
+            # add whitespace to input and eos to output
+            input_input_ids = torch.cat([input_input_ids, dataset.delimiter_token_id])
+            output_input_ids = torch.cat([output_input_ids, torch.tensor([dataset.tokenizer.eos_token_id])])
 
             # create input_ids, attention_mask, label_ids for pair
             input_ids = torch.cat([input_input_ids, output_input_ids])
@@ -167,8 +170,6 @@ def collate_fn_train(batch: List[int], dataset: TrainDataset) -> Dict:
                 torch.full(input_input_ids.shape, -100, dtype=dtype),
                 output_input_ids,
             ]) # do not predict input ids
-            if example_i < len(examples) - 1:
-                label_ids[-1] = -100 # do not predict delimiter
 
             assert input_ids.shape == attention_mask.shape == label_ids.shape
 
@@ -197,9 +198,9 @@ def collate_fn_train(batch: List[int], dataset: TrainDataset) -> Dict:
     # collate
     assert isinstance(dataset.tokenizer.pad_token_id, int)
     for pair_i in range(dataset.num_pair):
-        all_input_ids[pair_i] = pad_sequence_left(all_input_ids[pair_i], padding_value=dataset.tokenizer.pad_token_id)
-        all_attention_mask[pair_i] = pad_sequence_left(all_attention_mask[pair_i], padding_value=0)
-        all_label_ids[pair_i] = pad_sequence_left(all_label_ids[pair_i], padding_value=-100)
+        all_input_ids[pair_i] = pad_sequence_with_side(all_input_ids[pair_i], padding_value=dataset.tokenizer.pad_token_id, side=dataset.train_pad_side)
+        all_attention_mask[pair_i] = pad_sequence_with_side(all_attention_mask[pair_i], padding_value=0, side=dataset.train_pad_side)
+        all_label_ids[pair_i] = pad_sequence_with_side(all_label_ids[pair_i], padding_value=-100, side=dataset.train_pad_side)
         assert all_input_ids[pair_i].shape == all_attention_mask[pair_i].shape == all_label_ids[pair_i].shape
 
     # extra padding
@@ -212,6 +213,7 @@ def collate_fn_train(batch: List[int], dataset: TrainDataset) -> Dict:
                 [input_ids, attention_mask, label_ids],
                 padding_values=[dataset.tokenizer.pad_token_id, 0, -100],
                 pad_len=dataset.debug_pad_len,
+                side=dataset.train_pad_side,
             )
             extra_padded_input_ids.append(input_ids)
             extra_padded_attention_mask.append(attention_mask)
@@ -284,6 +286,9 @@ class EvalDataset:
         max_seq_len: int,
         delimiter: str,
         eval_per_task: int,
+        train_pad_side: str,
+        gen_pad_side: str,
+        no_bos: bool,
         debug_len: int,
         debug_random_pad: bool,
         debug_pad_len: int,
@@ -296,6 +301,9 @@ class EvalDataset:
         self.ntokens = ntokens
         self.num_pair = num_pair
         self.max_seq_len = max_seq_len
+        self.train_pad_side = train_pad_side
+        self.gen_pad_side = gen_pad_side
+        self.no_bos = no_bos
         self.debug_len = debug_len
         self.debug_random_pad = debug_random_pad
         self.debug_pad_len = debug_pad_len
@@ -304,8 +312,7 @@ class EvalDataset:
         # get a customizable delimiter, use whitespace by default
         self.delimiter = delimiter
         delimiter_token_id = tokenizer(delimiter, return_tensors='pt')['input_ids'][0] # type: ignore
-        assert len(delimiter_token_id) == 2 # bos, single token of interest
-        self.delimiter_token_id = delimiter_token_id[1][None, ...] # (1,)
+        self.delimiter_token_id = delimiter_token_id[1:] # remove bos
 
         # task to indices
         self.task_to_indices = defaultdict(list)
@@ -351,18 +358,13 @@ class EvalDataset:
             output_input_ids = tokenized_output['input_ids'][0] # type: ignore
 
             # only keep bos for the first input
-            if example_i > 0:
+            if example_i > 0 or self.no_bos:
                 input_input_ids = input_input_ids[1:]
             output_input_ids = output_input_ids[1:]
 
-            # add whitespace at end of all inputs and outputs, except the last output
-            input_input_ids = torch.cat([input_input_ids, torch.tensor([self.delimiter_token_id])])
-            if example_i < len(examples) - 1:
-                output_input_ids = torch.cat([output_input_ids, torch.tensor([self.delimiter_token_id])])
-
-            # add eos at end of last output
-            if example_i == len(examples) - 1:
-                output_input_ids = torch.cat([output_input_ids, torch.tensor([self.tokenizer.eos_token_id])])
+            # add whitespace to input and eos to output
+            input_input_ids = torch.cat([input_input_ids, self.delimiter_token_id])
+            output_input_ids = torch.cat([output_input_ids, torch.tensor([self.tokenizer.eos_token_id])])
 
             # create input_ids, attention_mask for pair
             if example_i == len(examples) - 1:
@@ -439,8 +441,8 @@ def collate_fn_eval(batch: List[Dict], dataset: EvalDataset) -> Dict:
     # collate train
     assert isinstance(dataset.tokenizer.pad_token_id, int)
     for pair_i in range(dataset.num_pair - 1):
-        all_input_ids[pair_i] = pad_sequence_left(all_input_ids[pair_i], padding_value=dataset.tokenizer.pad_token_id)
-        all_attention_mask[pair_i] = pad_sequence_left(all_attention_mask[pair_i], padding_value=0)
+        all_input_ids[pair_i] = pad_sequence_with_side(all_input_ids[pair_i], padding_value=dataset.tokenizer.pad_token_id, side=dataset.train_pad_side)
+        all_attention_mask[pair_i] = pad_sequence_with_side(all_attention_mask[pair_i], padding_value=0, side=dataset.train_pad_side)
 
     # extra padding train
     extra_padded_input_ids = []
@@ -451,6 +453,7 @@ def collate_fn_eval(batch: List[Dict], dataset: EvalDataset) -> Dict:
                 [input_ids, attention_mask],
                 padding_values=[dataset.tokenizer.pad_token_id, 0],
                 pad_len=dataset.debug_pad_len,
+                side=dataset.train_pad_side,
             )
             extra_padded_input_ids.append(input_ids)
             extra_padded_attention_mask.append(attention_mask)
@@ -460,14 +463,15 @@ def collate_fn_eval(batch: List[Dict], dataset: EvalDataset) -> Dict:
 
     # collate gen
     # we do not pad gen_output_ids
-    gen_input_ids = pad_sequence_left(gen_input_ids, padding_value=dataset.tokenizer.pad_token_id)
-    gen_attention_mask = pad_sequence_left(gen_attention_mask, padding_value=0)
+    gen_input_ids = pad_sequence_with_side(gen_input_ids, padding_value=dataset.tokenizer.pad_token_id, side=dataset.gen_pad_side)
+    gen_attention_mask = pad_sequence_with_side(gen_attention_mask, padding_value=0, side=dataset.gen_pad_side)
 
     # extra padding gen
     gen_input_ids, gen_attention_mask = debug_extra_pad_tensors(
         [gen_input_ids, gen_attention_mask],
         padding_values=[dataset.tokenizer.pad_token_id, 0],
         pad_len=dataset.debug_pad_len,
+        side=dataset.gen_pad_side,
     )
 
     batch_dict = {

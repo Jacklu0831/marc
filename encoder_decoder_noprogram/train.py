@@ -1,3 +1,4 @@
+import gc
 import shutil
 import wandb
 import matplotlib.pyplot as plt
@@ -1789,6 +1790,9 @@ def main():
 
         # Evaluate every N epochs
         if (epoch + 1) % args.eval_epochs == 0:
+            torch.cuda.empty_cache()
+            gc.collect()
+
             train_exact_acc, train_valid_grid, train_correct_grid_dim, train_token_acc, train_relaxed_token_acc, train_texts, \
                 train_votes, train_competition_sub_acc, train_competition_all_acc, _ = evaluate(
                 task_to_ttt_path=None,
@@ -1823,6 +1827,9 @@ def main():
                 attention_cutoff=args.attention_cutoff,
                 attend_prev_programs=args.attend_prev_programs,
             )
+
+            torch.cuda.empty_cache()
+            gc.collect()
 
             if accelerator.is_main_process:
                 eval_metric_dict = {

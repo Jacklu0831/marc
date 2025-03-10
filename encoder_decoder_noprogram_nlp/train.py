@@ -1,7 +1,6 @@
 from sklearn.metrics import f1_score, accuracy_score
 import shutil
 import wandb
-from collections import Counter
 import gc
 import matplotlib.pyplot as plt
 from custom_llama import MyLlamaForCausalLM
@@ -42,7 +41,7 @@ from data_utils import (
     collate_fn_eval,
     collate_fn_train_dummy,
     collate_fn_eval_dummy,
-    pad_sequence_left,
+    pad_sequence_with_side,
 )
 
 import os
@@ -237,13 +236,14 @@ def evaluate(
                     program_intervals = []
 
                     for task_input_ids, task_inputs_embeds, task_attention_mask, input_ids_len, start_idxs in zip(gen_input_ids, gen_inputs_embeds, gen_attention_mask, gen_input_ids_lens, pair_start_idxs):
-                        assert start_idxs[0] == 1 # first pair starts after bos
+                        assert start_idxs[0] == 1 - dataset.no_bos # first pair starts after bos
                         # start_idxs are offset if padding side is left
-                        start_idxs = [s + task_input_ids.shape[0] - input_ids_len for s in start_idxs]
+                        if dataset.pad_side == "left":
+                            start_idxs = [s + task_input_ids.shape[0] - input_ids_len for s in start_idxs]
 
                         # insert program token before every pair
-                        task_inputs_embeds_with_programs = [task_inputs_embeds[:start_idxs[0]]]
-                        task_attention_mask_with_programs = [task_attention_mask[:start_idxs[0]]]
+                        task_inputs_embeds_with_programs = [task_inputs_embeds[:start_idxs[0]]] if start_idxs[0] > 0 else []
+                        task_attention_mask_with_programs = [task_attention_mask[:start_idxs[0]]] if start_idxs[0] > 0 else []
                         task_program_intervals = []
 
                         for i, start_idx in enumerate(start_idxs):
@@ -264,9 +264,13 @@ def evaluate(
                         pad_length = (max_num_pairs - len(start_idxs)) * ntokens
                         task_pad_inputs_embeds = pad_embeds[None, ...].expand(pad_length, -1)
                         task_pad_attention_mask = torch.full((pad_length,), 0, device=device, dtype=dtype)
-                        task_inputs_embeds_with_programs.insert(0, task_pad_inputs_embeds)
-                        task_attention_mask_with_programs.insert(0, task_pad_attention_mask)
-                        task_program_intervals = [(x[0] + pad_length, x[1] + pad_length) for x in task_program_intervals]
+                        if dataset.pad_side == 'left':
+                            task_inputs_embeds_with_programs.insert(0, task_pad_inputs_embeds)
+                            task_attention_mask_with_programs.insert(0, task_pad_attention_mask)
+                            task_program_intervals = [(x[0] + pad_length, x[1] + pad_length) for x in task_program_intervals]
+                        else:
+                            task_inputs_embeds_with_programs.append(task_pad_inputs_embeds)
+                            task_attention_mask_with_programs.append(task_pad_attention_mask)
 
                         # concat all
                         inputs_embeds_with_programs.append(torch.cat(task_inputs_embeds_with_programs))
@@ -287,7 +291,10 @@ def evaluate(
 
                     # debug: assert no middle padding
                     assert set(torch.unique(attention_mask_with_programs).tolist()).issubset({0, 1})
-                    assert torch.all(attention_mask_with_programs[:, :-1] <= attention_mask_with_programs[:, 1:])
+                    if dataset.pad_side == 'left':
+                        assert torch.all(attention_mask_with_programs[:, :-1] <= attention_mask_with_programs[:, 1:])
+                    else:
+                        assert torch.all(attention_mask_with_programs[:, :-1] >= attention_mask_with_programs[:, 1:])
 
                     # generate
                     if not attention_cutoff:
@@ -315,7 +322,7 @@ def evaluate(
                             attend_prev_programs=attend_prev_programs,
                         )
 
-                # remove pads
+                # remove pads (unlike ARC, we directly compare token here)
                 gen_tokens = []
                 for t, l in zip(gen_tokens_padded, out_token_length):
                     gen_tokens.append(t[:l + arbitrary_increase])
@@ -354,8 +361,8 @@ def evaluate(
             macro_f1s.append(f1_score(gens, gts, average='macro'))
         else:
             accuracies.append(accuracy_score(gens, gts))
-    macro_f1 = sum(macro_f1s) / len(macro_f1s) if len(macro_f1s) > 0 else 0.0
-    accuracy = sum(accuracies) / len(accuracies) if len(accuracies) > 0 else 0.0
+    macro_f1 = sum(macro_f1s) / len(macro_f1s) if len(macro_f1s) > 0 else -1.0
+    accuracy = sum(accuracies) / len(accuracies) if len(accuracies) > 0 else -1.0
 
     return macro_f1, accuracy, task_id_to_texts
 
@@ -456,12 +463,14 @@ def model_loss(
     pair_start_idxs: List[List[int]],
     ntokens: int,
     # others
+    pad_side: str,
     program_loss_lambda_scheduler: LambdaScheduler,
     global_step: int,
     program_type: str,
     attention_cutoff: bool,
     attend_prev_programs: bool,
-    debug_len: int,
+    debug: bool,
+    no_bos: bool,
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
 
     # original baseline
@@ -500,14 +509,15 @@ def model_loss(
     pair_label_ids = []
 
     for task_input_ids, task_inputs_embeds, task_attention_mask, task_label_ids, input_ids_len, start_idxs in zip(input_ids, inputs_embeds, attention_mask, label_ids, input_ids_lens, pair_start_idxs):
-        assert start_idxs[0] == 1 # first pair starts after bos
+        assert start_idxs[0] == 1 - int(no_bos) # first pair starts after bos
         # start_idxs are offset if padding side is left
-        start_idxs = [s + task_input_ids.shape[0] - input_ids_len for s in start_idxs]
+        if pad_side == "left":
+            start_idxs = [s + task_input_ids.shape[0] - input_ids_len for s in start_idxs]
 
         # insert program token before every pair
-        task_inputs_embeds_with_programs = [task_inputs_embeds[:start_idxs[0]]]
-        task_attention_mask_with_programs = [task_attention_mask[:start_idxs[0]]]
-        task_label_ids_with_programs = [task_label_ids[:start_idxs[0]]]
+        task_inputs_embeds_with_programs = [task_inputs_embeds[:start_idxs[0]]] if start_idxs[0] > 0 else []
+        task_attention_mask_with_programs = [task_attention_mask[:start_idxs[0]]] if start_idxs[0] > 0 else []
+        task_label_ids_with_programs = [task_label_ids[:start_idxs[0]]] if start_idxs[0] > 0 else []
         task_program_intervals = []
 
         # store pairwise inputs_embeds, attention_mask, and label_ids for program loss
@@ -541,17 +551,25 @@ def model_loss(
         pair_label_ids.append(task_pair_label_ids)
 
         # full attention at this point for all beside the ends
-        for m in task_attention_mask_with_programs[1:]: assert m.sum() == m.numel()
+        if pad_side == 'left':
+            for m in task_attention_mask_with_programs[1:]: assert m.sum() == m.numel()
+        else:
+            for m in task_attention_mask_with_programs[:-1]: assert m.sum() == m.numel()
 
         # some programs in batch have fewer pairs, pad manually, so hacky
         pad_length = (max_num_pairs - len(start_idxs)) * ntokens
         task_pad_inputs_embeds = pad_embeds[None, ...].expand(pad_length, -1)
         task_pad_attention_mask = torch.full((pad_length,), 0, device=device, dtype=dtype)
         task_pad_label_ids = torch.full((pad_length,), -100, device=device, dtype=dtype)
-        task_inputs_embeds_with_programs.insert(0, task_pad_inputs_embeds)
-        task_attention_mask_with_programs.insert(0, task_pad_attention_mask)
-        task_label_ids_with_programs.insert(0, task_pad_label_ids)
-        task_program_intervals = [(x[0] + pad_length, x[1] + pad_length) for x in task_program_intervals]
+        if pad_side == 'left':
+            task_inputs_embeds_with_programs.insert(0, task_pad_inputs_embeds)
+            task_attention_mask_with_programs.insert(0, task_pad_attention_mask)
+            task_label_ids_with_programs.insert(0, task_pad_label_ids)
+            task_program_intervals = [(x[0] + pad_length, x[1] + pad_length) for x in task_program_intervals]
+        else:
+            task_inputs_embeds_with_programs.append(task_pad_inputs_embeds)
+            task_attention_mask_with_programs.append(task_pad_attention_mask)
+            task_label_ids_with_programs.append(task_pad_label_ids)
 
         # concat all
         inputs_embeds_with_programs.append(torch.cat(task_inputs_embeds_with_programs))
@@ -576,21 +594,24 @@ def model_loss(
     # debug: assert no middle padding when we don't cut off attention
     if not attention_cutoff:
         assert set(torch.unique(attention_mask_with_programs).tolist()).issubset({0, 1})
-        assert torch.all(attention_mask_with_programs[:, :-1] <= attention_mask_with_programs[:, 1:])
+        if pad_side == 'left':
+            assert torch.all(attention_mask_with_programs[:, :-1] <= attention_mask_with_programs[:, 1:])
+        else:
+            assert torch.all(attention_mask_with_programs[:, :-1] >= attention_mask_with_programs[:, 1:])
 
     if not attention_cutoff:
         model_out = model(
             inputs_embeds=inputs_embeds_with_programs,
             attention_mask=attention_mask_with_programs,
             labels=label_ids_with_programs,
-            output_hidden_states=(program_type != 'none'),
+            output_hidden_states=(program_type != 'none') or debug,
         )
     else:
         model_out = model(
             inputs_embeds=inputs_embeds_with_programs,
             attention_mask=attention_mask_with_programs,
             labels=label_ids_with_programs,
-            output_hidden_states=(program_type != 'none'),
+            output_hidden_states=(program_type != 'none') or debug,
             program_intervals=program_intervals,
             attend_prev_programs=attend_prev_programs,
         )
@@ -624,11 +645,15 @@ def model_loss(
         max_pair_len = max(pair_input_ids_lens)
         # pad pair data
         select_pair_inputs_embeds = torch.stack([
-            torch.cat([pad_embeds[None, ...].expand(max_pair_len - x.shape[0], -1), x], dim=0)
+            (
+                torch.cat([pad_embeds[None, ...].expand(max_pair_len - x.shape[0], -1), x], dim=0)
+                if pad_side == "left"
+                else torch.cat([x, pad_embeds[None, ...].expand(max_pair_len - x.shape[0], -1)], dim=0)
+            )
             for x in select_pair_inputs_embeds
         ])
-        select_pair_attention_mask = pad_sequence_left(select_pair_attention_mask, padding_value=0)
-        select_pair_label_ids = pad_sequence_left(select_pair_label_ids, padding_value=-100)
+        select_pair_attention_mask = pad_sequence_with_side(select_pair_attention_mask, padding_value=0, side=pad_side)
+        select_pair_label_ids = pad_sequence_with_side(select_pair_label_ids, padding_value=-100, side=pad_side)
         # time to insert
         program_len = select_program.shape[1]
         select_pair_inputs_embeds = insert_based_on_sides(
@@ -636,6 +661,7 @@ def model_loss(
             to_insert=select_program,
             lens=pair_input_ids_lens,
             insert_side="left",
+            pad_side=pad_side,
             pad_id=pad_embeds,
         )
         select_pair_attention_mask = insert_based_on_sides(
@@ -643,6 +669,7 @@ def model_loss(
             to_insert=torch.full((batch_size, program_len), 1, device=device, dtype=dtype),
             lens=pair_input_ids_lens,
             insert_side="left",
+            pad_side=pad_side,
             pad_id=0,
         )
         select_pair_label_ids = insert_based_on_sides(
@@ -650,11 +677,15 @@ def model_loss(
             to_insert=torch.full((batch_size, program_len), -100, device=device, dtype=dtype),
             lens=pair_input_ids_lens,
             insert_side="left",
+            pad_side=pad_side,
             pad_id=-100,
         )
         # debug: no attention middle padding
         assert set(torch.unique(select_pair_attention_mask).tolist()).issubset({0, 1})
-        assert torch.all(select_pair_attention_mask[:, :-1] <= select_pair_attention_mask[:, 1:])
+        if pad_side == 'left':
+            assert torch.all(select_pair_attention_mask[:, :-1] <= select_pair_attention_mask[:, 1:])
+        else:
+            assert torch.all(select_pair_attention_mask[:, :-1] >= select_pair_attention_mask[:, 1:])
         assert select_pair_inputs_embeds.shape[:2] == select_pair_attention_mask.shape == select_pair_label_ids.shape
         # forward
         model_out = model(
@@ -675,21 +706,36 @@ def insert_based_on_sides(
         to_insert: torch.Tensor,
         lens: List[int],
         insert_side: str,
+        pad_side: str,
         pad_id: Union[int, torch.Tensor],
     ) -> torch.Tensor:
 
-    if insert_side == "left":
-        data_new = []
-        for x, m, l in zip(data, to_insert, lens):
-            if isinstance(pad_id, int):
-                assert torch.equal(x[:-l], torch.full(x[:-l].shape, pad_id, device=x[:-l].device)), x[:-l]
-            else:
-                assert torch.equal(x[:-l], pad_id.unsqueeze(0).expand(x[:-l].shape[0], -1)), x[:-l]
-            x = torch.cat([x[:-l], m, x[-l:]])
-            data_new.append(x)
-        return torch.stack(data_new)
+    if pad_side == "right":
+        if insert_side == "left":
+            return torch.cat([to_insert, data], dim=1)
+        else:
+            data_new = []
+            for x, m, l in zip(data, to_insert, lens):
+                if isinstance(pad_id, int):
+                    assert torch.equal(x[l:], torch.full(x[l:].shape, pad_id, device=x[l:].device)), x[l:]
+                else:
+                    assert torch.equal(x[l:], pad_id.unsqueeze(0).expand(x[l:].shape[0], -1)), x[l:]
+                x = torch.cat([x[:l], m, x[l:]])
+                data_new.append(x)
+            return torch.stack(data_new)
     else:
-        return torch.cat([data, to_insert], dim=1)
+        if insert_side == "left":
+            data_new = []
+            for x, m, l in zip(data, to_insert, lens):
+                if isinstance(pad_id, int):
+                    assert torch.equal(x[:-l], torch.full(x[:-l].shape, pad_id, device=x[:-l].device)), x[:-l]
+                else:
+                    assert torch.equal(x[:-l], pad_id.unsqueeze(0).expand(x[:-l].shape[0], -1)), x[:-l]
+                x = torch.cat([x[:-l], m, x[-l:]])
+                data_new.append(x)
+            return torch.stack(data_new)
+        else:
+            return torch.cat([data, to_insert], dim=1)
 
 
 def main():
@@ -718,8 +764,8 @@ def main():
     parser.add_argument("--trainable_nbit", type=int, choices=[16, 32], default=16)
     parser.add_argument("--gradient_checkpointing", action="store_true")
     parser.add_argument("--lora", action="store_true")
-    parser.add_argument("--lr_scheduler", type=str, choices=["cosine", "constant"], default="cosine")
-    parser.add_argument("--loss_type", type=str, choices=['only_last', 'all', 'exclude_first'], default='exclude_first')
+    parser.add_argument("--no_tf32", action="store_true")
+    parser.add_argument("--loss_type", type=str, choices=['only_last', 'all', 'exclude_first'], default='only_last')
 
     # program loss
     parser.add_argument("--program_type", type=str, choices=["none", "random", "concat"], default="none")
@@ -746,6 +792,7 @@ def main():
     parser.add_argument("--dry_train_run", action="store_true")
     parser.add_argument("--dry_eval_run", action="store_true")
     parser.add_argument("--warmup_epochs", type=int, default=0)
+    parser.add_argument("--lr_scheduler", type=str, choices=["cosine", "constant"], default="cosine")
 
     # scheduled extra losses
     parser.add_argument("--program_loss_lambda", type=float, default=1.0)
@@ -758,6 +805,8 @@ def main():
     parser.add_argument("--num_pair", type=int, default=4) # includes test pair
     parser.add_argument("--eval_per_task", type=int, default=250)
     parser.add_argument("--max_seq_len", type=int, default=512)
+    parser.add_argument("--pad_side", type=str, choices=["left", "right"], default="left")
+    parser.add_argument("--no_bos", action='store_true')
 
     # Lora
     parser.add_argument("--lora_rank", type=int, default=256)
@@ -777,6 +826,7 @@ def main():
         args.wandb = False
         args.samples_per_epoch = 32
         args.log_every = 1
+        args.debug_no_resume = True
 
     # check args
     if not args.lora:
@@ -830,7 +880,8 @@ def main():
             tracker_config,
             init_kwargs={"wandb": wandb_init_args}
         )
-    torch.backends.cuda.matmul.allow_tf32 = True
+    if not args.no_tf32:
+        torch.backends.cuda.matmul.allow_tf32 = True
     logger.info("Accelerator and seed set up.")
 
     # log args
@@ -845,7 +896,6 @@ def main():
     assert tokenizer.pad_token is None
     assert isinstance(tokenizer.bos_token, str)
     tokenizer.pad_token = tokenizer.eos_token
-    tokenizer.padding_side = 'left'
     logger.info("Tokenizers loaded and pad tokens handled.")
 
     # Build base models
@@ -896,7 +946,7 @@ def main():
     # initialize program embeddings
     prior_embeddings = None
     program_embeddings = None
-    if args.ntokens > 0:
+    if args.ntokens != -1:
         prior_embeddings = ProgramEmbeddings(
             embedding=initialize_program_embeddings(
                 base_model.model.embed_tokens.weight.data.detach().clone(),
@@ -1031,6 +1081,8 @@ def main():
         num_pair=args.num_pair,
         num_workers=args.num_workers,
         max_seq_len=args.max_seq_len,
+        pad_side=args.pad_side,
+        no_bos=args.no_bos,
         delimiter=args.delimiter,
         debug_random_pad=args.debug_random_pad,
         debug_len=args.debug_len,
@@ -1162,6 +1214,8 @@ def main():
             max_seq_len=args.max_seq_len,
             delimiter=args.delimiter,
             eval_per_task=args.eval_per_task,
+            pad_side=args.pad_side,
+            no_bos=args.no_bos,
             debug_len=args.debug_len,
             debug_random_pad=args.debug_random_pad,
             debug_pad_len=args.debug_pad_len,
@@ -1223,8 +1277,6 @@ def main():
             label_ids = batch_data["label_ids"].to(accelerator.device)
             input_ids_lens = batch_data["input_ids_lens"]
             pair_start_idxs = batch_data["pair_start_idxs"]
-            assert len(input_ids) == args.train_batch_size
-            assert input_ids.shape == attention_mask.shape == label_ids.shape
 
             with accelerator.accumulate(model, prior_embeddings, program_embeddings):
                 with accelerator.autocast():
@@ -1239,12 +1291,14 @@ def main():
                         input_ids_lens=input_ids_lens,
                         pair_start_idxs=pair_start_idxs,
                         ntokens=args.ntokens,
+                        pad_side=args.pad_side,
                         program_loss_lambda_scheduler=program_loss_lambda_scheduler,
                         global_step=global_step,
                         program_type=args.program_type,
                         attention_cutoff=args.attention_cutoff,
                         attend_prev_programs=args.attend_prev_programs,
-                        debug_len=args.debug_len,
+                        debug=args.debug,
+                        no_bos=args.no_bos,
                     )
 
                 ce_loss_accum += ce_loss.item() / args.grad_accum_steps
@@ -1307,7 +1361,7 @@ def main():
             torch.cuda.empty_cache()
             gc.collect()
 
-            macro_f1s, accuracys, total_scores = [], [], []
+            macro_f1s, accuracys = [], []
             all_task_id_to_texts = defaultdict(list)
             for eval_dataset in eval_datasets:
                 macro_f1, accuracy, task_id_to_texts = evaluate(
@@ -1324,26 +1378,33 @@ def main():
                     attend_prev_programs=args.attend_prev_programs,
                     task_to_is_classification=task_to_is_classification,
                 )
-                total_score = (macro_f1 + accuracy) / 2.0
                 # aggregate
-                macro_f1s.append(macro_f1)
-                accuracys.append(accuracy)
-                total_scores.append(total_score)
+                if macro_f1 != -1.0:
+                    macro_f1s.append(macro_f1)
+                if accuracy != -1.0:
+                    accuracys.append(accuracy)
                 for task_id, texts in task_id_to_texts.items():
                     texts = [(eval_dataset.split_name, t[0], t[1]) for t in texts]
                     all_task_id_to_texts[task_id] += texts
 
-                torch.cuda.empty_cache()
-                gc.collect()
+            # average macro_f1s and accuracys
+            assert len(macro_f1s) in [0, len(eval_datasets)]
+            assert len(accuracys) in [0, len(eval_datasets)]
+            macro_f1 = sum(macro_f1s) / len(macro_f1s) if len(macro_f1s) > 0 else -1.0
+            accuracy = sum(accuracys) / len(accuracys) if len(accuracys) > 0 else -1.0
 
-            # print for debugging
-            logger.info(f"macro_f1s: {macro_f1s}")
-            logger.info(f"accuracys: {accuracys}")
-            logger.info(f"total_scores: {total_scores}")
+            # total score
+            if len(macro_f1s) == 0:
+                total_score = accuracy
+            elif len(accuracys) == 0:
+                total_score = macro_f1
+            else:
+                assert len(macro_f1s) == len(accuracys) == len(eval_datasets)
+                total_scores = [(x + y) / 2.0 for x, y in zip(macro_f1s, accuracys)]
+                total_score = sum(total_scores) / len(total_scores)
 
-            macro_f1 = sum(macro_f1s) / len(macro_f1s)
-            accuracy = sum(accuracys) / len(accuracys)
-            total_score = sum(total_scores) / len(total_scores)
+            torch.cuda.empty_cache()
+            gc.collect()
 
             if accelerator.is_main_process:
                 eval_metric_dict = {
