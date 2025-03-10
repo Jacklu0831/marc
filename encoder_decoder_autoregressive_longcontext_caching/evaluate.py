@@ -101,6 +101,8 @@ def main():
     parser.add_argument("--gen_pad_side", type=str, choices=["left", "right"], default="left")
     parser.add_argument("--no_dim", action='store_true')
     parser.add_argument("--no_separate_color_tokens", action='store_true')
+    parser.add_argument("--no_bos", action="store_true")
+    parser.add_argument("--short_context", action='store_true')
 
     # eval data
     parser.add_argument("--data_dir", type=str, default="./data/re-arc/arc_original/evaluation")
@@ -123,7 +125,7 @@ def main():
     parser.add_argument("--gs_take_best", action="store_true")
 
     # Virtual tokens approach
-    parser.add_argument("--ntokens", type=int, default=16)
+    parser.add_argument("--ntokens", type=int, default=4)
     parser.add_argument("--seed", type=int, default=0)
     args = parser.parse_args()
 
@@ -135,7 +137,7 @@ def main():
     if args.gs_iters > 0:
         assert args.batch_size == 1
 
-    args.tag = f"eval_{args.tag}_{args.weight_dir}"
+    args.tag = f"eval_{args.tag}_{args.ttt_weight_dir}"
     args.output_dir = os.path.join(args.output_dir, args.tag)
 
     # Setup accelerator
@@ -422,6 +424,7 @@ def main():
         limit_inference_pairs_strict=args.limit_inference_pairs_strict,
         max_num_train_pair=args.max_num_pair - 1,
         max_seq_len=args.max_seq_len,
+        no_bos=args.no_bos,
     )
     collate_fn = partial(collate_fn_eval, dataset=dataset)
 
@@ -449,6 +452,7 @@ def main():
         output_dir=args.output_dir,
         no_codebook=False,
         weird_cast=args.weird_cast,
+        short_context=args.short_context,
     )
 
     if accelerator.is_main_process:

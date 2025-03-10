@@ -351,8 +351,12 @@ def evaluate(
                         do_sample=False,
                         eos_token_id=[dataset.tokenizer.eos_token_id],
                     )
+                    gen_tokens = gen_tokens[:, gen_input_ids.shape[1]:]
+                    assert len(gen_tokens) == len(out_token_length)
+                    for t, l in zip(gen_tokens, out_token_length):
+                        t[l + arbitrary_increase:] = dataset.tokenizer.pad_token_id
                     gen_texts = dataset.tokenizer.batch_decode(
-                        gen_tokens[:, gen_input_ids.shape[1]:],
+                        gen_tokens,
                         skip_special_tokens=True,
                         no_separate_color_tokens=dataset.no_separate_color_tokens,
                     )
@@ -370,15 +374,15 @@ def evaluate(
                     program_intervals = []
 
                     for task_input_ids, task_inputs_embeds, task_attention_mask, input_ids_len, start_idxs in zip(gen_input_ids, gen_inputs_embeds, gen_attention_mask, gen_input_ids_lens, pair_start_idxs):
-                        assert start_idxs[0] == 1 # first pair starts after bos
+                        assert start_idxs[0] == 1 - dataset.no_bos # first pair starts after bos
                         # start_idxs are offset if padding side is left
                         if dataset.pad_side == "left":
                             start_idxs = [s + task_input_ids.shape[0] - input_ids_len for s in start_idxs]
                         assert len(set(task_input_ids[start_idxs].tolist())) == 1 # all should be the input token (we remove bos)
 
                         # insert program token before every pair
-                        task_inputs_embeds_with_programs = [task_inputs_embeds[:start_idxs[0]]]
-                        task_attention_mask_with_programs = [task_attention_mask[:start_idxs[0]]]
+                        task_inputs_embeds_with_programs = [task_inputs_embeds[:start_idxs[0]]] if start_idxs[0] > 0 else []
+                        task_attention_mask_with_programs = [task_attention_mask[:start_idxs[0]]] if start_idxs[0] > 0 else []
                         task_program_intervals = []
 
                         for i, start_idx in enumerate(start_idxs):
@@ -456,11 +460,31 @@ def evaluate(
                             program_intervals=program_intervals,
                             attend_prev_programs=attend_prev_programs,
                         )
+                    assert len(gen_tokens) == len(out_token_length)
+                    for t, l in zip(gen_tokens, out_token_length):
+                        t[l + arbitrary_increase:] = dataset.tokenizer.pad_token_id
                     gen_texts = dataset.tokenizer.batch_decode(
                         gen_tokens,
                         skip_special_tokens=True,
                         no_separate_color_tokens=dataset.no_separate_color_tokens,
                     )
+
+                    # DBEUG: when ntoken0
+                    # gen_tokens2 = module.generate(
+                    #     input_ids=gen_input_ids,
+                    #     attention_mask=gen_attention_mask,
+                    #     max_new_tokens=max(out_token_length) + arbitrary_increase, # arbitrary increase
+                    #     num_return_sequences=1,
+                    #     temperature=1.0,
+                    #     top_p=1.0,
+                    #     do_sample=False,
+                    #     eos_token_id=[dataset.tokenizer.eos_token_id],
+                    # )
+                    # gen_tokens2 = gen_tokens2[:, gen_input_ids.shape[1]:]
+                    # assert len(gen_tokens2) == len(out_token_length)
+                    # for t, l in zip(gen_tokens2, out_token_length):
+                    #     t[l + arbitrary_increase:] = dataset.tokenizer.pad_token_id
+                    # assert torch.equal(gen_tokens, gen_tokens2)
 
             # Compare each gen_text with label_texts
             assert len(task_ids) == len(inverters) == bs, (len(task_ids), len(inverters), bs)
@@ -791,6 +815,8 @@ def model_loss(
     attention_cutoff: bool,
     attend_prev_programs: bool,
     debug_len: int,
+    debug: bool,
+    no_bos: bool,
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
 
     # original baseline
@@ -829,7 +855,7 @@ def model_loss(
     pair_label_ids = []
 
     for task_input_ids, task_inputs_embeds, task_attention_mask, task_label_ids, input_ids_len, start_idxs in zip(input_ids, inputs_embeds, attention_mask, label_ids, input_ids_lens, pair_start_idxs):
-        assert start_idxs[0] == 1 # first pair starts after bos
+        assert start_idxs[0] == 1 - int(no_bos) # first pair starts after bos
         # start_idxs are offset if padding side is left
         if pad_side == "left":
             start_idxs = [s + task_input_ids.shape[0] - input_ids_len for s in start_idxs]
@@ -837,9 +863,9 @@ def model_loss(
             assert len(set(task_input_ids[start_idxs].tolist())) == 1 # all should be the input token (we remove bos)
 
         # insert program token before every pair
-        task_inputs_embeds_with_programs = [task_inputs_embeds[:start_idxs[0]]]
-        task_attention_mask_with_programs = [task_attention_mask[:start_idxs[0]]]
-        task_label_ids_with_programs = [task_label_ids[:start_idxs[0]]]
+        task_inputs_embeds_with_programs = [task_inputs_embeds[:start_idxs[0]]] if start_idxs[0] > 0 else []
+        task_attention_mask_with_programs = [task_attention_mask[:start_idxs[0]]] if start_idxs[0] > 0 else []
+        task_label_ids_with_programs = [task_label_ids[:start_idxs[0]]] if start_idxs[0] > 0 else []
         task_program_intervals = []
 
         # store pairwise inputs_embeds, attention_mask, and label_ids for program loss
@@ -926,14 +952,14 @@ def model_loss(
             inputs_embeds=inputs_embeds_with_programs,
             attention_mask=attention_mask_with_programs,
             labels=label_ids_with_programs,
-            output_hidden_states=(program_type != 'none'),
+            output_hidden_states=(program_type != 'none') or debug,
         )
     else:
         model_out = model(
             inputs_embeds=inputs_embeds_with_programs,
             attention_mask=attention_mask_with_programs,
             labels=label_ids_with_programs,
-            output_hidden_states=(program_type != 'none'),
+            output_hidden_states=(program_type != 'none') or debug,
             program_intervals=program_intervals,
             attend_prev_programs=attend_prev_programs,
         )
@@ -1020,6 +1046,19 @@ def model_loss(
 
     total_loss = ce_loss + program_loss_lambda * program_loss
 
+    # DEBUG when ntoken=1
+    # model_out_2 = model(
+    #     input_ids=input_ids,
+    #     attention_mask=attention_mask,
+    #     labels=label_ids,
+    #     output_hidden_states=True,
+    # )
+    # hidden_states_1 = model_out.hidden_states[-1] # (batch_size, seq_len, hidden_dim) # type: ignore
+    # hidden_states_2 = model_out_2.hidden_states[-1] # (batch_size, seq_len, hidden_dim) # type: ignore
+    # print('hidden state difference', (hidden_states_1 - hidden_states_2).abs().mean().item() / hidden_states_2.abs().mean().item())
+
+    # also added breakpoint here to test whether left and right padding generate the same loss over multiple iters (they do)
+
     return ce_loss, program_loss, total_loss
 
 
@@ -1089,6 +1128,7 @@ def main():
     parser.add_argument("--trainable_nbit", type=int, choices=[16, 32], default=16)
     parser.add_argument("--gradient_checkpointing", action="store_true")
     parser.add_argument("--no_lora", action="store_true")
+    parser.add_argument("--no_tf32", action="store_true")
 
     # program loss
     parser.add_argument("--program_type", type=str, choices=["none", "random", "concat"], default="none")
@@ -1128,6 +1168,7 @@ def main():
     parser.add_argument("--max_num_pair", type=int, default=8) # includes test pair
     parser.add_argument("--max_seq_len", type=int, default=8192)
     parser.add_argument("--pad_side", type=str, choices=["left", "right"], default="left")
+    parser.add_argument("--no_bos", action='store_true')
 
     # re-arc train data
     parser.add_argument("--train_data_dir", type=str, default="./data/re-arc/train_data/tasks")
@@ -1179,6 +1220,7 @@ def main():
         args.wandb = False
         args.samples_per_epoch = 32
         args.log_every = 1
+        args.debug_no_resume = True
 
     # check args
     if args.model_name == "nemo8b":
@@ -1239,7 +1281,8 @@ def main():
             tracker_config,
             init_kwargs={"wandb": wandb_init_args}
         )
-    torch.backends.cuda.matmul.allow_tf32 = True
+    if not args.no_tf32:
+        torch.backends.cuda.matmul.allow_tf32 = True
     logger.info("Accelerator and seed set up.")
 
     # log args
@@ -1463,6 +1506,7 @@ def main():
         num_workers=args.num_workers,
         no_separate_color_tokens=args.no_separate_color_tokens,
         max_seq_len=args.max_seq_len,
+        no_bos=args.no_bos,
     )
     train_collate_fn = partial(collate_fn_train, dataset=train_dataset)
     if args.debug_len > 0:
@@ -1590,6 +1634,7 @@ def main():
         debug_len=args.debug_len,
         no_separate_color_tokens=args.no_separate_color_tokens,
         max_seq_len=args.max_seq_len,
+        no_bos=args.no_bos,
     )
     eval_eval_dataset = EvalDataset(
         eval_dir=args.eval_eval_dir,
@@ -1607,6 +1652,7 @@ def main():
         debug_len=args.debug_len,
         no_separate_color_tokens=args.no_separate_color_tokens,
         max_seq_len=args.max_seq_len,
+        no_bos=args.no_bos,
     )
     eval_collate_fn = partial(collate_fn_eval, dataset=eval_train_dataset)
     if args.debug_len > 0:
@@ -1682,6 +1728,8 @@ def main():
                         attention_cutoff=args.attention_cutoff,
                         attend_prev_programs=args.attend_prev_programs,
                         debug_len=args.debug_len,
+                        debug=args.debug,
+                        no_bos=args.no_bos,
                     )
 
                 ce_loss_accum += ce_loss.item() / args.grad_accum_steps

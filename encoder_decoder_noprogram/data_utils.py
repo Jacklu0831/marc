@@ -353,6 +353,7 @@ class TrainDataset(Dataset):
         num_workers: int,
         no_separate_color_tokens: bool,
         max_seq_len: int,
+        no_bos: bool,
     ):
         self.re_arc_ratio = re_arc_ratio
         self.concept_arc_ratio = concept_arc_ratio
@@ -374,6 +375,7 @@ class TrainDataset(Dataset):
         self.debug_len = debug_len
         self.no_separate_color_tokens = no_separate_color_tokens
         self.max_seq_len = max_seq_len
+        self.no_bos = no_bos
 
         # setup args
         self.normalized_ratio = np.array([self.re_arc_ratio, self.concept_arc_ratio, self.arc_heavy_ratio])
@@ -461,6 +463,9 @@ def collate_fn_train(batch: List[int], dataset: TrainDataset) -> Dict:
             all_pairs = [{"input": pair[0], "output": pair[1]} for pair in all_pairs]
             assert all(len(pair) == 2 for pair in all_pairs)
 
+        if dataset.debug_fixed_order:
+            required_num_pair = len(all_pairs)
+
         # need at least required_num_pair to proceed
         if len(all_pairs) < required_num_pair:
             continue
@@ -534,7 +539,7 @@ def collate_fn_train(batch: List[int], dataset: TrainDataset) -> Dict:
             example = (task.train_examples + [task.test_example])[pair_i]
             input_grid_ids, output_grid_ids = dataset.tokenizer.get_input_and_output_grid_ids(
                 example=example,
-                add_bos=(pair_i == 0),
+                add_bos=(pair_i == 0) if not dataset.no_bos else False,
                 no_separate_color_tokens=dataset.no_separate_color_tokens,
             )
             input_ids = torch.cat([input_grid_ids, output_grid_ids])
@@ -552,7 +557,7 @@ def collate_fn_train(batch: List[int], dataset: TrainDataset) -> Dict:
 
         # start idxs computed from cumsum of lengths of pairs except last, set first start idx to 1 for bos
         pair_start_idxs = np.cumsum([0, *[len(x) for x in pair_idx_to_input_ids[:-1]]]).tolist()
-        pair_start_idxs[0] = 1
+        pair_start_idxs[0] = 0 if dataset.no_bos else 1
 
         input_ids = torch.cat(pair_idx_to_input_ids)
         attention_mask = torch.cat(pair_idx_to_attention_mask)
@@ -574,7 +579,10 @@ def collate_fn_train(batch: List[int], dataset: TrainDataset) -> Dict:
     label_ids = [x['label_ids'] for x in out_list]
 
     pair_start_idxs = [x['pair_start_idxs'] for x in out_list]
-    assert all(start_idxs[0] == 1 for start_idxs in pair_start_idxs)
+    if not dataset.no_bos:
+        assert all(start_idxs[0] == 1 for start_idxs in pair_start_idxs)
+    else:
+        assert all(start_idxs[0] == 0 for start_idxs in pair_start_idxs)
     input_ids_lens = [len(i) for i in input_ids]
 
     # pad
@@ -608,7 +616,10 @@ def collate_fn_train_dummy(batch: List[int], dataset: TrainDataset) -> Dict:
     attention_mask = torch.full((batch_size, dataset.debug_len), 1, dtype=torch.int64, device='cpu')
     input_ids_lens = [dataset.debug_len] * batch_size
 
-    pair_start_idxs = [list(range(1, dataset.debug_len * 9 // 10, dataset.debug_len // 15))[:10] for _ in range(batch_size)]
+    if not dataset.no_bos:
+        pair_start_idxs = [list(range(1, dataset.debug_len * 9 // 10, dataset.debug_len // 15))[:10] for _ in range(batch_size)]
+    else:
+        pair_start_idxs = [list(range(0, dataset.debug_len * 9 // 10, dataset.debug_len // 15))[:10] for _ in range(batch_size)]
 
     return {
         "input_ids": input_ids,
@@ -640,6 +651,7 @@ class EvalDataset:
         debug_len: int,
         no_separate_color_tokens: bool,
         max_seq_len: int,
+        no_bos: bool,
     ):
         self.permute_n = permute_n
         self.augment_n = augment_n
@@ -652,6 +664,7 @@ class EvalDataset:
         self.debug_len = debug_len
         self.max_seq_len = max_seq_len
         self.no_separate_color_tokens = no_separate_color_tokens
+        self.no_bos = no_bos
 
         self.augmenters = [Transpose(), Flip(0), Flip(1), Rotate(90), Rotate(180)]
 
@@ -822,7 +835,7 @@ class EvalDataset:
             example = (task.train_examples + [task.test_example])[pair_i]
             input_grid_ids, output_grid_ids = self.tokenizer.get_input_and_output_grid_ids(
                 example=example,
-                add_bos=(pair_i == 0),
+                add_bos=(pair_i == 0) if not self.no_bos else False,
                 no_separate_color_tokens=self.no_separate_color_tokens,
             )
             input_ids = torch.cat([input_grid_ids, output_grid_ids])
@@ -845,7 +858,7 @@ class EvalDataset:
 
         # start idxs computed from cumsum of lengths of pairs except last, plus one for bos
         pair_start_idxs = np.cumsum([0, *[len(x) for x in pair_idx_to_input_ids[:-1]]]).tolist()
-        pair_start_idxs[0] = 1
+        pair_start_idxs[0] = 0 if self.no_bos else 1
 
         input_ids = torch.cat(pair_idx_to_input_ids)
         attention_mask = torch.cat(pair_idx_to_attention_mask)
@@ -895,7 +908,7 @@ def collate_fn_eval(batch: List[Dict], dataset: EvalDataset) -> Dict:
     out_token_length = [x["out_token_length"] for x in batch]
     label_texts = [x["label_texts"] for x in batch]
     pair_start_idxs = [x["pair_start_idxs"] for x in batch]
-    assert all(start_idxs[0] == 1 for start_idxs in pair_start_idxs)
+    assert all(start_idxs[0] == 1 - dataset.no_bos for start_idxs in pair_start_idxs)
 
     input_ids_lens = [len(x) for x in input_ids]
     input_ids = pad_sequence_with_side(input_ids, padding_value=dataset.tokenizer.pad_token_id, side=dataset.pad_side)
@@ -949,7 +962,10 @@ def collate_fn_eval_dummy(batch: List[Dict], dataset: EvalDataset) -> Dict:
     gen_attention_mask = torch.full((batch_size, dataset.debug_len * 9 // 10 + 1), 1, dtype=torch.int64, device='cpu')
     gen_input_ids_lens = [dataset.debug_len * 9 // 10 + 1] * batch_size
 
-    pair_start_idxs = [list(range(1, dataset.debug_len * 9 // 10, dataset.debug_len // 15))[:10] for _ in range(batch_size)]
+    if not dataset.no_bos:
+        pair_start_idxs = [list(range(1, dataset.debug_len * 9 // 10, dataset.debug_len // 15))[:10] for _ in range(batch_size)]
+    else:
+        pair_start_idxs = [list(range(0, dataset.debug_len * 9 // 10, dataset.debug_len // 15))[:10] for _ in range(batch_size)]
 
     task_ids = [str(x) for x in range(100000, 100000 + batch_size)]
     out_token_length = [dataset.debug_len // 10 + 1] * batch_size
@@ -988,6 +1004,7 @@ class TTTDataset(Dataset):
         debug_no_aug: bool,
         aug_type: str,
         no_separate_color_tokens: bool,
+        no_bos: bool,
     ):
         self.permute_n = permute_n
         self.tokenizer = tokenizer
@@ -996,6 +1013,7 @@ class TTTDataset(Dataset):
         self.pad_side = pad_side
         self.debug_no_aug = debug_no_aug
         self.no_separate_color_tokens = no_separate_color_tokens
+        self.no_bos = no_bos
 
         # get all augmenters
         d8_augmenters = get_d8_augmenters(include_identity=False)
@@ -1110,7 +1128,7 @@ class TTTDataset(Dataset):
             example = (task.train_examples + [task.test_example])[pair_i]
             input_grid_ids, output_grid_ids = self.tokenizer.get_input_and_output_grid_ids(
                 example=example,
-                add_bos=(pair_i == 0),
+                add_bos=(pair_i == 0) if not self.no_bos else False,
                 no_separate_color_tokens=self.no_separate_color_tokens,
             )
             input_ids = torch.cat([input_grid_ids, output_grid_ids])
@@ -1126,7 +1144,7 @@ class TTTDataset(Dataset):
 
         # start idxs computed from cumsum of lengths of pairs except last, plus one for bos
         pair_start_idxs = np.cumsum([0, *[len(x) for x in pair_idx_to_input_ids[:-1]]]).tolist()
-        pair_start_idxs[0] = 1
+        pair_start_idxs[0] = 0 if self.no_bos else 1
 
         input_ids = torch.cat(pair_idx_to_input_ids)
         attention_mask = torch.cat(pair_idx_to_attention_mask)

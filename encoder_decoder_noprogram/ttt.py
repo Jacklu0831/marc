@@ -124,7 +124,7 @@ def main():
 
     # Model
     parser.add_argument("--model_name", type=str, default="llama1b")
-    parser.add_argument("--flash_attn", action="store_true")
+    parser.add_argument("--no_flash_attn", action="store_true")
     parser.add_argument("--untrainable_nbit", type=float, choices=[3.6, 4, 8, 16, 32], default=16)
     parser.add_argument("--trainable_nbit", type=int, choices=[16, 32], default=16)
     parser.add_argument("--gradient_checkpointing", action="store_true")
@@ -168,6 +168,7 @@ def main():
     parser.add_argument("--pad_side", type=str, choices=["left", "right"], default="right")
     parser.add_argument("--no_separate_color_tokens", action='store_true')
     parser.add_argument("--max_seq_len", type=int, default=8192)
+    parser.add_argument("--no_bos", action='store_true')
 
     parser.add_argument("--seed", type=int, default=0)
     args = parser.parse_args()
@@ -224,7 +225,7 @@ def main():
         "cache_dir": "./encoder_decoder_cache",
         "low_cpu_mem_usage": True,
     }
-    if args.flash_attn:
+    if not args.no_flash_attn:
         from_pretrained_kwargs["attn_implementation"] = "flash_attention_2"
     if args.untrainable_nbit in NBIT_TO_DTYPE:
         from_pretrained_kwargs["torch_dtype"] = NBIT_TO_DTYPE[args.untrainable_nbit]
@@ -388,6 +389,7 @@ def main():
         debug_no_aug=args.debug_no_aug,
         aug_type=args.aug_type,
         no_separate_color_tokens=args.no_separate_color_tokens,
+        no_bos=args.no_bos,
     )
 
     # save memory by making datasets on the fly
@@ -554,6 +556,8 @@ def main():
                             attention_cutoff=args.attention_cutoff,
                             attend_prev_programs=args.attend_prev_programs,
                             debug_len=-1,
+                            debug=False,
+                            no_bos=args.no_bos,
                         )
 
                     accelerator.backward(total_loss)

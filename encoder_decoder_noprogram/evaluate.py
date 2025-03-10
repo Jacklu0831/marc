@@ -60,7 +60,7 @@ def main():
 
     # Model
     parser.add_argument("--model_name", type=str, default="llama1b")
-    parser.add_argument("--flash_attn", action="store_true")
+    parser.add_argument("--no_flash_attn", action="store_true")
     parser.add_argument("--untrainable_nbit", type=float, choices=[3.6, 4, 8, 16, 32], default=16)
     parser.add_argument("--trainable_nbit", type=int, choices=[16, 32], default=16)
 
@@ -82,6 +82,7 @@ def main():
     parser.add_argument("--max_seq_len", type=int, default=8192)
     parser.add_argument("--pad_side", type=str, choices=["left", "right"], default="left")
     parser.add_argument("--no_separate_color_tokens", action='store_true')
+    parser.add_argument("--no_bos", action='store_true')
 
     # eval data
     parser.add_argument("--data_dir", type=str, default="./data/re-arc/arc_original/evaluation")
@@ -102,7 +103,7 @@ def main():
     if args.model_name == "nemo8b":
         assert args.pad_side == "left"
 
-    args.tag = f"eval_{args.tag}_{args.weight_dir}"
+    args.tag = f"eval_{args.tag}_{args.ttt_weight_dir}"
     args.output_dir = os.path.join(args.output_dir, args.tag)
 
     # Setup accelerator
@@ -139,7 +140,7 @@ def main():
         "cache_dir": "./encoder_decoder_cache",
         "low_cpu_mem_usage": True,
     }
-    if args.flash_attn:
+    if not args.no_flash_attn:
         from_pretrained_kwargs["attn_implementation"] = "flash_attention_2"
     if args.untrainable_nbit in NBIT_TO_DTYPE:
         from_pretrained_kwargs["torch_dtype"] = NBIT_TO_DTYPE[args.untrainable_nbit]
@@ -321,6 +322,7 @@ def main():
         debug_len=-1,
         no_separate_color_tokens=args.no_separate_color_tokens,
         max_seq_len=args.max_seq_len,
+        no_bos=args.no_bos,
     )
     collate_fn = partial(collate_fn_eval, dataset=dataset)
 
@@ -331,7 +333,6 @@ def main():
         model=model,
         prior_embeddings=prior_embeddings,
         program_embeddings=program_embeddings,
-        tokenizer=tokenizer,
         dataset=dataset,
         accelerator=accelerator,
         batch_size=args.batch_size,

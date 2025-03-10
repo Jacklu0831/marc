@@ -204,6 +204,7 @@ def main():
     parser.add_argument("--program_dropout", type=float, default=0.0)
     parser.add_argument("--program_noise_std", type=float, default=0.0)
     parser.add_argument("--save_epochs", type=int, default=-1)
+    parser.add_argument("--short_context", action='store_true')
 
     # scheduled extra losses
     parser.add_argument("--consistency_loss_lambda", type=float, default=0.0)
@@ -232,8 +233,9 @@ def main():
     parser.add_argument("--pad_side", type=str, choices=["left", "right"], default="right")
     parser.add_argument("--no_dim", action='store_true')
     parser.add_argument("--no_separate_color_tokens", action='store_true')
+    parser.add_argument("--no_bos", action="store_true")
 
-    parser.add_argument("--ntokens", type=int, default=16)
+    parser.add_argument("--ntokens", type=int, default=4)
     parser.add_argument("--seed", type=int, default=0)
     args = parser.parse_args()
 
@@ -475,6 +477,7 @@ def main():
         no_dim=args.no_dim,
         no_separate_color_tokens=args.no_separate_color_tokens,
         max_seq_len=args.max_seq_len,
+        no_bos=args.no_bos,
     )
 
     # save memory by making datasets on the fly
@@ -729,6 +732,7 @@ def main():
                             debug=False,
                             contrastive_loss=contrastive_loss, # NOTIMPLEMENTED
                             is_same=True, # NOTIMPLEMENTED
+                            short_context=args.short_context,
                         )
 
                     accelerator.backward(total_loss)

@@ -250,7 +250,10 @@ def extract_program_from_right_side(data: torch.Tensor, lens: List[int], ntokens
             program.append(x[l:l+ntokens])
         return torch.stack(program)
     else:
-        return data[:, -ntokens:, :]
+        if ntokens == 0:
+            return data[:, 0:0, :]
+        else:
+            return data[:, -ntokens:, :]
 
 
 def sample_from_vae(mu: torch.Tensor, logvar: torch.Tensor) -> torch.Tensor:
@@ -300,6 +303,7 @@ def get_predicted_program(
     no_discrete_prior: bool,
     train_codebook_only: bool,
     weird_cast: bool,
+    short_context: bool,
 ) -> List[List[torch.Tensor]]:
 
     def update_based_on_avail(all_x: List[Any], new_x: List[Any], avail_mask: torch.Tensor, concat: bool) -> None:
@@ -368,7 +372,7 @@ def get_predicted_program(
         # do the same for prev_past_key_values and attention
         prev_past_key_values = None
         prev_past_key_values_attention_mask = None
-        if pair_i > 0:
+        if pair_i > 0 and not short_context:
             assert all_prev_past_key_values is not None
             assert all_prev_past_key_values_attention_mask is not None
             # get avail
@@ -438,7 +442,7 @@ def get_predicted_program(
         )
 
         # attention mask should span to the past kvs
-        if pair_i > 0:
+        if pair_i > 0 and not short_context:
             assert prev_past_key_values is not None
             assert prev_past_key_values_attention_mask is not None
             assert prev_past_key_values_attention_mask.shape[1] == prev_past_key_values[0][0].shape[2]
@@ -449,9 +453,9 @@ def get_predicted_program(
             "inputs_embeds": pair_inputs_embeds,
             "attention_mask": pair_attention_mask,
             "output_hidden_states": True,
-            "use_cache": True,
+            "use_cache": not short_context,
         }
-        if pair_i > 0:
+        if pair_i > 0 and not short_context:
             assert prev_past_key_values is not None
             model_kwargs["past_key_values"] = prev_past_key_values
 
@@ -472,58 +476,77 @@ def get_predicted_program(
             position_ids = torch.stack(position_ids)
             model_kwargs["position_ids"] = position_ids
 
+        else:
+            # necessary for padside left and does not change when padside is right, idky
+            position_ids = []
+            for m in pair_attention_mask:
+                sequence_position_ids = torch.zeros(pair_inputs_embeds.shape[1], device=device, dtype=dtype)
+                n_new_positions = m.sum()
+                new_positions = torch.tensor(range(n_new_positions), device=device, dtype=dtype)
+                if pad_side == "right":
+                    sequence_position_ids[:n_new_positions] = new_positions
+                else:
+                    sequence_position_ids[-n_new_positions:] = new_positions
+                position_ids.append(sequence_position_ids)
+            position_ids = torch.stack(position_ids)
+            model_kwargs["position_ids"] = position_ids
+
         # refine program
         model_out = model(**model_kwargs)
         assert model_out is not None
 
-        # remove the end program of past key values
-        old_key_values_len = prev_past_key_values[0][0].shape[2] if prev_past_key_values is not None else 0
-        if pad_side == "right":
-            new_past_key_values = tuple(
-                (
-                    torch.stack([torch.cat([kv[:, :old_key_values_len+l], kv[:, old_key_values_len+l+ntokens:]], dim=1) for kv, l in zip(layer_kv[0], pair_input_ids_lens)]),
-                    torch.stack([torch.cat([kv[:, :old_key_values_len+l], kv[:, old_key_values_len+l+ntokens:]], dim=1) for kv, l in zip(layer_kv[1], pair_input_ids_lens)]),
+        if not short_context:
+            # remove the end program of past key values
+            old_key_values_len = prev_past_key_values[0][0].shape[2] if prev_past_key_values is not None else 0
+            if pad_side == "right":
+                new_past_key_values = tuple(
+                    (
+                        torch.stack([torch.cat([kv[:, :old_key_values_len+l], kv[:, old_key_values_len+l+ntokens:]], dim=1) for kv, l in zip(layer_kv[0], pair_input_ids_lens)]),
+                        torch.stack([torch.cat([kv[:, :old_key_values_len+l], kv[:, old_key_values_len+l+ntokens:]], dim=1) for kv, l in zip(layer_kv[1], pair_input_ids_lens)]),
+                    )
+                    for layer_kv in model_out.past_key_values
                 )
-                for layer_kv in model_out.past_key_values
-            )
-        else:
-            new_past_key_values = tuple(
-                (
-                    layer_kv[0][:, :, :-ntokens, :],
-                    layer_kv[1][:, :, :-ntokens, :],
-                )
-                for layer_kv in model_out.past_key_values
-            )
+            else:
+                if ntokens == 0:
+                    new_past_key_values = model_out.past_key_values
+                else:
+                    new_past_key_values = tuple(
+                        (
+                            layer_kv[0][:, :, :-ntokens, :],
+                            layer_kv[1][:, :, :-ntokens, :],
+                        )
+                        for layer_kv in model_out.past_key_values
+                    )
 
-        # format kv to batchsize x numlayer x 2, (nhead, seqlen, hiddendim)
-        new_past_key_values = [
-            [
-                (kv[0][batch_i], kv[1][batch_i])
-                for kv in new_past_key_values
+            # format kv to batchsize x numlayer x 2, (nhead, seqlen, hiddendim)
+            new_past_key_values = [
+                [
+                    (kv[0][batch_i], kv[1][batch_i])
+                    for kv in new_past_key_values
+                ]
+                for batch_i in range(sum(avail_mask))
             ]
-            for batch_i in range(sum(avail_mask))
-        ]
-        # update key values
-        if pair_i == 0:
-            all_prev_past_key_values = new_past_key_values
-        else:
-            assert all_prev_past_key_values is not None
-            update_based_on_avail(all_prev_past_key_values, new_past_key_values, avail_mask, concat=False)
+            # update key values
+            if pair_i == 0:
+                all_prev_past_key_values = new_past_key_values
+            else:
+                assert all_prev_past_key_values is not None
+                update_based_on_avail(all_prev_past_key_values, new_past_key_values, avail_mask, concat=False)
 
-        # format kv attention mask to batchsize x (seqlen,)
-        new_prev_past_key_values_attention_mask = [x for x in pair_attention_mask_no_program_embed]
-        # update kv attention mask
-        if pair_i == 0:
-            all_prev_past_key_values_attention_mask = new_prev_past_key_values_attention_mask
-        else:
-            assert all_prev_past_key_values_attention_mask is not None
-            update_based_on_avail(all_prev_past_key_values_attention_mask, new_prev_past_key_values_attention_mask, avail_mask, concat=True)
+            # format kv attention mask to batchsize x (seqlen,)
+            new_prev_past_key_values_attention_mask = [x for x in pair_attention_mask_no_program_embed]
+            # update kv attention mask
+            if pair_i == 0:
+                all_prev_past_key_values_attention_mask = new_prev_past_key_values_attention_mask
+            else:
+                assert all_prev_past_key_values_attention_mask is not None
+                update_based_on_avail(all_prev_past_key_values_attention_mask, new_prev_past_key_values_attention_mask, avail_mask, concat=True)
 
-        # check length
-        for batch_i in range(batch_size):
-            assert all_prev_past_key_values[batch_i][0][0].shape[1] == all_prev_past_key_values_attention_mask[batch_i].shape[0]
-            n_pair = min(pair_i + 1, num_pairs[batch_i])
-            assert all_prev_past_key_values[batch_i][0][0].shape[1] == n_pair * ntokens + sum(x[batch_i].shape[0] for x in inputs_embeds[:n_pair])
+            # check length
+            for batch_i in range(batch_size):
+                assert all_prev_past_key_values[batch_i][0][0].shape[1] == all_prev_past_key_values_attention_mask[batch_i].shape[0]
+                n_pair = min(pair_i + 1, num_pairs[batch_i])
+                assert all_prev_past_key_values[batch_i][0][0].shape[1] == n_pair * ntokens + sum(x[batch_i].shape[0] for x in inputs_embeds[:n_pair])
 
         # projection then sample new program prediction for all pairs except the last
         # sample program
@@ -604,10 +627,10 @@ def model_loss(
     loss_on_first: bool,
     debug: bool,
     contrastive_loss: ContrastiveLoss,
+    short_context: bool,
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, List[torch.Tensor]]:
 
-    # debugging: make sure middle attention 0s do not affect hidden states -> works for both float32 and 16 on rtx8000 without flashattn
-    # TODO: test this on a100 with flashattn when have one
+    # # debugging: make sure middle attention 0s do not affect hidden states -> works for both float32 and 16 on rtx8000 without flashattn
     # batch_size = len(input_ids[0])
     # dtype, device = input_ids[0].dtype, input_ids[0].device
 
@@ -626,7 +649,7 @@ def model_loss(
     #     attention_mask=dummy_attention_mask,
     #     output_hidden_states=True,
     # )
-    # print('right pad dummy1 vs dummy2 hidden diff', (dummy_out1.hidden_states[-1][:, :-2, :] - dummy_out2.hidden_states[-1][:, :-2, :]).abs().mean().item())
+    # print('right pad dummy1 vs dummy2 hidden diff', (dummy_out1.hidden_states[-1][:, :-2, :] - dummy_out2.hidden_states[-1][:, :-2, :]).abs().max().item())
 
     # dummy_inputs_embeds = dummy_inputs_embeds[:, :-2, :]
     # dummy_attention_mask = torch.tensor([1, 1, 1], dtype=torch.long, device=device)[None, ...].expand(batch_size, -1)
@@ -635,7 +658,7 @@ def model_loss(
     #     attention_mask=dummy_attention_mask,
     #     output_hidden_states=True,
     # )
-    # print('right pad dummy1 vs dummy3 hidden diff', (dummy_out1.hidden_states[-1][:, :-2, :] - dummy_out3.hidden_states[-1]).abs().mean().item())
+    # print('right pad dummy1 vs dummy3 hidden diff', (dummy_out1.hidden_states[-1][:, :-2, :] - dummy_out3.hidden_states[-1]).abs().max().item())
 
 
 
@@ -646,7 +669,6 @@ def model_loss(
 
 
     # # debugging: make sure middle attention 0s do not affect hidden states -> works for both float32 and 16 on rtx8000 without flashattn
-    # # TODO: test this on a100 with flashattn when have one
     # batch_size = len(input_ids[0])
     # dtype, device = input_ids[0].dtype, input_ids[0].device
 
@@ -665,7 +687,7 @@ def model_loss(
     #     attention_mask=dummy_attention_mask,
     #     output_hidden_states=True,
     # )
-    # print('left pad dummy1 vs dummy2 hidden diff', (dummy_out1.hidden_states[-1][:, 2:, :] - dummy_out2.hidden_states[-1][:, 2:, :]).abs().mean().item())
+    # print('left pad dummy1 vs dummy2 hidden diff', (dummy_out1.hidden_states[-1][:, 2:, :] - dummy_out2.hidden_states[-1][:, 2:, :]).abs().max().item())
 
     # dummy_inputs_embeds = dummy_inputs_embeds[:, 2:, :]
     # dummy_attention_mask = torch.tensor([1, 1, 1], dtype=torch.long, device=device)[None, ...].expand(batch_size, -1)
@@ -674,10 +696,7 @@ def model_loss(
     #     attention_mask=dummy_attention_mask,
     #     output_hidden_states=True,
     # )
-    # print('left pad dummy1 vs dummy3 hidden diff', (dummy_out1.hidden_states[-1][:, 2:, :] - dummy_out3.hidden_states[-1]).abs().mean().item())
-
-
-
+    # print('left pad dummy1 vs dummy3 hidden diff', (dummy_out1.hidden_states[-1][:, 2:, :] - dummy_out3.hidden_states[-1]).abs().max().item())
 
 
 
@@ -685,7 +704,6 @@ def model_loss(
 
 
     # # debugging: make sure middle attention 0s do not affect hidden states -> works for both float32 and 16 on rtx8000 without flashattn
-    # # TODO: test this on a100 with flashattn when have one
     # batch_size = len(input_ids[0])
     # dtype, device = input_ids[0].dtype, input_ids[0].device
 
@@ -708,7 +726,7 @@ def model_loss(
     #     position_ids=position_ids,
     #     output_hidden_states=True,
     # )
-    # print('mid pad dummy1 vs dummy2 hidden diff', (dummy_out1.hidden_states[-1][:, torch.tensor([0, 2, 4]), :] - dummy_out2.hidden_states[-1][:, torch.tensor([0, 2, 4]), :]).abs().mean().item())
+    # print('mid pad dummy1 vs dummy2 hidden diff', (dummy_out1.hidden_states[-1][:, torch.tensor([0, 2, 4]), :] - dummy_out2.hidden_states[-1][:, torch.tensor([0, 2, 4]), :]).abs().max().item())
 
     # dummy_inputs_embeds = dummy_inputs_embeds[:, torch.tensor([0, 2, 4]), :]
     # dummy_attention_mask = torch.tensor([1, 1, 1], dtype=torch.long, device=device)[None, ...].expand(batch_size, -1)
@@ -717,13 +735,110 @@ def model_loss(
     #     attention_mask=dummy_attention_mask,
     #     output_hidden_states=True,
     # )
-    # print('mid pad dummy1 vs dummy3 hidden diff', (dummy_out1.hidden_states[-1][:, torch.tensor([0, 2, 4]), :] - dummy_out3.hidden_states[-1]).abs().mean().item())
+    # print('mid pad dummy1 vs dummy3 hidden diff', (dummy_out1.hidden_states[-1][:, torch.tensor([0, 2, 4]), :] - dummy_out3.hidden_states[-1]).abs().max().item())
     # # finally ~1e-7
 
 
 
 
 
+
+    # # debugging: simulate left padding's effect on kv cache, conclusion is that position_ids IS needed
+    # dtype, device = input_ids[0].dtype, input_ids[0].device
+
+    # dummy_inputs_embeds1 = torch.randn((2, 7, 2048), dtype=torch.float32, device=device)
+    # dummy_attention_mask1 = torch.tensor([[0, 0, 1, 0, 1, 0, 1],
+    #                                       [1, 1, 1, 1, 1, 1, 1]], dtype=torch.long, device=device)
+    # position_ids = torch.tensor([[0, 0, 0, 0, 1, 0, 2],
+    #                              [0, 1, 2, 3, 4, 5, 6]], dtype=torch.long, device=device)
+    # dummy_out1 = model(
+    #     inputs_embeds=dummy_inputs_embeds1,
+    #     attention_mask=dummy_attention_mask1,
+    #     position_ids=position_ids,
+    #     output_hidden_states=True,
+    # )
+
+    # dummy_inputs_embeds2 = torch.randn((2, 7, 2048), dtype=torch.float32, device=device)
+    # dummy_inputs_embeds2[1] = dummy_inputs_embeds1[1]
+    # dummy_inputs_embeds2[0, 4] = dummy_inputs_embeds1[0, 2]
+    # dummy_inputs_embeds2[0, 5] = dummy_inputs_embeds1[0, 4]
+    # dummy_inputs_embeds2[0, 6] = dummy_inputs_embeds1[0, 6]
+    # dummy_attention_mask2 = torch.tensor([[0, 0, 0, 0, 1, 1, 1], [1, 1, 1, 1, 1, 1, 1]], dtype=torch.long, device=device)
+    # position_ids = torch.tensor([[0, 0, 0, 0, 0, 1, 2], [0, 1, 2, 3, 4, 5, 6]], dtype=torch.long, device=device)
+    # dummy_out2 = model(
+    #     inputs_embeds=dummy_inputs_embeds2,
+    #     attention_mask=dummy_attention_mask2,
+    #     position_ids=position_ids,
+    #     output_hidden_states=True,
+    # )
+
+    # embeds1 = dummy_inputs_embeds1.masked_select(dummy_attention_mask1.bool()[:, :, None])
+    # embeds2 = dummy_inputs_embeds2.masked_select(dummy_attention_mask2.bool()[:, :, None])
+    # assert (embeds1 - embeds2).max() == 0.0
+
+    # assert dummy_out1.past_key_values[0][0].shape == dummy_out2.past_key_values[0][0].shape
+    # max_kv_diff = 0.0
+    # for i in range(len(dummy_out1.past_key_values)):
+    #     for j in range(2):
+    #         kv1 = dummy_out1.past_key_values[i][j]
+    #         kv2 = dummy_out2.past_key_values[i][j]
+    #         kv1 = kv1.masked_select(dummy_attention_mask1.bool()[:, None, :, None])
+    #         kv2 = kv2.masked_select(dummy_attention_mask2.bool()[:, None, :, None])
+    #         max_kv_diff = max(max_kv_diff, (kv1 - kv2).abs().max().item())
+    #         print(i, j, (kv1 - kv2).abs().max().item())
+    # print('mid pad dummy1 vs dummy2 kv diff', max_kv_diff)
+    # breakpoint()
+    # # finally ~1e-7
+
+
+
+
+    # # debugging: simulate right padding's effect on kv cache, conclusion is that position_ids is NOT needed
+    # dtype, device = input_ids[0].dtype, input_ids[0].device
+
+    # dummy_inputs_embeds = torch.randn((2, 7, 2048), dtype=torch.float32, device=device)
+    # dummy_attention_mask = torch.tensor([[1, 0, 1, 0, 1, 0, 0],
+    #                                      [1, 1, 1, 1, 1, 1, 1]], dtype=torch.long, device=device)
+    # position_ids = torch.tensor([[0, 0, 1, 1, 2, 2, 2],
+    #                              [0, 1, 2, 3, 4, 5, 6]], dtype=torch.long, device=device)
+    # dummy_out = model(
+    #     inputs_embeds=dummy_inputs_embeds,
+    #     attention_mask=dummy_attention_mask,
+    #     position_ids=position_ids,
+    #     output_hidden_states=True,
+    # )
+
+    # dummy_inputs_embeds2 = torch.randn((2, 7, 2048), dtype=torch.float32, device=device)
+    # dummy_inputs_embeds2[1] = dummy_inputs_embeds[1]
+    # dummy_inputs_embeds2[0, 0] = dummy_inputs_embeds[0, 0]
+    # dummy_inputs_embeds2[0, 1] = dummy_inputs_embeds[0, 2]
+    # dummy_inputs_embeds2[0, 2] = dummy_inputs_embeds[0, 4]
+    # dummy_attention_mask2 = torch.tensor([[1, 1, 1, 0, 0, 0, 0], [1, 1, 1, 1, 1, 1, 1]], dtype=torch.long, device=device)
+    # position_ids = torch.tensor([[0, 1, 2, 2, 2, 2, 2], [0, 1, 2, 3, 4, 5, 6]], dtype=torch.long, device=device)
+    # dummy_out2 = model(
+    #     inputs_embeds=dummy_inputs_embeds2,
+    #     attention_mask=dummy_attention_mask2,
+    #     position_ids=position_ids,
+    #     output_hidden_states=True,
+    # )
+
+    # embeds1 = dummy_inputs_embeds.masked_select(dummy_attention_mask.bool()[:, :, None])
+    # embeds2 = dummy_inputs_embeds2.masked_select(dummy_attention_mask2.bool()[:, :, None])
+    # assert (embeds1 - embeds2).max() == 0.0
+
+    # assert dummy_out.past_key_values[0][0].shape == dummy_out2.past_key_values[0][0].shape
+    # max_kv_diff = 0.0
+    # for i in range(len(dummy_out.past_key_values)):
+    #     for j in range(2):
+    #         kv1 = dummy_out.past_key_values[i][j]
+    #         kv2 = dummy_out2.past_key_values[i][j]
+    #         kv1 = kv1.masked_select(dummy_attention_mask.bool()[:, None, :, None])
+    #         kv2 = kv2.masked_select(dummy_attention_mask2.bool()[:, None, :, None])
+    #         max_kv_diff = max(max_kv_diff, (kv1 - kv2).abs().max().item())
+    #         print(i, j, (kv1 - kv2).abs().max().item())
+    # print('mid pad dummy1 vs dummy2 kv diff', max_kv_diff)
+    # breakpoint()
+    # # finally ~1e-7
 
 
 
@@ -852,7 +967,7 @@ def model_loss(
         # STEP 3: refine program (no output grid label for first pair)
 
         # attention mask should span to the past kvs
-        if pair_i > 0: # no loss on first here because we just keep pair_attention_mask
+        if pair_i > 0 and not short_context: # no loss on first here because we just keep pair_attention_mask
             assert prev_past_key_values is not None
             assert prev_past_key_values_attention_mask is not None
             assert prev_past_key_values_attention_mask.shape[1] == prev_past_key_values[0][0].shape[2]
@@ -863,12 +978,12 @@ def model_loss(
             "inputs_embeds": pair_inputs_embeds,
             "attention_mask": pair_attention_mask,
             "output_hidden_states": (pair_i < n_pairs - 1), # not the last pair
-            "use_cache": True, # need to generate or use kv cache
+            "use_cache": not short_context, # need to generate or use kv cache
         }
         if pair_i > 0 or loss_on_first:
             model_kwargs["labels"] = pair_label_ids
 
-        if pair_i > 0:
+        if pair_i > 0 and not short_context:
             assert prev_past_key_values is not None
             model_kwargs["past_key_values"] = prev_past_key_values
 
@@ -905,6 +1020,21 @@ def model_loss(
             position_ids = torch.stack(position_ids)
             model_kwargs["position_ids"] = position_ids
 
+        else:
+            # necessary for padside left and does not change when padside is right, idky
+            position_ids = []
+            for m in pair_attention_mask:
+                sequence_position_ids = torch.zeros(pair_inputs_embeds.shape[1], device=device, dtype=dtype)
+                n_new_positions = m.sum()
+                new_positions = torch.tensor(range(n_new_positions), device=device, dtype=dtype)
+                if pad_side == "right":
+                    sequence_position_ids[:n_new_positions] = new_positions
+                else:
+                    sequence_position_ids[-n_new_positions:] = new_positions
+                position_ids.append(sequence_position_ids)
+            position_ids = torch.stack(position_ids)
+            model_kwargs["position_ids"] = position_ids
+
         # print(f'$$$ model forward {pair_i}')
         # print('inputs_embeds', pair_inputs_embeds.shape)
         # print('attention_mask', pair_attention_mask.shape)
@@ -922,7 +1052,7 @@ def model_loss(
             ce_losses.append(model_out.loss) # type: ignore
 
         # STEP 4: update kv
-        if pair_i < n_pairs - 1:
+        if pair_i < n_pairs - 1 and not short_context:
             assert model_out is not None
             # remove end program from kv cache
             old_key_values_len = prev_past_key_values[0][0].shape[2] if prev_past_key_values is not None else 0
@@ -935,13 +1065,16 @@ def model_loss(
                     for layer_kv in model_out.past_key_values
                 )
             else:
-                new_past_key_values = tuple(
-                    (
-                        layer_kv[0][:, :, :-ntokens, :],
-                        layer_kv[1][:, :, :-ntokens, :],
+                if ntokens == 0:
+                    new_past_key_values = model_out.past_key_values
+                else:
+                    new_past_key_values = tuple(
+                        (
+                            layer_kv[0][:, :, :-ntokens, :],
+                            layer_kv[1][:, :, :-ntokens, :],
+                        )
+                        for layer_kv in model_out.past_key_values
                     )
-                    for layer_kv in model_out.past_key_values
-                )
             # update kv cache
             if prev_past_key_values is not None:
                 assert prev_past_key_values[0][0].shape[2] + inputs_embeds[pair_i].shape[1] + ntokens == new_past_key_values[0][0].shape[2]
@@ -1107,15 +1240,17 @@ def model_loss(
 
 
 
-    # # we do a little debugging, nvm oh my god its a lot
-    # include_last_pair = True # set to true to compare loss
+
+
+
+
+    # # DEBUG: now we have all the programs along the way, let's aggregate all context into a single long context
+    # #        and make sure the output is the same, try this for train_pad_side left and right
     # assert len(saved_all_programs) == len(inputs_embeds) == len(attention_mask) == len(label_ids)
     # single_inputs_embeds = []
     # single_attention_mask = []
     # single_label_ids = []
     # for pair_i, (predicted_program, pair_inputs_embeds, pair_attention_mask, pair_label_ids, pair_input_ids_lens) in enumerate(zip(saved_all_programs, inputs_embeds, attention_mask, label_ids, input_ids_lens)):
-    #     if pair_i == len(inputs_embeds) - 1 and not include_last_pair:
-    #         continue
     #     single_inputs_embeds.append(insert_based_on_sides(
     #         data=pair_inputs_embeds,
     #         to_insert=predicted_program,
@@ -1132,7 +1267,7 @@ def model_loss(
     #         pad_side=pad_side,
     #         pad_id=0,
     #     ))
-    #     if pair_i == 0:
+    #     if pair_i == 0 and not loss_on_first:
     #         pair_label_ids = torch.full(pair_label_ids.shape, -100, dtype=dtype, device=device)
     #     single_label_ids.append(insert_based_on_sides(
     #         data=pair_label_ids,
@@ -1143,10 +1278,10 @@ def model_loss(
     #         pad_id=-100,
     #     ))
 
-    # single_inputs_embeds = torch.cat(single_inputs_embeds, dim=1)
-    # single_attention_mask = torch.cat(single_attention_mask, dim=1)
-    # single_label_ids = torch.cat(single_label_ids, dim=1)
-    # assert single_inputs_embeds.shape[:2] == single_attention_mask.shape[:2] == single_label_ids.shape[:2]
+    # single_inputs_embeds1 = torch.cat(single_inputs_embeds, dim=1)
+    # single_attention_mask1 = torch.cat(single_attention_mask, dim=1)
+    # single_label_ids1 = torch.cat(single_label_ids, dim=1)
+    # assert single_inputs_embeds1.shape[:2] == single_attention_mask1.shape[:2] == single_label_ids1.shape[:2]
 
     # assert prev_past_key_values is not None
     # assert prev_past_key_values_attention_mask is not None
@@ -1155,48 +1290,48 @@ def model_loss(
     # seq_len_to_check = prev_past_key_values_attention_mask.shape[1] # does not have final pair
     # assert seq_len_to_check == sum(x.shape[1] for x in inputs_embeds[:-1]) + (len(inputs_embeds) - 1) * ntokens
     # assert prev_past_key_values[0][0].shape[2] == seq_len_to_check
-    # assert torch.equal(single_attention_mask[:, :seq_len_to_check], prev_past_key_values_attention_mask)
+    # assert torch.equal(single_attention_mask1[:, :seq_len_to_check], prev_past_key_values_attention_mask)
 
     # # construct position ids
-    # position_ids = []
-    # for m in single_attention_mask:
-    #     sequence_position_ids = torch.cumsum(m, dim=0) - 1
-    #     position_ids.append(sequence_position_ids)
-    # position_ids = torch.stack(position_ids)
-    # assert position_ids.shape == single_attention_mask.shape
+    # position_ids1 = []
+    # for m in single_attention_mask1:
+    #     sequence_position_ids1 = torch.cumsum(m, dim=0) - 1
+    #     sequence_position_ids1[sequence_position_ids1 < 0] = 0
+    #     position_ids1.append(sequence_position_ids1)
+    # position_ids1 = torch.stack(position_ids1)
+    # assert position_ids1.shape == single_attention_mask1.shape
 
     # # single model forward
-    # model_out = model(
-    #     inputs_embeds=single_inputs_embeds,
-    #     attention_mask=single_attention_mask,
-    #     labels=single_label_ids,
-    #     position_ids=position_ids,
+    # model_out_1 = model(
+    #     inputs_embeds=single_inputs_embeds1,
+    #     attention_mask=single_attention_mask1,
+    #     labels=single_label_ids1,
+    #     position_ids=position_ids1,
     #     output_hidden_states=True,
     # )
-    # single_past_key_values = model_out.past_key_values
-    # if include_last_pair:
-    #     assert seq_len_to_check + inputs_embeds[-1].shape[1] + ntokens == single_past_key_values[0][0].shape[2]
-    # else:
-    #     assert seq_len_to_check == single_past_key_values[0][0].shape[2]
+    # single_past_key_values = model_out_1.past_key_values
+    # assert seq_len_to_check + inputs_embeds[-1].shape[1] + ntokens == single_past_key_values[0][0].shape[2]
 
-    # mean_kv_relative_diff = 0.0
+    # kv_max_diff = 0.0
     # for i in range(len(prev_past_key_values)):
     #     for j in range(2):
     #         old_kv = prev_past_key_values[i][j]
-    #         new_kv = single_past_key_values[i][j][:, :, :seq_len_to_check, :]
+    #         new_kv = single_past_key_values[i][j].detach().clone()[:, :, :seq_len_to_check, :]
     #         old_kv = old_kv.masked_select(prev_past_key_values_attention_mask.bool()[:, None, :, None])
     #         new_kv = new_kv.masked_select(prev_past_key_values_attention_mask.bool()[:, None, :, None])
-    #         mean_kv_relative_diff += (new_kv - old_kv).abs().mean() / prev_past_key_values[i][j].abs().mean()
-    # print('kv diff relative', mean_kv_relative_diff / len(prev_past_key_values) / 2)
-    # print('loss diff relative', (model_out.loss - ce_loss).abs() / ce_loss.abs())
-    # # # NOTE: kv 0 and model loss ~1e-7 diff
+    #         kv_max_diff = max(kv_max_diff, (new_kv - old_kv).abs().max().item())
+
+    # print('kv max diff', kv_max_diff)
+    # print('loss diff', (model_out_1.loss - ce_loss).abs().item())
 
 
 
 
 
 
-    # # we do a little MORE debugging
+
+    # # DEBUG: even more extreme than above, we strip all intermediate paddings in the long context and just
+    # #        do a big manual padding at the end, try this for train_pad_side left and right
     # assert len(saved_all_programs) == len(input_ids) == len(attention_mask) == len(label_ids)
     # single_inputs_embeds = []
     # single_attention_mask = []
@@ -1214,8 +1349,9 @@ def model_loss(
     #     assert sum(x.shape[0] for x in task_input_ids) == sum(x.shape[0] for x in task_attention_mask)
 
     #     # no loss on first
-    #     label1 = task_label_ids[0]
-    #     task_label_ids[0] = torch.full(label1.shape, -100, dtype=label1.dtype, device=label1.device)
+    #     if not loss_on_first:
+    #         label1 = task_label_ids[0]
+    #         task_label_ids[0] = torch.full(label1.shape, -100, dtype=label1.dtype, device=label1.device)
 
     #     # strip individual train paddings (make sure they actually are paddings)
     #     if pad_side == 'right':
@@ -1269,10 +1405,10 @@ def model_loss(
     #     single_attention_mask.append(task_attention_mask)
     #     single_label_ids.append(task_label_ids)
 
-    # # now pad based on gen pad side
-    # single_attention_mask = pad_sequence_with_side(single_attention_mask, padding_value=0, side=pad_side)
-    # single_label_ids = pad_sequence_with_side(single_label_ids, padding_value=-100, side=pad_side)
-    # assert single_attention_mask.shape == single_label_ids.shape
+    # # now pad based on pad side
+    # single_attention_mask2 = pad_sequence_with_side(single_attention_mask, padding_value=0, side=pad_side)
+    # single_label_ids2 = pad_sequence_with_side(single_label_ids, padding_value=-100, side=pad_side)
+    # assert single_attention_mask2.shape == single_label_ids2.shape
 
     # # pad single_inputs_embeds batchsize x (task-seqlen, hiddendim)
     # max_task_len = max(x.shape[0] for x in single_inputs_embeds)
@@ -1283,31 +1419,41 @@ def model_loss(
     #             single_inputs_embeds[i] = torch.cat([task_pad_embeds, single_inputs_embeds[i]])
     #         else:
     #             single_inputs_embeds[i] = torch.cat([single_inputs_embeds[i], task_pad_embeds])
-    # single_inputs_embeds = torch.stack(single_inputs_embeds)
-    # assert single_inputs_embeds.shape[:2] == single_label_ids.shape
+    # single_inputs_embeds2 = torch.stack(single_inputs_embeds)
+    # assert single_inputs_embeds2.shape[:2] == single_label_ids2.shape
 
     # assert prev_past_key_values is not None
     # assert prev_past_key_values_attention_mask is not None
 
+    # # construct position ids
+    # position_ids2 = []
+    # for m in single_attention_mask2:
+    #     sequence_position_ids2 = torch.cumsum(m, dim=0) - 1
+    #     sequence_position_ids2[sequence_position_ids2 < 0] = 0
+    #     position_ids2.append(sequence_position_ids2)
+    # position_ids2 = torch.stack(position_ids2)
+    # assert position_ids2.shape == single_attention_mask2.shape
+
     # # single model forward
-    # model_out = model(
-    #     inputs_embeds=single_inputs_embeds,
-    #     attention_mask=single_attention_mask,
-    #     labels=single_label_ids,
+    # model_out_2 = model(
+    #     inputs_embeds=single_inputs_embeds2,
+    #     attention_mask=single_attention_mask2,
+    #     labels=single_label_ids2,
+    #     position_ids=position_ids2,
     #     output_hidden_states=True,
     # )
-    # single_past_key_values = model_out.past_key_values
+    # single_past_key_values = model_out_2.past_key_values
 
     # # compare
-    # mean_kv_relative_diff = 0.0
+    # kv_max_diff = 0.0
     # for i in range(len(prev_past_key_values)):
     #     for j in range(2):
     #         old_kv = prev_past_key_values[i][j].detach().clone()
     #         new_kv = single_past_key_values[i][j].detach().clone()
     #         assert old_kv.shape[:2] == new_kv.shape[:2] and old_kv.shape[3] == new_kv.shape[3]
-    #         assert prev_past_key_values_attention_mask.shape[0] == single_attention_mask.shape[0] == batch_size
-    #         assert prev_past_key_values_attention_mask.shape[1] == old_kv.shape[2] and single_attention_mask.shape[1] == new_kv.shape[2]
-    #         for batch_i, (task_old_kv, task_new_kv, task_old_mask, task_new_mask, task_new_program_idxs) in enumerate(zip(old_kv, new_kv, prev_past_key_values_attention_mask, single_attention_mask, new_program_idxs)):
+    #         assert prev_past_key_values_attention_mask.shape[0] == single_attention_mask2.shape[0] == batch_size
+    #         assert prev_past_key_values_attention_mask.shape[1] == old_kv.shape[2] and single_attention_mask2.shape[1] == new_kv.shape[2]
+    #         for batch_i, (task_old_kv, task_new_kv, task_old_mask, task_new_mask, task_new_program_idxs) in enumerate(zip(old_kv, new_kv, prev_past_key_values_attention_mask, single_attention_mask2, new_program_idxs)):
     #             task_input_ids_lens = [x[batch_i] for x in input_ids_lens]
     #             # # remove program from old
     #             # assert task_old_kv.shape[1] == sum(x.shape[1] for x in inputs_embeds[:-1]) + ntokens * (len(inputs_embeds) - 1)
@@ -1329,10 +1475,39 @@ def model_loss(
     #             #     n_is_zero += old_is_zero
     #             # assert n_is_zero == ntokens * (len(inputs_embeds) - 1)
     #             assert task_old_kv.shape[1] == task_new_kv.shape[1] == sum(task_input_ids_lens[:-1]) + (n_pairs - 1) * ntokens
-    #             mean_kv_relative_diff += (task_old_kv - task_new_kv).abs().mean() / task_old_kv.abs().mean()
+    #             kv_max_diff = max(kv_max_diff, (task_old_kv - task_new_kv).abs().max().item())
 
-    # print('kv diff relative', mean_kv_relative_diff / len(prev_past_key_values) / 2 / batch_size)
-    # print('loss diff relative', (model_out.loss - ce_loss).abs() / ce_loss.abs()) # type: ignore
+    # print('kv max diff', kv_max_diff)
+    # print('loss diff', (model_out_2.loss - ce_loss).abs().item()) # type: ignore
+
+
+
+
+    # # compare model_out_1 and model_out_2 for sanity check
+    # embeds1 = single_inputs_embeds1.masked_select(single_attention_mask1.bool()[:, :, None])
+    # embeds2 = single_inputs_embeds2.masked_select(single_attention_mask2.bool()[:, :, None])
+    # assert (embeds1 - embeds2).max() == 0.0
+    # labs1 = single_label_ids1.masked_select(single_attention_mask1.bool())
+    # labs2 = single_label_ids2.masked_select(single_attention_mask2.bool())
+    # assert (labs1 - labs2).max() == 0.0
+
+    # max_kv_diff = 0.0
+    # assert len(model_out_1.past_key_values) == len(model_out_2.past_key_values)
+    # for i in range(len(model_out_1.past_key_values)):
+    #     assert len(model_out_1.past_key_values[i]) == len(model_out_2.past_key_values[i])
+    #     for j in range(2):
+    #         kv1 = model_out_1.past_key_values[i][j]
+    #         kv2 = model_out_2.past_key_values[i][j]
+    #         kv1 = kv1.masked_select(single_attention_mask1.bool()[:, None, :, None])
+    #         kv2 = kv2.masked_select(single_attention_mask2.bool()[:, None, :, None])
+    #         assert kv1.shape == kv2.shape
+    #         max_kv_diff = max(max_kv_diff, (kv1 - kv2).abs().max().item())
+    # print('kv max diff', max_kv_diff)
+    # print('loss diff', (model_out_2.loss - model_out_1.loss).abs().item()) # type: ignore
+    # breakpoint()
+
+
+
 
     return ce_loss, kl_loss, codebook_loss, commitment_loss, perplexity, program_loss, consistency_loss, invar_loss, total_loss, ce_losses # type: ignore
 
@@ -1440,6 +1615,7 @@ def evaluate(
     output_dir: str,
     no_codebook: bool,
     weird_cast: bool,
+    short_context: bool,
 ):
     model.eval()
     prior_embeddings.eval()
@@ -1635,6 +1811,7 @@ def evaluate(
                     no_discrete_prior=no_discrete_prior,
                     train_codebook_only=no_codebook,
                     weird_cast=weird_cast,
+                    short_context=short_context,
                 )
                 assert len(all_intermediate_programs) == bs
                 assert all(len(x) == y + 1 for x, y in zip(all_intermediate_programs, num_pairs)) # one more program than num (train) pair
@@ -1699,12 +1876,20 @@ def evaluate(
                     task_attention_mask = [item for pair in zip(program_attentions, task_attention_mask) for item in pair]
                     assert len(task_inputs_embeds) == len(task_attention_mask) == 2 * (num_pairs[batch_i] + 1)
 
+                    if short_context:
+                        task_inputs_embeds = task_inputs_embeds[-2:]
+                        task_attention_mask = task_attention_mask[-2:]
+
                     # finally now without padding, concat
                     task_inputs_embeds = torch.cat(task_inputs_embeds)
                     task_attention_mask = torch.cat(task_attention_mask)
                     assert task_inputs_embeds.shape[:1] == task_attention_mask.shape
                     assert (task_attention_mask == 1).sum() == task_attention_mask.numel() # no padding so full attention
-                    assert len(task_inputs_embeds) == dataset.ntokens * (num_pairs[batch_i] + 1) + sum(task_input_ids_lens) + task_gen_input_ids_len
+
+                    if short_context:
+                        assert len(task_inputs_embeds) == dataset.ntokens + task_gen_input_ids_len
+                    else:
+                        assert len(task_inputs_embeds) == dataset.ntokens * (num_pairs[batch_i] + 1) + sum(task_input_ids_lens) + task_gen_input_ids_len
 
                     single_inputs_embeds.append(task_inputs_embeds)
                     single_attention_mask.append(task_attention_mask)
@@ -2171,6 +2356,7 @@ def main():
     parser.add_argument("--attention_dropout", type=float, default=0.0)
     parser.add_argument("--program_dropout", type=float, default=0.0)
     parser.add_argument("--program_noise_std", type=float, default=0.0)
+    parser.add_argument("--short_context", action='store_true')
 
     # Evaluation
     parser.add_argument("--extra_inference_pairs", type=int, default=0)
@@ -2210,6 +2396,7 @@ def main():
     parser.add_argument("--no_pair_permute", action="store_true")
     parser.add_argument("--no_d8", action="store_true")
     parser.add_argument("--lr_scheduler", type=str, choices=["cosine", "constant"], default="cosine")
+    parser.add_argument("--no_bos", action="store_true")
 
     # re-arc train data
     parser.add_argument("--train_data_dir", type=str, default="./data/re-arc/train_data/tasks")
@@ -2264,6 +2451,7 @@ def main():
         args.wandb = False
         args.samples_per_epoch = 32
         args.log_every = 1
+        args.debug_no_resume = True
 
     # check args
     if args.model_name == "nemo8b":
@@ -2635,6 +2823,7 @@ def main():
         no_dim=args.no_dim,
         no_separate_color_tokens=args.no_separate_color_tokens,
         max_seq_len=args.max_seq_len,
+        no_bos=args.no_bos,
     )
     train_collate_fn = partial(collate_fn_train, dataset=train_dataset)
     if args.invar_loss_lambda > 0.0:
@@ -2832,6 +3021,7 @@ def main():
         limit_inference_pairs_strict=args.limit_inference_pairs_strict,
         max_num_train_pair=args.max_num_pair - 1,
         max_seq_len=args.max_seq_len,
+        no_bos=args.no_bos,
     )
     eval_eval_dataset = EvalDataset(
         eval_dir=args.eval_eval_dir,
@@ -2856,6 +3046,7 @@ def main():
         limit_inference_pairs_strict=args.limit_inference_pairs_strict,
         max_num_train_pair=args.max_num_pair - 1,
         max_seq_len=args.max_seq_len,
+        no_bos=args.no_bos,
     )
     eval_collate_fn = partial(collate_fn_eval, dataset=eval_train_dataset) # only use tokenizer, padding info
     if args.debug_len > 0:
@@ -2973,6 +3164,7 @@ def main():
                         debug=args.debug,
                         contrastive_loss=contrastive_loss,
                         is_same=is_same,
+                        short_context=args.short_context,
                     )
 
                 # only log one process
@@ -3086,6 +3278,7 @@ def main():
                 output_dir=args.output_dir,
                 no_codebook=no_codebook,
                 weird_cast=args.weird_cast,
+                short_context=args.short_context,
             )
             eval_exact_acc, eval_valid_grid, eval_correct_grid_dim, eval_token_acc, eval_relaxed_token_acc, eval_texts, \
                 eval_votes, eval_competition_sub_acc, eval_competition_all_acc, _ = evaluate(
@@ -3110,6 +3303,7 @@ def main():
                 output_dir=args.output_dir,
                 no_codebook=no_codebook,
                 weird_cast=args.weird_cast,
+                short_context=args.short_context,
             )
 
             torch.cuda.empty_cache()
