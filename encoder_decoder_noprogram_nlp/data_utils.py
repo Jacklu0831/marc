@@ -1,11 +1,11 @@
 from transformers.tokenization_utils_fast import PreTrainedTokenizerFast
+from transformers import GPT2TokenizerFast
 from collections import defaultdict
 import random
 import torch
 from torch.utils.data import Dataset, get_worker_info
 from torch.nn.utils.rnn import pad_sequence
-from typing import Dict, List, Any
-from typing import List, Optional
+from typing import Dict, List, Any, List, Optional, Union
 import numpy as np
 
 from accelerate.logging import get_logger
@@ -43,12 +43,13 @@ def debug_extra_pad_tensors(
     return padded_tensors
 
 
-def verify_tokenizer_output(tokenizer_out: Any, tokenizer: PreTrainedTokenizerFast):
+def verify_tokenizer_output(tokenizer_out: Any, tokenizer: Union[PreTrainedTokenizerFast, GPT2TokenizerFast]):
     # make sure the tokenizer doesnt fail me
     assert tokenizer_out['attention_mask'].numel() == tokenizer_out['attention_mask'].sum()
     assert tokenizer_out['input_ids'].shape == tokenizer_out['attention_mask'].shape
     assert tokenizer_out['input_ids'].dim() == 2 and tokenizer_out['input_ids'].shape[0] == 1
-    assert tokenizer_out['input_ids'][0][0].item() == tokenizer.bos_token_id
+    if not isinstance(tokenizer, GPT2TokenizerFast):
+        assert tokenizer_out['input_ids'][0][0].item() == tokenizer.bos_token_id
 
 
 ########################################
@@ -59,7 +60,7 @@ class TrainDataset(Dataset):
     def __init__(
         self,
         data: Dataset,
-        tokenizer: PreTrainedTokenizerFast,
+        tokenizer: Union[PreTrainedTokenizerFast, GPT2TokenizerFast],
         total_steps: int,
         seed: int,
         process_index: int,
@@ -93,8 +94,10 @@ class TrainDataset(Dataset):
 
         # get a customizable delimiter, use whitespace by default
         self.delimiter = delimiter
-        delimiter_token_id = tokenizer(delimiter, return_tensors='pt')['input_ids'][0] # type: ignore
-        self.delimiter_token_id = delimiter_token_id[1:] # remove bos
+        self.delimiter_token_id = tokenizer(delimiter, return_tensors='pt')['input_ids'][0] # type: ignore
+        if not isinstance(tokenizer, GPT2TokenizerFast):
+            assert self.delimiter_token_id[0] == tokenizer.bos_token_id
+            self.delimiter_token_id = self.delimiter_token_id[1:] # remove bos
 
         # seed and process_index
         if num_workers == 0:
@@ -157,9 +160,10 @@ def collate_fn_train(batch: List[int], dataset: TrainDataset) -> Dict:
             dtype = input_input_ids.dtype
 
             # only keep bos for the first input
-            if example_i > 0 or dataset.no_bos:
-                input_input_ids = input_input_ids[1:]
-            output_input_ids = output_input_ids[1:]
+            if not isinstance(dataset.tokenizer, GPT2TokenizerFast):
+                if example_i > 0 or dataset.no_bos:
+                    input_input_ids = input_input_ids[1:]
+                output_input_ids = output_input_ids[1:]
 
             # add whitespace to input and eos to output
             input_input_ids = torch.cat([input_input_ids, dataset.delimiter_token_id])
@@ -275,7 +279,7 @@ class EvalDataset:
         data: Dataset,
         split_name: str,
         seed: int,
-        tokenizer: PreTrainedTokenizerFast,
+        tokenizer: Union[PreTrainedTokenizerFast, GPT2TokenizerFast],
         ntokens: int,
         num_pair: int,
         max_seq_len: int,
@@ -304,8 +308,10 @@ class EvalDataset:
 
         # get a customizable delimiter, use whitespace by default
         self.delimiter = delimiter
-        delimiter_token_id = tokenizer(delimiter, return_tensors='pt')['input_ids'][0] # type: ignore
-        self.delimiter_token_id = delimiter_token_id[1:] # remove bos
+        self.delimiter_token_id = tokenizer(delimiter, return_tensors='pt')['input_ids'][0] # type: ignore
+        if not isinstance(tokenizer, GPT2TokenizerFast):
+            assert self.delimiter_token_id[0] == tokenizer.bos_token_id
+            self.delimiter_token_id = self.delimiter_token_id[1:] # remove bos
 
         # task to indices
         self.task_to_indices = defaultdict(list)
@@ -350,9 +356,10 @@ class EvalDataset:
             output_input_ids = tokenized_output['input_ids'][0] # type: ignore
 
             # only keep bos for the first input
-            if example_i > 0 or self.no_bos:
-                input_input_ids = input_input_ids[1:]
-            output_input_ids = output_input_ids[1:]
+            if not isinstance(self.tokenizer, GPT2TokenizerFast):
+                if example_i > 0 or self.no_bos:
+                    input_input_ids = input_input_ids[1:]
+                output_input_ids = output_input_ids[1:]
 
             # add whitespace to input and eos to output
             input_input_ids = torch.cat([input_input_ids, self.delimiter_token_id])

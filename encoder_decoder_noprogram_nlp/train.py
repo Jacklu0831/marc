@@ -22,6 +22,8 @@ from transformers import (
     AutoTokenizer,
     get_cosine_schedule_with_warmup,
     get_constant_schedule_with_warmup,
+    AutoModelForCausalLM,
+    GPT2LMHeadModel,
 )
 from accelerate import Accelerator, PartialState, InitProcessGroupKwargs
 from accelerate.logging import get_logger
@@ -63,6 +65,7 @@ MODEL_NAME_TO_PATH = {
     "llama8b": "meta-llama/Meta-Llama-3-8B-Instruct",
     "llama3b_uncensored": "chuanli11/Llama-3.2-3B-Instruct-uncensored",
     "nemo8b": "nvidia/Mistral-NeMo-Minitron-8B-Base",
+    "gpt2": "openai-community/gpt2-large",
 }
 NBIT_TO_DTYPE = {
     16: torch.bfloat16,
@@ -173,10 +176,13 @@ def evaluate(
 
     # get modules in case of DDP
     module = model.module if isinstance(model, DistributedDataParallel) else model
-    embed_tokens = module.model.embed_tokens if hasattr(module.model, "embed_tokens") else module.model.model.embed_tokens
+    if isinstance(module, GPT2LMHeadModel):
+        embed_tokens = module.transformer.wte if hasattr(module.transformer, "wte") else module.model.transformer.wte
+    else:
+        embed_tokens = module.model.embed_tokens if hasattr(module.model, "embed_tokens") else module.model.model.embed_tokens
 
     # setup terminators and suppress warning
-    module.generation_config.pad_token_id = dataset.tokenizer.pad_token_id
+    module.generation_config.pad_token_id = dataset.tokenizer.pad_token_id # type: ignore
 
     distributed_state = PartialState()
     output_list = []
@@ -831,6 +837,8 @@ def main():
     # check args
     if not args.lora:
         args.untrainable_nbit = args.trainable_nbit # untrainable become trainable
+    if args.model_name == 'gpt2':
+        assert args.no_bos
 
     args.output_dir = os.path.join(args.output_dir, args.tag)
 
@@ -926,10 +934,16 @@ def main():
     else:
         raise ValueError(f"unrecognized untrainable_nbit {args.untrainable_nbit}")
 
-    base_model = MyLlamaForCausalLM.from_pretrained(
-        pretrained_model_name_or_path=MODEL_NAME_TO_PATH[args.model_name],
-        **from_pretrained_kwargs,
-    )
+    if 'llama' in args.model_name:
+        base_model = MyLlamaForCausalLM.from_pretrained(
+            pretrained_model_name_or_path=MODEL_NAME_TO_PATH[args.model_name],
+            **from_pretrained_kwargs,
+        )
+    else:
+        base_model = AutoModelForCausalLM.from_pretrained(
+            pretrained_model_name_or_path=MODEL_NAME_TO_PATH[args.model_name],
+            **from_pretrained_kwargs,
+        )
 
     if args.untrainable_nbit in [4, 8]:
         base_model = prepare_model_for_kbit_training(
