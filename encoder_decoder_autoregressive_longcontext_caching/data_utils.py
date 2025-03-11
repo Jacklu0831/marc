@@ -1566,7 +1566,7 @@ def collate_fn_eval_dummy(batch: List[Dict], dataset: EvalDataset) -> Dict:
     gen_input_ids = torch.randint(0, 30, (batch_size, pair_lens[-1] // 2), dtype=torch.int64, device='cpu')
     gen_attention_mask = torch.full(gen_input_ids.shape, 1, dtype=torch.int64, device='cpu')
     gen_output_ids = torch.randint(0, 30, (batch_size, pair_lens[-1] // 2 + 1), dtype=torch.int64, device='cpu')
-    out_token_length = gen_output_ids.shape[1]
+    out_token_length = [gen_output_ids.shape[1]] * batch_size
 
     input_ids_lens = [[l] * batch_size for l in pair_lens[:-1]]
     gen_input_ids_lens = [pair_lens[-1] // 2] * batch_size

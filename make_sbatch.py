@@ -24,7 +24,7 @@ MASTER_PORT=$(comm -23 <(seq 10000 65000 | sort) <(ss -tan | awk '{print $4}' | 
 singularity exec --nv \\
     --overlay /scratch/yl11330/my_env/overlay-50G-10M-pytorch.ext3:ro \\
     /scratch/work/public/singularity/cuda11.6.124-cudnn8.4.0.27-devel-ubuntu20.04.4.sif \\
-    /bin/bash -c "source /ext3/env.sh; cd /scratch/yl11330/marc; conda activate ./penv; export MASTER_PORT; \\
+    /bin/bash -c "source /ext3/env.sh; cd /scratch/yl11330/marc; $GITPULL conda activate ./penv; export MASTER_PORT; \\
         $CMD"
 """
 
@@ -57,6 +57,7 @@ if args.burst:
     }[args.ngpu]
     template = template.replace("$PARTITION", f"#SBATCH --partition {partition}")
     template = template.replace("$CONSTRAINT", "")
+    template = template.replace("$GITPULL", "git pull;")
 else:
     template = template.replace("$REQUEUE", "")
     template = template.replace("$ACCOUNT", "")
@@ -65,6 +66,7 @@ else:
         template = template.replace("$CONSTRAINT", "#SBATCH --constraint='rtx8000'")
     else:
         template = template.replace("$CONSTRAINT", "#SBATCH --constraint='a100|h100'")
+    template = template.replace("$GITPULL", "")
 
 if args.multi_node:
     template = template.replace('$NODE', str(args.ngpu))

@@ -273,7 +273,7 @@ class EvalDataset:
     def __init__(
         self,
         data: Dataset,
-        split_name: int,
+        split_name: str,
         seed: int,
         tokenizer: PreTrainedTokenizerFast,
         ntokens: int,

@@ -824,7 +824,7 @@ def main():
     if args.debug:
         args.tag = 'test'
         args.wandb = False
-        args.samples_per_epoch = 32
+        args.samples_per_epoch = 128
         args.log_every = 1
         args.debug_no_resume = True
 
@@ -1199,15 +1199,34 @@ def main():
             pass
         exit()
 
-    # Build evaluation datasets
+    # Build train eval dataset
+    eval_train_dataset = EvalDataset(
+        data=train_split, # type: ignore
+        seed=args.seed,
+        split_name='train',
+        tokenizer=tokenizer,
+        ntokens=args.ntokens,
+        num_pair=args.num_pair,
+        max_seq_len=args.max_seq_len,
+        delimiter=args.delimiter,
+        eval_per_task=args.eval_per_task,
+        pad_side=args.pad_side,
+        no_bos=args.no_bos,
+        debug_len=args.debug_len,
+        debug_random_pad=args.debug_random_pad,
+        debug_pad_len=args.debug_pad_len,
+        debug_overfit=(args.debug_overfit_clf > 0 or args.debug_overfit_noclf > 0),
+    )
+
+    # Build eval eval dataset
     seeds = sorted(set(test_split['seed']))
     seed_to_test_split = [(seed, test_split.filter(lambda example: example['seed'] == seed).remove_columns('seed'))
                           for seed in seeds]
-    eval_datasets = [
+    eval_eval_datasets = [
         EvalDataset(
             data=data, # type: ignore
             seed=args.seed,
-            split_name=split_name,
+            split_name=f"eval_{seed}",
             tokenizer=tokenizer,
             ntokens=args.ntokens,
             num_pair=args.num_pair,
@@ -1221,12 +1240,12 @@ def main():
             debug_pad_len=args.debug_pad_len,
             debug_overfit=(args.debug_overfit_clf > 0 or args.debug_overfit_noclf > 0),
         )
-        for split_name, data in seed_to_test_split
+        for seed, data in seed_to_test_split
     ]
-    assert len(set(tuple(sorted(data.task_to_indices.keys())) for data in eval_datasets)) == 1 # all eval splits same tasks
-    eval_collate_fn = partial(collate_fn_eval, dataset=eval_datasets[0]) # only use tokenizer, padding info
+    assert len(set(tuple(sorted(data.task_to_indices.keys())) for data in eval_eval_datasets)) == 1 # all eval splits same tasks
+    eval_collate_fn = partial(collate_fn_eval, dataset=eval_eval_datasets[0]) # only use tokenizer, padding info
     if args.debug_len > 0:
-        eval_collate_fn = partial(collate_fn_eval_dummy, dataset=eval_datasets[0])
+        eval_collate_fn = partial(collate_fn_eval_dummy, dataset=eval_eval_datasets[0])
 
     logger.info(f'======= TRAINING INFO START =======')
     logger.info(f'num_epochs={args.num_epochs}')
@@ -1361,14 +1380,43 @@ def main():
             torch.cuda.empty_cache()
             gc.collect()
 
-            macro_f1s, accuracys = [], []
-            all_task_id_to_texts = defaultdict(list)
-            for eval_dataset in eval_datasets:
+            # 1. Eval Train Dataset
+            train_all_task_id_to_texts = defaultdict(list)
+            train_macro_f1, train_accuracy, task_id_to_texts = evaluate(
+                model=model,
+                prior_embeddings=prior_embeddings,
+                program_embeddings=program_embeddings,
+                dataset=eval_train_dataset,
+                accelerator=accelerator,
+                batch_size=args.eval_batch_size,
+                collate_fn=eval_collate_fn,
+                dry_eval_run=args.dry_eval_run,
+                ntokens=args.ntokens,
+                attention_cutoff=args.attention_cutoff,
+                attend_prev_programs=args.attend_prev_programs,
+                task_to_is_classification=task_to_is_classification,
+            )
+            for task_id, texts in task_id_to_texts.items():
+                texts = [(eval_train_dataset.split_name, t[0], t[1]) for t in texts]
+                train_all_task_id_to_texts[task_id] += texts
+
+            # train total score
+            if train_macro_f1 == -1.0:
+                train_total_score = train_accuracy
+            elif train_accuracy == -1.0:
+                train_total_score = train_macro_f1
+            else:
+                train_total_score = (train_accuracy + train_macro_f1) / 2.0
+
+            # 2. Eval Eval Datasets
+            eval_macro_f1s, eval_accuracys = [], []
+            eval_all_task_id_to_texts = defaultdict(list)
+            for eval_eval_dataset in eval_eval_datasets:
                 macro_f1, accuracy, task_id_to_texts = evaluate(
                     model=model,
                     prior_embeddings=prior_embeddings,
                     program_embeddings=program_embeddings,
-                    dataset=eval_dataset,
+                    dataset=eval_eval_dataset,
                     accelerator=accelerator,
                     batch_size=args.eval_batch_size,
                     collate_fn=eval_collate_fn,
@@ -1380,37 +1428,40 @@ def main():
                 )
                 # aggregate
                 if macro_f1 != -1.0:
-                    macro_f1s.append(macro_f1)
+                    eval_macro_f1s.append(macro_f1)
                 if accuracy != -1.0:
-                    accuracys.append(accuracy)
+                    eval_accuracys.append(accuracy)
                 for task_id, texts in task_id_to_texts.items():
-                    texts = [(eval_dataset.split_name, t[0], t[1]) for t in texts]
-                    all_task_id_to_texts[task_id] += texts
+                    texts = [(eval_eval_dataset.split_name, t[0], t[1]) for t in texts]
+                    eval_all_task_id_to_texts[task_id] += texts
 
             # average macro_f1s and accuracys
-            assert len(macro_f1s) in [0, len(eval_datasets)]
-            assert len(accuracys) in [0, len(eval_datasets)]
-            macro_f1 = sum(macro_f1s) / len(macro_f1s) if len(macro_f1s) > 0 else -1.0
-            accuracy = sum(accuracys) / len(accuracys) if len(accuracys) > 0 else -1.0
+            assert len(eval_macro_f1s) in [0, len(eval_eval_datasets)]
+            assert len(eval_accuracys) in [0, len(eval_eval_datasets)]
+            eval_macro_f1 = sum(eval_macro_f1s) / len(eval_macro_f1s) if len(eval_macro_f1s) > 0 else -1.0
+            eval_accuracy = sum(eval_accuracys) / len(eval_accuracys) if len(eval_accuracys) > 0 else -1.0
 
             # total score
-            if len(macro_f1s) == 0:
-                total_score = accuracy
-            elif len(accuracys) == 0:
-                total_score = macro_f1
+            if len(eval_macro_f1s) == 0:
+                eval_total_score = eval_accuracy
+            elif len(eval_accuracys) == 0:
+                eval_total_score = eval_macro_f1
             else:
-                assert len(macro_f1s) == len(accuracys) == len(eval_datasets)
-                total_scores = [(x + y) / 2.0 for x, y in zip(macro_f1s, accuracys)]
-                total_score = sum(total_scores) / len(total_scores)
+                assert len(eval_macro_f1s) == len(eval_accuracys) == len(eval_eval_datasets)
+                eval_total_scores = [(x + y) / 2.0 for x, y in zip(eval_macro_f1s, eval_accuracys)]
+                eval_total_score = sum(eval_total_scores) / len(eval_total_scores)
 
             torch.cuda.empty_cache()
             gc.collect()
 
             if accelerator.is_main_process:
                 eval_metric_dict = {
-                    "eval/macro_f1": macro_f1,
-                    "eval/accuracy": accuracy,
-                    "eval/total_score": total_score,
+                    "train/macro_f1": train_macro_f1,
+                    "train/accuracy": train_accuracy,
+                    "train/total_score": train_total_score,
+                    "eval/macro_f1": eval_macro_f1,
+                    "eval/accuracy": eval_accuracy,
+                    "eval/total_score": eval_total_score,
                 }
                 logger.info(f'Evaluation results:\n{pprint.pformat(eval_metric_dict, indent=4)}')
                 try:
@@ -1418,16 +1469,20 @@ def main():
                 except:
                     logger.info(f"wandb failed on process {accelerator.process_index}, skipping the error")
 
-                # merge and save outputs
-                output_dict_path = os.path.join(args.output_dir, f"{epoch+1}_output_list.json")
-                with open(output_dict_path, 'w') as f:
-                    json.dump(all_task_id_to_texts, f)
-                logger.info(f"Saved output list to {output_dict_path}")
+                # Save outputs
+                save_eval_train_pred_gt_path = os.path.join(args.output_dir, f"eval_train_{epoch+1}_pred_gt.json")
+                save_eval_eval_pred_gt_path = os.path.join(args.output_dir, f"eval_eval_{epoch+1}_pred_gt.json")
+                with open(save_eval_train_pred_gt_path, 'w') as f:
+                    json.dump(train_all_task_id_to_texts, f)
+                with open(save_eval_eval_pred_gt_path, 'w') as f:
+                    json.dump(eval_all_task_id_to_texts, f)
+                logger.info(f"Saved eval train pred gt to {save_eval_train_pred_gt_path}")
+                logger.info(f"Saved eval eval pred gt to {save_eval_eval_pred_gt_path}")
 
                 # Save model
                 do_save_model = args.save_all_models
                 if not args.save_all_models:
-                    if (not epoch_to_total_score) or total_score >= max(epoch_to_total_score.values()):
+                    if (not epoch_to_total_score) or eval_total_score >= max(epoch_to_total_score.values()):
                         do_save_model = True
 
                 if do_save_model:
@@ -1446,7 +1501,7 @@ def main():
                         output_dir=args.output_dir,
                         epoch=epoch,
                     )
-                epoch_to_total_score[epoch] = total_score
+                epoch_to_total_score[epoch] = eval_total_score
 
     accelerator.end_training()
     logger.info("All done training.")
