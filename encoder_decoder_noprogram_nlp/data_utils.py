@@ -94,7 +94,7 @@ class TrainDataset(Dataset):
 
         # get a customizable delimiter, use whitespace by default
         self.delimiter = delimiter
-        self.delimiter_token_id = tokenizer(delimiter, return_tensors='pt')['input_ids'][0] # type: ignore
+        self.delimiter_token_id = tokenizer(delimiter, return_tensors='pt', truncation=True, max_length=self.max_seq_len)['input_ids'][0] # type: ignore
         if not isinstance(tokenizer, GPT2TokenizerFast):
             assert self.delimiter_token_id[0] == tokenizer.bos_token_id
             self.delimiter_token_id = self.delimiter_token_id[1:] # remove bos
@@ -151,8 +151,8 @@ def collate_fn_train(batch: List[int], dataset: TrainDataset) -> Dict:
         examples = [dataset.data[i] for i in chosen_indices]
         for example_i, example in enumerate(examples):
             # tokenize
-            tokenized_input = dataset.tokenizer(example['input'], return_tensors="pt")
-            tokenized_output = dataset.tokenizer(example['output'], return_tensors="pt")
+            tokenized_input = dataset.tokenizer(example['input'], return_tensors="pt", truncation=True, max_length=dataset.max_seq_len)
+            tokenized_output = dataset.tokenizer(example['output'], return_tensors="pt", truncation=True, max_length=dataset.max_seq_len)
             verify_tokenizer_output(tokenized_input, dataset.tokenizer)
             verify_tokenizer_output(tokenized_output, dataset.tokenizer)
             input_input_ids = tokenized_input['input_ids'][0] # type: ignore
@@ -308,7 +308,7 @@ class EvalDataset:
 
         # get a customizable delimiter, use whitespace by default
         self.delimiter = delimiter
-        self.delimiter_token_id = tokenizer(delimiter, return_tensors='pt')['input_ids'][0] # type: ignore
+        self.delimiter_token_id = tokenizer(delimiter, return_tensors='pt', truncation=True, max_length=self.max_seq_len)['input_ids'][0] # type: ignore
         if not isinstance(tokenizer, GPT2TokenizerFast):
             assert self.delimiter_token_id[0] == tokenizer.bos_token_id
             self.delimiter_token_id = self.delimiter_token_id[1:] # remove bos
@@ -348,8 +348,8 @@ class EvalDataset:
 
         for example_i, example in enumerate(examples):
             # tokenize
-            tokenized_input = self.tokenizer(example['input'], return_tensors="pt")
-            tokenized_output = self.tokenizer(example['output'], return_tensors="pt")
+            tokenized_input = self.tokenizer(example['input'], return_tensors="pt", truncation=True, max_length=self.max_seq_len)
+            tokenized_output = self.tokenizer(example['output'], return_tensors="pt", truncation=True, max_length=self.max_seq_len)
             verify_tokenizer_output(tokenized_input, self.tokenizer)
             verify_tokenizer_output(tokenized_output, self.tokenizer)
             input_input_ids = tokenized_input['input_ids'][0] # type: ignore

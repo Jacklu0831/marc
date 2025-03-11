@@ -9,4 +9,5 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
     --tag 0311_noprogram_nlp_gpt2 \
     --eval_epochs 1 \
     --model_name gpt2 \
+    --no_flash_attn \
     --wandb
