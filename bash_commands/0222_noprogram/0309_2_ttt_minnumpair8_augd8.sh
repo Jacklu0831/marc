@@ -92,8 +92,8 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
 # Submitted batch job 58114904 # 4.4hr
 
 # eval ttt
-# Submitted batch job 58139571
-# Submitted batch job 58139572
-# Submitted batch job 58139573
-# Submitted batch job 58139574
-# Submitted batch job 58139575
+# Submitted batch job 58246920
+# Submitted batch job 58246921
+# Submitted batch job 58246922
+# Submitted batch job 58246923
+# Submitted batch job 58246924

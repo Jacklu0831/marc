@@ -111,12 +111,12 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
 
 
 # re-eval first two runs without ttt on rtx8000
-# Submitted batch job 58104049
-# Submitted batch job 58104050
+# Submitted batch job 58104049 # 0.125
+# Submitted batch job 58104050 # 0.1125
 
 # eval ttt on rtx8000
-# Submitted batch job 58104051
-# Submitted batch job 58104052
-# Submitted batch job 58104053
-# Submitted batch job 58104054
-# Submitted batch job 58104055
+# Submitted batch job 58104051 # 0.2
+# Submitted batch job 58104052 # 0.2125
+# Submitted batch job 58104053 # 0.2375
+# Submitted batch job 58104054 # 0.2375
+# Submitted batch job 58104055 # 0.225
