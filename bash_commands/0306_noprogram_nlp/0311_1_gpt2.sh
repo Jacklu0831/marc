@@ -11,3 +11,5 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
     --model_name gpt2 \
     --no_flash_attn \
     --wandb
+
+# Submitted batch job 36846

@@ -2396,7 +2396,7 @@ def main():
     global_step = 0
     resume_batch_idx = 0
     if recovery_state_file is not None:
-        logger.info("Loading checkpoint from", recovery_checkpoint_dir)
+        logger.info(f"Loading checkpoint from {recovery_checkpoint_dir}")
         accelerator.load_state(recovery_checkpoint_dir)
         start_epoch = recovery_state_file["epoch"]
         global_step = recovery_state_file["global_step"]
