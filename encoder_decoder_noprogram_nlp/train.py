@@ -1,4 +1,4 @@
-from sklearn.metrics import f1_score, accuracy_score
+import numpy as np
 import shutil
 import wandb
 import gc
@@ -7,7 +7,7 @@ from custom_llama import MyLlamaForCausalLM
 from transformers.tokenization_utils_fast import PreTrainedTokenizerFast
 from datetime import timedelta
 from collections import defaultdict
-from typing import Union, Callable, List, Tuple, Optional, Iterator, Dict
+from typing import Union, Callable, List, Tuple, Optional, Iterator
 import pprint
 import math
 import json
@@ -23,7 +23,6 @@ from transformers import (
     get_cosine_schedule_with_warmup,
     get_constant_schedule_with_warmup,
     AutoModelForCausalLM,
-    GPT2LMHeadModel,
 )
 from accelerate import Accelerator, PartialState, InitProcessGroupKwargs
 from accelerate.logging import get_logger
@@ -150,11 +149,40 @@ def get_memory_footprint(module: nn.Module):
         sum(p.nelement() * p.element_size() for p in module.buffers())
 
 
+def compute_macrof1_or_accuracy(predictions, groundtruths, is_classification) -> float:
+    accs = []
+    precisions = defaultdict(list)
+    recalls = defaultdict(list)
+    for prediction, groundtruth in zip(predictions, groundtruths):
+        prediction = prediction.strip()
+        groundtruth = groundtruth.strip()
+        is_correct = prediction==groundtruth
+        accs.append(is_correct)
+        if is_classification:
+            recalls[groundtruth].append(is_correct)
+            precisions[prediction].append(is_correct)
+
+    if not is_classification:
+        return float(np.mean(accs))
+
+    f1s = []
+    for key in recalls:
+        precision = np.mean(precisions[key]) if key in precisions else 1.0
+        recall = np.mean(recalls[key])
+        if precision+recall==0:
+            f1s.append(0)
+        else:
+            f1s.append(2*precision*recall / (precision+recall))
+
+    return float(np.mean(f1s))
+
+
 ################################################
 # Evaluate with cross-entropy + exact-match
 ################################################
 @torch.no_grad()
 def evaluate(
+    config_file: str,
     model: Union[nn.Module, DistributedDataParallel],
     prior_embeddings: Optional[Union[ProgramEmbeddings, DistributedDataParallel]],
     program_embeddings: Optional[Union[ProgramEmbeddings, DistributedDataParallel]],
@@ -163,11 +191,10 @@ def evaluate(
     batch_size: int,
     collate_fn: Callable,
     dry_eval_run: bool,
-    ntokens: int,
     attention_cutoff: bool,
     attend_prev_programs: bool,
-    task_to_is_classification: Dict[str, bool],
-):
+) -> Tuple[float, List]:
+
     model.eval()
     if prior_embeddings is not None:
         prior_embeddings.eval()
@@ -176,10 +203,6 @@ def evaluate(
 
     # get modules in case of DDP
     module = model.module if isinstance(model, DistributedDataParallel) else model
-    if isinstance(module, GPT2LMHeadModel):
-        embed_tokens = module.transformer.wte if hasattr(module.transformer, "wte") else module.model.transformer.wte
-    else:
-        embed_tokens = module.model.embed_tokens if hasattr(module.model, "embed_tokens") else module.model.model.embed_tokens
 
     # setup terminators and suppress warning
     module.generation_config.pad_token_id = dataset.tokenizer.pad_token_id # type: ignore
@@ -197,180 +220,97 @@ def evaluate(
 
         for batch_idxs in data_idx_iterator:
             batch_data = [dataset[i] for i in batch_idxs]
+            bs = len(batch_data)
             batch = collate_fn(batch_data)
 
             if dry_eval_run:
                 continue
 
             # get tensors
-            task_ids = batch["task_ids"]
-            gen_input_ids = batch["gen_input_ids"].to(accelerator.device)
-            gen_output_ids = [x.to(accelerator.device) for x in batch["gen_output_ids"]]
-            gen_attention_mask = batch["gen_attention_mask"].to(accelerator.device)
-            gen_input_ids_lens = batch["gen_input_ids_lens"]
-            out_token_length = batch["out_token_length"]
+            task = batch['task']
+            test_idx = batch['test_idx']
+            input_ids = batch["input_ids"].to(accelerator.device)
+            attention_mask = batch["attention_mask"].to(accelerator.device)
+            label_ids = batch["label_ids"].to(accelerator.device)
+            input_ids_lens = batch["input_ids_lens"]
             pair_start_idxs = batch["pair_start_idxs"]
+            option = batch['option']
+            correct_option = batch['correct_option']
 
-            # compute accuracy
             with accelerator.autocast():
-                arbitrary_increase = 5
-                if program_embeddings is None:
-                    assert prior_embeddings is None
-                    # generate with no program
-                    gen_tokens_padded = module.generate(
-                        input_ids=gen_input_ids,
-                        attention_mask=gen_attention_mask,
-                        max_new_tokens=max(out_token_length) + arbitrary_increase, # arbitrary increase
-                        num_return_sequences=1,
-                        temperature=1.0,
-                        top_p=1.0,
-                        do_sample=False,
-                        eos_token_id=[dataset.tokenizer.eos_token_id],
-                    )
-                    gen_tokens_padded = gen_tokens_padded[:, gen_input_ids.shape[1]:]
-                else:
-                    assert prior_embeddings is not None
-                    # generate with no program
-                    device, dtype = gen_input_ids.device, gen_input_ids.dtype
-                    max_num_pairs = max(len(start_idxs) for start_idxs in pair_start_idxs)
-                    pad_embeds = embed_tokens(torch.tensor(dataset.tokenizer.pad_token_id, device=device)) # (hidden_dim,)
-                    gen_inputs_embeds = embed_tokens(gen_input_ids)
-
-                    # insert program embeddings
-                    inputs_embeds_with_programs = []
-                    attention_mask_with_programs = []
-                    program_intervals = []
-
-                    for task_input_ids, task_inputs_embeds, task_attention_mask, input_ids_len, start_idxs in zip(gen_input_ids, gen_inputs_embeds, gen_attention_mask, gen_input_ids_lens, pair_start_idxs):
-                        assert start_idxs[0] == 1 - dataset.no_bos # first pair starts after bos
-                        # start_idxs are offset if padding side is left
-                        if dataset.pad_side == "left":
-                            start_idxs = [s + task_input_ids.shape[0] - input_ids_len for s in start_idxs]
-
-                        # insert program token before every pair
-                        task_inputs_embeds_with_programs = [task_inputs_embeds[:start_idxs[0]]] if start_idxs[0] > 0 else []
-                        task_attention_mask_with_programs = [task_attention_mask[:start_idxs[0]]] if start_idxs[0] > 0 else []
-                        task_program_intervals = []
-
-                        for i, start_idx in enumerate(start_idxs):
-                            end_idx = start_idxs[i+1] if i < len(start_idxs) - 1 else len(task_inputs_embeds)
-                            # program intervals
-                            program_start = sum(len(x) for x in task_inputs_embeds_with_programs)
-                            task_program_intervals.append((program_start, program_start + ntokens))
-                            # prior or program
-                            embedding = prior_embeddings('dummy') if i == 0 else program_embeddings('dummy')
-                            # insert program embedding into inputs_embeds
-                            task_inputs_embeds_with_programs.append(embedding)
-                            task_inputs_embeds_with_programs.append(task_inputs_embeds[start_idx: end_idx])
-                            # insert full attention for programs
-                            task_attention_mask_with_programs.append(torch.full((ntokens,), 1, device=device, dtype=dtype))
-                            task_attention_mask_with_programs.append(task_attention_mask[start_idx: end_idx])
-
-                        # some programs in batch have fewer pairs, pad manually, so hacky
-                        pad_length = (max_num_pairs - len(start_idxs)) * ntokens
-                        task_pad_inputs_embeds = pad_embeds[None, ...].expand(pad_length, -1)
-                        task_pad_attention_mask = torch.full((pad_length,), 0, device=device, dtype=dtype)
-                        if dataset.pad_side == 'left':
-                            task_inputs_embeds_with_programs.insert(0, task_pad_inputs_embeds)
-                            task_attention_mask_with_programs.insert(0, task_pad_attention_mask)
-                            task_program_intervals = [(x[0] + pad_length, x[1] + pad_length) for x in task_program_intervals]
-                        else:
-                            task_inputs_embeds_with_programs.append(task_pad_inputs_embeds)
-                            task_attention_mask_with_programs.append(task_pad_attention_mask)
-
-                        # concat all
-                        inputs_embeds_with_programs.append(torch.cat(task_inputs_embeds_with_programs))
-                        attention_mask_with_programs.append(torch.cat(task_attention_mask_with_programs))
-                        program_intervals.append(task_program_intervals)
-
-                    # stack and check, now we have the three inputs with programs
-                    inputs_embeds_with_programs = torch.stack(inputs_embeds_with_programs)
-                    attention_mask_with_programs = torch.stack(attention_mask_with_programs)
-                    assert inputs_embeds_with_programs.shape[1] == gen_input_ids.shape[1] + max_num_pairs * ntokens
-                    assert inputs_embeds_with_programs.shape[:2] == attention_mask_with_programs.shape[:2]
-
-                    # debug: assert programs are programs based on stored intervals
-                    for embs, attn, intervals in zip(inputs_embeds_with_programs, attention_mask_with_programs, program_intervals):
-                        for a, b in intervals:
-                            assert torch.equal(embs[a:b], program_embeddings('dummy'))
-                            assert attn[a:b].sum() == attn[a:b].numel()
-
-                    # debug: assert no middle padding
-                    assert set(torch.unique(attention_mask_with_programs).tolist()).issubset({0, 1})
-                    if dataset.pad_side == 'left':
-                        assert torch.all(attention_mask_with_programs[:, :-1] <= attention_mask_with_programs[:, 1:])
-                    else:
-                        assert torch.all(attention_mask_with_programs[:, :-1] >= attention_mask_with_programs[:, 1:])
-
-                    # generate
-                    if not attention_cutoff:
-                        gen_tokens_padded = module.generate(
-                            inputs_embeds=inputs_embeds_with_programs,
-                            attention_mask=attention_mask_with_programs,
-                            max_new_tokens=max(out_token_length) + arbitrary_increase, # arbitrary increase
-                            num_return_sequences=1,
-                            temperature=1.0,
-                            top_p=1.0,
-                            do_sample=False,
-                            eos_token_id=[dataset.tokenizer.eos_token_id],
-                        )
-                    else:
-                        gen_tokens_padded = module.generate(
-                            inputs_embeds=inputs_embeds_with_programs,
-                            attention_mask=attention_mask_with_programs,
-                            max_new_tokens=max(out_token_length) + arbitrary_increase, # arbitrary increase
-                            num_return_sequences=1,
-                            temperature=1.0,
-                            top_p=1.0,
-                            do_sample=False,
-                            eos_token_id=[dataset.tokenizer.eos_token_id],
-                            program_intervals=program_intervals,
-                            attend_prev_programs=attend_prev_programs,
-                        )
-
-                # remove pads (unlike ARC, we directly compare token here)
-                gen_tokens = []
-                for t, l in zip(gen_tokens_padded, out_token_length):
-                    gen_tokens.append(t[:l + arbitrary_increase])
-
-            # compute metrics
-            assert len(gen_tokens) == len(gen_output_ids) == len(task_ids)
-
-            # log output
-            gen_texts = dataset.tokenizer.batch_decode(gen_tokens, skip_special_tokens=True)
-            gt_texts = dataset.tokenizer.batch_decode(gen_output_ids, skip_special_tokens=True)
-            assert len(gen_texts) == len(gt_texts) == len(task_ids)
-            for gen_text, gt_text, task_id in zip(gen_texts, gt_texts, task_ids):
-                output_list.append({
-                    'task_id': task_id,
-                    'gen_text': gen_text,
-                    'gt_text': gt_text,
-                })
+                losses = model_loss(
+                    model=module,
+                    tokenizer=dataset.tokenizer,
+                    prior_embeddings=prior_embeddings,
+                    program_embeddings=program_embeddings,
+                    input_ids=input_ids,
+                    attention_mask=attention_mask,
+                    label_ids=label_ids,
+                    input_ids_lens=input_ids_lens,
+                    pair_start_idxs=pair_start_idxs,
+                    ntokens=dataset.ntokens,
+                    pad_side=dataset.pad_side,
+                    program_loss_lambda_scheduler=None,
+                    global_step=0,
+                    program_type='none',
+                    attention_cutoff=attention_cutoff,
+                    attend_prev_programs=attend_prev_programs,
+                    debug=False,
+                    individual_loss=True
+                )
+            assert isinstance(losses, torch.Tensor)
+            assert losses.shape[0] == len(task) == len(test_idx) == len(option) == len(correct_option) == bs
+            for x0, x1, x2, x3, x4 in zip(losses, task, test_idx, option, correct_option):
+                output_list.append((x0.item(), x1, x2, x3, x4))
 
     distributed_state.wait_for_everyone()
     # results
     output_list = gather_object(output_list)
     assert len(output_list) == len(dataset), (len(output_list), len(dataset))
 
-    # grab all results
-    task_id_to_texts = defaultdict(list)
-    for output in output_list:
-        task_id_to_texts[output['task_id']].append((output['gen_text'], output['gt_text']))
+    # determine which tasks are classification (for macro-f1)
+    test_tasks = json.load(open(config_file))['test']
+    task_to_is_clf = {}
+    for task in test_tasks:
+        meta_data_path = os.path.join('MetaICL/config/tasks', f'{task}.json')
+        task_meta_data = json.load(open(meta_data_path, 'r'))
+        task_to_is_clf[task] = task_meta_data['task_type'] == "classification"
 
-    # average metrics over each task
-    accuracies = []
-    macro_f1s = []
-    for task, gen_and_gt in task_id_to_texts.items():
-        gens = [x[0] for x in gen_and_gt]
-        gts = [x[1] for x in gen_and_gt]
-        if task_to_is_classification[task]:
-            macro_f1s.append(f1_score(gens, gts, average='macro'))
-        else:
-            accuracies.append(accuracy_score(gens, gts))
-    macro_f1 = sum(macro_f1s) / len(macro_f1s) if len(macro_f1s) > 0 else -1.0
-    accuracy = sum(accuracies) / len(accuracies) if len(accuracies) > 0 else -1.0
+    # metrics
+    task_to_score = {}
+    for task in test_tasks:
+        task_outs = [x for x in output_list if x[1] == task]
+        if len(task_outs) == 0:
+            logger.info(f'[WARNING] {task} is not evaluated (likely due max_seq_len)')
+            continue
 
-    return macro_f1, accuracy, task_id_to_texts
+        preds, gts = [], []
+        test_idxs = set(x[2] for x in task_outs)
+        for test_i in test_idxs:
+            task_test_outs = [x for x in task_outs if x[2] == test_i]
+            correct_option = task_test_outs[0][4]
+            assert all(x[4] == correct_option for x in task_test_outs)
+            # choose option with lowest loss
+            lowest_loss = float('inf')
+            chosen_option = None
+            for x in task_test_outs:
+                if x[0] < lowest_loss:
+                    lowest_loss = x[0]
+                    chosen_option = x[3]
+            assert chosen_option is not None
+            # record
+            preds.append(chosen_option)
+            gts.append(correct_option)
+
+        task_to_score[task] = compute_macrof1_or_accuracy(preds, gts, task_to_is_clf[task])
+
+    # average scores
+    sorted_tasks = sorted(task_to_score.keys())
+    for task in sorted_tasks:
+        logger.info(f"{task} clf {task_to_is_clf[task]} has a score {task_to_score[task]}")
+    score = sum(v for v in task_to_score.values()) / len(task_to_score)
+
+    return score, output_list
 
 
 @torch.no_grad()
@@ -455,6 +395,34 @@ def initialize_program_embeddings(
     return distribution.sample(sample_shape=(ntokens,)).to(device).to(dtype) # type: ignore
 
 
+def get_individual_loss(lm_logits: torch.Tensor, label_ids: torch.Tensor) -> torch.Tensor:
+    # move labels to correct device to enable model parallelism
+    labels = label_ids.to(lm_logits.device)
+    # Shift so that tokens < n predict n
+    assert lm_logits.shape[0] == labels.shape[0]
+    losses = []
+    for logs, labs in zip(lm_logits, labels):
+        shift_logits = logs[:-1, :].contiguous()
+        shift_labels = labs[1:].contiguous()
+        # Flatten the tokens
+        loss_fct = nn.CrossEntropyLoss(reduction='none')
+        loss = loss_fct(shift_logits.view(-1, shift_logits.size(-1)), shift_labels.view(-1))
+
+        assert loss.shape == labs[1:].shape
+        loss = loss[labs[1:] != -100].mean()
+        losses.append(loss)
+
+    # debugging, should match crossentropy reduction (currently just match to 4 decimals)
+    # ns = [(l != -100).sum() for l in labels]
+    # ns = [n / sum(ns) for n in ns]
+    # m = 0
+    # for loss, n in zip(losses, ns):
+    #     m += loss * n
+    # print(m.item())
+
+    return torch.stack(losses)
+
+
 def model_loss(
     # model
     model: Union[nn.Module, DistributedDataParallel],
@@ -470,24 +438,28 @@ def model_loss(
     ntokens: int,
     # others
     pad_side: str,
-    program_loss_lambda_scheduler: LambdaScheduler,
+    program_loss_lambda_scheduler: Optional[LambdaScheduler],
     global_step: int,
     program_type: str,
     attention_cutoff: bool,
     attend_prev_programs: bool,
     debug: bool,
-    no_bos: bool,
-) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    individual_loss: bool,
+) -> Union[Tuple[torch.Tensor, torch.Tensor, torch.Tensor], torch.Tensor]:
 
     # original baseline
     if program_embeddings is None:
         assert prior_embeddings is None
-        ce_loss = model(
+        model_out = model(
             input_ids=input_ids,
             attention_mask=attention_mask,
             labels=label_ids,
-        ).loss
-        return ce_loss, torch.tensor(0.0, device=input_ids.device), ce_loss
+        )
+        if individual_loss:
+            return get_individual_loss(lm_logits=model_out.logits.half(), label_ids=label_ids)
+        else:
+            ce_loss = model_out.loss
+            return ce_loss, torch.tensor(0.0, device=input_ids.device), ce_loss
 
     assert prior_embeddings is not None
     module = model.module if isinstance(model, DistributedDataParallel) else model
@@ -501,7 +473,9 @@ def model_loss(
     inputs_embeds = embed_tokens(input_ids)
 
     # loss lambdas
-    program_loss_lambda = program_loss_lambda_scheduler.get_lambda(step=global_step)
+    program_loss_lambda = 0.0
+    if program_loss_lambda_scheduler is not None:
+        program_loss_lambda = program_loss_lambda_scheduler.get_lambda(step=global_step)
 
     # insert program embeddings
     inputs_embeds_with_programs = []
@@ -515,7 +489,7 @@ def model_loss(
     pair_label_ids = []
 
     for task_input_ids, task_inputs_embeds, task_attention_mask, task_label_ids, input_ids_len, start_idxs in zip(input_ids, inputs_embeds, attention_mask, label_ids, input_ids_lens, pair_start_idxs):
-        assert start_idxs[0] == 1 - int(no_bos) # first pair starts after bos
+        assert start_idxs[0] == 0
         # start_idxs are offset if padding side is left
         if pad_side == "left":
             start_idxs = [s + task_input_ids.shape[0] - input_ids_len for s in start_idxs]
@@ -750,26 +724,25 @@ def main():
     parser.add_argument("--wandb", action="store_true")
     parser.add_argument("--output_dir", type=str, default="./encoder_decoder/outputs")
     parser.add_argument("--log_every", type=int, default=10)
-    parser.add_argument("--save_every", type=int, default=500)
+    parser.add_argument("--save_every", type=int, default=2000)
     parser.add_argument("--tracker_project_name", type=str, default="metaicl")
     parser.add_argument("--save_all_models", action="store_true") # otherwise save only best
 
     # Debug
     parser.add_argument("--debug", action='store_true')
     parser.add_argument("--debug_len", type=int, default=-1)
+    parser.add_argument("--debug_fixed_order", action="store_true")
     parser.add_argument("--debug_random_pad", action="store_true")
     parser.add_argument("--debug_pad_len", type=int, default=-1)
     parser.add_argument("--debug_no_resume", action='store_true')
-    parser.add_argument("--debug_overfit_noclf", type=int, default=0)
-    parser.add_argument("--debug_overfit_clf", type=int, default=0)
 
     # Model
-    parser.add_argument("--model_name", type=str, default="llama1b")
+    parser.add_argument("--model_name", type=str, default="gpt2")
     parser.add_argument("--no_flash_attn", action="store_true")
     parser.add_argument("--untrainable_nbit", type=float, choices=[3.6, 4, 8, 16, 32], default=16)
     parser.add_argument("--trainable_nbit", type=int, choices=[16, 32], default=16)
     parser.add_argument("--gradient_checkpointing", action="store_true")
-    parser.add_argument("--lora", action="store_true")
+    parser.add_argument("--no_lora", action="store_true")
     parser.add_argument("--no_tf32", action="store_true")
     parser.add_argument("--loss_type", type=str, choices=['only_last', 'all', 'exclude_first'], default='only_last')
 
@@ -782,17 +755,17 @@ def main():
     parser.add_argument("--attend_prev_programs", action="store_true")
 
     # Training
-    parser.add_argument("--grad_accum_steps", type=int, default=4)
-    parser.add_argument("--train_batch_size", type=int, default=16)
-    parser.add_argument("--eval_batch_size", type=int, default=64)
-    parser.add_argument("--lr_embedding", type=float, default=1e-6)
+    parser.add_argument("--grad_accum_steps", type=int, default=1)
+    parser.add_argument("--train_batch_size", type=int, default=8)
+    parser.add_argument("--eval_batch_size", type=int, default=16) # 32 is fine, but dont want to risk
+    parser.add_argument("--lr_embedding", type=float, default=1e-5)
     parser.add_argument("--lr_program", type=float, default=1e-5)
     parser.add_argument("--lr_prior", type=float, default=1e-5)
     parser.add_argument("--lr_other", type=float, default=1e-5)
     parser.add_argument("--weight_decay", type=float, default=0.01)
     parser.add_argument("--num_epochs", type=int, default=10000)
-    parser.add_argument("--samples_per_epoch", type=int, default=20000)
-    parser.add_argument("--eval_epochs", type=int, default=4)
+    parser.add_argument("--samples_per_epoch", type=int, default=5000)
+    parser.add_argument("--eval_epochs", type=int, default=1)
     parser.add_argument("--max_grad_norm", default=1.0, type=float, help="Max gradient norm.")
     parser.add_argument("--optimizer", type=str, choices=["adamw8bit", "adamw", "sgd"], default="adamw")
     parser.add_argument("--dry_train_run", action="store_true")
@@ -806,13 +779,17 @@ def main():
     parser.add_argument("--program_loss_linear_epochs", type=int, default=0)
 
     # both data
-    parser.add_argument("--delimiter", type=str, default=' ')
+    parser.add_argument("--config_file", type=str, default="MetaICL/config/hr_to_lr.json")
+    parser.add_argument("--data_dir", type=str, default="MetaICL/data")
     parser.add_argument("--num_workers", type=int, default=8)
-    parser.add_argument("--num_pair", type=int, default=4) # includes test pair
-    parser.add_argument("--eval_per_task", type=int, default=250)
-    parser.add_argument("--max_seq_len", type=int, default=512)
+    parser.add_argument("--min_num_pair", type=int, default=17) # includes test pair
+    parser.add_argument("--max_num_pair", type=int, default=17) # includes test pair
+    parser.add_argument("--eval_min_num_pair", type=int, default=17) # includes test pair
+    parser.add_argument("--max_seq_len", type=int, default=1024)
+    parser.add_argument("--max_pair_len", type=int, default=256)
     parser.add_argument("--pad_side", type=str, choices=["left", "right"], default="left")
-    parser.add_argument("--no_bos", action='store_true')
+    parser.add_argument('--eval_seeds', type=str, nargs="+", default=['100'])
+    parser.add_argument('--eval_ratio', type=float, default=1.0)
 
     # Lora
     parser.add_argument("--lora_rank", type=int, default=256)
@@ -830,15 +807,14 @@ def main():
     if args.debug:
         args.tag = 'test'
         args.wandb = False
-        args.samples_per_epoch = 128
+        args.samples_per_epoch = 16
         args.log_every = 1
         args.debug_no_resume = True
+        args.eval_ratio = 0.1
 
     # check args
-    if not args.lora:
+    if args.no_lora:
         args.untrainable_nbit = args.trainable_nbit # untrainable become trainable
-    if args.model_name == 'gpt2':
-        assert args.no_bos
 
     args.output_dir = os.path.join(args.output_dir, args.tag)
 
@@ -981,7 +957,7 @@ def main():
 
     # lora
     model = None
-    if not args.lora:
+    if args.no_lora:
         model = base_model
     else:
         peft_config = LoraConfig(
@@ -1033,76 +1009,25 @@ def main():
     if program_embeddings is not None:
         logger.info(f'program embeddings size {round(get_memory_footprint(program_embeddings) / 1024 ** 3, 2)}GB')
 
-    # load dataset and figure out splits
-    hr_lr_split = json.load(open('metaicl_config/hr_to_lr.json'))
-    HR_TASKS = set(hr_lr_split['train'])
-    LR_TASKS = set(hr_lr_split['test'])
-    HR_TASKS.remove('gigaword') # missing for some reason
-
-    # load dataset
-    dataset = datasets.load_dataset("bigheiniuJ/EvalMetaICLAll")
-    train_split = dataset['meta_train'] # type: ignore
-    test_split = dataset['meta_eval_100shot'] # type: ignore
-    train_tasks = set(list(train_split['task'])) # type: ignore
-    test_tasks = set(list(test_split['task'])) # type: ignore
-    assert HR_TASKS.issubset(train_tasks)
-    assert LR_TASKS.issubset(test_tasks)
-
-    # get classification tasks
-    task_to_is_classification = {}
-    for task in test_tasks:
-        path = os.path.join(f'metaicl_config/tasks/{task}.json')
-        is_classification = json.load(open(path, 'r'))['task_type'] == 'classification'
-        task_to_is_classification[task] = is_classification
-
-    # finally, filter train and test split to HR and LR tasks
-    train_split = train_split.filter(lambda example: example["task"] in HR_TASKS) # type: ignore
-    test_split = test_split.filter(lambda example: example["task"] in LR_TASKS) # type: ignore
-    train_split = train_split.remove_columns(['seed', 'split'])
-    test_split = test_split.remove_columns(['split'])
-    # print counts
-    # logger.info('train task sample count')
-    # logger.info(f"{pprint.pformat(Counter(train_split['task']), indent=4)}")
-    # logger.info('')
-    # logger.info('test task sample count')
-    # logger.info(f"{pprint.pformat(Counter(test_split['task']), indent=4)}")
-    # logger.info('')
-
-    if args.debug_overfit_clf > 0 or args.debug_overfit_noclf > 0:
-        test_split = test_split.filter(lambda example: example['seed'] == "100")
-        test_tasks = sorted(set(test_split['task']))
-        clf_test_tasks = [t for t in test_tasks if task_to_is_classification[t]]
-        noclf_test_tasks = [t for t in test_tasks if not task_to_is_classification[t]]
-        # select tasks
-        select_test_tasks = []
-        if args.debug_overfit_clf > 0:
-            select_test_tasks += clf_test_tasks[:args.debug_overfit_clf]
-        if args.debug_overfit_noclf > 0:
-            select_test_tasks += noclf_test_tasks[:args.debug_overfit_noclf]
-        select_test_tasks = set(select_test_tasks)
-        # for each task, select indices
-        test_split = test_split.filter(lambda e: e['task'] in select_test_tasks)
-        train_split = test_split.remove_columns('seed')
-
     # Build training dataset
     train_dataset = TrainDataset(
-        data=train_split, # type: ignore
+        data_dir=args.data_dir,
+        config_file=args.config_file,
         tokenizer=tokenizer,
         total_steps=args.samples_per_epoch,
         seed=args.seed,
         process_index=accelerator.process_index,
-        ntokens=args.ntokens,
-        num_pair=args.num_pair,
+        debug_fixed_order=args.debug_fixed_order,
+        debug_random_pad=args.debug_random_pad,
+        debug_pad_len=args.debug_pad_len,
+        pad_side=args.pad_side,
+        min_num_pair=args.min_num_pair,
+        max_num_pair=args.max_num_pair,
+        loss_type=args.loss_type,
+        debug_len=args.debug_len,
         num_workers=args.num_workers,
         max_seq_len=args.max_seq_len,
-        pad_side=args.pad_side,
-        no_bos=args.no_bos,
-        delimiter=args.delimiter,
-        debug_random_pad=args.debug_random_pad,
-        debug_len=args.debug_len,
-        debug_pad_len=args.debug_pad_len,
-        loss_type=args.loss_type,
-        debug_overfit=(args.debug_overfit_clf > 0 or args.debug_overfit_noclf > 0),
+        max_pair_len=args.max_pair_len,
     )
     train_collate_fn = partial(collate_fn_train, dataset=train_dataset)
     if args.debug_len > 0:
@@ -1196,7 +1121,7 @@ def main():
     global_step = 0
     resume_batch_idx = 0
     if recovery_state_file is not None:
-        logger.info("Loading checkpoint from", recovery_checkpoint_dir)
+        logger.info(f"Loading checkpoint from {recovery_checkpoint_dir}")
         accelerator.load_state(recovery_checkpoint_dir)
         start_epoch = recovery_state_file["epoch"]
         global_step = recovery_state_file["global_step"]
@@ -1213,50 +1138,27 @@ def main():
             pass
         exit()
 
-    # Build train eval dataset
-    eval_train_dataset = EvalDataset(
-        data=train_split, # type: ignore
-        seed=args.seed,
-        split_name='train',
-        tokenizer=tokenizer,
-        ntokens=args.ntokens,
-        num_pair=args.num_pair,
-        max_seq_len=args.max_seq_len,
-        delimiter=args.delimiter,
-        eval_per_task=args.eval_per_task,
-        pad_side=args.pad_side,
-        no_bos=args.no_bos,
-        debug_len=args.debug_len,
-        debug_random_pad=args.debug_random_pad,
-        debug_pad_len=args.debug_pad_len,
-        debug_overfit=(args.debug_overfit_clf > 0 or args.debug_overfit_noclf > 0),
-    )
-
     # Build eval eval dataset
-    seeds = sorted(set(test_split['seed']))
-    seed_to_test_split = [(seed, test_split.filter(lambda example: example['seed'] == seed).remove_columns('seed'))
-                          for seed in seeds]
     eval_eval_datasets = [
         EvalDataset(
-            data=data, # type: ignore
+            data_dir=args.data_dir,
+            config_file=args.config_file,
             seed=args.seed,
-            split_name=f"eval_{seed}",
+            eval_seed=eval_seed,
             tokenizer=tokenizer,
-            ntokens=args.ntokens,
-            num_pair=args.num_pair,
-            max_seq_len=args.max_seq_len,
-            delimiter=args.delimiter,
-            eval_per_task=args.eval_per_task,
-            pad_side=args.pad_side,
-            no_bos=args.no_bos,
-            debug_len=args.debug_len,
             debug_random_pad=args.debug_random_pad,
             debug_pad_len=args.debug_pad_len,
-            debug_overfit=(args.debug_overfit_clf > 0 or args.debug_overfit_noclf > 0),
+            pad_side=args.pad_side,
+            debug_len=args.debug_len,
+            max_seq_len=args.max_seq_len,
+            max_pair_len=args.max_pair_len,
+            min_num_train_pair=args.eval_min_num_pair - 1,
+            max_num_train_pair=args.max_num_pair - 1,
+            ntokens=args.ntokens,
+            eval_ratio=args.eval_ratio,
         )
-        for seed, data in seed_to_test_split
+        for eval_seed in args.eval_seeds
     ]
-    assert len(set(tuple(sorted(data.task_to_indices.keys())) for data in eval_eval_datasets)) == 1 # all eval splits same tasks
     eval_collate_fn = partial(collate_fn_eval, dataset=eval_eval_datasets[0]) # only use tokenizer, padding info
     if args.debug_len > 0:
         eval_collate_fn = partial(collate_fn_eval_dummy, dataset=eval_eval_datasets[0])
@@ -1331,7 +1233,7 @@ def main():
                         attention_cutoff=args.attention_cutoff,
                         attend_prev_programs=args.attend_prev_programs,
                         debug=args.debug,
-                        no_bos=args.no_bos,
+                        individual_loss=False,
                     )
 
                 ce_loss_accum += ce_loss.item() / args.grad_accum_steps
@@ -1394,39 +1296,11 @@ def main():
             torch.cuda.empty_cache()
             gc.collect()
 
-            # 1. Eval Train Dataset
-            train_all_task_id_to_texts = defaultdict(list)
-            train_macro_f1, train_accuracy, task_id_to_texts = evaluate(
-                model=model,
-                prior_embeddings=prior_embeddings,
-                program_embeddings=program_embeddings,
-                dataset=eval_train_dataset,
-                accelerator=accelerator,
-                batch_size=args.eval_batch_size,
-                collate_fn=eval_collate_fn,
-                dry_eval_run=args.dry_eval_run,
-                ntokens=args.ntokens,
-                attention_cutoff=args.attention_cutoff,
-                attend_prev_programs=args.attend_prev_programs,
-                task_to_is_classification=task_to_is_classification,
-            )
-            for task_id, texts in task_id_to_texts.items():
-                texts = [(eval_train_dataset.split_name, t[0], t[1]) for t in texts]
-                train_all_task_id_to_texts[task_id] += texts
-
-            # train total score
-            if train_macro_f1 == -1.0:
-                train_total_score = train_accuracy
-            elif train_accuracy == -1.0:
-                train_total_score = train_macro_f1
-            else:
-                train_total_score = (train_accuracy + train_macro_f1) / 2.0
-
-            # 2. Eval Eval Datasets
-            eval_macro_f1s, eval_accuracys = [], []
-            eval_all_task_id_to_texts = defaultdict(list)
-            for eval_eval_dataset in eval_eval_datasets:
-                macro_f1, accuracy, task_id_to_texts = evaluate(
+            # Eval Eval Datasets
+            scores, all_output_list = [], None
+            for eval_dataset_i, eval_eval_dataset in enumerate(eval_eval_datasets):
+                score, output_list = evaluate(
+                    config_file=args.config_file,
                     model=model,
                     prior_embeddings=prior_embeddings,
                     program_embeddings=program_embeddings,
@@ -1435,48 +1309,19 @@ def main():
                     batch_size=args.eval_batch_size,
                     collate_fn=eval_collate_fn,
                     dry_eval_run=args.dry_eval_run,
-                    ntokens=args.ntokens,
                     attention_cutoff=args.attention_cutoff,
                     attend_prev_programs=args.attend_prev_programs,
-                    task_to_is_classification=task_to_is_classification,
                 )
-                # aggregate
-                if macro_f1 != -1.0:
-                    eval_macro_f1s.append(macro_f1)
-                if accuracy != -1.0:
-                    eval_accuracys.append(accuracy)
-                for task_id, texts in task_id_to_texts.items():
-                    texts = [(eval_eval_dataset.split_name, t[0], t[1]) for t in texts]
-                    eval_all_task_id_to_texts[task_id] += texts
-
-            # average macro_f1s and accuracys
-            assert len(eval_macro_f1s) in [0, len(eval_eval_datasets)]
-            assert len(eval_accuracys) in [0, len(eval_eval_datasets)]
-            eval_macro_f1 = sum(eval_macro_f1s) / len(eval_macro_f1s) if len(eval_macro_f1s) > 0 else -1.0
-            eval_accuracy = sum(eval_accuracys) / len(eval_accuracys) if len(eval_accuracys) > 0 else -1.0
-
-            # total score
-            if len(eval_macro_f1s) == 0:
-                eval_total_score = eval_accuracy
-            elif len(eval_accuracys) == 0:
-                eval_total_score = eval_macro_f1
-            else:
-                assert len(eval_macro_f1s) == len(eval_accuracys) == len(eval_eval_datasets)
-                eval_total_scores = [(x + y) / 2.0 for x, y in zip(eval_macro_f1s, eval_accuracys)]
-                eval_total_score = sum(eval_total_scores) / len(eval_total_scores)
+                if eval_dataset_i == 0:
+                    all_output_list = output_list
+                scores.append(score)
+            score = sum(scores) / len(scores)
 
             torch.cuda.empty_cache()
             gc.collect()
 
             if accelerator.is_main_process:
-                eval_metric_dict = {
-                    "train/macro_f1": train_macro_f1,
-                    "train/accuracy": train_accuracy,
-                    "train/total_score": train_total_score,
-                    "eval/macro_f1": eval_macro_f1,
-                    "eval/accuracy": eval_accuracy,
-                    "eval/total_score": eval_total_score,
-                }
+                eval_metric_dict = {"eval/score": score}
                 logger.info(f'Evaluation results:\n{pprint.pformat(eval_metric_dict, indent=4)}')
                 try:
                     accelerator.log(eval_metric_dict, step=global_step)
@@ -1484,19 +1329,15 @@ def main():
                     logger.info(f"wandb failed on process {accelerator.process_index}, skipping the error")
 
                 # Save outputs
-                save_eval_train_pred_gt_path = os.path.join(args.output_dir, f"eval_train_{epoch+1}_pred_gt.json")
                 save_eval_eval_pred_gt_path = os.path.join(args.output_dir, f"eval_eval_{epoch+1}_pred_gt.json")
-                with open(save_eval_train_pred_gt_path, 'w') as f:
-                    json.dump(train_all_task_id_to_texts, f)
                 with open(save_eval_eval_pred_gt_path, 'w') as f:
-                    json.dump(eval_all_task_id_to_texts, f)
-                logger.info(f"Saved eval train pred gt to {save_eval_train_pred_gt_path}")
+                    json.dump(all_output_list, f)
                 logger.info(f"Saved eval eval pred gt to {save_eval_eval_pred_gt_path}")
 
                 # Save model
                 do_save_model = args.save_all_models
                 if not args.save_all_models:
-                    if (not epoch_to_total_score) or eval_total_score >= max(epoch_to_total_score.values()):
+                    if (not epoch_to_total_score) or score >= max(epoch_to_total_score.values()):
                         do_save_model = True
 
                 if do_save_model:
@@ -1515,7 +1356,7 @@ def main():
                         output_dir=args.output_dir,
                         epoch=epoch,
                     )
-                epoch_to_total_score[epoch] = eval_total_score
+                epoch_to_total_score[epoch] = score
 
     accelerator.end_training()
     logger.info("All done training.")

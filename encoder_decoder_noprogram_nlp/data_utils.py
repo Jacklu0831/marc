@@ -1,3 +1,6 @@
+import math
+import os
+import json
 from transformers.tokenization_utils_fast import PreTrainedTokenizerFast
 from transformers import GPT2TokenizerFast
 from collections import defaultdict
@@ -5,7 +8,7 @@ import random
 import torch
 from torch.utils.data import Dataset, get_worker_info
 from torch.nn.utils.rnn import pad_sequence
-from typing import Dict, List, Any, List, Optional, Union
+from typing import Dict, List, List, Optional, Union, Tuple
 import numpy as np
 
 from accelerate.logging import get_logger
@@ -43,13 +46,117 @@ def debug_extra_pad_tensors(
     return padded_tensors
 
 
-def verify_tokenizer_output(tokenizer_out: Any, tokenizer: Union[PreTrainedTokenizerFast, GPT2TokenizerFast]):
-    # make sure the tokenizer doesnt fail me
-    assert tokenizer_out['attention_mask'].numel() == tokenizer_out['attention_mask'].sum()
-    assert tokenizer_out['input_ids'].shape == tokenizer_out['attention_mask'].shape
-    assert tokenizer_out['input_ids'].dim() == 2 and tokenizer_out['input_ids'].shape[0] == 1
+def tokenize(
+        text: str,
+        tokenizer: Union[PreTrainedTokenizerFast, GPT2TokenizerFast]
+    ) -> torch.Tensor:
+
+    tokenizer_out = tokenizer(text, return_tensors="pt", truncation=True, max_length=1024)
+    assert tokenizer_out['input_ids'].shape == tokenizer_out['attention_mask'].shape # type: ignore
+    assert tokenizer_out['input_ids'].dim() == 2 and tokenizer_out['input_ids'].shape[0] == 1 # type: ignore
+    assert tokenizer_out['attention_mask'].numel() == tokenizer_out['attention_mask'].sum() # type: ignore
+
+    input_ids = tokenizer_out['input_ids'][0] # type: ignore
     if not isinstance(tokenizer, GPT2TokenizerFast):
-        assert tokenizer_out['input_ids'][0][0].item() == tokenizer.bos_token_id
+        assert input_ids[0].item() == tokenizer.bos_token_id # type: ignore
+        input_ids = input_ids[1:]
+
+    return input_ids
+
+
+def parse_pairs(
+    pairs: List[Dict],
+    tokenizer: Union[PreTrainedTokenizerFast, GPT2TokenizerFast],
+    max_pair_len: int,
+    max_seq_len: int,
+    newline_token_id: torch.Tensor,
+    loss_type: str,
+) -> Optional[Tuple[torch.Tensor, torch.Tensor, torch.Tensor, np.ndarray]]:
+
+    # compute input_ids, attention_mask, label_ids for each pair
+    input_ids_of_each_pair = []
+    label_ids_of_each_pair = []
+
+    for pair_i, pair in enumerate(pairs):
+        # tokenize
+        input_input_ids = tokenize(pair['input'], tokenizer)
+        output_input_ids = tokenize(pair['output'], tokenizer)
+
+        # truncate each pair like in metaICL, not account for newlines tho
+        if len(input_input_ids) > max_pair_len - len(output_input_ids):
+            input_input_ids = input_input_ids[: max_pair_len - len(output_input_ids)]
+
+        # append delimiter to input
+        input_input_ids = torch.cat([input_input_ids, newline_token_id])
+
+        # prepend \n\n for inputs that are not first
+        if pair_i != 0:
+            input_input_ids = torch.cat([newline_token_id, newline_token_id, input_input_ids])
+
+        # create input_ids and label_ids
+        input_ids = torch.cat([input_input_ids, output_input_ids])
+        if (pair_i == 0 and loss_type == 'exclude_first') or (pair_i < len(pairs) - 1 and loss_type == 'only_last'):
+            label_ids = torch.full(input_ids.shape, -100, dtype=input_ids.dtype)
+        else:
+            label_ids = torch.cat([
+                torch.full(input_input_ids.shape, -100, dtype=input_ids.dtype),
+                output_input_ids,
+            ])
+
+        input_ids_of_each_pair.append(input_ids)
+        label_ids_of_each_pair.append(label_ids)
+
+    # start idxs computed from cumsum of lengths of pairs except last
+    pair_start_idxs = np.cumsum([0, *[len(x) for x in input_ids_of_each_pair[:-1]]]).tolist()
+
+    # concat
+    input_ids = torch.cat(input_ids_of_each_pair)
+    attention_mask = torch.full(input_ids.shape, 1, dtype=input_ids.dtype)
+    label_ids = torch.cat(label_ids_of_each_pair)
+    assert input_ids.shape == attention_mask.shape == label_ids.shape
+
+    # check length
+    if len(input_ids) > max_seq_len:
+        return None
+
+    return input_ids, attention_mask, label_ids, pair_start_idxs
+
+
+def collate_data(
+    batch: List[Dict],
+    tokenizer: Union[PreTrainedTokenizerFast, GPT2TokenizerFast],
+    debug_random_pad: bool,
+    debug_pad_len: int,
+    pad_side: str
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, List[int]]:
+
+    batch_size = len(batch)
+    all_input_ids = [x['input_ids'] for x in batch]
+    all_attention_mask = [x['attention_mask'] for x in batch]
+    all_label_ids = [x['label_ids'] for x in batch]
+
+    # get input ids lens (batch_size,)
+    input_ids_lens = [len(x) for x in all_input_ids]
+
+    # collate
+    assert isinstance(tokenizer.pad_token_id, int)
+    all_input_ids = pad_sequence_with_side(all_input_ids, padding_value=tokenizer.pad_token_id, side=pad_side)
+    all_attention_mask = pad_sequence_with_side(all_attention_mask, padding_value=0, side=pad_side)
+    all_label_ids = pad_sequence_with_side(all_label_ids, padding_value=-100, side=pad_side)
+    assert all_input_ids.shape == all_attention_mask.shape == all_label_ids.shape
+
+    # extra padding
+    if debug_random_pad or debug_pad_len > -1:
+        all_input_ids, all_attention_mask, all_label_ids = debug_extra_pad_tensors(
+            [all_input_ids, all_attention_mask, all_label_ids],
+            padding_values=[tokenizer.pad_token_id, 0, -100],
+            pad_len=debug_pad_len,
+            side=pad_side,
+        )
+
+    assert len(all_input_ids) == batch_size
+    assert all_input_ids.shape == all_attention_mask.shape == all_label_ids.shape
+    return all_input_ids, all_attention_mask, all_label_ids, input_ids_lens
 
 
 ########################################
@@ -59,45 +166,41 @@ def verify_tokenizer_output(tokenizer_out: Any, tokenizer: Union[PreTrainedToken
 class TrainDataset(Dataset):
     def __init__(
         self,
-        data: Dataset,
+        data_dir: str,
+        config_file: str,
         tokenizer: Union[PreTrainedTokenizerFast, GPT2TokenizerFast],
         total_steps: int,
         seed: int,
         process_index: int,
-        ntokens: int,
-        num_pair: int,
+        debug_fixed_order: bool,
+        debug_random_pad: bool,
+        debug_pad_len: int,
+        pad_side: str,
+        min_num_pair: int,
+        max_num_pair: int,
+        loss_type: str,
+        debug_len: int,
         num_workers: int,
         max_seq_len: int,
-        pad_side: str,
-        no_bos: bool,
-        delimiter: str,
-        debug_random_pad: bool,
-        debug_len: int,
-        debug_pad_len: int,
-        loss_type: str,
-        debug_overfit: bool,
+        max_pair_len: int,
     ):
-        self.data = data
+
         self.tokenizer = tokenizer
         self._length = total_steps
-        self.ntokens = ntokens
-        self.num_pair = num_pair
-        self.num_workers = num_workers if num_workers > 0 else 1
-        self.pad_side = pad_side
-        self.no_bos = no_bos
-        self.max_seq_len = max_seq_len
+        self.debug_fixed_order = debug_fixed_order
         self.debug_random_pad = debug_random_pad
-        self.debug_len = debug_len
         self.debug_pad_len = debug_pad_len
+        self.pad_side = pad_side
+        self.min_num_pair = min_num_pair
+        self.max_num_pair = max_num_pair
         self.loss_type = loss_type
-        self.debug_overfit = debug_overfit
+        self.debug_len = debug_len
+        self.num_workers = num_workers
+        self.max_seq_len = max_seq_len
+        self.max_pair_len = max_pair_len
 
-        # get a customizable delimiter, use whitespace by default
-        self.delimiter = delimiter
-        self.delimiter_token_id = tokenizer(delimiter, return_tensors='pt', truncation=True, max_length=self.max_seq_len)['input_ids'][0] # type: ignore
-        if not isinstance(tokenizer, GPT2TokenizerFast):
-            assert self.delimiter_token_id[0] == tokenizer.bos_token_id
-            self.delimiter_token_id = self.delimiter_token_id[1:] # remove bos
+        # separate input and output by newline
+        self.newline_token_id = tokenize("\n", tokenizer)
 
         # seed and process_index
         if num_workers == 0:
@@ -105,11 +208,25 @@ class TrainDataset(Dataset):
         else:
             self.rngs = [np.random.RandomState(seed + i) for i in range(num_workers * process_index, num_workers * (process_index + 1))]
 
-        # task to indices
-        self.task_to_indices = defaultdict(list)
-        for idx, task in enumerate(data['task']):
-            self.task_to_indices[task].append(idx)
-        assert all(len(indices) >= self.num_pair for indices in self.task_to_indices.values())
+        # num pair must be the same across gpus
+        if num_workers == 0:
+            self.num_pair_rngs = [np.random.RandomState(seed)]
+        else:
+            self.num_pair_rngs = [np.random.RandomState(seed + i) for i in range(num_workers)]
+
+        # load data
+        self.tasks = json.load(open(config_file))['train']
+        self.task_to_pairs = defaultdict(list)
+        for task in self.tasks:
+            task_data_dir = os.path.join(data_dir, task)
+            assert os.path.exists(os.path.join(task_data_dir, f"{task}_16384_100_train.jsonl"))
+            all_lines = open(os.path.join(task_data_dir, f"{task}_16384_100_train.jsonl"), 'r').readlines()
+            for l in all_lines:
+                example = json.loads(l)
+                assert len(example['input']) > 0 and len(example['output']) > 0
+                del example['task'], example['options']
+                self.task_to_pairs[task].append(example)
+        assert all(len(pairs) >= self.max_num_pair for pairs in self.task_to_pairs.values())
 
     def __len__(self):
         return self._length
@@ -126,125 +243,62 @@ def collate_fn_train(batch: List[int], dataset: TrainDataset) -> Dict:
     worker_info = get_worker_info()
     worker_id = worker_info.id if worker_info is not None else 0 # could be single-thread
     rng = dataset.rngs[int(worker_id)]
+    num_pair_rng = dataset.num_pair_rngs[int(worker_id)]
 
-    # each of (batch_size x pair_seq_len)
-    all_input_ids = []
-    all_attention_mask = []
-    all_label_ids = []
-    all_pair_start_idxs = [] # (batch_size, num_pair)
+    # must sample this number of pairs to avoid GPU synchronization issues
+    required_num_pair = num_pair_rng.choice(list(range(dataset.min_num_pair, dataset.max_num_pair + 1)))
 
-    while len(all_input_ids) < batch_size:
-        # choose task and indices
-        task = rng.choice(list(dataset.task_to_indices)) # type: ignore
-        indices = dataset.task_to_indices[task]
+    out_batch = []
+    while len(out_batch) < batch_size:
+        task = rng.choice(list(dataset.task_to_pairs)) # type: ignore
+        all_pairs = dataset.task_to_pairs[task]
 
-        if dataset.debug_overfit:
-            chosen_indices = indices[:dataset.num_pair]
+        if dataset.debug_fixed_order:
+            required_num_pair = len(all_pairs)
+            chosen_pairs = all_pairs[:required_num_pair]
         else:
-            chosen_indices = rng.choice(indices, size=dataset.num_pair, replace=False).tolist() # type: ignore
+            chosen_pairs = rng.choice(all_pairs, size=required_num_pair, replace=False).tolist()
 
-        # compute input_ids, attention_mask, label_ids for each pair
-        input_ids_of_each_pair = []
-        attention_mask_of_each_pair = []
-        label_ids_of_each_pair = []
-
-        examples = [dataset.data[i] for i in chosen_indices]
-        for example_i, example in enumerate(examples):
-            # tokenize
-            tokenized_input = dataset.tokenizer(example['input'], return_tensors="pt", truncation=True, max_length=dataset.max_seq_len)
-            tokenized_output = dataset.tokenizer(example['output'], return_tensors="pt", truncation=True, max_length=dataset.max_seq_len)
-            verify_tokenizer_output(tokenized_input, dataset.tokenizer)
-            verify_tokenizer_output(tokenized_output, dataset.tokenizer)
-            input_input_ids = tokenized_input['input_ids'][0] # type: ignore
-            output_input_ids = tokenized_output['input_ids'][0] # type: ignore
-            dtype = input_input_ids.dtype
-
-            # only keep bos for the first input
-            if not isinstance(dataset.tokenizer, GPT2TokenizerFast):
-                if example_i > 0 or dataset.no_bos:
-                    input_input_ids = input_input_ids[1:]
-                output_input_ids = output_input_ids[1:]
-
-            # add whitespace to input and eos to output
-            input_input_ids = torch.cat([input_input_ids, dataset.delimiter_token_id])
-            output_input_ids = torch.cat([output_input_ids, torch.tensor([dataset.tokenizer.eos_token_id])])
-
-            # create input_ids, attention_mask, label_ids for pair
-            input_ids = torch.cat([input_input_ids, output_input_ids])
-            attention_mask = torch.full(input_ids.shape, 1, dtype=dtype)
-
-            label_ids = torch.cat([
-                torch.full(input_input_ids.shape, -100, dtype=dtype),
-                output_input_ids,
-            ]) # do not predict input ids
-
-            # set label ids to -100 here if not to be trained on
-            if (example_i == 0 and dataset.loss_type == 'exclude_first') or (example_i < len(examples) - 1 and dataset.loss_type == 'only_last'):
-                label_ids = torch.full(label_ids.shape, -100, dtype=dtype)
-
-            assert input_ids.shape == attention_mask.shape == label_ids.shape
-
-            input_ids_of_each_pair.append(input_ids)
-            attention_mask_of_each_pair.append(attention_mask)
-            label_ids_of_each_pair.append(label_ids)
-
-        # start idxs computed from cumsum of lengths of pairs except last, set first start idx to 1 for bos
-        pair_start_idxs = np.cumsum([0, *[len(x) for x in input_ids_of_each_pair[:-1]]]).tolist()
-        pair_start_idxs[0] = 0 if dataset.no_bos else 1
-
-        # concat
-        input_ids = torch.cat(input_ids_of_each_pair)
-        attention_mask = torch.cat(attention_mask_of_each_pair)
-        label_ids = torch.cat(label_ids_of_each_pair)
-
-        # check length
-        if len(input_ids) > dataset.max_seq_len:
+        out = parse_pairs(
+            pairs=chosen_pairs,
+            tokenizer=dataset.tokenizer,
+            max_pair_len=dataset.max_pair_len,
+            max_seq_len=dataset.max_seq_len,
+            newline_token_id=dataset.newline_token_id,
+            loss_type=dataset.loss_type,
+        )
+        if out == None:
             continue
+        input_ids, attention_mask, label_ids, pair_start_idxs = out
 
         # add to batch
-        all_input_ids.append(input_ids)
-        all_attention_mask.append(attention_mask)
-        all_label_ids.append(label_ids)
-        all_pair_start_idxs.append(pair_start_idxs)
+        out_batch.append({
+            'input_ids': input_ids,
+            'attention_mask': attention_mask,
+            'label_ids': label_ids,
+            'pair_start_idxs': pair_start_idxs,
+        })
 
-    assert len(all_input_ids) == batch_size
-    if not dataset.no_bos:
-        assert all(start_idxs[0] == 1 for start_idxs in all_pair_start_idxs)
-    else:
-        assert all(start_idxs[0] == 0 for start_idxs in all_pair_start_idxs)
+    input_ids, attention_mask, label_ids, input_ids_lens = collate_data(
+        batch=out_batch,
+        tokenizer=dataset.tokenizer,
+        debug_random_pad=dataset.debug_random_pad,
+        debug_pad_len=dataset.debug_pad_len,
+        pad_side=dataset.pad_side,
+    )
+    pair_start_idxs = [x['pair_start_idxs'] for x in out_batch]
+    assert all(start_idxs[0] == 0 for start_idxs in pair_start_idxs)
 
-    # get input ids lens (batch_size,)
-    input_ids_lens = [len(x) for x in all_input_ids]
-
-    # collate
-    assert isinstance(dataset.tokenizer.pad_token_id, int)
-    all_input_ids = pad_sequence_with_side(all_input_ids, padding_value=dataset.tokenizer.pad_token_id, side=dataset.pad_side)
-    all_attention_mask = pad_sequence_with_side(all_attention_mask, padding_value=0, side=dataset.pad_side)
-    all_label_ids = pad_sequence_with_side(all_label_ids, padding_value=-100, side=dataset.pad_side)
-    assert all_input_ids.shape == all_attention_mask.shape == all_label_ids.shape
-
-    # extra padding
-    if dataset.debug_random_pad or dataset.debug_pad_len > -1:
-        all_input_ids, all_attention_mask, all_label_ids = debug_extra_pad_tensors(
-            [all_input_ids, all_attention_mask, all_label_ids],
-            padding_values=[dataset.tokenizer.pad_token_id, 0, -100],
-            pad_len=dataset.debug_pad_len,
-            side=dataset.pad_side,
-        )
-
-    assert len(all_input_ids) == batch_size
-    assert all_input_ids.shape == all_attention_mask.shape == all_label_ids.shape
-
-    # dataset.tokenizer.decode(all_input_ids[1], skip_special_tokens=False)
-    # all_input_ids[1]
-    # all_label_ids[1]
+    # dataset.tokenizer.decode(input_ids[2], skip_special_tokens=True)
+    # attention_mask[2]
+    # dataset.tokenizer.decode(label_ids[2][label_ids[2] != -100])
 
     return {
-        'input_ids': all_input_ids,
-        'attention_mask': all_attention_mask,
-        'label_ids': all_label_ids,
+        'input_ids': input_ids,
+        'attention_mask': attention_mask,
+        'label_ids': label_ids,
         'input_ids_lens': input_ids_lens,
-        'pair_start_idxs': all_pair_start_idxs,
+        'pair_start_idxs': pair_start_idxs,
     }
 
 
@@ -255,11 +309,7 @@ def collate_fn_train_dummy(batch: List[int], dataset: TrainDataset) -> Dict:
     input_ids = torch.randint(0, 30, (batch_size, dataset.debug_len), dtype=torch.int64, device='cpu')
     attention_mask = torch.full((batch_size, dataset.debug_len), 1, dtype=torch.int64, device='cpu')
     input_ids_lens = [dataset.debug_len] * batch_size
-
-    if not dataset.no_bos:
-        pair_start_idxs = [[1] + sorted(random.sample(range(2, dataset.debug_len), k=dataset.num_pair-1)) for _ in range(batch_size)]
-    else:
-        pair_start_idxs = [[0] + sorted(random.sample(range(2, dataset.debug_len), k=dataset.num_pair-1)) for _ in range(batch_size)]
+    pair_start_idxs = [[0] + sorted(random.sample(range(2, dataset.debug_len), k=dataset.max_num_pair-1)) for _ in range(batch_size)]
 
     return {
         "input_ids": input_ids,
@@ -276,200 +326,180 @@ def collate_fn_train_dummy(batch: List[int], dataset: TrainDataset) -> Dict:
 class EvalDataset:
     def __init__(
         self,
-        data: Dataset,
-        split_name: str,
+        data_dir: str,
+        config_file: str,
         seed: int,
+        eval_seed: int,
         tokenizer: Union[PreTrainedTokenizerFast, GPT2TokenizerFast],
-        ntokens: int,
-        num_pair: int,
-        max_seq_len: int,
-        delimiter: str,
-        eval_per_task: int,
-        pad_side: str,
-        no_bos: bool,
-        debug_len: int,
         debug_random_pad: bool,
         debug_pad_len: int,
-        debug_overfit: bool,
+        pad_side: str,
+        debug_len: int,
+        max_seq_len: int,
+        max_pair_len: int,
+        min_num_train_pair: int,
+        max_num_train_pair: int,
+        ntokens: int,
+        eval_ratio: float,
     ):
-        self.data = data
-        self.split_name = split_name
-        self.seed = seed
+        self.eval_seed = eval_seed
         self.tokenizer = tokenizer
-        self.ntokens = ntokens
-        self.num_pair = num_pair
-        self.max_seq_len = max_seq_len
-        self.pad_side = pad_side
-        self.no_bos = no_bos
-        self.debug_len = debug_len
         self.debug_random_pad = debug_random_pad
         self.debug_pad_len = debug_pad_len
-        self.eval_per_task = eval_per_task
+        self.pad_side = pad_side
+        self.debug_len = debug_len
+        self.max_seq_len = max_seq_len
+        self.max_pair_len = max_pair_len
+        self.min_num_train_pair = min_num_train_pair
+        self.max_num_train_pair = max_num_train_pair
+        self.ntokens = ntokens
+        self.eval_ratio = eval_ratio
 
-        # get a customizable delimiter, use whitespace by default
-        self.delimiter = delimiter
-        self.delimiter_token_id = tokenizer(delimiter, return_tensors='pt', truncation=True, max_length=self.max_seq_len)['input_ids'][0] # type: ignore
-        if not isinstance(tokenizer, GPT2TokenizerFast):
-            assert self.delimiter_token_id[0] == tokenizer.bos_token_id
-            self.delimiter_token_id = self.delimiter_token_id[1:] # remove bos
+        # separate input and output by newline
+        self.newline_token_id = tokenize("\n", tokenizer)
 
-        # task to indices
-        self.task_to_indices = defaultdict(list)
-        for idx, task in enumerate(data['task']):
-            self.task_to_indices[task].append(idx)
-        assert all(len(indices) >= self.num_pair for indices in self.task_to_indices.values())
-
-        # pre-select tasks
+        # rng
         rng = np.random.RandomState(seed)
-        chosen_indices_and_task_ids = []
-        for task, indices in self.task_to_indices.items():
-            for _ in range(self.eval_per_task):
-                if debug_overfit:
-                    chosen_indices = indices[:num_pair]
-                else:
-                    chosen_indices = rng.choice(indices, size=num_pair, replace=False).tolist() # type: ignore
-                chosen_indices_and_task_ids.append((chosen_indices, task))
 
-        # preset chosen task ids
-        self.chosen_indices_and_task_ids = []
-        for chosen_indices, task_id in chosen_indices_and_task_ids:
-            formatted = self.format_and_filter(chosen_indices, task_id)
-            if formatted is not None:
-                self.chosen_indices_and_task_ids.append((chosen_indices, task_id))
+        # load data
+        self.tasks = json.load(open(config_file))['test']
+        task_to_demonstrations = defaultdict(list)
+        task_to_test_pairs = defaultdict(list)
+        for task in self.tasks:
+            task_data_dir = os.path.join(data_dir, task)
+            train_file = os.path.join(task_data_dir, f"{task}_16_{eval_seed}_train.jsonl")
+            test_file = os.path.join(task_data_dir, f"{task}_16_{eval_seed}_test.jsonl")
+            # train demonstration pairs
+            for l in open(train_file, 'r').readlines():
+                example = json.loads(l)
+                task_to_demonstrations[task].append(example)
+            assert len(task_to_demonstrations[task]) == 16 >= max_num_train_pair
+            # subset test pairs
+            lines = open(test_file, 'r').readlines()
+            rng.shuffle(lines)
+            num_chosen = math.ceil(len(lines) * eval_ratio)
+            for l in lines[:num_chosen]:
+                example = json.loads(l)
+                task_to_test_pairs[task].append(example)
+        assert set(task_to_demonstrations.keys()) == set(task_to_test_pairs.keys())
 
-        logger.info(f"evaluator filtered down to {len(self.chosen_indices_and_task_ids)}/{len(chosen_indices_and_task_ids)}")
+        # process and filter down
+        logger.info('generating eval samples...')
+        self.data = []
+        unfiltered_total_task, filtered_total_task, unfiltered_total_sample, filtered_total_sample = 0, 0, 0, 0
 
-    def format_and_filter(self, chosen_indices: List[int], task_id: str) -> Optional[Dict]:
-        examples = [self.data[i] for i in chosen_indices]
-        assert len(set(e['task'] for e in examples)) == 1
+        for task_i, (task, test_pairs) in enumerate(task_to_test_pairs.items()):
+            logger.info(f'{task_i+1}/{len(task_to_test_pairs)}')
+            num_demonstration = int(rng.choice(range(min_num_train_pair, max_num_train_pair + 1), size=1))
+            demonstrations = task_to_demonstrations[task][:num_demonstration]
 
-        # compute input_ids, attention_mask for each train pair and one for gen pair
-        gen_input_ids, gen_output_ids = [], None
+            for test_idx, test_pair in enumerate(test_pairs):
+                assert len(test_pair['options']) > 1
+                assert test_pair['output'] in test_pair['options']
+                correct_option = test_pair['output']
 
-        for example_i, example in enumerate(examples):
-            # tokenize
-            tokenized_input = self.tokenizer(example['input'], return_tensors="pt", truncation=True, max_length=self.max_seq_len)
-            tokenized_output = self.tokenizer(example['output'], return_tensors="pt", truncation=True, max_length=self.max_seq_len)
-            verify_tokenizer_output(tokenized_input, self.tokenizer)
-            verify_tokenizer_output(tokenized_output, self.tokenizer)
-            input_input_ids = tokenized_input['input_ids'][0] # type: ignore
-            output_input_ids = tokenized_output['input_ids'][0] # type: ignore
+                # get outputs for each option
+                outs = []
+                for option in test_pair['options']:
+                    test_pair['output'] = option
+                    outs.append(self.format_and_filter(demonstrations, test_pair, test_idx, correct_option))
 
-            # only keep bos for the first input
-            if not isinstance(self.tokenizer, GPT2TokenizerFast):
-                if example_i > 0 or self.no_bos:
-                    input_input_ids = input_input_ids[1:]
-                output_input_ids = output_input_ids[1:]
+                # add to data, accumulate filter and unfilter stats
+                if None not in outs:
+                    self.data += outs
+                    filtered_total_task += 1
+                    filtered_total_sample += len(test_pair['options'])
+                unfiltered_total_task += 1
+                unfiltered_total_sample += len(test_pair['options'])
 
-            # add whitespace to input and eos to output
-            input_input_ids = torch.cat([input_input_ids, self.delimiter_token_id])
-            output_input_ids = torch.cat([output_input_ids, torch.tensor([self.tokenizer.eos_token_id])])
+        logger.info(f'eval split {eval_seed} filtered to {filtered_total_task}/{unfiltered_total_task} tasks')
+        logger.info(f'eval split {eval_seed} filtered to {filtered_total_sample}/{unfiltered_total_sample} samples')
 
-            # create input_ids, attention_mask for pair
-            if example_i == len(examples) - 1:
-                gen_input_ids.append(input_input_ids)
-                gen_output_ids = output_input_ids
-            else:
-                gen_input_ids.append(torch.cat([input_input_ids, output_input_ids]))
+    def format_and_filter(self, demonstrations: List[Dict], test_pair: Dict, test_idx: int, correct_option: str) -> Optional[Dict]:
+        # make sure they are all the same task with the same non-empty options
+        task = test_pair['task']
+        assert all(e['task'] == task for e in demonstrations) # test and demonstration pair have same task (dont need same option)
+        assert correct_option in test_pair['options']
 
-        # start idxs computed from cumsum of lengths of pairs except last, set first start idx to 1 for bos
-        assert len(gen_input_ids) == self.num_pair
-        pair_start_idxs = np.cumsum([0, *[len(x) for x in gen_input_ids[:-1]]]).tolist()
-        pair_start_idxs[0] = 0 if self.no_bos else 1
-
-        # gen stuff
-        gen_input_ids = torch.cat(gen_input_ids)
-        gen_attention_mask = torch.full(gen_input_ids.shape, 1, dtype=gen_input_ids.dtype)
-
-        # deal with gen stuff
-        assert gen_output_ids is not None
-        assert gen_output_ids[-1] == self.tokenizer.eos_token_id
-        out_token_length = len(gen_output_ids) - 1 # remove eos
-
-        # filter by length
-        if len(gen_input_ids) + len(gen_output_ids) > self.max_seq_len:
+        out = parse_pairs(
+            pairs=demonstrations + [test_pair],
+            tokenizer=self.tokenizer,
+            max_pair_len=self.max_pair_len,
+            max_seq_len=self.max_seq_len,
+            newline_token_id=self.newline_token_id,
+            loss_type="only_last",
+        )
+        if out == None:
             return None
-
-        # self.tokenizer.decode(gen_input_ids, skip_special_tokens=False)
-        # self.tokenizer.decode(gen_output_ids, skip_special_tokens=False)
+        input_ids, attention_mask, label_ids, pair_start_idxs = out
 
         return {
-            "task_id": task_id,
-            "gen_input_ids": gen_input_ids,
-            "gen_output_ids": gen_output_ids,
-            "gen_attention_mask": gen_attention_mask,
-            "out_token_length": out_token_length,
+            "task": task,
+            "test_idx": test_idx,
+            "input_ids": input_ids,
+            "attention_mask": attention_mask,
+            "label_ids": label_ids,
             "pair_start_idxs": pair_start_idxs,
+            "option": test_pair['output'],
+            "correct_option": correct_option,
         }
 
     def __len__(self):
-        return len(self.chosen_indices_and_task_ids)
+        return len(self.data)
 
     def __getitem__(self, idx):
-        # ignore idx, we sample instead
-        formatted = self.format_and_filter(*self.chosen_indices_and_task_ids[idx])
-        assert formatted is not None
-        return formatted
+        return self.data[idx]
 
 
 def collate_fn_eval(batch: List[Dict], dataset: EvalDataset) -> Dict:
-    task_ids = [x['task_id'] for x in batch]
-    gen_input_ids = [x["gen_input_ids"] for x in batch]
-    gen_output_ids = [x["gen_output_ids"] for x in batch]
-    gen_attention_mask = [x["gen_attention_mask"] for x in batch]
-    out_token_length = [x["out_token_length"] for x in batch]
-    pair_start_idxs = [x["pair_start_idxs"] for x in batch]
-    assert all(start_idxs[0] == 1 - dataset.no_bos for start_idxs in pair_start_idxs)
+    batch_size = len(batch)
 
-    # we do not pad gen_output_ids
-    assert isinstance(dataset.tokenizer.pad_token_id, int)
-    gen_input_ids_lens = [len(x) for x in gen_input_ids]
-    gen_input_ids = pad_sequence_with_side(gen_input_ids, padding_value=dataset.tokenizer.pad_token_id, side=dataset.pad_side)
-    gen_attention_mask = pad_sequence_with_side(gen_attention_mask, padding_value=0, side=dataset.pad_side)
-
-    # extra padding gen
-    gen_input_ids, gen_attention_mask = debug_extra_pad_tensors(
-        [gen_input_ids, gen_attention_mask],
-        padding_values=[dataset.tokenizer.pad_token_id, 0],
-        pad_len=dataset.debug_pad_len,
-        side=dataset.pad_side,
+    all_input_ids, all_attention_mask, all_label_ids, input_ids_lens = collate_data(
+        batch=batch,
+        tokenizer=dataset.tokenizer,
+        debug_random_pad=dataset.debug_random_pad,
+        debug_pad_len=dataset.debug_pad_len,
+        pad_side=dataset.pad_side,
     )
+    assert len(all_input_ids) == batch_size
 
-    batch_dict = {
-        "task_ids": task_ids,
-        "gen_input_ids": gen_input_ids,
-        "gen_output_ids": gen_output_ids,
-        "gen_attention_mask": gen_attention_mask,
-        "out_token_length": out_token_length,
-        "gen_input_ids_lens": gen_input_ids_lens,
-        "pair_start_idxs": pair_start_idxs,
+    pair_start_idxs = [x['pair_start_idxs'] for x in batch]
+    task = [x['task'] for x in batch]
+    test_idx = [x['test_idx'] for x in batch]
+    option = [x['option'] for x in batch]
+    correct_option = [x['correct_option'] for x in batch]
+    assert all(start_idxs[0] == 0 for start_idxs in pair_start_idxs)
+
+    return {
+        'task': task,
+        'test_idx': test_idx,
+        'input_ids': all_input_ids,
+        'attention_mask': all_attention_mask,
+        'label_ids': all_label_ids,
+        'input_ids_lens': input_ids_lens,
+        'pair_start_idxs': pair_start_idxs,
+        "option": option,
+        "correct_option": correct_option,
     }
-    return batch_dict
 
 
-def collate_fn_eval_dummy(batch: List[Dict], dataset: EvalDataset) -> Dict:
+def collate_fn_eval_dummy(batch: List[int], dataset: EvalDataset) -> Dict:
     batch_size = len(batch)
     del batch  # we don't use it directly
 
-    gen_input_ids = torch.randint(0, 30, (batch_size, dataset.debug_len * 7 // 8 + 1), dtype=torch.int64, device='cpu')
-    gen_attention_mask = torch.full((batch_size, dataset.debug_len * 7 // 8 + 1), 1, dtype=torch.int64, device='cpu')
-    gen_input_ids_lens = [dataset.debug_len * 7 // 8 + 1] * batch_size
-    gen_output_ids = torch.randint(0, 30, (batch_size, dataset.debug_len // 8 + 1), dtype=torch.int64, device='cpu')
+    input_ids = torch.randint(0, 30, (batch_size, dataset.debug_len), dtype=torch.int64, device='cpu')
+    attention_mask = torch.full((batch_size, dataset.debug_len), 1, dtype=torch.int64, device='cpu')
+    input_ids_lens = [dataset.debug_len] * batch_size
+    pair_start_idxs = [[0] + sorted(random.sample(range(2, dataset.debug_len), k=dataset.max_num_train_pair)) for _ in range(batch_size)]
 
-    if not dataset.no_bos:
-        pair_start_idxs = [[1] + sorted(random.sample(range(2, dataset.debug_len * 7 // 8 + 1), k=dataset.num_pair-1)) for _ in range(batch_size)]
-    else:
-        pair_start_idxs = [[0] + sorted(random.sample(range(2, dataset.debug_len * 7 // 8 + 1), k=dataset.num_pair-1)) for _ in range(batch_size)]
-
-    out_token_length = [dataset.debug_len // 8 + 1] * batch_size
-
-    batch_dict = {
-        "task_ids": ["task_0"] * batch_size,
-        "gen_input_ids": gen_input_ids,
-        "gen_output_ids": gen_output_ids,
-        "gen_attention_mask": gen_attention_mask,
-        "out_token_length": out_token_length,
-        "gen_input_ids_lens": gen_input_ids_lens,
+    return {
+        "task": ["dummy"] * batch_size,
+        "test_idx": list(range(batch_size)),
+        "input_ids": input_ids,
+        "attention_mask": attention_mask,
+        "label_ids": input_ids,
+        "input_ids_lens": input_ids_lens,
         "pair_start_idxs": pair_start_idxs,
+        "option": [''] * batch_size,
+        "correct_option": [''] * batch_size,
     }
-    return batch_dict
