@@ -40,3 +40,9 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
 # Submitted batch job 58103980
 # Submitted batch job 58103981
 # Submitted batch job 58103982
+
+# continue after the 48 hrs
+# Submitted batch job 58264451
+# Submitted batch job 58264452
+# Submitted batch job 58264453
+# Submitted batch job 58264454

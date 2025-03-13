@@ -71,12 +71,10 @@ def main():
     parser.add_argument("--trainable_nbit", type=float, choices=[16, 32], default=16)
     parser.add_argument("--no_residual", action="store_true")
     parser.add_argument("--no_normalize", action="store_true")
-    parser.add_argument("--concat_programs", action="store_true")
     parser.add_argument("--weird_cast", action="store_true")
 
     # vqvae
     parser.add_argument("--codebook_size", type=int, default=-1)
-    parser.add_argument("--fsq_L", metavar='N', type=int, nargs='+', default=[])
     parser.add_argument("--no_discrete_prior", action="store_true")
 
     # vae
@@ -91,20 +89,20 @@ def main():
     parser.add_argument("--ttt_weight_epoch", type=int, default=-1)
 
     # Evaluation
-    parser.add_argument("--batch_size", type=int, default=16)
+    parser.add_argument("--batch_size", type=int, default=2)
     parser.add_argument("--max_seq_len", type=int, default=8192)
     parser.add_argument("--max_num_pair", type=int, default=8) # includes test pair
     parser.add_argument("--extra_inference_pairs", type=int, default=0)
     parser.add_argument("--limit_inference_pairs", action='store_true')
     parser.add_argument("--limit_inference_pairs_strict", action='store_true') # overrides limit_inference_pairs
-    parser.add_argument("--long_context", action="store_true")
-    parser.add_argument("--long_context_repeat_demonstration", action="store_true")
 
     # data
     parser.add_argument("--train_pad_side", type=str, choices=["left", "right"], default="right")
     parser.add_argument("--gen_pad_side", type=str, choices=["left", "right"], default="left")
     parser.add_argument("--no_dim", action='store_true')
     parser.add_argument("--no_separate_color_tokens", action='store_true')
+    parser.add_argument("--no_bos", action="store_true")
+    parser.add_argument("--short_context", action='store_true')
 
     # eval data
     parser.add_argument("--data_dir", type=str, default="./data/re-arc/arc_original/evaluation")
@@ -127,7 +125,7 @@ def main():
     parser.add_argument("--gs_take_best", action="store_true")
 
     # Virtual tokens approach
-    parser.add_argument("--ntokens", type=int, default=16)
+    parser.add_argument("--ntokens", type=int, default=4)
     parser.add_argument("--seed", type=int, default=0)
     args = parser.parse_args()
 
@@ -139,7 +137,7 @@ def main():
     if args.gs_iters > 0:
         assert args.batch_size == 1
 
-    args.tag = f"eval_{args.tag}_{args.weight_dir}"
+    args.tag = f"eval_{args.tag}_{args.ttt_weight_dir}"
     args.output_dir = os.path.join(args.output_dir, args.tag)
 
     # Setup accelerator
@@ -306,7 +304,7 @@ def main():
             map_location=accelerator.device
         )
     quantizer: Optional[Quantizer] = None
-    if args.codebook_size > 0 or args.fsq_L != []:
+    if args.codebook_size > 0:
         quantizer = torch.load(
             quantizer_weight_path,
             weights_only=False,
@@ -363,7 +361,7 @@ def main():
                 if args.vae:
                     vae_projection_ttt_path = os.path.join(task_weight_dir, f"vae_projection_epoch_{args.ttt_weight_epoch}.pt")
                     assert os.path.exists(vae_projection_ttt_path), vae_projection_ttt_path
-                if args.codebook_size > 0 or args.fsq_L != []:
+                if args.codebook_size > 0:
                     quantizer_ttt_path = os.path.join(task_weight_dir, f"quantizer_epoch_{args.ttt_weight_epoch}.pt")
                     assert os.path.exists(quantizer_ttt_path), quantizer_ttt_path
                 if not args.no_normalize:
@@ -425,9 +423,8 @@ def main():
         limit_inference_pairs=args.limit_inference_pairs,
         limit_inference_pairs_strict=args.limit_inference_pairs_strict,
         max_num_train_pair=args.max_num_pair - 1,
-        long_context=args.long_context,
-        long_context_repeat_demonstration=args.long_context_repeat_demonstration,
         max_seq_len=args.max_seq_len,
+        no_bos=args.no_bos,
     )
     collate_fn = partial(collate_fn_eval, dataset=dataset)
 
@@ -443,7 +440,6 @@ def main():
         vae_projection=vae_projection,
         quantizer=quantizer,
         program_norm=program_norm,
-        tokenizer=tokenizer,
         dataset=dataset,
         accelerator=accelerator,
         batch_size=args.batch_size,
@@ -451,21 +447,12 @@ def main():
         trainable_nbit=args.trainable_nbit,
         no_flash_attn=not args.flash_attn,
         dry_eval_run=False,
-        gs_iters=args.gs_iters,
-        gs_lr=args.gs_lr,
-        gs_beta1=args.gs_beta1,
-        gs_beta2=args.gs_beta2,
-        gs_batch_size=args.gs_batch_size,
-        gs_optimizer=args.gs_optimizer,
-        gs_max_grad_norm=args.gs_max_grad_norm,
-        gs_lr_scheduler=args.gs_lr_scheduler,
-        gs_take_best=args.gs_take_best,
         no_residual=args.no_residual,
         no_discrete_prior=args.no_discrete_prior,
         output_dir=args.output_dir,
-        concat_programs=args.concat_programs,
         no_codebook=False,
         weird_cast=args.weird_cast,
+        short_context=args.short_context,
     )
 
     if accelerator.is_main_process:

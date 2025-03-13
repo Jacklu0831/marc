@@ -2492,9 +2492,9 @@ def main():
         try:
             recovery_state_file = json.load(open(recovery_state_file_path, 'r'))
             if args.wandb:
-                assert set(recovery_state_file.keys()) == {"run_id", "global_step", "batch_idx", "epoch"}
+                assert set(recovery_state_file.keys()) == {"run_id", "global_step", "batch_idx", "epoch"}, 'wrong state keys'
             else:
-                assert set(recovery_state_file.keys()) == {"global_step", "batch_idx", "epoch"}
+                assert set(recovery_state_file.keys()) == {"global_step", "batch_idx", "epoch"}, 'wrong state keys'
             logger.info(f'loaded state from {recovery_state_file_path}')
         except Exception as e:
             recovery_state_file = None

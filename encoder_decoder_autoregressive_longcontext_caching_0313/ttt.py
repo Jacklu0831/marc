@@ -19,6 +19,7 @@ from transformers import (
     AutoTokenizer,
     AutoModelForCausalLM,
     get_cosine_schedule_with_warmup,
+    get_constant_schedule_with_warmup,
 )
 from accelerate import Accelerator, InitProcessGroupKwargs
 from accelerate.logging import get_logger
@@ -38,6 +39,7 @@ from train import (
     set_up_main_process_logger,
     model_loss,
     initialize_program_embeddings,
+    ContrastiveLoss,
 )
 
 import os
@@ -162,21 +164,20 @@ def main():
     parser.add_argument("--full_lora", action="store_true")
     parser.add_argument("--no_residual", action="store_true")
     parser.add_argument("--no_normalize", action="store_true")
-    parser.add_argument("--concat_programs", action="store_true")
     parser.add_argument("--token_weighted_loss", action="store_true")
     parser.add_argument("--weird_cast", action="store_true")
+    parser.add_argument("--demonstration_dropout", type=float, default=0.0)
+    parser.add_argument("--reset_rope", action="store_true")
+    parser.add_argument("--lr_scheduler", type=str, choices=["cosine", "constant"], default="cosine")
+
+    # program loss
+    parser.add_argument("--program_type", type=str, choices=["none", "random", "concat"], default="none")
 
     # long context
-    parser.add_argument("--long_context", action="store_true")
-    parser.add_argument("--long_context_repeat_demonstration", action="store_true")
-    parser.add_argument("--checkpointing_threshold", type=int, default=0)
-
-    # Self-consistency
-    parser.add_argument("--consistency_type", type=str, choices=["none", "all", "only_first", "exclude_last", "only_last"], default="none")
+    parser.add_argument("--long_context_checkpointing_threshold", type=int, default=0)
 
     # vqvae
     parser.add_argument("--codebook_size", type=int, default=-1)
-    parser.add_argument("--fsq_L", metavar='N', type=int, nargs='+', default=[])
     parser.add_argument("--no_discrete_prior", action="store_true")
     parser.add_argument("--warmup_cookbook_only_epochs", type=int, default=0)
 
@@ -203,11 +204,15 @@ def main():
     parser.add_argument("--program_dropout", type=float, default=0.0)
     parser.add_argument("--program_noise_std", type=float, default=0.0)
     parser.add_argument("--save_epochs", type=int, default=-1)
+    parser.add_argument("--short_context", action='store_true')
 
     # scheduled extra losses
-    parser.add_argument("--consistency_loss_lambda", type=float, default=1.0)
+    parser.add_argument("--consistency_loss_lambda", type=float, default=0.0)
     parser.add_argument("--consistency_loss_offset_epochs", type=int, default=0)
     parser.add_argument("--consistency_loss_linear_epochs", type=int, default=0)
+    parser.add_argument("--program_loss_lambda", type=float, default=1.0)
+    parser.add_argument("--program_loss_offset_epochs", type=int, default=0)
+    parser.add_argument("--program_loss_linear_epochs", type=int, default=0)
     parser.add_argument("--commitment_loss_lambda", type=float, default=0.1)
     parser.add_argument("--commitment_loss_offset_epochs", type=int, default=0)
     parser.add_argument("--commitment_loss_linear_epochs", type=int, default=0)
@@ -228,8 +233,9 @@ def main():
     parser.add_argument("--pad_side", type=str, choices=["left", "right"], default="right")
     parser.add_argument("--no_dim", action='store_true')
     parser.add_argument("--no_separate_color_tokens", action='store_true')
+    parser.add_argument("--no_bos", action="store_true")
 
-    parser.add_argument("--ntokens", type=int, default=16)
+    parser.add_argument("--ntokens", type=int, default=4)
     parser.add_argument("--seed", type=int, default=0)
     args = parser.parse_args()
 
@@ -408,7 +414,7 @@ def main():
     if args.vae:
         vae_projection_weight_path = os.path.join(weight_dir, f"vae_projection_epoch_{args.weight_epoch}.pt")
     quantizer_weight_path = None
-    if args.codebook_size > 0 or args.fsq_L != []:
+    if args.codebook_size > 0:
         quantizer_weight_path = os.path.join(weight_dir, f"quantizer_epoch_{args.weight_epoch}.pt")
     program_norm_weight_path = None
     if not args.no_normalize:
@@ -470,9 +476,8 @@ def main():
         aug_type=args.aug_type,
         no_dim=args.no_dim,
         no_separate_color_tokens=args.no_separate_color_tokens,
-        long_context=args.long_context,
-        long_context_repeat_demonstration=args.long_context_repeat_demonstration,
         max_seq_len=args.max_seq_len,
+        no_bos=args.no_bos,
     )
 
     # save memory by making datasets on the fly
@@ -573,12 +578,17 @@ def main():
         # LR schedule
         steps_per_epoch = len(ttt_dataset) // (args.batch_size * args.grad_accum_steps * accelerator.num_processes)
         num_training_steps = steps_per_epoch * args.num_epochs
-        lr_scheduler = get_cosine_schedule_with_warmup(
-            optimizer,
-            num_warmup_steps=steps_per_epoch * args.grad_accum_steps * args.warmup_epochs,
-            num_training_steps=num_training_steps * args.grad_accum_steps * args.warmup_epochs
-        )
-        logger.info(f'lr scheduler with {num_training_steps} warmup steps')
+        if args.lr_scheduler == 'cosine':
+            lr_scheduler = get_cosine_schedule_with_warmup(
+                optimizer,
+                num_warmup_steps=steps_per_epoch * args.grad_accum_steps * args.warmup_epochs,
+                num_training_steps=num_training_steps * args.grad_accum_steps,
+            )
+        else:
+            lr_scheduler = get_constant_schedule_with_warmup(
+                optimizer=optimizer,
+                num_warmup_steps=steps_per_epoch * args.grad_accum_steps * args.warmup_epochs,
+            )
 
         # lambda schedulers
         kl_loss_lambda_scheduler = LambdaScheduler(
@@ -599,12 +609,27 @@ def main():
             linear_epochs=args.commitment_loss_linear_epochs,
             steps_per_epoch=steps_per_epoch,
         )
+        program_loss_lambda_scheduler = LambdaScheduler(
+            loss_lambda=args.program_loss_lambda,
+            start_epoch=args.program_loss_offset_epochs,
+            linear_epochs=args.program_loss_linear_epochs,
+            steps_per_epoch=steps_per_epoch,
+        )
         consistency_loss_lambda_scheduler = LambdaScheduler(
             loss_lambda=args.consistency_loss_lambda,
             start_epoch=args.consistency_loss_offset_epochs,
             linear_epochs=args.consistency_loss_linear_epochs,
             steps_per_epoch=steps_per_epoch,
         )
+        # dummy invar loss
+        invar_loss_lambda_scheduler = LambdaScheduler(
+            loss_lambda=0.0,
+            start_epoch=0,
+            linear_epochs=0,
+            steps_per_epoch=steps_per_epoch,
+        )
+
+        contrastive_loss = ContrastiveLoss(margin=0.5) # NOTIMPLEMENTED
 
         # Prepare with accelerator
         (
@@ -665,43 +690,50 @@ def main():
 
                 with accelerator.accumulate(model, prior_embeddings, program_embeddings, vae_projection, quantizer, program_norm):
                     with accelerator.autocast():
-                        _, _, _, _, _, _, total_loss, _, _ = model_loss(
-                                # model
-                                model=model,
-                                prior_embeddings=prior_embeddings,
-                                program_embeddings=program_embeddings,
-                                vae_projection=vae_projection,
-                                quantizer=quantizer,
-                                program_norm=program_norm,
-                                program_dropout=program_dropout,
-                                tokenizer=tokenizer,
-                                # data
-                                input_ids=input_ids,
-                                attention_mask=attention_mask,
-                                label_ids=label_ids,
-                                input_ids_lens=input_ids_lens,
-                                num_pairs=num_pairs,
-                                # others
-                                ntokens=args.ntokens,
-                                pad_side=args.pad_side,
-                                kl_loss_lambda_scheduler=kl_loss_lambda_scheduler,
-                                codebook_loss_lambda_scheduler=codebook_loss_lambda_scheduler,
-                                commitment_loss_lambda_scheduler=commitment_loss_lambda_scheduler,
-                                consistency_loss_lambda_scheduler=consistency_loss_lambda_scheduler,
-                                global_step=global_step,
-                                no_residual=args.no_residual,
-                                no_discrete_prior=args.no_discrete_prior,
-                                consistency_type=args.consistency_type,
-                                concat_programs=args.concat_programs,
-                                train_codebook_only=False,
-                                ar_gradient_checkpointing=args.ar_gradient_checkpointing,
-                                program_noise_std=args.program_noise_std,
-                                subset_kl=args.subset_kl,
-                                checkpointing_threshold=args.checkpointing_threshold,
-                                token_weighted_loss=args.token_weighted_loss,
-                                weird_cast=args.weird_cast,
-                                loss_on_first=True,
-                            )
+                        _, _, _, _, _, _, _, _, total_loss, _ = model_loss(
+                            # model
+                            model=model,
+                            prior_embeddings=prior_embeddings,
+                            program_embeddings=program_embeddings,
+                            vae_projection=vae_projection,
+                            quantizer=quantizer,
+                            program_norm=program_norm,
+                            program_dropout=program_dropout,
+                            tokenizer=tokenizer,
+                            # data
+                            input_ids=input_ids,
+                            attention_mask=attention_mask,
+                            label_ids=label_ids,
+                            input_ids_lens=input_ids_lens,
+                            num_pairs=num_pairs,
+                            # others
+                            ntokens=args.ntokens,
+                            pad_side=args.pad_side,
+                            kl_loss_lambda_scheduler=kl_loss_lambda_scheduler,
+                            codebook_loss_lambda_scheduler=codebook_loss_lambda_scheduler,
+                            commitment_loss_lambda_scheduler=commitment_loss_lambda_scheduler,
+                            program_loss_lambda_scheduler=program_loss_lambda_scheduler,
+                            consistency_loss_lambda_scheduler=consistency_loss_lambda_scheduler,
+                            invar_loss_lambda_scheduler=invar_loss_lambda_scheduler, # NOTIMPLEMENTED
+                            global_step=global_step,
+                            no_residual=args.no_residual,
+                            no_discrete_prior=args.no_discrete_prior,
+                            program_type=args.program_type,
+                            train_codebook_only=False,
+                            ar_gradient_checkpointing=args.ar_gradient_checkpointing,
+                            program_noise_std=args.program_noise_std,
+                            subset_kl=args.subset_kl,
+                            long_context_checkpointing_threshold=args.long_context_checkpointing_threshold,
+                            token_weighted_loss=args.token_weighted_loss,
+                            weird_cast=args.weird_cast,
+                            loss_on_first=True,
+                            demonstration_dropout=args.demonstration_dropout,
+                            reset_rope=args.reset_rope,
+                            debug=False,
+                            contrastive_loss=contrastive_loss, # NOTIMPLEMENTED
+                            is_same=True, # NOTIMPLEMENTED
+                            short_context=args.short_context,
+                        )
 
                     accelerator.backward(total_loss)
                     if accelerator.sync_gradients:

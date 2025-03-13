@@ -1,3 +1,5 @@
+import hashlib
+import ast
 from datasets import load_dataset
 import matplotlib.pyplot as plt
 from matplotlib.colors import ListedColormap
@@ -490,6 +492,7 @@ class TrainDataset(Dataset):
         self,
         train_data_dir: str,
         eval_train_dir: str,
+        verifier_file: str,
         re_arc_ratio: float,
         concept_arc_ratio: float,
         arc_heavy_ratio: float,
@@ -519,8 +522,7 @@ class TrainDataset(Dataset):
         no_dim: bool,
         no_separate_color_tokens: bool,
         max_seq_len: int,
-        long_context: bool,
-        long_context_repeat_demonstration: bool,
+        no_bos: bool,
     ):
         self.re_arc_ratio = re_arc_ratio
         self.concept_arc_ratio = concept_arc_ratio
@@ -548,8 +550,7 @@ class TrainDataset(Dataset):
         self.no_dim = no_dim
         self.no_separate_color_tokens = no_separate_color_tokens
         self.max_seq_len = max_seq_len
-        self.long_context = long_context
-        self.long_context_repeat_demonstration = long_context_repeat_demonstration
+        self.no_bos = no_bos
 
         # setup args
         self.normalized_ratio = np.array([self.re_arc_ratio, self.concept_arc_ratio, self.arc_heavy_ratio])
@@ -601,6 +602,19 @@ class TrainDataset(Dataset):
         if arc_heavy_ratio > 0.0:
             self.heavy_arc_data = load_dataset("barc0/200k_HEAVY_gpt4o-description-gpt4omini-code_generated_problems")["train"] # type: ignore
             logger.info(f'loaded {len(self.heavy_arc_data)} arc-heavy tasks')
+
+        # find unique tasks
+        with open(verifier_file, "r") as f:
+            file_content = f.read()
+        tree = ast.parse(file_content)
+        self.task_id_to_hash = {}
+        for node in ast.walk(tree):
+            if isinstance(node, ast.FunctionDef):
+                function_body = ast.unparse(node.body) # type: ignore
+                function_hash = hashlib.sha256(function_body.encode('utf-8')).hexdigest()
+                assert node.name not in self.task_id_to_hash
+                self.task_id_to_hash[node.name.split('_')[1]] = function_hash
+        logger.info(f"found {len(self.task_id_to_hash)} functions from {verifier_file}")
 
     def __len__(self):
         return self._length
@@ -709,8 +723,10 @@ def collate_fn_train(batch: List[int], dataset: TrainDataset) -> Dict:
             h1, w1 = len(pair['input']), len(pair['input'][0])
             h2, w2 = len(pair['output']), len(pair['output'][0])
             pair_token_len = h1 * (w1 + 1) + h2 * (w2 + 1) - 2 # cells and \n
-            pair_token_len += 4 # bos, input, output, eos
+            pair_token_len += 3 # input, output, eos
             pair_token_len += 6 # hw\n for both input and output
+            if not dataset.no_bos:
+                pair_token_len += 1
             token_len += pair_token_len
 
         if token_len > dataset.max_seq_len:
@@ -751,7 +767,7 @@ def collate_fn_train(batch: List[int], dataset: TrainDataset) -> Dict:
             example = (task.train_examples + [task.test_example])[pair_i]
             input_grid_ids, output_grid_ids = dataset.tokenizer.get_input_and_output_grid_ids(
                 example=example,
-                add_bos=True,
+                add_bos=not dataset.no_bos,
                 no_dim=dataset.no_dim,
                 no_separate_color_tokens=dataset.no_separate_color_tokens,
             )
@@ -769,32 +785,8 @@ def collate_fn_train(batch: List[int], dataset: TrainDataset) -> Dict:
         pair_idx_to_label_ids.append(batch_label_ids)
     assert [sum(x[batch_i].shape[0] for x in pair_idx_to_input_ids) for batch_i in range(batch_size)] == token_lens
 
-    # aggregate for increasing context
-    if dataset.long_context:
-        for pair_idx in range(1, len(pair_idx_to_input_ids)):
-            for batch_i in range(batch_size):
-                pair_idx_to_input_ids[pair_idx][batch_i] = torch.cat([
-                    pair_idx_to_input_ids[pair_idx - 1][batch_i],
-                    pair_idx_to_input_ids[pair_idx][batch_i],
-                ])
-                pair_idx_to_attention_mask[pair_idx][batch_i] = torch.cat([
-                    pair_idx_to_attention_mask[pair_idx - 1][batch_i],
-                    pair_idx_to_attention_mask[pair_idx][batch_i],
-                ])
-                # label ids depends on whether to repeat demonstration loss
-                if dataset.long_context_repeat_demonstration:
-                    prev_label_ids = pair_idx_to_label_ids[pair_idx - 1][batch_i]
-                else:
-                    prev_label_ids = torch.full(pair_idx_to_label_ids[pair_idx - 1][batch_i].shape, -100, dtype=torch.int64)
-                pair_idx_to_label_ids[pair_idx][batch_i] = torch.cat([
-                    prev_label_ids,
-                    pair_idx_to_label_ids[pair_idx][batch_i],
-                ])
-        assert [x.shape[0] for x in pair_idx_to_input_ids[-1]] == token_lens
-
     # visualize some training data
     if dataset.debug_train_data:
-        assert not dataset.long_context
         img_idx = max([int(Path(p).stem.split('_')[0]) for p in glob.glob(f"debug_train_data/*.jpg")], default=-1) + 1
         for batch_i in range(batch_size):
             input_ids = [pair_idx_to_input_ids[pair_i][batch_i] for pair_i in range(required_num_pair)]
@@ -854,6 +846,271 @@ def collate_fn_train(batch: List[int], dataset: TrainDataset) -> Dict:
         "label_ids": extra_padded_label_ids,
         "input_ids_lens": input_ids_lens,
         "num_pairs": [required_num_pair] * batch_size,
+        "is_same": False,
+    }
+    return batch_dict
+
+
+def collate_fn_train_invar(batch: List[int], dataset: TrainDataset) -> Dict:
+    batch_size = len(batch)
+    assert batch_size == 2
+    del batch  # we don't use it directly
+
+    def get_all_pairs(required_num_pair: int, exclude_id: Optional[str] = None):
+        while True:
+            dataset_name = rng.choice(["re-arc", "concept-arc", "arc-heavy"], p=dataset.normalized_ratio)
+
+            if dataset_name == "re-arc":
+                task_id = rng.choice(list(dataset.arc_train_id_to_pairs.keys()))
+                all_pairs = dataset.arc_train_id_to_pairs[task_id]
+            elif dataset_name == "concept-arc":
+                task_id = rng.choice(list(dataset.concept_arc_id_to_pairs.keys()))
+                all_pairs = dataset.concept_arc_id_to_pairs[task_id]
+            else:
+                idx = rng.choice(list(range(len(dataset.heavy_arc_data))))
+                task_id = f"heavy{idx}"
+                all_pairs = dataset.heavy_arc_data[int(idx)]["examples"]
+                all_pairs = [{"input": pair[0], "output": pair[1]} for pair in all_pairs]
+                assert all(len(pair) == 2 for pair in all_pairs)
+
+            if len(all_pairs) < required_num_pair:
+                continue
+
+            # for re-arc, some tasks replicate
+            if dataset_name == "re-arc" and (exclude_id is not None) and dataset.task_id_to_hash[task_id] == dataset.task_id_to_hash[exclude_id]:
+                continue
+
+            return task_id, all_pairs
+
+    def get_augmentations():
+        # d8
+        if not dataset.no_d8:
+            d8_augmenter = rng.choice(dataset.d8_augmenters) # type: ignore
+        else:
+            d8_augmenter = None
+        # extra
+        if rng.rand() < dataset.extra_augment_ratio:
+            extra_augmenter = rng.choice(dataset.extra_augmenters) # type: ignore
+            io_augmentation_choice = rng.choice(["input_only", "output_only", "both"]) if dataset.extra_augment_single_grid else "both"
+        else:
+            extra_augmenter = None
+            io_augmentation_choice = None
+        return d8_augmenter, extra_augmenter, io_augmentation_choice
+
+    def get_np_chosen_pairs(chosen_pairs, d8_augmenter, extra_augmenter, io_augmentation_choice):
+        np_chosen_pairs = []
+        for pair in chosen_pairs:
+            assert set(pair.keys()) == {"input", "output"}
+            np_pair = {
+                "input": np.array(copy.deepcopy(pair["input"])).astype(int),
+                "output": np.array(copy.deepcopy(pair["output"])).astype(int),
+            }
+            # apply d8 augmentation
+            if d8_augmenter is not None:
+                np_pair['input'] = d8_augmenter.apply_to_grid(np_pair['input'], rng)
+                np_pair['output'] = d8_augmenter.apply_to_grid(np_pair['output'], rng)
+            # apply extra augmentation
+            if extra_augmenter is not None:
+                if io_augmentation_choice in ['input_only', 'both']:
+                    np_pair['input'] = extra_augmenter.apply_to_grid(np_pair['input'], rng)
+                if io_augmentation_choice in ['output_only', 'both']:
+                    np_pair['output'] = extra_augmenter.apply_to_grid(np_pair['output'], rng)
+            else:
+                assert io_augmentation_choice is None
+            np_chosen_pairs.append(np_pair)
+        return np_chosen_pairs
+
+    def get_token_len(np_chosen_pairs):
+        # HACK: just hardcode some calculation here to limit maxseqlen
+        token_len = 0
+        for pair in np_chosen_pairs:
+            h1, w1 = len(pair['input']), len(pair['input'][0])
+            h2, w2 = len(pair['output']), len(pair['output'][0])
+            pair_token_len = h1 * (w1 + 1) + h2 * (w2 + 1) - 2 # cells and \n
+            pair_token_len += 3 # input, output, eos
+            pair_token_len += 6 # hw\n for both input and output
+            token_len += pair_token_len
+            if not dataset.no_bos:
+                token_len += 1
+        return token_len
+
+    worker_info = get_worker_info()
+    worker_id = worker_info.id if worker_info is not None else 0 # could be single-thread
+    rng = dataset.rngs[int(worker_id)]
+    num_pair_rng = dataset.num_pair_rngs[int(worker_id)]
+
+    # update curriculum
+    dataset.workers_to_num_sample[int(worker_id)] += batch_size
+
+    # must sample this number of pairs to avoid GPU synchronization issues
+    if dataset.curriculum_iters > 0:
+        required_num_pair = dataset.min_num_pair + \
+            (dataset.workers_to_num_sample[int(worker_id)] * dataset.num_workers) // (dataset.global_batch_size * dataset.curriculum_iters)
+        required_num_pair = min(required_num_pair, dataset.max_num_pair)
+    else:
+        required_num_pair = num_pair_rng.choice(list(range(dataset.min_num_pair, dataset.max_num_pair + 1)))
+
+    # is same
+    is_same = rng.rand() < 0.5
+
+    # get tasks
+    while True:
+        # task_ids, np_chosen_pairs, and token_lens
+        if is_same:
+            # sample same task and augmentation scheme
+            task_id, all_pairs = get_all_pairs(required_num_pair=required_num_pair)
+            d8_augmenter, extra_augmenter, io_augmentation_choice = get_augmentations()
+            # choose
+            chosen_pairs1 = rng.choice(all_pairs, size=required_num_pair, replace=False) # type: ignore
+            chosen_pairs2 = rng.choice(all_pairs, size=required_num_pair, replace=False) # type: ignore
+            np_chosen_pairs1 = get_np_chosen_pairs(chosen_pairs1, d8_augmenter, extra_augmenter, io_augmentation_choice)
+            np_chosen_pairs2 = get_np_chosen_pairs(chosen_pairs2, d8_augmenter, extra_augmenter, io_augmentation_choice)
+        else:
+            # sample different task and different augmentation scheme
+            task_id1, all_pairs1 = get_all_pairs(required_num_pair=required_num_pair)
+            task_id2, all_pairs2 = get_all_pairs(required_num_pair=required_num_pair, exclude_id=task_id1)
+            d8_augmenter1, extra_augmenter1, io_augmentation_choice1 = get_augmentations()
+            d8_augmenter2, extra_augmenter2, io_augmentation_choice2 = get_augmentations()
+            # choose
+            chosen_pairs1 = rng.choice(all_pairs1, size=required_num_pair, replace=False) # type: ignore
+            chosen_pairs2 = rng.choice(all_pairs2, size=required_num_pair, replace=False) # type: ignore
+            np_chosen_pairs1 = get_np_chosen_pairs(chosen_pairs1, d8_augmenter1, extra_augmenter1, io_augmentation_choice1)
+            np_chosen_pairs2 = get_np_chosen_pairs(chosen_pairs2, d8_augmenter2, extra_augmenter2, io_augmentation_choice2)
+
+        if any(max(*pair["input"].shape, *pair["output"].shape) > 30 for pair in np_chosen_pairs1):
+            continue
+        if any(max(*pair["input"].shape, *pair["output"].shape) > 30 for pair in np_chosen_pairs2):
+            continue
+
+        token_len1 = get_token_len(np_chosen_pairs1)
+        token_len2 = get_token_len(np_chosen_pairs2)
+        if max(token_len1, token_len2) > dataset.max_seq_len:
+            continue
+
+        all_task_ids = [task_id, task_id] if is_same else [task_id1, task_id2] # type: ignore
+        token_lens = [token_len1, token_len2]
+        all_np_chosen_pairs = [np_chosen_pairs1, np_chosen_pairs2]
+
+        # create tasks
+        tasks = [Task(
+            name=task_id,
+            train_examples=[
+                Example(input=pair["input"], output=pair["output"])
+                for pair in pairs[:-1]
+            ],
+            test_example=Example(input=pairs[-1]["input"], output=pairs[-1]["output"]),
+        ) for task_id, pairs in zip(all_task_ids, all_np_chosen_pairs)]
+
+        # permute examples
+        if not dataset.no_pair_permute:
+            tasks = [PermuteExamples().apply_to_task(task, to_input=True, to_output=True, rng=rng) for task in tasks]
+
+        # color permute depends on is_same
+        if not dataset.no_color_permute:
+            if is_same:
+                augmenter = PermuteColors()
+                tasks[0] = augmenter.apply_to_task(tasks[0], to_input=True, to_output=True, rng=rng)
+                color_mapper = augmenter.color_mapper
+                tasks[1] = augmenter.apply_to_task(tasks[1], to_input=True, to_output=True, rng=rng, color_mapper=color_mapper)
+            else:
+                tasks = [PermuteColors().apply_to_task(task, to_input=True, to_output=True, rng=rng) for task in tasks]
+
+        break
+
+    # we do a lil parsing
+    pair_idx_to_input_ids = []
+    pair_idx_to_attention_mask = []
+    pair_idx_to_label_ids = []
+
+    for pair_i in range(required_num_pair):
+        # get inputids, attention, labelids for batch of pairs at pair_i
+        batch_input_ids = []
+        batch_attention_mask = []
+        batch_label_ids = []
+        for task in tasks:
+            example = (task.train_examples + [task.test_example])[pair_i]
+            input_grid_ids, output_grid_ids = dataset.tokenizer.get_input_and_output_grid_ids(
+                example=example,
+                add_bos=not dataset.no_bos,
+                no_dim=dataset.no_dim,
+                no_separate_color_tokens=dataset.no_separate_color_tokens,
+            )
+            input_ids = torch.cat([input_grid_ids, output_grid_ids])
+            attention_mask = torch.full(input_ids.shape, 1, dtype=torch.int64)
+            label_ids = torch.full(input_grid_ids.shape, -100, dtype=torch.int64)
+            label_ids = torch.cat([label_ids, output_grid_ids])
+            # append
+            batch_input_ids.append(input_ids)
+            batch_attention_mask.append(attention_mask)
+            batch_label_ids.append(label_ids)
+        # aggregate
+        pair_idx_to_input_ids.append(batch_input_ids)
+        pair_idx_to_attention_mask.append(batch_attention_mask)
+        pair_idx_to_label_ids.append(batch_label_ids)
+    assert [sum(x[batch_i].shape[0] for x in pair_idx_to_input_ids) for batch_i in range(batch_size)] == token_lens
+
+    # visualize some training data
+    if dataset.debug_train_data:
+        img_idx = max([int(Path(p).stem.split('_')[0]) for p in glob.glob(f"debug_train_data/*.jpg")], default=-1) + 1
+        for batch_i in range(batch_size):
+            input_ids = [pair_idx_to_input_ids[pair_i][batch_i] for pair_i in range(required_num_pair)]
+            texts = [
+                dataset.tokenizer.decode(ids, skip_special_tokens=True, no_separate_color_tokens=dataset.no_separate_color_tokens)
+                for ids in input_ids
+            ]
+            dimensions = [dataset.tokenizer.get_grid_dimensions(pair_idx_to_input_ids[pair_i][batch_i]) for pair_i in range(required_num_pair)]
+            assert all(len(d) == 2 for d in dimensions)
+            grids = [parse_input_output_grids(t, d) for t, d in zip(texts, dimensions)]
+            grids = [item for sublist in grids for item in sublist]
+            visualize_task(
+                task=grids,
+                name=f"{all_task_ids[batch_i]}_{is_same}", # type: ignore
+                out_path=f"debug_train_data/{img_idx}_{batch_i}.jpg",
+            )
+
+    # get input ids lens
+    input_ids_lens = []
+    for pair_i in range(required_num_pair):
+        input_ids_lens.append([len(ids) for ids in pair_idx_to_input_ids[pair_i]])
+
+    # pad
+    padded_input_ids = []
+    padded_attention_mask = []
+    padded_label_ids = []
+    for input_ids, attention_mask, label_ids in zip(pair_idx_to_input_ids, pair_idx_to_attention_mask, pair_idx_to_label_ids):
+        input_ids = pad_sequence_with_side(input_ids, padding_value=dataset.tokenizer.pad_token_id, side=dataset.train_pad_side)
+        attention_mask = pad_sequence_with_side(attention_mask, padding_value=0, side=dataset.train_pad_side)
+        label_ids = pad_sequence_with_side(label_ids, padding_value=-100, side=dataset.train_pad_side)
+        padded_input_ids.append(input_ids)
+        padded_attention_mask.append(attention_mask)
+        padded_label_ids.append(label_ids)
+
+    extra_padded_input_ids = []
+    extra_padded_attention_mask = []
+    extra_padded_label_ids = []
+    if dataset.debug_random_pad or dataset.debug_pad_len > -1:
+        for input_ids, attention_mask, label_ids in zip(padded_input_ids, padded_attention_mask, padded_label_ids):
+            input_ids, attention_mask, label_ids = debug_extra_pad_tensors(
+                [input_ids, attention_mask, label_ids],
+                padding_values=[dataset.tokenizer.pad_token_id, 0, -100],
+                pad_len=dataset.debug_pad_len,
+                side=dataset.train_pad_side,
+            )
+            extra_padded_input_ids.append(input_ids)
+            extra_padded_attention_mask.append(attention_mask)
+            extra_padded_label_ids.append(label_ids)
+    else:
+        extra_padded_input_ids = padded_input_ids
+        extra_padded_attention_mask = padded_attention_mask
+        extra_padded_label_ids = padded_label_ids
+
+    batch_dict = {
+        "input_ids": extra_padded_input_ids,
+        "attention_mask": extra_padded_attention_mask,
+        "label_ids": extra_padded_label_ids,
+        "input_ids_lens": input_ids_lens,
+        "num_pairs": [required_num_pair] * batch_size,
+        "is_same": is_same,
     }
     return batch_dict
 
@@ -862,22 +1119,27 @@ def collate_fn_train_dummy(batch: List[int], dataset: TrainDataset) -> Dict:
     batch_size = len(batch)
     del batch  # we don't use it directly
 
-    if not dataset.long_context:
-        input_ids = [torch.randint(0, 30, (batch_size, dataset.debug_len), dtype=torch.int64, device='cpu') for _ in range(dataset.max_num_pair)]
-        attention_mask = [torch.full((batch_size, dataset.debug_len), 1, dtype=torch.int64, device='cpu') for _ in range(dataset.max_num_pair)]
-        input_ids_lens = [[dataset.debug_len] * batch_size for _ in range(dataset.max_num_pair)]
-    else:
-        pair_lens = sorted(random.sample(range(1, dataset.debug_len), k=dataset.max_num_pair-1)) + [dataset.debug_len]
-        input_ids = [torch.randint(0, 30, (batch_size, l), dtype=torch.int64, device='cpu') for l in pair_lens]
-        attention_mask = [torch.full((batch_size, l), 1, dtype=torch.int64, device='cpu') for l in pair_lens]
-        input_ids_lens = [[l] * batch_size for l in pair_lens]
+    sampled_indices = sorted(random.sample(range(1, dataset.debug_len), k=dataset.max_num_pair-1)) + [dataset.debug_len]
+    pair_lens = []
+    for i in range(len(sampled_indices)):
+        if i == 0:
+            pair_lens.append(sampled_indices[0])
+        else:
+            pair_lens.append(sampled_indices[i] - sampled_indices[i-1])
+    assert len(pair_lens) == dataset.max_num_pair
+
+    input_ids_of_each_pair = [torch.randint(0, 30, (batch_size, l), dtype=torch.int64, device='cpu') for l in pair_lens]
+    attention_mask_of_each_pair = [torch.full((batch_size, l), 1, dtype=torch.int64, device='cpu') for l in pair_lens]
+    input_ids_lens = [[l] * batch_size for l in pair_lens]
+    assert sum(x.shape[1] for x in input_ids_of_each_pair) == dataset.debug_len
 
     return {
-        "input_ids": input_ids,
-        "attention_mask": attention_mask,
-        "label_ids": input_ids,
+        "input_ids": input_ids_of_each_pair,
+        "attention_mask": attention_mask_of_each_pair,
+        "label_ids": input_ids_of_each_pair,
         "input_ids_lens": input_ids_lens,
         "num_pairs": [dataset.max_num_pair] * batch_size,
+        "is_same": False,
     }
 
 
@@ -908,9 +1170,8 @@ class EvalDataset:
         limit_inference_pairs: bool,
         limit_inference_pairs_strict: bool,
         max_num_train_pair: int,
-        long_context: bool,
-        long_context_repeat_demonstration: bool,
         max_seq_len: int,
+        no_bos: bool,
     ):
         self.permute_n = permute_n
         self.augment_n = augment_n
@@ -928,9 +1189,8 @@ class EvalDataset:
         self.limit_inference_pairs = limit_inference_pairs
         self.limit_inference_pairs_strict = limit_inference_pairs_strict
         self.max_num_train_pair = max_num_train_pair # max num pair in training, used for limiting inference
-        self.long_context = long_context
-        self.long_context_repeat_demonstration = long_context_repeat_demonstration
         self.max_seq_len = max_seq_len
+        self.no_bos = no_bos
 
         self.extra_inference_pairs = extra_inference_pairs
         self.inference_pair_rng = np.random.RandomState(seed)
@@ -1126,7 +1386,7 @@ class EvalDataset:
         for example in task.train_examples:
             input_grid_ids, output_grid_ids = self.tokenizer.get_input_and_output_grid_ids(
                 example=example,
-                add_bos=True,
+                add_bos=not self.no_bos,
                 no_dim=self.no_dim,
                 no_separate_color_tokens=self.no_separate_color_tokens,
             )
@@ -1135,32 +1395,21 @@ class EvalDataset:
             pair_idx_to_input_ids.append(input_ids)
             pair_idx_to_attention_mask.append(attention_mask)
 
-        # aggregate for increasing context
-        if self.long_context:
-            for pair_idx in range(1, len(pair_idx_to_input_ids)):
-                pair_idx_to_input_ids[pair_idx] = torch.cat([
-                    pair_idx_to_input_ids[pair_idx - 1],
-                    pair_idx_to_input_ids[pair_idx],
-                ])
-                pair_idx_to_attention_mask[pair_idx] = torch.cat([
-                    pair_idx_to_attention_mask[pair_idx - 1],
-                    pair_idx_to_attention_mask[pair_idx],
-                ])
-
         # test pair
         gen_input_ids, gen_output_ids = self.tokenizer.get_input_and_output_grid_ids(
             example=task.test_example,
-            add_bos=True,
+            add_bos=not self.no_bos,
             no_dim=self.no_dim,
             no_separate_color_tokens=self.no_separate_color_tokens,
         )
-        if self.long_context:
-            gen_input_ids = torch.cat([pair_idx_to_input_ids[-1], gen_input_ids])
-            if gen_input_ids.shape[0] + gen_output_ids.shape[0] > self.max_seq_len:
-                return None
         assert isinstance(gen_input_ids, torch.Tensor) and isinstance(gen_output_ids, torch.Tensor)
         gen_attention_mask = torch.full(gen_input_ids.shape, 1, dtype=torch.int64)
         out_token_length = len(gen_output_ids) - 1 # remove eos token
+
+        # filter just in case (test with eval script later to see if this limits performance)
+        total_seq_len = sum(x.shape[0] for x in pair_idx_to_input_ids) + gen_input_ids.shape[0] + gen_output_ids.shape[0]
+        if total_seq_len > self.max_seq_len:
+            return None
 
         # decoder label text has to be non-color-mapped
         label_texts = self.tokenizer.decode(
@@ -1302,37 +1551,35 @@ def collate_fn_eval_dummy(batch: List[Dict], dataset: EvalDataset) -> Dict:
     batch_size = len(batch)
     del batch  # we don't use it directly
 
-    num_demonstration_pair = 9
-    if not dataset.long_context:
-        input_ids = [torch.randint(0, 30, (batch_size, dataset.debug_len), dtype=torch.int64, device='cpu') for _ in range(num_demonstration_pair)]
-        attention_mask = [torch.full((batch_size, dataset.debug_len), 1, dtype=torch.int64, device='cpu') for _ in range(num_demonstration_pair)]
-        input_ids_lens = [[dataset.debug_len] * batch_size for _ in range(num_demonstration_pair)]
-        # gen
-        gen_input_ids = torch.randint(0, 30, (batch_size, dataset.debug_len // 2 + 1), dtype=torch.int64, device='cpu')
-        gen_attention_mask = torch.full((batch_size, dataset.debug_len // 2 + 1), 1, dtype=torch.int64, device='cpu')
-        gen_input_ids_lens = [dataset.debug_len // 2 + 1] * batch_size
-        out_token_length = [dataset.debug_len // 2 + 1] * batch_size
-    else:
-        pair_lens = sorted(random.sample(range(1, dataset.debug_len), k=num_demonstration_pair))
-        input_ids = [torch.randint(0, 30, (batch_size, l), dtype=torch.int64, device='cpu') for l in pair_lens]
-        attention_mask = [torch.full((batch_size, l), 1, dtype=torch.int64, device='cpu') for l in pair_lens]
-        input_ids_lens = [[l] * batch_size for l in pair_lens]
-        # gen
-        test_len = dataset.debug_len - pair_lens[-1]
-        gen_input_ids_lens = [pair_lens[-1] + test_len // 2 + 1] * batch_size
-        gen_input_ids = torch.randint(0, 30, (batch_size, gen_input_ids_lens[0]), dtype=torch.int64, device='cpu')
-        gen_attention_mask = torch.full((batch_size, gen_input_ids_lens[0]), 1, dtype=torch.int64, device='cpu')
-        out_token_length = [test_len // 2 + 1] * batch_size
+    sampled_indices = sorted(random.sample(range(1, dataset.debug_len), k=dataset.max_num_train_pair)) + [dataset.debug_len]
+    pair_lens = []
+    for i in range(len(sampled_indices)):
+        if i == 0:
+            pair_lens.append(sampled_indices[0])
+        else:
+            pair_lens.append(sampled_indices[i] - sampled_indices[i-1])
+    assert len(pair_lens) == dataset.max_num_train_pair + 1
+
+    input_ids_of_each_pair = [torch.randint(0, 30, (batch_size, l), dtype=torch.int64, device='cpu') for l in pair_lens[:-1]]
+    attention_mask_of_each_pair = [torch.full((batch_size, l), 1, dtype=torch.int64, device='cpu') for l in pair_lens[:-1]]
+
+    gen_input_ids = torch.randint(0, 30, (batch_size, pair_lens[-1] // 2), dtype=torch.int64, device='cpu')
+    gen_attention_mask = torch.full(gen_input_ids.shape, 1, dtype=torch.int64, device='cpu')
+    gen_output_ids = torch.randint(0, 30, (batch_size, pair_lens[-1] // 2 + 1), dtype=torch.int64, device='cpu')
+    out_token_length = [gen_output_ids.shape[1]] * batch_size
+
+    input_ids_lens = [[l] * batch_size for l in pair_lens[:-1]]
+    gen_input_ids_lens = [pair_lens[-1] // 2] * batch_size
 
     task_ids = [str(x) for x in range(100000, 100000 + batch_size)]
     label_texts = ['1\n1\n1'] * batch_size
-    num_pairs = [num_demonstration_pair] * batch_size
+    num_pairs = [dataset.max_num_train_pair] * batch_size
 
     batch_dict = {
         "task_ids": task_ids,
         "inverters": [""] * batch_size,
-        "input_ids": input_ids,
-        "attention_mask": attention_mask,
+        "input_ids": input_ids_of_each_pair,
+        "attention_mask": attention_mask_of_each_pair,
         "gen_input_ids": gen_input_ids,
         "gen_attention_mask": gen_attention_mask,
         "out_token_length": out_token_length,
@@ -1358,6 +1605,7 @@ class GSDataset(Dataset):
         gen_pad_side: str,
         no_dim: bool,
         no_separate_color_tokens: bool,
+        no_bos: bool,
     ):
         self.task = task
         self.tokenizer = tokenizer
@@ -1367,6 +1615,7 @@ class GSDataset(Dataset):
         self.gen_pad_side = gen_pad_side
         self.no_dim = no_dim
         self.no_separate_color_tokens = no_separate_color_tokens
+        self.no_bos = no_bos
 
         # format data (only use demonstration pairs)
         self.parsed_examples = [self.format(example) for example in task.train_examples]
@@ -1383,7 +1632,7 @@ class GSDataset(Dataset):
 
         input_grid_ids, output_grid_ids = self.tokenizer.get_input_and_output_grid_ids(
             example=example,
-            add_bos=True,
+            add_bos=not self.no_bos,
             no_dim=self.no_dim,
             no_separate_color_tokens=self.no_separate_color_tokens,
         )
@@ -1444,9 +1693,8 @@ class TTTDataset(Dataset):
         aug_type: str,
         no_dim: bool,
         no_separate_color_tokens: bool,
-        long_context: bool,
-        long_context_repeat_demonstration: bool,
         max_seq_len: int,
+        no_bos: bool,
     ):
         self.permute_n = permute_n
         self.tokenizer = tokenizer
@@ -1455,9 +1703,8 @@ class TTTDataset(Dataset):
         self.debug_no_aug = debug_no_aug
         self.no_dim = no_dim
         self.no_separate_color_tokens = no_separate_color_tokens
-        self.long_context = long_context
-        self.long_context_repeat_demonstration = long_context_repeat_demonstration
         self.max_seq_len = max_seq_len
+        self.no_bos = no_bos
 
         # get all augmenters
         d8_augmenters = get_d8_augmenters(include_identity=False)
@@ -1571,7 +1818,7 @@ class TTTDataset(Dataset):
             example = (task.train_examples + [task.test_example])[pair_i]
             input_grid_ids, output_grid_ids = self.tokenizer.get_input_and_output_grid_ids(
                 example=example,
-                add_bos=True,
+                add_bos=not self.no_bos,
                 no_dim=self.no_dim,
                 no_separate_color_tokens=self.no_separate_color_tokens,
             )
@@ -1583,29 +1830,6 @@ class TTTDataset(Dataset):
             pair_idx_to_input_ids.append(input_ids)
             pair_idx_to_attention_mask.append(attention_mask)
             pair_idx_to_label_ids.append(label_ids)
-
-        # aggregate for increasing context
-        if self.long_context:
-            for pair_idx in range(1, len(pair_idx_to_input_ids)):
-                pair_idx_to_input_ids[pair_idx] = torch.cat([
-                    pair_idx_to_input_ids[pair_idx - 1],
-                    pair_idx_to_input_ids[pair_idx],
-                ])
-                pair_idx_to_attention_mask[pair_idx] = torch.cat([
-                    pair_idx_to_attention_mask[pair_idx - 1],
-                    pair_idx_to_attention_mask[pair_idx],
-                ])
-                # label ids depends on whether to repeat demonstration loss
-                if self.long_context_repeat_demonstration:
-                    prev_label_ids = pair_idx_to_label_ids[pair_idx - 1]
-                else:
-                    prev_label_ids = torch.full(pair_idx_to_label_ids[pair_idx - 1].shape, -100, dtype=torch.int64)
-                pair_idx_to_label_ids[pair_idx] = torch.cat([
-                    prev_label_ids,
-                    pair_idx_to_label_ids[pair_idx],
-                ])
-            if pair_idx_to_input_ids[-1].shape[0] > self.max_seq_len:
-                return None
 
         return {
             "input_ids": pair_idx_to_input_ids,
