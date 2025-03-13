@@ -796,6 +796,7 @@ def main():
     parser.add_argument("--max_num_pair", type=int, default=17) # includes test pair
     parser.add_argument("--eval_min_num_pair", type=int, default=17) # includes test pair
     parser.add_argument("--max_seq_len", type=int, default=1024)
+    parser.add_argument("--allow_truncate", action='store_true')
     parser.add_argument("--max_pair_len", type=int, default=256)
     parser.add_argument("--pad_side", type=str, choices=["left", "right"], default="left")
     parser.add_argument('--eval_seeds', type=str, nargs="+", default=['100'])
@@ -804,7 +805,7 @@ def main():
     parser.add_argument('--eval_train_test_per_task', type=int, default=50)
     parser.add_argument('--eval_train_ratio', type=float, default=1.0)
     parser.add_argument('--eval_eval_test_per_task', type=int, default=10000000)
-    parser.add_argument('--eval_eval_ratio', type=float, default=0.2)
+    parser.add_argument('--eval_eval_ratio', type=float, default=1.0)
 
     # Lora
     parser.add_argument("--lora_rank", type=int, default=256)
@@ -1043,6 +1044,7 @@ def main():
         num_workers=args.num_workers,
         max_seq_len=args.max_seq_len,
         max_pair_len=args.max_pair_len,
+        allow_truncate=args.allow_truncate,
     )
     train_collate_fn = partial(collate_fn_train, dataset=train_dataset)
     if args.debug_len > 0:
@@ -1173,6 +1175,7 @@ def main():
             eval_test_per_task=args.eval_train_test_per_task,
             eval_ratio=args.eval_train_ratio,
             split='train',
+            allow_truncate=args.allow_truncate,
         )
         for eval_seed in args.eval_seeds
     ]
@@ -1197,6 +1200,7 @@ def main():
             eval_test_per_task=args.eval_eval_test_per_task,
             eval_ratio=args.eval_eval_ratio,
             split='test',
+            allow_truncate=args.allow_truncate,
         )
         for eval_seed in args.eval_seeds
     ]

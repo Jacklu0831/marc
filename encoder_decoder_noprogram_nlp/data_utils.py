@@ -71,11 +71,13 @@ def parse_pairs(
     max_seq_len: int,
     newline_token_id: torch.Tensor,
     loss_type: str,
+    allow_truncate: bool,
 ) -> Optional[Tuple[torch.Tensor, torch.Tensor, torch.Tensor, np.ndarray]]:
 
     # compute input_ids, attention_mask, label_ids for each pair
     input_ids_of_each_pair = []
     label_ids_of_each_pair = []
+    final_output_start_idx = -1
 
     for pair_i, pair in enumerate(pairs):
         # tokenize
@@ -92,6 +94,10 @@ def parse_pairs(
         # prepend \n\n for inputs that are not first
         if pair_i != 0:
             input_input_ids = torch.cat([newline_token_id, newline_token_id, input_input_ids])
+
+        # record the last output's start idx for optional truncation
+        if pair_i == len(pairs) - 1:
+            final_output_start_idx = sum(x.shape[0] for x in input_ids_of_each_pair) + input_input_ids.shape[0]
 
         # create input_ids and label_ids
         input_ids = torch.cat([input_input_ids, output_input_ids])
@@ -115,9 +121,19 @@ def parse_pairs(
     label_ids = torch.cat(label_ids_of_each_pair)
     assert input_ids.shape == attention_mask.shape == label_ids.shape
 
-    # check length
+    # optionally truncate, also messes up pair start idxs
+    assert final_output_start_idx > -1
     if len(input_ids) > max_seq_len:
-        return None
+        if allow_truncate:
+            inp, out = input_ids[:final_output_start_idx], input_ids[final_output_start_idx:]
+            input_ids = torch.cat([inp[:max_seq_len - out.shape[0]], out])
+            inp, out = label_ids[:final_output_start_idx], label_ids[final_output_start_idx:]
+            label_ids = torch.cat([inp[:max_seq_len - out.shape[0]], out])
+            attention_mask = torch.full(input_ids.shape, 1, dtype=input_ids.dtype) # attention mask
+            assert input_ids.shape == attention_mask.shape == label_ids.shape
+            assert input_ids.shape[0] == max_seq_len
+        else:
+            return None
 
     return input_ids, attention_mask, label_ids, pair_start_idxs
 
@@ -183,6 +199,7 @@ class TrainDataset(Dataset):
         num_workers: int,
         max_seq_len: int,
         max_pair_len: int,
+        allow_truncate: bool,
     ):
 
         self.tokenizer = tokenizer
@@ -198,6 +215,7 @@ class TrainDataset(Dataset):
         self.num_workers = num_workers
         self.max_seq_len = max_seq_len
         self.max_pair_len = max_pair_len
+        self.allow_truncate = allow_truncate
 
         # separate input and output by newline
         self.newline_token_id = tokenize("\n", tokenizer)
@@ -223,11 +241,11 @@ class TrainDataset(Dataset):
             all_lines = open(os.path.join(task_data_dir, f"{task}_16384_100_train.jsonl"), 'r').readlines()
             for l in all_lines:
                 example = json.loads(l)
-                assert len(example['input']) > 0 and len(example['output']) > 0
-                assert example['task'] == task
-                assert len(example['options']) != 1
+                assert len(example['input']) > 0 and len(example['output']) > 0 # non-empty input output
+                assert example['task'] == task # correct task in file
+                assert len(example['options']) != 1 # either no option, or 2+ options
                 if len(example['options']) > 1:
-                    assert example['output'] in example['options']
+                    assert example['output'] in example['options'] # example in option
                 del example['task'], example['options']
                 assert set(example.keys()) == {'input', 'output'}
                 self.task_to_pairs[task].append(example)
@@ -275,6 +293,7 @@ def collate_fn_train(batch: List[int], dataset: TrainDataset) -> Dict:
             max_seq_len=dataset.max_seq_len,
             newline_token_id=dataset.newline_token_id,
             loss_type=dataset.loss_type,
+            allow_truncate=dataset.allow_truncate,
         )
         if out == None:
             continue
@@ -352,6 +371,7 @@ class EvalDataset:
         eval_test_per_task: int,
         eval_ratio: float,
         split: str,
+        allow_truncate: bool,
     ):
         self.tokenizer = tokenizer
         self.debug_random_pad = debug_random_pad
@@ -360,6 +380,7 @@ class EvalDataset:
         self.debug_len = debug_len
         self.max_seq_len = max_seq_len
         self.max_pair_len = max_pair_len
+        self.allow_truncate = allow_truncate
 
         # needed in evaluate
         self.ntokens = ntokens
@@ -452,7 +473,7 @@ class EvalDataset:
                 # add to data, accumulate filter and unfilter stats
                 unfiltered_total_test += 1
                 unfiltered_total_sample += len(test_pair['options'])
-                if None not in outs:
+                if None not in outs: # all tests fit in sequence length
                     self.data += outs
                     filtered_total_test += 1
                     test_added += 1
@@ -463,7 +484,7 @@ class EvalDataset:
                 if test_added == eval_test_per_task or patience == 100:
                     break
 
-        # some tasks may be completely filtered?
+        # some tasks may be completely filtered due to max sequence length
         self.tasks = sorted(set(data['task'] for data in self.data))
         logger.info(f'eval split {split}-{eval_seed} filtered to {len(self.tasks)}/{total_unfiltered_tasks} tasks, {filtered_total_test}/{unfiltered_total_test} tests, {len(self.data)}/{unfiltered_total_sample} samples')
 
@@ -480,6 +501,7 @@ class EvalDataset:
             max_seq_len=self.max_seq_len,
             newline_token_id=self.newline_token_id,
             loss_type="only_last",
+            allow_truncate=self.allow_truncate,
         )
         if out == None:
             return None
