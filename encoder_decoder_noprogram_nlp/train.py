@@ -182,7 +182,6 @@ def compute_macrof1_or_accuracy(predictions, groundtruths, is_classification) ->
 ################################################
 @torch.no_grad()
 def evaluate(
-    config_file: str,
     model: Union[nn.Module, DistributedDataParallel],
     prior_embeddings: Optional[Union[ProgramEmbeddings, DistributedDataParallel]],
     program_embeddings: Optional[Union[ProgramEmbeddings, DistributedDataParallel]],
@@ -256,7 +255,7 @@ def evaluate(
                     attention_cutoff=attention_cutoff,
                     attend_prev_programs=attend_prev_programs,
                     debug=False,
-                    individual_loss=True
+                    individual_loss=True,
                 )
             assert isinstance(losses, torch.Tensor)
             assert losses.shape[0] == len(task) == len(test_idx) == len(option) == len(correct_option) == bs
@@ -808,11 +807,11 @@ def main():
     if args.debug:
         args.tag = 'test'
         args.wandb = False
-        args.samples_per_epoch = 16
+        args.samples_per_epoch = 10000
         args.log_every = 1
         args.debug_no_resume = True
         args.eval_train_ratio = 0.001
-        args.eval_eval_ratio = 0.1
+        args.eval_eval_ratio = 0.01
 
     # check args
     if args.no_lora:
@@ -1220,7 +1219,7 @@ def main():
 
     # train!
     for epoch in range(start_epoch, args.num_epochs):
-        if start_epoch > -1:
+        if epoch > -1:
             model.train()
             if prior_embeddings is not None:
                 prior_embeddings.train()
@@ -1330,7 +1329,6 @@ def main():
             train_scores, train_all_output_list = [], None
             for dataset_i, dataset in enumerate(eval_train_datasets):
                 score, output_list = evaluate(
-                    config_file=args.config_file,
                     model=model,
                     prior_embeddings=prior_embeddings,
                     program_embeddings=program_embeddings,
@@ -1351,7 +1349,6 @@ def main():
             eval_scores, eval_all_output_list = [], None
             for dataset_i, dataset in enumerate(eval_eval_datasets):
                 score, output_list = evaluate(
-                    config_file=args.config_file,
                     model=model,
                     prior_embeddings=prior_embeddings,
                     program_embeddings=program_embeddings,
