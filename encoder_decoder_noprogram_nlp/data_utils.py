@@ -224,9 +224,18 @@ class TrainDataset(Dataset):
             for l in all_lines:
                 example = json.loads(l)
                 assert len(example['input']) > 0 and len(example['output']) > 0
+                assert example['task'] == task
+                assert len(example['options']) != 1
+                if len(example['options']) > 1:
+                    assert example['output'] in example['options']
                 del example['task'], example['options']
+                assert set(example.keys()) == {'input', 'output'}
                 self.task_to_pairs[task].append(example)
         assert all(len(pairs) >= self.max_num_pair for pairs in self.task_to_pairs.values())
+
+        logger.info(f'number of train tasks: {len(self.task_to_pairs)}')
+        for task, pairs in self.task_to_pairs.items():
+            logger.info(f'{task} with {len(pairs)} pairs')
 
     def __len__(self):
         return self._length
@@ -341,8 +350,8 @@ class EvalDataset:
         max_num_train_pair: int,
         ntokens: int,
         eval_ratio: float,
+        split: str,
     ):
-        self.eval_seed = eval_seed
         self.tokenizer = tokenizer
         self.debug_random_pad = debug_random_pad
         self.debug_pad_len = debug_pad_len
@@ -350,10 +359,7 @@ class EvalDataset:
         self.debug_len = debug_len
         self.max_seq_len = max_seq_len
         self.max_pair_len = max_pair_len
-        self.min_num_train_pair = min_num_train_pair
-        self.max_num_train_pair = max_num_train_pair
         self.ntokens = ntokens
-        self.eval_ratio = eval_ratio
 
         # separate input and output by newline
         self.newline_token_id = tokenize("\n", tokenizer)
@@ -361,30 +367,51 @@ class EvalDataset:
         # rng
         rng = np.random.RandomState(seed)
 
+        # get tasks
+        self.tasks = json.load(open(config_file))[split]
+
         # load data
-        self.tasks = json.load(open(config_file))['test']
+        tasks_with_empty_options = set()
         task_to_demonstrations = defaultdict(list)
         task_to_test_pairs = defaultdict(list)
         for task in self.tasks:
             task_data_dir = os.path.join(data_dir, task)
-            train_file = os.path.join(task_data_dir, f"{task}_16_{eval_seed}_train.jsonl")
-            test_file = os.path.join(task_data_dir, f"{task}_16_{eval_seed}_test.jsonl")
+
             # train demonstration pairs
+            train_file = os.path.join(task_data_dir, f"{task}_16_{eval_seed}_train.jsonl")
             for l in open(train_file, 'r').readlines():
                 example = json.loads(l)
                 task_to_demonstrations[task].append(example)
             assert len(task_to_demonstrations[task]) == 16 >= max_num_train_pair
+
             # subset test pairs
+            with_empty_options = False
+            test_file = os.path.join(task_data_dir, f"{task}_16_{eval_seed}_test.jsonl")
             lines = open(test_file, 'r').readlines()
             rng.shuffle(lines)
             num_chosen = math.ceil(len(lines) * eval_ratio)
             for l in lines[:num_chosen]:
                 example = json.loads(l)
                 task_to_test_pairs[task].append(example)
+                with_empty_options = with_empty_options or (len(example['options'])) == 0
+
+            # keep track of tasks that have empty options, we filter them out
+            if with_empty_options:
+                tasks_with_empty_options.add(task)
+
+        # filter out tasks with empty options
+        if split == 'test':
+            assert len(tasks_with_empty_options) == 0
+        else:
+            logger.info(f'evaluating on train split found {len(tasks_with_empty_options)}/{len(self.tasks)} tasks have no options')
+            for task in tasks_with_empty_options:
+                self.tasks.remove(task)
+                del task_to_demonstrations[task]
+                del task_to_test_pairs[task]
         assert set(task_to_demonstrations.keys()) == set(task_to_test_pairs.keys())
 
         # process and filter down
-        logger.info('generating eval samples...')
+        logger.info(f'generating samples for split {split}-{eval_seed}...')
         self.data = []
         unfiltered_total_task, filtered_total_task, unfiltered_total_sample, filtered_total_sample = 0, 0, 0, 0
 
@@ -412,8 +439,8 @@ class EvalDataset:
                 unfiltered_total_task += 1
                 unfiltered_total_sample += len(test_pair['options'])
 
-        logger.info(f'eval split {eval_seed} filtered to {filtered_total_task}/{unfiltered_total_task} tasks')
-        logger.info(f'eval split {eval_seed} filtered to {filtered_total_sample}/{unfiltered_total_sample} samples')
+        logger.info(f'eval split {split}-{eval_seed} filtered to {filtered_total_task}/{unfiltered_total_task} tasks')
+        logger.info(f'eval split {split}-{eval_seed} filtered to {filtered_total_sample}/{unfiltered_total_sample} samples')
 
     def format_and_filter(self, demonstrations: List[Dict], test_pair: Dict, test_idx: int, correct_option: str) -> Optional[Dict]:
         # make sure they are all the same task with the same non-empty options

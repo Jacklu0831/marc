@@ -772,6 +772,7 @@ def main():
     parser.add_argument("--dry_eval_run", action="store_true")
     parser.add_argument("--warmup_epochs", type=int, default=0)
     parser.add_argument("--lr_scheduler", type=str, choices=["cosine", "constant"], default="cosine")
+    parser.add_argument("--eval_pretrained", action="store_true")
 
     # scheduled extra losses
     parser.add_argument("--program_loss_lambda", type=float, default=1.0)
@@ -789,7 +790,8 @@ def main():
     parser.add_argument("--max_pair_len", type=int, default=256)
     parser.add_argument("--pad_side", type=str, choices=["left", "right"], default="left")
     parser.add_argument('--eval_seeds', type=str, nargs="+", default=['100'])
-    parser.add_argument('--eval_ratio', type=float, default=1.0)
+    parser.add_argument('--eval_train_ratio', type=float, default=0.01)
+    parser.add_argument('--eval_eval_ratio', type=float, default=1.0)
 
     # Lora
     parser.add_argument("--lora_rank", type=int, default=256)
@@ -810,7 +812,8 @@ def main():
         args.samples_per_epoch = 16
         args.log_every = 1
         args.debug_no_resume = True
-        args.eval_ratio = 0.1
+        args.eval_train_ratio = 0.001
+        args.eval_eval_ratio = 0.1
 
     # check args
     if args.no_lora:
@@ -1138,6 +1141,29 @@ def main():
             pass
         exit()
 
+    # Build eval train dataset (NOTE: only a subset of tasks have options)
+    eval_train_datasets = [
+        EvalDataset(
+            data_dir=args.data_dir,
+            config_file=args.config_file,
+            seed=args.seed,
+            eval_seed=eval_seed,
+            tokenizer=tokenizer,
+            debug_random_pad=args.debug_random_pad,
+            debug_pad_len=args.debug_pad_len,
+            pad_side=args.pad_side,
+            debug_len=args.debug_len,
+            max_seq_len=args.max_seq_len,
+            max_pair_len=args.max_pair_len,
+            min_num_train_pair=args.eval_min_num_pair - 1,
+            max_num_train_pair=args.max_num_pair - 1,
+            ntokens=args.ntokens,
+            eval_ratio=args.eval_train_ratio,
+            split='train',
+        )
+        for eval_seed in args.eval_seeds
+    ]
+
     # Build eval eval dataset
     eval_eval_datasets = [
         EvalDataset(
@@ -1155,13 +1181,14 @@ def main():
             min_num_train_pair=args.eval_min_num_pair - 1,
             max_num_train_pair=args.max_num_pair - 1,
             ntokens=args.ntokens,
-            eval_ratio=args.eval_ratio,
+            eval_ratio=args.eval_eval_ratio,
+            split='test',
         )
         for eval_seed in args.eval_seeds
     ]
-    eval_collate_fn = partial(collate_fn_eval, dataset=eval_eval_datasets[0]) # only use tokenizer, padding info
+    eval_collate_fn = partial(collate_fn_eval, dataset=eval_train_datasets[0]) # only use tokenizer, padding info
     if args.debug_len > 0:
-        eval_collate_fn = partial(collate_fn_eval_dummy, dataset=eval_eval_datasets[0])
+        eval_collate_fn = partial(collate_fn_eval_dummy, dataset=eval_train_datasets[0])
 
     logger.info(f'======= TRAINING INFO START =======')
     logger.info(f'num_epochs={args.num_epochs}')
@@ -1189,122 +1216,126 @@ def main():
     if global_step > 0:
         progress_bar.update(global_step)
 
+    if args.eval_pretrained and start_epoch == 0:
+        start_epoch = -1
+
     # train!
     for epoch in range(start_epoch, args.num_epochs):
-        model.train()
-        if prior_embeddings is not None:
-            prior_embeddings.train()
-        if program_embeddings is not None:
-            program_embeddings.train()
+        if start_epoch > -1:
+            model.train()
+            if prior_embeddings is not None:
+                prior_embeddings.train()
+            if program_embeddings is not None:
+                program_embeddings.train()
 
-        ce_loss_accum = 0.0
-        program_loss_accum = 0.0
-        total_loss_accum = 0.0
-        grad_norm_accum = 0.0
+            ce_loss_accum = 0.0
+            program_loss_accum = 0.0
+            total_loss_accum = 0.0
+            grad_norm_accum = 0.0
 
-        for batch_idx, batch_data in enumerate(train_loader):
-            # skip batch idx if recovered run already encountered it
-            if batch_idx < resume_batch_idx:
-                continue
+            for batch_idx, batch_data in enumerate(train_loader):
+                # skip batch idx if recovered run already encountered it
+                if batch_idx < resume_batch_idx:
+                    continue
 
-            input_ids = batch_data["input_ids"].to(accelerator.device)
-            attention_mask = batch_data["attention_mask"].to(accelerator.device)
-            label_ids = batch_data["label_ids"].to(accelerator.device)
-            input_ids_lens = batch_data["input_ids_lens"]
-            pair_start_idxs = batch_data["pair_start_idxs"]
+                input_ids = batch_data["input_ids"].to(accelerator.device)
+                attention_mask = batch_data["attention_mask"].to(accelerator.device)
+                label_ids = batch_data["label_ids"].to(accelerator.device)
+                input_ids_lens = batch_data["input_ids_lens"]
+                pair_start_idxs = batch_data["pair_start_idxs"]
 
-            with accelerator.accumulate(model, prior_embeddings, program_embeddings):
-                with accelerator.autocast():
-                    ce_loss, program_loss, total_loss = model_loss(
-                        model=model,
-                        tokenizer=tokenizer,
-                        prior_embeddings=prior_embeddings,
-                        program_embeddings=program_embeddings,
-                        input_ids=input_ids,
-                        attention_mask=attention_mask,
-                        label_ids=label_ids,
-                        input_ids_lens=input_ids_lens,
-                        pair_start_idxs=pair_start_idxs,
-                        ntokens=args.ntokens,
-                        pad_side=args.pad_side,
-                        program_loss_lambda_scheduler=program_loss_lambda_scheduler,
-                        global_step=global_step,
-                        program_type=args.program_type,
-                        attention_cutoff=args.attention_cutoff,
-                        attend_prev_programs=args.attend_prev_programs,
-                        debug=args.debug,
-                        individual_loss=False,
-                    )
+                with accelerator.accumulate(model, prior_embeddings, program_embeddings):
+                    with accelerator.autocast():
+                        ce_loss, program_loss, total_loss = model_loss(
+                            model=model,
+                            tokenizer=tokenizer,
+                            prior_embeddings=prior_embeddings,
+                            program_embeddings=program_embeddings,
+                            input_ids=input_ids,
+                            attention_mask=attention_mask,
+                            label_ids=label_ids,
+                            input_ids_lens=input_ids_lens,
+                            pair_start_idxs=pair_start_idxs,
+                            ntokens=args.ntokens,
+                            pad_side=args.pad_side,
+                            program_loss_lambda_scheduler=program_loss_lambda_scheduler,
+                            global_step=global_step,
+                            program_type=args.program_type,
+                            attention_cutoff=args.attention_cutoff,
+                            attend_prev_programs=args.attend_prev_programs,
+                            debug=args.debug,
+                            individual_loss=False,
+                        )
 
-                ce_loss_accum += ce_loss.item() / args.grad_accum_steps
-                program_loss_accum += program_loss.item() / args.grad_accum_steps
-                total_loss_accum += total_loss.item() / args.grad_accum_steps
+                    ce_loss_accum += ce_loss.item() / args.grad_accum_steps
+                    program_loss_accum += program_loss.item() / args.grad_accum_steps
+                    total_loss_accum += total_loss.item() / args.grad_accum_steps
 
-                accelerator.backward(total_loss)
+                    accelerator.backward(total_loss)
+                    if accelerator.sync_gradients:
+                        grad_norm_accum += accelerator.clip_grad_norm_(all_params, args.max_grad_norm).item() / args.grad_accum_steps # type: ignore
+                    optimizer.step()
+                    lr_scheduler.step()
+                    optimizer.zero_grad()
+
                 if accelerator.sync_gradients:
-                    grad_norm_accum += accelerator.clip_grad_norm_(all_params, args.max_grad_norm).item() / args.grad_accum_steps # type: ignore
-                optimizer.step()
-                lr_scheduler.step()
-                optimizer.zero_grad()
+                    global_step += 1
+                    if global_step % args.log_every == 0:
+                        progress_bar.update(args.log_every)
+                        try:
+                            accelerator.log({
+                                "train/ce_loss": ce_loss_accum,
+                                "train/program_loss": program_loss_accum,
+                                "train/total_loss": total_loss_accum,
+                                "train/grad_norm": grad_norm_accum,
+                                "train/lr_embedding": lr_scheduler.get_last_lr()[0],
+                                "train/lr_prior": lr_scheduler.get_last_lr()[1],
+                                "train/lr_program": lr_scheduler.get_last_lr()[2],
+                                "train/lr_other": lr_scheduler.get_last_lr()[3],
+                            }, step=global_step)
+                        except:
+                            logger.info(f"wandb failed on process {accelerator.process_index}, skipping the error")
 
-            if accelerator.sync_gradients:
-                global_step += 1
-                if global_step % args.log_every == 0:
-                    progress_bar.update(args.log_every)
-                    try:
-                        accelerator.log({
-                            "train/ce_loss": ce_loss_accum,
-                            "train/program_loss": program_loss_accum,
-                            "train/total_loss": total_loss_accum,
-                            "train/grad_norm": grad_norm_accum,
-                            "train/lr_embedding": lr_scheduler.get_last_lr()[0],
-                            "train/lr_prior": lr_scheduler.get_last_lr()[1],
-                            "train/lr_program": lr_scheduler.get_last_lr()[2],
-                            "train/lr_other": lr_scheduler.get_last_lr()[3],
-                        }, step=global_step)
-                    except:
-                        logger.info(f"wandb failed on process {accelerator.process_index}, skipping the error")
+                    ce_loss_accum = 0.0
+                    program_loss_accum = 0.0
+                    total_loss_accum = 0.0
+                    grad_norm_accum = 0.0
 
-                ce_loss_accum = 0.0
-                program_loss_accum = 0.0
-                total_loss_accum = 0.0
-                grad_norm_accum = 0.0
-
-                # recovery
-                if global_step % args.save_every == 0:
-                    if accelerator.is_main_process:
-                        if os.path.exists(recovery_checkpoint_dir):
-                            shutil.rmtree(recovery_checkpoint_dir)
-                        os.makedirs(recovery_checkpoint_dir, exist_ok=True)
-                        accelerator.save_state(recovery_checkpoint_dir)
-                        # must save state AFTER everything else
-                        # we use it determine whether the save is valid (not interrupted in middle of saving)
-                        state = {
-                            "global_step": global_step,
-                            "epoch": epoch,
-                            "batch_idx": batch_idx + 1,
-                        }
-                        if args.wandb:
-                            assert wandb.run is not None
-                            state['run_id'] = wandb.run.id
-                        json.dump(state, open(recovery_state_file_path, "w"))
-                        logger.info(f"saved training at epoch {epoch} global_step {global_step} batch_idx {batch_idx + 1}")
-                        logger.info(f"saved state to {recovery_state_file_path}")
+                    # recovery
+                    if global_step % args.save_every == 0:
+                        if accelerator.is_main_process:
+                            if os.path.exists(recovery_checkpoint_dir):
+                                shutil.rmtree(recovery_checkpoint_dir)
+                            os.makedirs(recovery_checkpoint_dir, exist_ok=True)
+                            accelerator.save_state(recovery_checkpoint_dir)
+                            # must save state AFTER everything else
+                            # we use it determine whether the save is valid (not interrupted in middle of saving)
+                            state = {
+                                "global_step": global_step,
+                                "epoch": epoch,
+                                "batch_idx": batch_idx + 1,
+                            }
+                            if args.wandb:
+                                assert wandb.run is not None
+                                state['run_id'] = wandb.run.id
+                            json.dump(state, open(recovery_state_file_path, "w"))
+                            logger.info(f"saved training at epoch {epoch} global_step {global_step} batch_idx {batch_idx + 1}")
+                            logger.info(f"saved state to {recovery_state_file_path}")
 
         # Evaluate every N epochs
         if (epoch + 1) % args.eval_epochs == 0:
             torch.cuda.empty_cache()
             gc.collect()
 
-            # Eval Eval Datasets
-            scores, all_output_list = [], None
-            for eval_dataset_i, eval_eval_dataset in enumerate(eval_eval_datasets):
+            # Eval Train Datasets
+            train_scores, train_all_output_list = [], None
+            for dataset_i, dataset in enumerate(eval_train_datasets):
                 score, output_list = evaluate(
                     config_file=args.config_file,
                     model=model,
                     prior_embeddings=prior_embeddings,
                     program_embeddings=program_embeddings,
-                    dataset=eval_eval_dataset,
+                    dataset=dataset,
                     accelerator=accelerator,
                     batch_size=args.eval_batch_size,
                     collate_fn=eval_collate_fn,
@@ -1312,16 +1343,40 @@ def main():
                     attention_cutoff=args.attention_cutoff,
                     attend_prev_programs=args.attend_prev_programs,
                 )
-                if eval_dataset_i == 0:
-                    all_output_list = output_list
-                scores.append(score)
-            score = sum(scores) / len(scores)
+                if dataset_i == 0:
+                    train_all_output_list = output_list
+                train_scores.append(score)
+            train_score = sum(train_scores) / len(train_scores)
+
+            # Eval Eval Datasets
+            eval_scores, eval_all_output_list = [], None
+            for dataset_i, dataset in enumerate(eval_eval_datasets):
+                score, output_list = evaluate(
+                    config_file=args.config_file,
+                    model=model,
+                    prior_embeddings=prior_embeddings,
+                    program_embeddings=program_embeddings,
+                    dataset=dataset,
+                    accelerator=accelerator,
+                    batch_size=args.eval_batch_size,
+                    collate_fn=eval_collate_fn,
+                    dry_eval_run=args.dry_eval_run,
+                    attention_cutoff=args.attention_cutoff,
+                    attend_prev_programs=args.attend_prev_programs,
+                )
+                if dataset_i == 0:
+                    eval_all_output_list = output_list
+                eval_scores.append(score)
+            eval_score = sum(eval_scores) / len(eval_scores)
 
             torch.cuda.empty_cache()
             gc.collect()
 
             if accelerator.is_main_process:
-                eval_metric_dict = {"eval/score": score}
+                eval_metric_dict = {
+                    "train/score": train_score,
+                    "eval/score": eval_score,
+                }
                 logger.info(f'Evaluation results:\n{pprint.pformat(eval_metric_dict, indent=4)}')
                 try:
                     accelerator.log(eval_metric_dict, step=global_step)
@@ -1329,15 +1384,19 @@ def main():
                     logger.info(f"wandb failed on process {accelerator.process_index}, skipping the error")
 
                 # Save outputs
+                save_eval_train_pred_gt_path = os.path.join(args.output_dir, f"eval_train_{epoch+1}_pred_gt.json")
                 save_eval_eval_pred_gt_path = os.path.join(args.output_dir, f"eval_eval_{epoch+1}_pred_gt.json")
+                with open(save_eval_train_pred_gt_path, 'w') as f:
+                    json.dump(train_all_output_list, f)
                 with open(save_eval_eval_pred_gt_path, 'w') as f:
-                    json.dump(all_output_list, f)
+                    json.dump(eval_all_output_list, f)
+                logger.info(f"Saved eval train pred gt to {save_eval_train_pred_gt_path}")
                 logger.info(f"Saved eval eval pred gt to {save_eval_eval_pred_gt_path}")
 
                 # Save model
                 do_save_model = args.save_all_models
                 if not args.save_all_models:
-                    if (not epoch_to_total_score) or score >= max(epoch_to_total_score.values()):
+                    if (not epoch_to_total_score) or eval_score >= max(epoch_to_total_score.values()):
                         do_save_model = True
 
                 if do_save_model:
@@ -1356,7 +1415,7 @@ def main():
                         output_dir=args.output_dir,
                         epoch=epoch,
                     )
-                epoch_to_total_score[epoch] = score
+                epoch_to_total_score[epoch] = eval_score
 
     accelerator.end_training()
     logger.info("All done training.")

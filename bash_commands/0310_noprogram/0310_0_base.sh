@@ -15,5 +15,14 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
     --no_bos \
     --wandb
 
+# noprogram nobos rerun
+accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder_noprogram/train.py \
+    --lr_scheduler constant \
+    --min_num_pair 8 \
+    --tag 0310_noprogram_nobos_rerun \
+    --no_bos \
+    --wandb
+
 # Submitted batch job 58139594
 # Submitted batch job 58139595
+# Submitted batch job 58248272
