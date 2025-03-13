@@ -269,16 +269,15 @@ def evaluate(
     assert len(output_list) == len(dataset), (len(output_list), len(dataset))
 
     # determine which tasks are classification (for macro-f1)
-    test_tasks = json.load(open(config_file))['test']
     task_to_is_clf = {}
-    for task in test_tasks:
+    for task in dataset.tasks:
         meta_data_path = os.path.join('MetaICL/config/tasks', f'{task}.json')
         task_meta_data = json.load(open(meta_data_path, 'r'))
         task_to_is_clf[task] = task_meta_data['task_type'] == "classification"
 
     # metrics
     task_to_score = {}
-    for task in test_tasks:
+    for task in dataset.tasks:
         task_outs = [x for x in output_list if x[1] == task]
         if len(task_outs) == 0:
             logger.info(f'[WARNING] {task} is not evaluated (likely due max_seq_len)')

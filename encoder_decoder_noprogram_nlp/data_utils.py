@@ -359,7 +359,10 @@ class EvalDataset:
         self.debug_len = debug_len
         self.max_seq_len = max_seq_len
         self.max_pair_len = max_pair_len
+
+        # needed in evaluate
         self.ntokens = ntokens
+        self.split = split
 
         # separate input and output by newline
         self.newline_token_id = tokenize("\n", tokenizer)
@@ -409,11 +412,12 @@ class EvalDataset:
                 del task_to_demonstrations[task]
                 del task_to_test_pairs[task]
         assert set(task_to_demonstrations.keys()) == set(task_to_test_pairs.keys())
+        total_tasks = len(self.tasks)
 
         # process and filter down
         logger.info(f'generating samples for split {split}-{eval_seed}...')
         self.data = []
-        unfiltered_total_task, filtered_total_task, unfiltered_total_sample, filtered_total_sample = 0, 0, 0, 0
+        unfiltered_total_test, filtered_total_test, unfiltered_total_sample = 0, 0, 0
 
         for task_i, (task, test_pairs) in enumerate(task_to_test_pairs.items()):
             logger.info(f'{task_i+1}/{len(task_to_test_pairs)}')
@@ -432,15 +436,15 @@ class EvalDataset:
                     outs.append(self.format_and_filter(demonstrations, test_pair, test_idx, correct_option))
 
                 # add to data, accumulate filter and unfilter stats
+                unfiltered_total_test += 1
+                unfiltered_total_sample += len(test_pair['options'])
                 if None not in outs:
                     self.data += outs
-                    filtered_total_task += 1
-                    filtered_total_sample += len(test_pair['options'])
-                unfiltered_total_task += 1
-                unfiltered_total_sample += len(test_pair['options'])
+                    filtered_total_test += 1
 
-        logger.info(f'eval split {split}-{eval_seed} filtered to {filtered_total_task}/{unfiltered_total_task} tasks')
-        logger.info(f'eval split {split}-{eval_seed} filtered to {filtered_total_sample}/{unfiltered_total_sample} samples')
+        # some tasks may be completely filtered?
+        self.tasks = sorted(set(data['task'] for data in self.data))
+        logger.info(f'eval split {split}-{eval_seed} filtered to {len(self.tasks)}/{total_tasks} tasks, {filtered_total_test}/{unfiltered_total_test} tests, {len(self.data)}/{unfiltered_total_sample} samples')
 
     def format_and_filter(self, demonstrations: List[Dict], test_pair: Dict, test_idx: int, correct_option: str) -> Optional[Dict]:
         # make sure they are all the same task with the same non-empty options
