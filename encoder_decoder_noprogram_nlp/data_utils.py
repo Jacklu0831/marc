@@ -349,6 +349,7 @@ class EvalDataset:
         min_num_train_pair: int,
         max_num_train_pair: int,
         ntokens: int,
+        eval_test_per_task: int,
         eval_ratio: float,
         split: str,
     ):
@@ -372,9 +373,10 @@ class EvalDataset:
 
         # get tasks
         self.tasks = json.load(open(config_file))[split]
+        assert len(self.tasks) == len(set(self.tasks))
 
         # load data
-        tasks_with_empty_options = set()
+        tasks_to_remove = set()
         task_to_demonstrations = defaultdict(list)
         task_to_test_pairs = defaultdict(list)
         for task in self.tasks:
@@ -400,19 +402,28 @@ class EvalDataset:
 
             # keep track of tasks that have empty options, we filter them out
             if with_empty_options:
-                tasks_with_empty_options.add(task)
+                tasks_to_remove.add(task)
+
+        if split == 'train':
+            # remove tasks with 10+ options
+            for task, test_pairs in task_to_test_pairs.items():
+                max_num_options = max(len(x['options']) for x in test_pairs)
+                if max_num_options >= 10:
+                    tasks_to_remove.add(task)
+            # manually remove these
+            tasks_to_remove.update({'piqa', 'cosmos_qa', 'art', 'paws', 'quail'})
 
         # filter out tasks with empty options
         if split == 'test':
-            assert len(tasks_with_empty_options) == 0
+            assert len(tasks_to_remove) == 0
         else:
-            logger.info(f'evaluating on train split found {len(tasks_with_empty_options)}/{len(self.tasks)} tasks have no options')
-            for task in tasks_with_empty_options:
+            logger.info(f'evaluating on train split found {len(tasks_to_remove)}/{len(self.tasks)} tasks to remove')
+            for task in tasks_to_remove:
                 self.tasks.remove(task)
                 del task_to_demonstrations[task]
                 del task_to_test_pairs[task]
-        assert set(task_to_demonstrations.keys()) == set(task_to_test_pairs.keys())
-        total_tasks = len(self.tasks)
+        assert set(task_to_demonstrations.keys()) == set(task_to_test_pairs.keys()) == set(self.tasks)
+        total_unfiltered_tasks = len(self.tasks)
 
         # process and filter down
         logger.info(f'generating samples for split {split}-{eval_seed}...')
@@ -421,9 +432,12 @@ class EvalDataset:
 
         for task_i, (task, test_pairs) in enumerate(task_to_test_pairs.items()):
             logger.info(f'{task_i+1}/{len(task_to_test_pairs)}')
+
             num_demonstration = int(rng.choice(range(min_num_train_pair, max_num_train_pair + 1), size=1))
             demonstrations = task_to_demonstrations[task][:num_demonstration]
 
+            test_added = 0 # we only add maximum of eval_test_per_task number of tests
+            patience = 0 # some tasks just contains sequences that are too long
             for test_idx, test_pair in enumerate(test_pairs):
                 assert len(test_pair['options']) > 1
                 assert test_pair['output'] in test_pair['options']
@@ -441,10 +455,17 @@ class EvalDataset:
                 if None not in outs:
                     self.data += outs
                     filtered_total_test += 1
+                    test_added += 1
+                    patience = 0
+                else:
+                    patience += 1
+
+                if test_added == eval_test_per_task or patience == 100:
+                    break
 
         # some tasks may be completely filtered?
         self.tasks = sorted(set(data['task'] for data in self.data))
-        logger.info(f'eval split {split}-{eval_seed} filtered to {len(self.tasks)}/{total_tasks} tasks, {filtered_total_test}/{unfiltered_total_test} tests, {len(self.data)}/{unfiltered_total_sample} samples')
+        logger.info(f'eval split {split}-{eval_seed} filtered to {len(self.tasks)}/{total_unfiltered_tasks} tasks, {filtered_total_test}/{unfiltered_total_test} tests, {len(self.data)}/{unfiltered_total_sample} samples')
 
     def format_and_filter(self, demonstrations: List[Dict], test_pair: Dict, test_idx: int, correct_option: str) -> Optional[Dict]:
         # make sure they are all the same task with the same non-empty options

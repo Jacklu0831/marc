@@ -192,6 +192,7 @@ def evaluate(
     dry_eval_run: bool,
     attention_cutoff: bool,
     attend_prev_programs: bool,
+    log_every: int,
 ) -> Tuple[float, List]:
 
     model.eval()
@@ -215,9 +216,16 @@ def evaluate(
     with distributed_state.split_between_processes(data_idxs) as process_data_idxs:
         assert isinstance(process_data_idxs, list)
         n_batches = math.ceil(len(process_data_idxs) / batch_size)
-        data_idx_iterator = tqdm(chunks(process_data_idxs, batch_size), total=n_batches)  # type: ignore
+        data_idxs = [idxs for idxs in chunks(process_data_idxs, batch_size)]
+        assert len(data_idxs) == n_batches
 
-        for batch_idxs in data_idx_iterator:
+        progress_bar = tqdm(
+            range(len(data_idxs)),
+            desc="Eval Steps",
+            disable=not accelerator.is_local_main_process
+        )
+
+        for eval_step, batch_idxs in enumerate(data_idxs):
             batch_data = [dataset[i] for i in batch_idxs]
             bs = len(batch_data)
             batch = collate_fn(batch_data)
@@ -261,6 +269,9 @@ def evaluate(
             assert losses.shape[0] == len(task) == len(test_idx) == len(option) == len(correct_option) == bs
             for x0, x1, x2, x3, x4 in zip(losses, task, test_idx, option, correct_option):
                 output_list.append((x0.item(), x1, x2, x3, x4))
+
+            if (eval_step + 1) % log_every == 0:
+                progress_bar.update(log_every)
 
     distributed_state.wait_for_everyone()
     # results
@@ -788,8 +799,12 @@ def main():
     parser.add_argument("--max_pair_len", type=int, default=256)
     parser.add_argument("--pad_side", type=str, choices=["left", "right"], default="left")
     parser.add_argument('--eval_seeds', type=str, nargs="+", default=['100'])
-    parser.add_argument('--eval_train_ratio', type=float, default=0.01)
-    parser.add_argument('--eval_eval_ratio', type=float, default=1.0)
+
+    # limit eval
+    parser.add_argument('--eval_train_test_per_task', type=int, default=50)
+    parser.add_argument('--eval_train_ratio', type=float, default=1.0)
+    parser.add_argument('--eval_eval_test_per_task', type=int, default=10000000)
+    parser.add_argument('--eval_eval_ratio', type=float, default=0.2)
 
     # Lora
     parser.add_argument("--lora_rank", type=int, default=256)
@@ -807,10 +822,9 @@ def main():
     if args.debug:
         args.tag = 'test'
         args.wandb = False
-        args.samples_per_epoch = 10000
         args.log_every = 1
         args.debug_no_resume = True
-        args.eval_train_ratio = 0.001
+        args.eval_train_test_per_task = 1
         args.eval_eval_ratio = 0.01
 
     # check args
@@ -1156,6 +1170,7 @@ def main():
             min_num_train_pair=args.eval_min_num_pair - 1,
             max_num_train_pair=args.max_num_pair - 1,
             ntokens=args.ntokens,
+            eval_test_per_task=args.eval_train_test_per_task,
             eval_ratio=args.eval_train_ratio,
             split='train',
         )
@@ -1179,6 +1194,7 @@ def main():
             min_num_train_pair=args.eval_min_num_pair - 1,
             max_num_train_pair=args.max_num_pair - 1,
             ntokens=args.ntokens,
+            eval_test_per_task=args.eval_eval_test_per_task,
             eval_ratio=args.eval_eval_ratio,
             split='test',
         )
@@ -1199,8 +1215,7 @@ def main():
 
     progress_bar = tqdm(
         range(num_training_steps),
-        desc="Steps",
-        # Only show the progress bar once on each machine.
+        desc="Train Steps",
         disable=not accelerator.is_local_main_process,
     )
     progress_bar.set_description("Total Train Steps")
@@ -1339,6 +1354,7 @@ def main():
                     dry_eval_run=args.dry_eval_run,
                     attention_cutoff=args.attention_cutoff,
                     attend_prev_programs=args.attend_prev_programs,
+                    log_every=args.log_every,
                 )
                 if dataset_i == 0:
                     train_all_output_list = output_list
@@ -1359,6 +1375,7 @@ def main():
                     dry_eval_run=args.dry_eval_run,
                     attention_cutoff=args.attention_cutoff,
                     attend_prev_programs=args.attend_prev_programs,
+                    log_every=args.log_every,
                 )
                 if dataset_i == 0:
                     eval_all_output_list = output_list
