@@ -377,23 +377,18 @@ class TrainDataset(Dataset):
         self.max_seq_len = max_seq_len
         self.no_bos = no_bos
 
+        self.num_workers = num_workers
+        self.process_index = process_index
+        self.seed = seed
+
         # setup args
         self.normalized_ratio = np.array([self.re_arc_ratio, self.concept_arc_ratio, self.arc_heavy_ratio])
         self.normalized_ratio /= np.sum(self.normalized_ratio)
         self.d8_augmenters = get_d8_augmenters(include_identity=True)
         self.extra_augmenters = get_mit_augmenters(include_basic=True, include_size=True, include_chain=True, include_repeat=True)
 
-        # seed and process_index
-        if num_workers == 0:
-            self.rngs = [np.random.RandomState(seed + process_index)]
-        else:
-            self.rngs = [np.random.RandomState(seed + i) for i in range(num_workers * process_index, num_workers * (process_index + 1))]
-
-        # num pair must be the same across gpus
-        if num_workers == 0:
-            self.num_pair_rngs = [np.random.RandomState(seed)]
-        else:
-            self.num_pair_rngs = [np.random.RandomState(seed + i) for i in range(num_workers)]
+        # set rngs
+        self.set_rngs(epoch=0)
 
         # load re-arc data + train original data
         if only_train_original:
@@ -431,6 +426,19 @@ class TrainDataset(Dataset):
     def __getitem__(self, idx):
         # We'll do random sampling in the collate fn
         return 0
+
+    def set_rngs(self, epoch: int):
+        epoch_seed = epoch * 1000
+        # seed and process_index
+        if self.num_workers == 0:
+            self.rngs = [np.random.RandomState(self.seed + epoch_seed + self.process_index)]
+        else:
+            self.rngs = [np.random.RandomState(self.seed + epoch_seed + i) for i in range(self.num_workers * self.process_index, self.num_workers * (self.process_index + 1))]
+        # num pair must be the same across gpus
+        if self.num_workers == 0:
+            self.num_pair_rngs = [np.random.RandomState(self.seed + epoch_seed)]
+        else:
+            self.num_pair_rngs = [np.random.RandomState(self.seed + epoch_seed + i) for i in range(self.num_workers)]
 
 
 def collate_fn_train(batch: List[int], dataset: TrainDataset) -> Dict:

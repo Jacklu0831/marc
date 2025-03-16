@@ -47,7 +47,6 @@ from data_utils import (
     collate_fn_train_dummy,
     collate_fn_eval_dummy,
     ARCTokenizer,
-    pad_sequence_with_side,
 )
 
 import os
@@ -306,7 +305,7 @@ def get_predicted_program(
     kv_pad_side: str,
     short_context: bool,
     attention_reduction_ratio: float,
-) -> Tuple[torch.Tensor, List[List[Tuple[int, int]]], Tuple[Tuple[torch.Tensor, torch.Tensor]], torch.Tensor]:
+) -> Tuple[torch.Tensor, List[List[Tuple[int, int]]], Optional[Tuple[Tuple[torch.Tensor, torch.Tensor]]], Optional[torch.Tensor]]:
 
     def update_based_on_avail(all_x: List[Any], new_x: List[Any], avail_mask: torch.Tensor, concat: bool) -> None:
         # inplace
@@ -1958,6 +1957,7 @@ def evaluate(
                     # print(gen_texts)
                     # breakpoint()
                 else:
+                    assert past_key_values is not None and past_key_values_attention_mask is not None
                     # add past key values portion to inputs_embeds and attention mask
                     # the padding of inputs_embeds is ignored
                     pad_len = past_key_values_attention_mask.shape[1]
@@ -2461,7 +2461,6 @@ def main():
     parser.add_argument("--train_pad_side", type=str, choices=["left", "right"], default="right")
     parser.add_argument("--gen_pad_side", type=str, choices=["left", "right"], default="left")
     parser.add_argument("--kv_pad_side", type=str, choices=["left", "right"], default="right")
-    parser.add_argument("--curriculum_iters", type=int, default=-1) # grow from min_num_pair to max_num_pair
     parser.add_argument("--no_dim", action='store_true')
     parser.add_argument("--no_separate_color_tokens", action='store_true')
     parser.add_argument("--no_color_permute", action="store_true")
@@ -2861,7 +2860,6 @@ def main():
         logger.info(f'program norm size {round(get_memory_footprint(program_norm) / 1024 ** 3, 2)}GB')
 
     # Build training dataset
-    global_batch_size = args.train_batch_size * args.grad_accum_steps * accelerator.num_processes
     train_dataset = TrainDataset(
         train_data_dir=args.train_data_dir,
         eval_train_dir=args.eval_train_dir,
@@ -2890,8 +2888,6 @@ def main():
         only_train_original=args.only_train_original,
         debug_len=args.debug_len,
         num_workers=args.num_workers,
-        curriculum_iters=args.curriculum_iters,
-        global_batch_size=global_batch_size,
         no_dim=args.no_dim,
         no_separate_color_tokens=args.no_separate_color_tokens,
         max_seq_len=args.max_seq_len,
@@ -2960,7 +2956,7 @@ def main():
     logger.info(f"Optimizer with {len(other_params)} other-params lr={args.lr_other}")
 
     # LR schedule
-    steps_per_epoch = args.samples_per_epoch // global_batch_size
+    steps_per_epoch = args.samples_per_epoch // (args.train_batch_size * args.grad_accum_steps * accelerator.num_processes)
     num_training_steps = steps_per_epoch * args.num_epochs
     if args.lr_scheduler == 'cosine':
         lr_scheduler = get_cosine_schedule_with_warmup(
@@ -3181,6 +3177,7 @@ def main():
         else:
             ce_losses_accum = [0.0 for _ in range(args.max_num_pair - 1)]
 
+        train_dataset.set_rngs(epoch)
         for batch_idx, batch_data in enumerate(train_loader):
             # skip batch idx if recovered run already encountered it
             if batch_idx < resume_batch_idx:

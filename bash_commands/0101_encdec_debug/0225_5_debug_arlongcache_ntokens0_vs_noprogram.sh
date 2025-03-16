@@ -9,7 +9,7 @@
 # TODO runs: rerun AR and noprogram with and without nobos, full precision AR nobos and noprogram nobos, ar shortcontext nobos
 
 # AR that collapses back to baseline
-accelerate launch --main_process_port $MASTER_PORT encoder_decoder_autoregressive_longcontext_caching_0310/train.py \
+accelerate launch --main_process_port $MASTER_PORT encoder_decoder_autoregressive_longcontext_caching/train.py \
     --train_data_dir ./data/re-arc/train_data_debug_overfit4/tasks \
     --eval_train_dir ./data/re-arc/arc_original_debug_overfit4/training \
     --eval_eval_dir ./data/re-arc/arc_original_debug_overfit4/training \
@@ -34,7 +34,7 @@ accelerate launch --main_process_port $MASTER_PORT encoder_decoder_autoregressiv
     --eval_batch_size 100
 
 # actual baseline
-accelerate launch --main_process_port $MASTER_PORT encoder_decoder_noprogram_0310/train.py \
+accelerate launch --main_process_port $MASTER_PORT encoder_decoder_noprogram/train.py \
     --train_data_dir ./data/re-arc/train_data_debug_overfit4/tasks \
     --eval_train_dir ./data/re-arc/arc_original_debug_overfit4/training \
     --eval_eval_dir ./data/re-arc/arc_original_debug_overfit4/training \

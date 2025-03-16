@@ -517,8 +517,6 @@ class TrainDataset(Dataset):
         only_train_original: bool,
         debug_len: int,
         num_workers: int,
-        curriculum_iters: int,
-        global_batch_size: int,
         no_dim: bool,
         no_separate_color_tokens: bool,
         max_seq_len: int,
@@ -545,14 +543,15 @@ class TrainDataset(Dataset):
         self.min_num_pair = min_num_pair
         self.max_num_pair = max_num_pair
         self.debug_len = debug_len
-        self.curriculum_iters = curriculum_iters
-        self.global_batch_size = global_batch_size
-        self.num_workers = num_workers if num_workers > 0 else 1
         self.no_dim = no_dim
         self.no_separate_color_tokens = no_separate_color_tokens
         self.max_seq_len = max_seq_len
         self.no_bos = no_bos
         self.only_first_bos = only_first_bos
+
+        self.num_workers = num_workers
+        self.process_index = process_index
+        self.seed = seed
 
         # setup args
         self.normalized_ratio = np.array([self.re_arc_ratio, self.concept_arc_ratio, self.arc_heavy_ratio])
@@ -560,23 +559,8 @@ class TrainDataset(Dataset):
         self.d8_augmenters = get_d8_augmenters(include_identity=True)
         self.extra_augmenters = get_mit_augmenters(include_basic=True, include_size=True, include_chain=True, include_repeat=True)
 
-        # seed and process_index
-        if num_workers == 0:
-            self.rngs = [np.random.RandomState(seed + process_index)]
-        else:
-            self.rngs = [np.random.RandomState(seed + i) for i in range(num_workers * process_index, num_workers * (process_index + 1))]
-
-        # keep track of how many samples for this worker
-        if num_workers == 0:
-            self.workers_to_num_sample = {0: 0}
-        else:
-            self.workers_to_num_sample = {i: 0 for i in range(num_workers)}
-
-        # num pair must be the same across gpus
-        if num_workers == 0:
-            self.num_pair_rngs = [np.random.RandomState(seed)]
-        else:
-            self.num_pair_rngs = [np.random.RandomState(seed + i) for i in range(num_workers)]
+        # set rngs
+        self.set_rngs(epoch=0)
 
         # load re-arc data + train original data
         if only_train_original:
@@ -628,6 +612,19 @@ class TrainDataset(Dataset):
         # We'll do random sampling in the collate fn
         return 0
 
+    def set_rngs(self, epoch: int):
+        epoch_seed = epoch * 1000
+        # seed and process_index
+        if self.num_workers == 0:
+            self.rngs = [np.random.RandomState(self.seed + epoch_seed + self.process_index)]
+        else:
+            self.rngs = [np.random.RandomState(self.seed + epoch_seed + i) for i in range(self.num_workers * self.process_index, self.num_workers * (self.process_index + 1))]
+        # num pair must be the same across gpus
+        if self.num_workers == 0:
+            self.num_pair_rngs = [np.random.RandomState(self.seed + epoch_seed)]
+        else:
+            self.num_pair_rngs = [np.random.RandomState(self.seed + epoch_seed + i) for i in range(self.num_workers)]
+
 
 def collate_fn_train(batch: List[int], dataset: TrainDataset) -> Dict:
     batch_size = len(batch)
@@ -638,21 +635,13 @@ def collate_fn_train(batch: List[int], dataset: TrainDataset) -> Dict:
     rng = dataset.rngs[int(worker_id)]
     num_pair_rng = dataset.num_pair_rngs[int(worker_id)]
 
-    # update curriculum
-    dataset.workers_to_num_sample[int(worker_id)] += batch_size
-
     # the restriction here is to enforce all list of pairs in batch are equal length
     all_task_ids = []
     token_lens = []
     all_np_chosen_pairs = []
 
     # must sample this number of pairs to avoid GPU synchronization issues
-    if dataset.curriculum_iters > 0:
-        required_num_pair = dataset.min_num_pair + \
-            (dataset.workers_to_num_sample[int(worker_id)] * dataset.num_workers) // (dataset.global_batch_size * dataset.curriculum_iters)
-        required_num_pair = min(required_num_pair, dataset.max_num_pair)
-    else:
-        required_num_pair = num_pair_rng.choice(list(range(dataset.min_num_pair, dataset.max_num_pair + 1)))
+    required_num_pair = num_pair_rng.choice(list(range(dataset.min_num_pair, dataset.max_num_pair + 1)))
 
     # sample random task from random dataset, if grid size >30 or does not have enough for required_num_pair, retry
     while len(all_task_ids) < batch_size:
@@ -952,16 +941,8 @@ def collate_fn_train_invar(batch: List[int], dataset: TrainDataset) -> Dict:
     rng = dataset.rngs[int(worker_id)]
     num_pair_rng = dataset.num_pair_rngs[int(worker_id)]
 
-    # update curriculum
-    dataset.workers_to_num_sample[int(worker_id)] += batch_size
-
     # must sample this number of pairs to avoid GPU synchronization issues
-    if dataset.curriculum_iters > 0:
-        required_num_pair = dataset.min_num_pair + \
-            (dataset.workers_to_num_sample[int(worker_id)] * dataset.num_workers) // (dataset.global_batch_size * dataset.curriculum_iters)
-        required_num_pair = min(required_num_pair, dataset.max_num_pair)
-    else:
-        required_num_pair = num_pair_rng.choice(list(range(dataset.min_num_pair, dataset.max_num_pair + 1)))
+    required_num_pair = num_pair_rng.choice(list(range(dataset.min_num_pair, dataset.max_num_pair + 1)))
 
     # is same
     is_same = rng.rand() < 0.5

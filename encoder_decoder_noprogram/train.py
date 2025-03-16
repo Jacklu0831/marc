@@ -361,6 +361,8 @@ def evaluate(
                         skip_special_tokens=True,
                         no_separate_color_tokens=dataset.no_separate_color_tokens,
                     )
+                    # print(gen_texts)
+                    # breakpoint()
                 else:
                     assert prior_embeddings is not None
                     # generate with no program
@@ -828,6 +830,8 @@ def model_loss(
             attention_mask=attention_mask,
             labels=label_ids,
         ).loss
+        # print(ce_loss.item())
+        # breakpoint()
         return ce_loss, torch.tensor(0.0, device=input_ids.device), ce_loss
 
     assert prior_embeddings is not None
@@ -1219,7 +1223,7 @@ def main():
     if args.debug:
         args.tag = 'test'
         args.wandb = False
-        args.samples_per_epoch = 32
+        args.samples_per_epoch = 8
         args.log_every = 1
         args.debug_no_resume = True
 
@@ -1698,6 +1702,7 @@ def main():
         total_loss_accum = 0.0
         grad_norm_accum = 0.0
 
+        train_dataset.set_rngs(epoch)
         for batch_idx, batch_data in enumerate(train_loader):
             # skip batch idx if recovered run already encountered it
             if batch_idx < resume_batch_idx:
