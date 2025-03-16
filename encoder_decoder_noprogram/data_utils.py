@@ -403,7 +403,10 @@ class TrainDataset(Dataset):
         else:
             re_arc_task_id_to_pairs = load_re_arc_from_data_dir(train_data_dir)
             train_original_task_id_to_pairs = load_train_original_data_from_dir(eval_train_dir)
-            assert set(re_arc_task_id_to_pairs.keys()) == set(train_original_task_id_to_pairs.keys())
+            if set(re_arc_task_id_to_pairs.keys()) != set(train_original_task_id_to_pairs.keys()):
+                assert set(re_arc_task_id_to_pairs.keys()).issubset(set(train_original_task_id_to_pairs.keys()))
+                logger.info(f'[WARNING] loaded {len(set(re_arc_task_id_to_pairs.keys()))} re-arc tasks, less than 400')
+                train_original_task_id_to_pairs = {task_id: pairs for task_id, pairs in train_original_task_id_to_pairs.items() if task_id in re_arc_task_id_to_pairs}
             for task_id in re_arc_task_id_to_pairs:
                 re_arc_task_id_to_pairs[task_id] += train_original_task_id_to_pairs[task_id]
         self.arc_train_id_to_pairs = re_arc_task_id_to_pairs
