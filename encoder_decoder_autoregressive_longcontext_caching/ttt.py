@@ -169,6 +169,7 @@ def main():
     parser.add_argument("--demonstration_dropout", type=float, default=0.0)
     parser.add_argument("--reset_rope", action="store_true")
     parser.add_argument("--lr_scheduler", type=str, choices=["cosine", "constant"], default="cosine")
+    parser.add_argument("--attention_reduction_ratio", type=float, default=1.0)
 
     # program loss
     parser.add_argument("--program_type", type=str, choices=["none", "random", "concat"], default="none")
@@ -234,6 +235,7 @@ def main():
     parser.add_argument("--no_dim", action='store_true')
     parser.add_argument("--no_separate_color_tokens", action='store_true')
     parser.add_argument("--no_bos", action="store_true")
+    parser.add_argument("--only_first_bos", action="store_true")
 
     parser.add_argument("--ntokens", type=int, default=4)
     parser.add_argument("--seed", type=int, default=0)
@@ -478,6 +480,7 @@ def main():
         no_separate_color_tokens=args.no_separate_color_tokens,
         max_seq_len=args.max_seq_len,
         no_bos=args.no_bos,
+        only_first_bos=args.only_first_bos,
     )
 
     # save memory by making datasets on the fly
@@ -733,6 +736,7 @@ def main():
                             contrastive_loss=contrastive_loss, # NOTIMPLEMENTED
                             is_same=True, # NOTIMPLEMENTED
                             short_context=args.short_context,
+                            attention_reduction_ratio=args.attention_reduction_ratio,
                         )
 
                     accelerator.backward(total_loss)

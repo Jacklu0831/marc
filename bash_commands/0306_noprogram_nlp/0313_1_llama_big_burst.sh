@@ -9,8 +9,10 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
     --max_pair_len 2048 \
     --train_batch_size 1 \
     --grad_accum_steps 8 \
-    --eval_batch_size 4 \
+    --eval_batch_size 2 \
     --samples_per_epoch 20000 \
     --eval_epochs 2 \
     --eval_pretrained \
     --wandb
+
+# Submitted batch job 37936

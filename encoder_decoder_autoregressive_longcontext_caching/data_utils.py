@@ -523,6 +523,7 @@ class TrainDataset(Dataset):
         no_separate_color_tokens: bool,
         max_seq_len: int,
         no_bos: bool,
+        only_first_bos: bool,
     ):
         self.re_arc_ratio = re_arc_ratio
         self.concept_arc_ratio = concept_arc_ratio
@@ -551,6 +552,7 @@ class TrainDataset(Dataset):
         self.no_separate_color_tokens = no_separate_color_tokens
         self.max_seq_len = max_seq_len
         self.no_bos = no_bos
+        self.only_first_bos = only_first_bos
 
         # setup args
         self.normalized_ratio = np.array([self.re_arc_ratio, self.concept_arc_ratio, self.arc_heavy_ratio])
@@ -584,7 +586,10 @@ class TrainDataset(Dataset):
         else:
             re_arc_task_id_to_pairs = load_re_arc_from_data_dir(train_data_dir)
             train_original_task_id_to_pairs = load_train_original_data_from_dir(eval_train_dir)
-            assert set(re_arc_task_id_to_pairs.keys()) == set(train_original_task_id_to_pairs.keys())
+            if set(re_arc_task_id_to_pairs.keys()) != set(train_original_task_id_to_pairs.keys()):
+                assert set(re_arc_task_id_to_pairs.keys()).issubset(set(train_original_task_id_to_pairs.keys()))
+                logger.info(f'[WARNING] loaded {len(set(re_arc_task_id_to_pairs.keys()))} re-arc tasks, less than 400')
+                train_original_task_id_to_pairs = {task_id: pairs for task_id, pairs in train_original_task_id_to_pairs.items() if task_id in re_arc_task_id_to_pairs}
             for task_id in re_arc_task_id_to_pairs:
                 re_arc_task_id_to_pairs[task_id] += train_original_task_id_to_pairs[task_id]
         self.arc_train_id_to_pairs = re_arc_task_id_to_pairs
@@ -719,14 +724,17 @@ def collate_fn_train(batch: List[int], dataset: TrainDataset) -> Dict:
 
         # HACK: just hardcode some calculation here to limit maxseqlen
         token_len = 0
-        for pair in np_chosen_pairs:
+        for pair_i, pair in enumerate(np_chosen_pairs):
             h1, w1 = len(pair['input']), len(pair['input'][0])
             h2, w2 = len(pair['output']), len(pair['output'][0])
             pair_token_len = h1 * (w1 + 1) + h2 * (w2 + 1) - 2 # cells and \n
             pair_token_len += 3 # input, output, eos
             pair_token_len += 6 # hw\n for both input and output
             if not dataset.no_bos:
-                pair_token_len += 1
+                if dataset.only_first_bos:
+                    pair_token_len += int(pair_i == 0)
+                else:
+                    pair_token_len += 1
             token_len += pair_token_len
 
         if token_len > dataset.max_seq_len:
@@ -767,7 +775,7 @@ def collate_fn_train(batch: List[int], dataset: TrainDataset) -> Dict:
             example = (task.train_examples + [task.test_example])[pair_i]
             input_grid_ids, output_grid_ids = dataset.tokenizer.get_input_and_output_grid_ids(
                 example=example,
-                add_bos=not dataset.no_bos,
+                add_bos=False if dataset.no_bos else (pair_i == 0 if dataset.only_first_bos else True),
                 no_dim=dataset.no_dim,
                 no_separate_color_tokens=dataset.no_separate_color_tokens,
             )
@@ -839,6 +847,8 @@ def collate_fn_train(batch: List[int], dataset: TrainDataset) -> Dict:
         extra_padded_input_ids = padded_input_ids
         extra_padded_attention_mask = padded_attention_mask
         extra_padded_label_ids = padded_label_ids
+
+    # for i in range(len(extra_padded_input_ids)): print(dataset.tokenizer.decode(extra_padded_input_ids[i][1], no_separate_color_tokens=dataset.no_separate_color_tokens), '\n')
 
     batch_dict = {
         "input_ids": extra_padded_input_ids,
@@ -923,15 +933,18 @@ def collate_fn_train_invar(batch: List[int], dataset: TrainDataset) -> Dict:
     def get_token_len(np_chosen_pairs):
         # HACK: just hardcode some calculation here to limit maxseqlen
         token_len = 0
-        for pair in np_chosen_pairs:
+        for pair_i, pair in enumerate(np_chosen_pairs):
             h1, w1 = len(pair['input']), len(pair['input'][0])
             h2, w2 = len(pair['output']), len(pair['output'][0])
             pair_token_len = h1 * (w1 + 1) + h2 * (w2 + 1) - 2 # cells and \n
             pair_token_len += 3 # input, output, eos
             pair_token_len += 6 # hw\n for both input and output
-            token_len += pair_token_len
             if not dataset.no_bos:
-                token_len += 1
+                if dataset.only_first_bos:
+                    pair_token_len += int(pair_i == 0)
+                else:
+                    pair_token_len += 1
+            token_len += pair_token_len
         return token_len
 
     worker_info = get_worker_info()
@@ -1031,7 +1044,7 @@ def collate_fn_train_invar(batch: List[int], dataset: TrainDataset) -> Dict:
             example = (task.train_examples + [task.test_example])[pair_i]
             input_grid_ids, output_grid_ids = dataset.tokenizer.get_input_and_output_grid_ids(
                 example=example,
-                add_bos=not dataset.no_bos,
+                add_bos=False if dataset.no_bos else (pair_i == 0 if dataset.only_first_bos else True),
                 no_dim=dataset.no_dim,
                 no_separate_color_tokens=dataset.no_separate_color_tokens,
             )
@@ -1172,6 +1185,7 @@ class EvalDataset:
         max_num_train_pair: int,
         max_seq_len: int,
         no_bos: bool,
+        only_first_bos: bool,
     ):
         self.permute_n = permute_n
         self.augment_n = augment_n
@@ -1191,6 +1205,7 @@ class EvalDataset:
         self.max_num_train_pair = max_num_train_pair # max num pair in training, used for limiting inference
         self.max_seq_len = max_seq_len
         self.no_bos = no_bos
+        self.only_first_bos = only_first_bos
 
         self.extra_inference_pairs = extra_inference_pairs
         self.inference_pair_rng = np.random.RandomState(seed)
@@ -1383,10 +1398,10 @@ class EvalDataset:
         out_token_length = -1
 
         # demonstration pairs
-        for example in task.train_examples:
+        for pair_i, example in enumerate(task.train_examples):
             input_grid_ids, output_grid_ids = self.tokenizer.get_input_and_output_grid_ids(
                 example=example,
-                add_bos=not self.no_bos,
+                add_bos=False if self.no_bos else (pair_i == 0 if self.only_first_bos else True),
                 no_dim=self.no_dim,
                 no_separate_color_tokens=self.no_separate_color_tokens,
             )
@@ -1398,7 +1413,7 @@ class EvalDataset:
         # test pair
         gen_input_ids, gen_output_ids = self.tokenizer.get_input_and_output_grid_ids(
             example=task.test_example,
-            add_bos=not self.no_bos,
+            add_bos=False if self.no_bos else (not self.only_first_bos),
             no_dim=self.no_dim,
             no_separate_color_tokens=self.no_separate_color_tokens,
         )
@@ -1416,6 +1431,8 @@ class EvalDataset:
             gen_output_ids,
             no_separate_color_tokens=self.no_separate_color_tokens
         )[:-len(self.tokenizer.eos_token)]
+
+        # for i in range(len(pair_idx_to_input_ids)): print(self.tokenizer.decode(pair_idx_to_input_ids[i], no_separate_color_tokens=self.no_separate_color_tokens), '\n')
 
         return {
             "task_id": task.name,
@@ -1606,6 +1623,7 @@ class GSDataset(Dataset):
         no_dim: bool,
         no_separate_color_tokens: bool,
         no_bos: bool,
+        only_first_bos: bool,
     ):
         self.task = task
         self.tokenizer = tokenizer
@@ -1616,6 +1634,7 @@ class GSDataset(Dataset):
         self.no_dim = no_dim
         self.no_separate_color_tokens = no_separate_color_tokens
         self.no_bos = no_bos
+        self.only_first_bos = only_first_bos
 
         # format data (only use demonstration pairs)
         self.parsed_examples = [self.format(example) for example in task.train_examples]
@@ -1632,7 +1651,7 @@ class GSDataset(Dataset):
 
         input_grid_ids, output_grid_ids = self.tokenizer.get_input_and_output_grid_ids(
             example=example,
-            add_bos=not self.no_bos,
+            add_bos=False if self.no_bos else (not self.only_first_bos),
             no_dim=self.no_dim,
             no_separate_color_tokens=self.no_separate_color_tokens,
         )
@@ -1695,6 +1714,7 @@ class TTTDataset(Dataset):
         no_separate_color_tokens: bool,
         max_seq_len: int,
         no_bos: bool,
+        only_first_bos: bool,
     ):
         self.permute_n = permute_n
         self.tokenizer = tokenizer
@@ -1705,6 +1725,7 @@ class TTTDataset(Dataset):
         self.no_separate_color_tokens = no_separate_color_tokens
         self.max_seq_len = max_seq_len
         self.no_bos = no_bos
+        self.only_first_bos = only_first_bos
 
         # get all augmenters
         d8_augmenters = get_d8_augmenters(include_identity=False)
@@ -1818,7 +1839,7 @@ class TTTDataset(Dataset):
             example = (task.train_examples + [task.test_example])[pair_i]
             input_grid_ids, output_grid_ids = self.tokenizer.get_input_and_output_grid_ids(
                 example=example,
-                add_bos=not self.no_bos,
+                add_bos=False if self.no_bos else (pair_i == 0 if self.only_first_bos else True),
                 no_dim=self.no_dim,
                 no_separate_color_tokens=self.no_separate_color_tokens,
             )

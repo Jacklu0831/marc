@@ -72,6 +72,7 @@ def main():
     parser.add_argument("--no_residual", action="store_true")
     parser.add_argument("--no_normalize", action="store_true")
     parser.add_argument("--weird_cast", action="store_true")
+    parser.add_argument("--attention_reduction_ratio", type=float, default=1.0)
 
     # vqvae
     parser.add_argument("--codebook_size", type=int, default=-1)
@@ -99,9 +100,11 @@ def main():
     # data
     parser.add_argument("--train_pad_side", type=str, choices=["left", "right"], default="right")
     parser.add_argument("--gen_pad_side", type=str, choices=["left", "right"], default="left")
+    parser.add_argument("--kv_pad_side", type=str, choices=["left", "right"], default="right")
     parser.add_argument("--no_dim", action='store_true')
     parser.add_argument("--no_separate_color_tokens", action='store_true')
     parser.add_argument("--no_bos", action="store_true")
+    parser.add_argument("--only_first_bos", action="store_true")
     parser.add_argument("--short_context", action='store_true')
 
     # eval data
@@ -425,6 +428,7 @@ def main():
         max_num_train_pair=args.max_num_pair - 1,
         max_seq_len=args.max_seq_len,
         no_bos=args.no_bos,
+        only_first_bos=args.only_first_bos,
     )
     collate_fn = partial(collate_fn_eval, dataset=dataset)
 
@@ -453,6 +457,8 @@ def main():
         no_codebook=False,
         weird_cast=args.weird_cast,
         short_context=args.short_context,
+        kv_pad_side=args.kv_pad_side,
+        attention_reduction_ratio=args.attention_reduction_ratio,
     )
 
     if accelerator.is_main_process:

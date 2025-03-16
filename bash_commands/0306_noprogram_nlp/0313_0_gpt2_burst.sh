@@ -9,8 +9,9 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
     --train_batch_size 4 \
     --eval_batch_size 8 \
     --eval_pretrained \
+    --debug_no_resume \
     --wandb
 
 # Submitted batch job 37755 # train acc not doing up, while eval does???????
 
-# Submitted batch job 37931 # only difference being eval on all
+# Submitted batch job 37945 # only difference being eval on all
