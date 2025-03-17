@@ -13,7 +13,7 @@
 # TODO now WITH THE BIG FIX:
 # AR and noprogram baseline, numpair3, noaug, extraaug, extraaugsingle, 100/200 tasks
 # AR ntoken search 2, 4, 8, 16, 32
-# AR everything: invarloss, programloss, consistencyloss, full/demonstration dropout, shortcontext (ntoken search)
+# AR everything: invarloss, programloss, consistencyloss, fullttention dropout, full/demonstration dropout, shortcontext (ntoken search)
 
 
 # make generate work with kv cache, finally works

@@ -1,3 +1,4 @@
+from custom_llama import MyLlamaForCausalLM
 from transformers.models.llama.modeling_llama import LlamaRMSNorm
 import time
 from transformers.tokenization_utils_fast import PreTrainedTokenizerFast
@@ -17,9 +18,9 @@ from torch.nn.parallel import DistributedDataParallel
 from torch.utils.data import DataLoader
 from transformers import (
     AutoTokenizer,
-    AutoModelForCausalLM,
     get_cosine_schedule_with_warmup,
     get_constant_schedule_with_warmup,
+    LlamaConfig.
 )
 from accelerate import Accelerator, InitProcessGroupKwargs
 from accelerate.logging import get_logger
@@ -166,8 +167,8 @@ def main():
     parser.add_argument("--no_normalize", action="store_true")
     parser.add_argument("--token_weighted_loss", action="store_true")
     parser.add_argument("--weird_cast", action="store_true")
-    parser.add_argument("--demonstration_dropout", type=float, default=0.0)
-    parser.add_argument("--reset_rope", action="store_true")
+    parser.add_argument("--full_demonstration_dropout", type=float, default=0.0)
+    parser.add_argument("--partial_demonstration_dropout", type=float, default=0.0)
     parser.add_argument("--lr_scheduler", type=str, choices=["cosine", "constant"], default="cosine")
     parser.add_argument("--attention_reduction_ratio", type=float, default=1.0)
 
@@ -201,7 +202,8 @@ def main():
     parser.add_argument("--optimizer", type=str, choices=["adamw8bit", "adamw", "sgd"], default="adamw")
     parser.add_argument("--warmup_epochs", type=int, default=0)
     parser.add_argument("--max_seq_len", type=int, default=8192)
-    parser.add_argument("--attention_dropout", type=float, default=0.0)
+    parser.add_argument("--full_attention_dropout", type=float, default=0.0)
+    parser.add_argument("--demonstration_attention_dropout", type=float, default=0.0) # activate naive selfattn but oom
     parser.add_argument("--program_dropout", type=float, default=0.0)
     parser.add_argument("--program_noise_std", type=float, default=0.0)
     parser.add_argument("--save_epochs", type=int, default=-1)
@@ -244,6 +246,8 @@ def main():
     # check args
     if args.model_name == "nemo8b":
         assert args.pad_side == "left"
+    if args.demonstration_attention_dropout:
+        assert not args.flash_attn
 
     assert args.trainable_nbit == 16 # TODO, test otherwise
 
@@ -316,15 +320,19 @@ def main():
     else:
         raise ValueError(f"unrecognized untrainable_nbit {args.untrainable_nbit}")
 
-    base_model = AutoModelForCausalLM.from_pretrained(
+    # load config here to set attention dropout params
+    config = LlamaConfig.from_pretrained(MODEL_NAME_TO_PATH[args.model_name])
+    config.attention_dropout = args.full_attention_dropout
+    config.demonstration_attention_dropout = args.demonstration_attention_dropout
+    if args.demonstration_attention_dropout > 0.0:
+        config._attn_implementation_autoset = False
+        config._attn_implementation = 'eager'
+
+    base_model = MyLlamaForCausalLM.from_pretrained(
         pretrained_model_name_or_path=MODEL_NAME_TO_PATH[args.model_name],
+        config=config,
         **from_pretrained_kwargs,
     )
-
-    # attention dropout
-    for layer in base_model.model.layers:
-        layer.self_attn.attention_dropout = args.attention_dropout
-    base_model.config.attention_dropout = args.attention_dropout
 
     # program dropout
     program_dropout = nn.Dropout(p=args.program_dropout)
@@ -730,8 +738,8 @@ def main():
                             token_weighted_loss=args.token_weighted_loss,
                             weird_cast=args.weird_cast,
                             loss_on_first=True,
-                            demonstration_dropout=args.demonstration_dropout,
-                            reset_rope=args.reset_rope,
+                            full_demonstration_dropout=args.full_demonstration_dropout,
+                            partial_demonstration_dropout=args.partial_demonstration_dropout,
                             debug=False,
                             contrastive_loss=contrastive_loss, # NOTIMPLEMENTED
                             is_same=True, # NOTIMPLEMENTED

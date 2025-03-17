@@ -1,3 +1,4 @@
+import math
 import inspect
 import os
 import warnings
@@ -56,32 +57,139 @@ logger = logging.get_logger(__name__)
 def reduce_key_states(
         key_states: torch.Tensor,
         query_states: torch.Tensor,
-        program_intervals: List[List[Tuple[int, int]]],
+        demonstration_intervals: List[List[Tuple[int, int]]],
         attention_reduction_ratio: float,
         is_prefill: bool,
     ):
 
-    # reduce all past demonstration pairs beside programs
-    assert query_states.shape[1] > 0 and key_states.shape[1] > 0
+    # reduce all past demonstration pairs
+    assert query_states.shape[2] > 0 and key_states.shape[2] > 0
     assert query_states.ndim == key_states.ndim == 4
-    assert key_states.shape[1] > query_states.shape[1] > 0 # only reduce when using kv cache with new query
-    assert max(x[-1][1] for x in program_intervals) <= key_states.shape[1] - query_states.shape[1] # program intervals only in keys
+    assert key_states.shape[2] > query_states.shape[2] > 0 # only reduce when using kv cache with new query
+    assert max(x[-1][1] for x in demonstration_intervals) <= key_states.shape[2] - query_states.shape[2] # demonstration intervals only in keys
 
     batch_size = key_states.shape[0]
-    assert batch_size == len(program_intervals)
+    assert batch_size == len(demonstration_intervals)
 
-    for batch_i in range(batch_size):
+    for batch_i, intervals in enumerate(demonstration_intervals):
         # create reduction mask, lets start with reducing everything
-        reduction_mask = torch.full((key_states.shape[1],), 1, dtype=bool, device=key_states.device) # type: ignore
-        # dont reduce the query portion pls
-        reduction_mask[-query_states.shape[1]:] = False
-        # dont reduce the programs too
-        for s, e in program_intervals[batch_i]:
-            reduction_mask[s: e] = False
-        # perform reducing
-        key_states[batch_i, reduction_mask, :, :] *= attention_reduction_ratio
+        reduction_mask = torch.full((key_states.shape[2],), False, dtype=bool, device=key_states.device) # type: ignore
+        reduction_mask[intervals[-1][0]: intervals[-1][1]] = True # only set final past demonstration pair to true
+        key_states[batch_i, :, reduction_mask, :] *= attention_reduction_ratio
 
     return key_states
+
+
+class MyLlamaAttention(nn.Module):
+    """Multi-headed attention from 'Attention Is All You Need' paper"""
+
+    def __init__(self, config: LlamaConfig, layer_idx: Optional[int] = None):
+        super().__init__()
+        self.config = config
+        self.layer_idx = layer_idx
+        if layer_idx is None:
+            logger.warning_once(
+                f"Instantiating {self.__class__.__name__} without passing a `layer_idx` is not recommended and will "
+                "lead to errors during the forward call if caching is used. Please make sure to provide a `layer_idx` "
+                "when creating this class."
+            )
+
+        self.attention_dropout = config.attention_dropout
+        self.hidden_size = config.hidden_size
+        self.num_heads = config.num_attention_heads
+        self.head_dim = getattr(config, "head_dim", self.hidden_size // self.num_heads)
+        self.num_key_value_heads = config.num_key_value_heads
+        self.num_key_value_groups = self.num_heads // self.num_key_value_heads
+        self.max_position_embeddings = config.max_position_embeddings
+        self.rope_theta = config.rope_theta
+        self.is_causal = True
+
+        self.q_proj = nn.Linear(self.hidden_size, self.num_heads * self.head_dim, bias=config.attention_bias)
+        self.k_proj = nn.Linear(self.hidden_size, self.num_key_value_heads * self.head_dim, bias=config.attention_bias)
+        self.v_proj = nn.Linear(self.hidden_size, self.num_key_value_heads * self.head_dim, bias=config.attention_bias)
+        self.o_proj = nn.Linear(self.num_heads * self.head_dim, self.hidden_size, bias=config.attention_bias)
+
+        # TODO (joao): remove in v4.46 (RoPE is computed in the model, not in the decoder layers)
+        self.rotary_emb = LlamaRotaryEmbedding(config=self.config)
+
+    def forward(
+        self,
+        hidden_states: torch.Tensor,
+        attention_mask: Optional[torch.Tensor] = None,
+        position_ids: Optional[torch.LongTensor] = None,
+        past_key_value: Optional[Cache] = None,
+        output_attentions: bool = False,
+        use_cache: bool = False,
+        cache_position: Optional[torch.LongTensor] = None,
+        position_embeddings: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,  # will become mandatory in v4.46
+        demonstration_intervals: Optional[List[List[Tuple[int, int]]]] = None, # JACK
+        attention_reduction_ratio: Optional[float] = None, # JACK
+        is_prefill: bool = False, # JACK
+        **kwargs,
+    ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
+        bsz, q_len, _ = hidden_states.size()
+
+        query_states = self.q_proj(hidden_states)
+        key_states = self.k_proj(hidden_states)
+        value_states = self.v_proj(hidden_states)
+
+        # use -1 to infer num_heads and num_key_value_heads as they may vary if tensor parallel is used
+        query_states = query_states.view(bsz, q_len, -1, self.head_dim).transpose(1, 2)
+        key_states = key_states.view(bsz, q_len, -1, self.head_dim).transpose(1, 2)
+        value_states = value_states.view(bsz, q_len, -1, self.head_dim).transpose(1, 2)
+
+        if position_embeddings is None:
+            logger.warning_once(
+                "The attention layers in this model are transitioning from computing the RoPE embeddings internally "
+                "through `position_ids` (2D tensor with the indexes of the tokens), to using externally computed "
+                "`position_embeddings` (Tuple of tensors, containing cos and sin). In v4.46 `position_ids` will be "
+                "removed and `position_embeddings` will be mandatory."
+            )
+            cos, sin = self.rotary_emb(value_states, position_ids)
+        else:
+            cos, sin = position_embeddings
+        query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin)
+
+        if past_key_value is not None:
+            # sin and cos are specific to RoPE models; cache_position needed for the static cache
+            cache_kwargs = {"sin": sin, "cos": cos, "cache_position": cache_position}
+            key_states, value_states = past_key_value.update(key_states, value_states, self.layer_idx, cache_kwargs)
+
+        # JACK
+        assert (demonstration_intervals == None) == (attention_reduction_ratio == None)
+        if attention_reduction_ratio is not None and attention_reduction_ratio != 1.0:
+            assert attention_reduction_ratio is not None
+            key_states = reduce_key_states(key_states, query_states, demonstration_intervals, attention_reduction_ratio, is_prefill)
+
+        key_states = repeat_kv(key_states, self.num_key_value_groups)
+        value_states = repeat_kv(value_states, self.num_key_value_groups)
+        attn_weights = torch.matmul(query_states, key_states.transpose(2, 3)) / math.sqrt(self.head_dim)
+
+        if attention_mask is not None:  # no matter the length, we just slice it
+            causal_mask = attention_mask[:, :, :, : key_states.shape[-2]]
+            attn_weights = attn_weights + causal_mask
+
+        # upcast attention to fp32
+        attn_weights = nn.functional.softmax(attn_weights, dim=-1, dtype=torch.float32).to(query_states.dtype)
+        attn_weights = nn.functional.dropout(attn_weights, p=self.attention_dropout, training=self.training)
+        attn_output = torch.matmul(attn_weights, value_states)
+
+        if attn_output.size() != (bsz, self.num_heads, q_len, self.head_dim):
+            raise ValueError(
+                f"`attn_output` should be of size {(bsz, self.num_heads, q_len, self.head_dim)}, but is"
+                f" {attn_output.size()}"
+            )
+
+        attn_output = attn_output.transpose(1, 2).contiguous()
+
+        attn_output = attn_output.reshape(bsz, q_len, -1)
+
+        attn_output = self.o_proj(attn_output)
+
+        if not output_attentions:
+            attn_weights = None
+
+        return attn_output, attn_weights, past_key_value
 
 
 class MyLlamaFlashAttention2(LlamaAttention):
@@ -109,7 +217,7 @@ class MyLlamaFlashAttention2(LlamaAttention):
         use_cache: bool = False,
         cache_position: Optional[torch.LongTensor] = None,
         position_embeddings: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,  # will become mandatory in v4.46
-        program_intervals: Optional[List[List[Tuple[int, int]]]] = None, # JACK
+        demonstration_intervals: Optional[List[List[Tuple[int, int]]]] = None, # JACK
         attention_reduction_ratio: Optional[float] = None, # JACK
         is_prefill: bool = False, # JACK
         **kwargs: Unpack[FlashAttentionKwargs],
@@ -152,6 +260,12 @@ class MyLlamaFlashAttention2(LlamaAttention):
             cache_kwargs = {"sin": sin, "cos": cos, "cache_position": cache_position}
             key_states, value_states = past_key_value.update(key_states, value_states, self.layer_idx, cache_kwargs)
 
+        # JACK
+        assert (demonstration_intervals == None) == (attention_reduction_ratio == None)
+        if attention_reduction_ratio is not None and attention_reduction_ratio != 1.0:
+            assert attention_reduction_ratio is not None
+            key_states = reduce_key_states(key_states, query_states, demonstration_intervals, attention_reduction_ratio, is_prefill)
+
         # TODO: These transpose are quite inefficient but Flash Attention requires the layout [batch_size, sequence_length, num_heads, head_dim]. We would need to refactor the KV cache
         # to be able to avoid many of these transpose/reshape/view.
         query_states = query_states.transpose(1, 2)
@@ -185,14 +299,6 @@ class MyLlamaFlashAttention2(LlamaAttention):
             query_states = query_states.to(target_dtype)
             key_states = key_states.to(target_dtype)
             value_states = value_states.to(target_dtype)
-
-        # JACK
-        assert (program_intervals == None) == (attention_reduction_ratio == None)
-        if attention_reduction_ratio is not None and attention_reduction_ratio != 1.0:
-            assert attention_reduction_ratio is not None
-            key_states = reduce_key_states(key_states, query_states, program_intervals, attention_reduction_ratio, is_prefill)
-            # key_states, value_states = past_key_value.update(key_states.transpose(1, 2).to(original_dtype), value_states.transpose(1, 2).to(original_dtype), self.layer_idx, cache_kwargs)
-            # past_key_value.key_cache[self.layer_idx] = key_states.transpose(1, 2)
 
         attn_output = _flash_attention_forward(
             query_states,
@@ -235,7 +341,7 @@ class MyLlamaSdpaAttention(LlamaAttention):
         use_cache: bool = False,
         cache_position: Optional[torch.LongTensor] = None,
         position_embeddings: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,  # will become mandatory in v4.46
-        program_intervals: Optional[List[List[Tuple[int, int]]]] = None, # JACK
+        demonstration_intervals: Optional[List[List[Tuple[int, int]]]] = None, # JACK
         attention_reduction_ratio: Optional[float] = None, # JACK
         is_prefill: bool = False, # JACK
         **kwargs,
@@ -285,6 +391,12 @@ class MyLlamaSdpaAttention(LlamaAttention):
             cache_kwargs = {"sin": sin, "cos": cos, "cache_position": cache_position}
             key_states, value_states = past_key_value.update(key_states, value_states, self.layer_idx, cache_kwargs)
 
+        # JACK
+        assert (demonstration_intervals == None) == (attention_reduction_ratio == None)
+        if attention_reduction_ratio is not None and attention_reduction_ratio != 1.0:
+            assert attention_reduction_ratio is not None
+            key_states = reduce_key_states(key_states, query_states, demonstration_intervals, attention_reduction_ratio, is_prefill)
+
         key_states = repeat_kv(key_states, self.num_key_value_groups)
         value_states = repeat_kv(value_states, self.num_key_value_groups)
 
@@ -302,14 +414,6 @@ class MyLlamaSdpaAttention(LlamaAttention):
         # We dispatch to SDPA's Flash Attention or Efficient kernels via this `is_causal` if statement instead of an inline conditional assignment
         # in SDPA to support both torch.compile's dynamic shapes and full graph options. An inline conditional prevents dynamic shapes from compiling.
         is_causal = True if causal_mask is None and q_len > 1 else False
-
-        # JACK
-        assert (program_intervals == None) == (attention_reduction_ratio == None)
-        if attention_reduction_ratio is not None and attention_reduction_ratio != 1.0:
-            assert attention_reduction_ratio is not None
-            key_states = reduce_key_states(key_states, query_states, program_intervals, attention_reduction_ratio, is_prefill)
-            # key_states, value_states = past_key_value.update(key_states.transpose(1, 2).to(original_dtype), value_states.transpose(1, 2).to(original_dtype), self.layer_idx, cache_kwargs)
-            # past_key_value.key_cache[self.layer_idx] = key_states.transpose(1, 2)
 
         attn_output = torch.nn.functional.scaled_dot_product_attention(
             query_states,
@@ -329,7 +433,7 @@ class MyLlamaSdpaAttention(LlamaAttention):
 
 
 LLAMA_ATTENTION_CLASSES = {
-    # "eager": LlamaAttention, # JACK
+    "eager": MyLlamaAttention,
     "flash_attention_2": MyLlamaFlashAttention2,
     "sdpa": MyLlamaSdpaAttention,
 }
@@ -356,7 +460,7 @@ class MyLlamaDecoderLayer(nn.Module):
         use_cache: Optional[bool] = False,
         cache_position: Optional[torch.LongTensor] = None,
         position_embeddings: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,  # will become mandatory in v4.46
-        program_intervals: Optional[List[List[Tuple[int, int]]]] = None, # JACK
+        demonstration_intervals: Optional[List[List[Tuple[int, int]]]] = None, # JACK
         attention_reduction_ratio: Optional[float] = None, # JACK
         is_prefill: bool = False, # JACK
         **kwargs,
@@ -397,7 +501,7 @@ class MyLlamaDecoderLayer(nn.Module):
             use_cache=use_cache,
             cache_position=cache_position,
             position_embeddings=position_embeddings,
-            program_intervals=program_intervals, # JACK
+            demonstration_intervals=demonstration_intervals, # JACK
             attention_reduction_ratio=attention_reduction_ratio, # JACK
             is_prefill=is_prefill, # JACK
             **kwargs,
@@ -454,7 +558,7 @@ class MyLlamaModel(LlamaModel):
         output_hidden_states: Optional[bool] = None,
         return_dict: Optional[bool] = None,
         cache_position: Optional[torch.LongTensor] = None,
-        program_intervals: Optional[List[List[Tuple[int, int]]]] = None, # JACK
+        demonstration_intervals: Optional[List[List[Tuple[int, int]]]] = None, # JACK
         attention_reduction_ratio: Optional[float] = None, # JACK
         is_prefill: bool = False, # JACK
         **flash_attn_kwargs: Unpack[FlashAttentionKwargs],
@@ -528,7 +632,7 @@ class MyLlamaModel(LlamaModel):
                     use_cache,
                     cache_position,
                     position_embeddings,
-                    program_intervals, # JACK
+                    demonstration_intervals, # JACK
                     attention_reduction_ratio, # JACK
                     is_prefill, # JACK
                 )
@@ -542,7 +646,7 @@ class MyLlamaModel(LlamaModel):
                     use_cache=use_cache,
                     cache_position=cache_position,
                     position_embeddings=position_embeddings,
-                    program_intervals=program_intervals, # JACK
+                    demonstration_intervals=demonstration_intervals, # JACK
                     attention_reduction_ratio=attention_reduction_ratio, # JACK
                     is_prefill=is_prefill, # JACK
                     **flash_attn_kwargs,
@@ -728,7 +832,7 @@ class MyGenerationMixin(GenerationMixin):
         streamer: Optional["BaseStreamer"] = None,
         negative_prompt_ids: Optional[torch.Tensor] = None,
         negative_prompt_attention_mask: Optional[torch.Tensor] = None,
-        program_intervals: Optional[List[List[Tuple[int, int]]]] = None, # JACK
+        demonstration_intervals: Optional[List[List[Tuple[int, int]]]] = None, # JACK
         attention_reduction_ratio: Optional[float] = None, # JACK
         **kwargs,
     ) -> Union[GenerateOutput, torch.LongTensor]:
@@ -1072,7 +1176,7 @@ class MyGenerationMixin(GenerationMixin):
                 generation_config=generation_config,
                 synced_gpus=synced_gpus,
                 streamer=streamer,
-                program_intervals=program_intervals, # JACK
+                demonstration_intervals=demonstration_intervals, # JACK
                 attention_reduction_ratio=attention_reduction_ratio, # JACK
                 **model_kwargs,
             )
@@ -1246,7 +1350,7 @@ class MyGenerationMixin(GenerationMixin):
         generation_config: GenerationConfig,
         synced_gpus: bool,
         streamer: Optional["BaseStreamer"],
-        program_intervals: Optional[List[List[Tuple[int, int]]]] = None, # JACK
+        demonstration_intervals: Optional[List[List[Tuple[int, int]]]] = None, # JACK
         attention_reduction_ratio: Optional[float] = None, # JACK
         **model_kwargs,
     ) -> Union[GenerateNonBeamOutput, torch.LongTensor]:
@@ -1336,7 +1440,7 @@ class MyGenerationMixin(GenerationMixin):
             model_inputs.update({"output_hidden_states": output_hidden_states} if output_hidden_states else {})
 
             if is_prefill:
-                model_inputs.update({"program_intervals": program_intervals, "attention_reduction_ratio": attention_reduction_ratio})
+                model_inputs.update({"demonstration_intervals": demonstration_intervals, "attention_reduction_ratio": attention_reduction_ratio})
                 outputs = self(**model_inputs, return_dict=True, is_prefill=is_prefill) # JACK
                 is_prefill = False
             else:
@@ -1462,7 +1566,7 @@ class MyLlamaForCausalLM(LlamaForCausalLM, MyGenerationMixin):
         return_dict: Optional[bool] = None,
         cache_position: Optional[torch.LongTensor] = None,
         num_logits_to_keep: int = 0,
-        program_intervals: Optional[List[List[Tuple[int, int]]]] = None, # JACK
+        demonstration_intervals: Optional[List[List[Tuple[int, int]]]] = None, # JACK
         attention_reduction_ratio: Optional[float] = None, # JACK
         is_prefill: bool = False, # JACK
         **kwargs: Unpack[KwargsForCausalLM],
@@ -1515,7 +1619,7 @@ class MyLlamaForCausalLM(LlamaForCausalLM, MyGenerationMixin):
             output_hidden_states=output_hidden_states,
             return_dict=return_dict,
             cache_position=cache_position,
-            program_intervals=program_intervals, # JACK
+            demonstration_intervals=demonstration_intervals, # JACK
             attention_reduction_ratio=attention_reduction_ratio, # JACK
             is_prefill=is_prefill, # JACK
             **kwargs,

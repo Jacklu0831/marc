@@ -35,6 +35,7 @@ from transformers import (
     AutoTokenizer,
     get_cosine_schedule_with_warmup,
     get_constant_schedule_with_warmup,
+    LlamaConfig,
 )
 import bitsandbytes as bnb
 
@@ -357,8 +358,18 @@ def get_predicted_program(
     all_intermediate_programs = [[all_prev_programs[batch_i]] for batch_i in range(batch_size)] # batchsize x num-program-in-each-task x (ntokens, hiddendim)
     # NOTE: num-program-in-task is one more than the number of input_ids pairs
 
-    # keep track of program intervals in KV cache (same across batch)
-    program_intervals = [[] for _ in range(batch_size)]
+    # precompute demonstration intervals for these three tries
+    demonstration_intervals = [[] for _ in range(batch_size)]
+    if attention_reduction_ratio != 1.0:
+        start = ntokens # keep track of start of each demonstration pair
+        for pair_j, lens in enumerate(input_ids_lens):
+            if pair_j > 0:
+                start += attention_mask[pair_j - 1].shape[1] + ntokens
+            max_l = attention_mask[pair_j].shape[1]
+            for batch_i, l in enumerate(lens):
+                if pair_j < num_pairs[batch_i]:
+                    s = start if pad_side == 'right' else start + max_l - l
+                    demonstration_intervals[batch_i].append((s, s + l))
 
     for pair_i, (pair_inputs_embeds, pair_attention_mask, pair_input_ids_lens) in enumerate(zip(inputs_embeds, attention_mask, input_ids_lens)):
 
@@ -367,7 +378,7 @@ def get_predicted_program(
         pair_inputs_embeds = pair_inputs_embeds[avail_mask]
         pair_attention_mask = pair_attention_mask[avail_mask]
         pair_input_ids_lens = [l for l, m in zip(pair_input_ids_lens, avail_mask) if m]
-        select_program_intervals = [l for l, m in zip(program_intervals, avail_mask) if m]
+        select_demonstration_intervals = [l for l, m in zip(demonstration_intervals, avail_mask) if m]
 
         # do the same for all_prev_programs
         prev_programs = [p for p, m in zip(all_prev_programs, avail_mask) if m]
@@ -483,7 +494,8 @@ def get_predicted_program(
 
             # apply attention reduction
             if attention_reduction_ratio != 1.0:
-                model_kwargs['program_intervals'] = select_program_intervals
+                assert all(pair_i < len(x) for x in select_demonstration_intervals) # there is one more for gen_input_ids
+                model_kwargs['demonstration_intervals'] = [x[:pair_i] for x in select_demonstration_intervals]
                 model_kwargs['attention_reduction_ratio'] = attention_reduction_ratio
 
         else:
@@ -506,13 +518,8 @@ def get_predicted_program(
         assert model_out is not None
 
         if not short_context:
-            # record program intervals for attention reduction
-            start = 0 if pair_i == 0 else prev_past_key_values[0][0].shape[2] # type: ignore
-            for interval in select_program_intervals:
-                interval.append((start, start + ntokens))
-
             # update program intervals
-            update_based_on_avail(program_intervals, select_program_intervals, avail_mask, concat=False)
+            update_based_on_avail(demonstration_intervals, select_demonstration_intervals, avail_mask, concat=False)
 
             # remove the end program of past key values
             old_key_values_len = prev_past_key_values[0][0].shape[2] if prev_past_key_values is not None else 0
@@ -601,7 +608,6 @@ def get_predicted_program(
     assert len(all_prev_programs) == batch_size
     assert len(set(p.shape[0] for p in all_prev_programs)) == 1
 
-
     if short_context:
         padded_past_key_values = None
         padded_past_key_values_attention_mask = None
@@ -639,7 +645,7 @@ def get_predicted_program(
                 pads = torch.zeros((pad_len,), device=mask.device, dtype=mask.dtype)
                 if kv_pad_side == 'left':
                     all_prev_past_key_values_attention_mask[batch_i] = torch.cat([pads, mask], dim=0)
-                    program_intervals[batch_i] = [(s + pad_len, e + pad_len) for s, e in program_intervals[batch_i]]
+                    demonstration_intervals[batch_i] = [(s + pad_len, e + pad_len) for s, e in demonstration_intervals[batch_i]]
                 else:
                     all_prev_past_key_values_attention_mask[batch_i] = torch.cat([mask, pads], dim=0)
         padded_past_key_values_attention_mask = torch.stack(all_prev_past_key_values_attention_mask)
@@ -648,7 +654,7 @@ def get_predicted_program(
     final_programs = [x[-1] for x in all_intermediate_programs]
     final_programs = torch.stack(final_programs)
 
-    return final_programs, program_intervals, padded_past_key_values, padded_past_key_values_attention_mask
+    return final_programs, demonstration_intervals, padded_past_key_values, padded_past_key_values_attention_mask
 
 
 def model_loss(
@@ -688,8 +694,8 @@ def model_loss(
     long_context_checkpointing_threshold: int,
     token_weighted_loss: bool,
     weird_cast: bool,
-    demonstration_dropout: bool,
-    reset_rope: bool,
+    full_demonstration_dropout: bool,
+    partial_demonstration_dropout: bool,
     loss_on_first: bool,
     debug: bool,
     contrastive_loss: ContrastiveLoss,
@@ -968,8 +974,17 @@ def model_loss(
     if do_save_programs:
         saved_all_programs = [prev_programs]
 
-    # keep track of program intervals in KV cache (same across batch)
-    program_intervals = [[] for _ in range(batch_size)]
+    # precompute demonstration intervals for these three tries
+    demonstration_intervals = [[] for _ in range(batch_size)]
+    if full_demonstration_dropout > 0.0 or partial_demonstration_dropout > 0.0 or attention_reduction_ratio != 1.0:
+        start = ntokens # keep track of start of each demonstration pair
+        for pair_j, lens in enumerate(input_ids_lens[:-1]):
+            if pair_j > 0:
+                start += attention_mask[pair_j - 1].shape[1] + ntokens
+            max_l = attention_mask[pair_j].shape[1]
+            for batch_i, l in enumerate(lens):
+                s = start if pad_side == 'right' else start + max_l - l
+                demonstration_intervals[batch_i].append((s, s + l))
 
     for pair_i, (pair_inputs_embeds, pair_attention_mask, pair_label_ids, pair_input_ids_lens) in enumerate(zip(inputs_embeds, attention_mask, label_ids, input_ids_lens)):
         # STEP 1: prepend the last predicted program for all pairs except the first
@@ -1057,25 +1072,23 @@ def model_loss(
             assert prev_past_key_values is not None
             model_kwargs["past_key_values"] = prev_past_key_values
 
-            # program dropout just before passing into the model
-            pair_attention_mask_with_dropout = pair_attention_mask.detach().clone()
-            pair_choices = list(range(pair_i)) # all pairs before pair_i
-            for pair_choice in pair_choices:
-                if torch.rand(1) < demonstration_dropout:
-                    start = sum(attention_mask[p].shape[1] for p in range(pair_choice)) + ntokens * (pair_choice + 1)
-                    end = start + attention_mask[pair_choice].shape[1]
-                    assert torch.equal(pair_attention_mask_with_dropout[:, start: end], attention_mask[pair_choice])
-                    pair_attention_mask_with_dropout[:, start: end] = 0
-            model_kwargs["attention_mask"] = pair_attention_mask_with_dropout
+            # program dropout just before passing into the model, ugly
+            if full_demonstration_dropout > 0.0 or partial_demonstration_dropout > 0.0:
+                pair_attention_mask_with_dropout = pair_attention_mask.detach().clone()
+                for batch_i, (m, intervals) in enumerate(zip(pair_attention_mask_with_dropout, demonstration_intervals)):
+                    for s, e in intervals[:pair_i]:
+                        # full demonstration dropout
+                        if torch.rand(1) < full_demonstration_dropout:
+                            m[s: e] = 0
+                        # partial demonstration dropout
+                        dropout_mask = torch.rand(m[s: e].shape, device=device) < partial_demonstration_dropout
+                        m[s: e] *= dropout_mask
+                # replace mask
+                model_kwargs["attention_mask"] = pair_attention_mask_with_dropout
 
             # build position ids (does NOT depend on dropout)
-            if reset_rope:
-                attention_mask_just_for_kv = pair_attention_mask_with_dropout[:, :prev_past_key_values[0][0].shape[2]]
-                attention_mask_after_kv = pair_attention_mask_with_dropout[:, prev_past_key_values[0][0].shape[2]:]
-            else:
-                attention_mask_just_for_kv = pair_attention_mask[:, :prev_past_key_values[0][0].shape[2]]
-                attention_mask_after_kv = pair_attention_mask[:, prev_past_key_values[0][0].shape[2]:]
-
+            attention_mask_just_for_kv = pair_attention_mask[:, :prev_past_key_values[0][0].shape[2]]
+            attention_mask_after_kv = pair_attention_mask[:, prev_past_key_values[0][0].shape[2]:]
             position_ids = []
             for mask_for_kv, mask_after_kv in zip(attention_mask_just_for_kv, attention_mask_after_kv):
                 sequence_position_ids = torch.zeros(pair_inputs_embeds.shape[1], device=device, dtype=dtype)
@@ -1092,8 +1105,7 @@ def model_loss(
 
             # apply attention reduction
             if attention_reduction_ratio != 1.0:
-                assert program_intervals is not None
-                model_kwargs['program_intervals'] = program_intervals
+                model_kwargs['demonstration_intervals'] = [x[:pair_i] for x in demonstration_intervals]
                 model_kwargs['attention_reduction_ratio'] = attention_reduction_ratio
 
         else:
@@ -1111,13 +1123,6 @@ def model_loss(
             position_ids = torch.stack(position_ids)
             model_kwargs["position_ids"] = position_ids
 
-        # print(f'$$$ model forward {pair_i}')
-        # print('inputs_embeds', pair_inputs_embeds.shape)
-        # print('attention_mask', pair_attention_mask.shape)
-        # if prev_past_key_values is not None:
-        #     print('prev_past_key_values', prev_past_key_values[0][0].shape)
-        # print()
-
         can_checkpoint = sum(x.shape[1] for x in inputs_embeds[:pair_i+1]) > long_context_checkpointing_threshold
         if ar_gradient_checkpointing and can_checkpoint:
             model_out = checkpoint.checkpoint(model, **model_kwargs, use_reentrant=False)
@@ -1127,18 +1132,9 @@ def model_loss(
         if pair_i > 0 or loss_on_first:
             ce_losses.append(model_out.loss) # type: ignore
 
-        # if pair_i > 0:
-        #     breakpoint()
-        #     model_out.past_key_values[0][0][0, 0, :, :5]
-
         # STEP 4: update kv
         if pair_i < n_pairs - 1 and not short_context:
             assert model_out is not None
-
-            # record program intervals for attention reduction
-            start = 0 if pair_i == 0 else prev_past_key_values[0][0].shape[2] # type: ignore
-            for interval in program_intervals:
-                interval.append((start, start + ntokens))
 
             # remove end program from kv cache
             old_key_values_len = prev_past_key_values[0][0].shape[2] if prev_past_key_values is not None else 0
@@ -1170,8 +1166,8 @@ def model_loss(
                 # for i in range(len(prev_past_key_values)):
                 #     for j in range(2):
                 #         assert torch.equal(prev_past_key_values[i][j], new_past_key_values[i][j][:, :, :seq_len_to_check, :])
-
             prev_past_key_values = new_past_key_values
+
             # update attention mask
             if pair_i == 0:
                 prev_past_key_values_attention_mask = pair_attention_mask_no_program_embed
@@ -1879,7 +1875,7 @@ def evaluate(
 
             with accelerator.autocast():
                 # STEP 1: get predicted programs and kv cache
-                prev_programs, program_intervals, past_key_values, past_key_values_attention_mask = get_predicted_program(
+                prev_programs, demonstration_intervals, past_key_values, past_key_values_attention_mask = get_predicted_program(
                     # model
                     model=model,
                     prior_embeddings=prior_embeddings,
@@ -1928,12 +1924,12 @@ def evaluate(
                     pad_id=0,
                 )
 
+                arbitrary_increase = 5
+                if not no_flash_attn:
+                    inputs_embeds = inputs_embeds.to(NBIT_TO_DTYPE[trainable_nbit])
+
                 if short_context:
                     # generate somehow needs this conversion done beforehand
-                    if not no_flash_attn:
-                        inputs_embeds = inputs_embeds.to(NBIT_TO_DTYPE[trainable_nbit])
-
-                    arbitrary_increase = 5
                     gen_tokens = module.generate(
                         inputs_embeds=inputs_embeds,
                         attention_mask=attention_mask,
@@ -1943,19 +1939,7 @@ def evaluate(
                         top_p=1.0,
                         do_sample=False,
                         eos_token_id=[dataset.tokenizer.eos_token_id],
-                        program_intervals=program_intervals,
-                        attention_reduction_ratio=attention_reduction_ratio,
                     )
-                    assert len(gen_tokens) == len(out_token_length)
-                    for t, l in zip(gen_tokens, out_token_length):
-                        t[l + arbitrary_increase:] = dataset.tokenizer.pad_token_id
-                    gen_texts = dataset.tokenizer.batch_decode(
-                        gen_tokens,
-                        skip_special_tokens=True,
-                        no_separate_color_tokens=dataset.no_separate_color_tokens,
-                    )
-                    # print(gen_texts)
-                    # breakpoint()
                 else:
                     assert past_key_values is not None and past_key_values_attention_mask is not None
                     # add past key values portion to inputs_embeds and attention mask
@@ -1967,9 +1951,7 @@ def evaluate(
                     ], dim=1)
                     attention_mask = torch.cat([past_key_values_attention_mask, attention_mask], dim=1)
 
-                    # generate somehow needs this conversion done beforehand
                     if not no_flash_attn:
-                        inputs_embeds = inputs_embeds.to(NBIT_TO_DTYPE[trainable_nbit])
                         past_key_values = tuple(
                             (
                                 layer_k.to(NBIT_TO_DTYPE[trainable_nbit]),
@@ -1978,7 +1960,6 @@ def evaluate(
                             for layer_k, layer_v in past_key_values
                         )
 
-                    arbitrary_increase = 5
                     gen_tokens = module.generate(
                         inputs_embeds=inputs_embeds,
                         attention_mask=attention_mask,
@@ -1989,19 +1970,20 @@ def evaluate(
                         top_p=1.0,
                         do_sample=False,
                         eos_token_id=[dataset.tokenizer.eos_token_id],
-                        program_intervals=program_intervals,
+                        demonstration_intervals=demonstration_intervals,
                         attention_reduction_ratio=attention_reduction_ratio,
                     )
-                    assert len(gen_tokens) == len(out_token_length)
-                    for t, l in zip(gen_tokens, out_token_length):
-                        t[l + arbitrary_increase:] = dataset.tokenizer.pad_token_id
-                    gen_texts = dataset.tokenizer.batch_decode(
-                        gen_tokens,
-                        skip_special_tokens=True,
-                        no_separate_color_tokens=dataset.no_separate_color_tokens,
-                    )
-                    # print(gen_texts)
-                    # breakpoint()
+
+                assert len(gen_tokens) == len(out_token_length)
+                for t, l in zip(gen_tokens, out_token_length):
+                    t[l + arbitrary_increase:] = dataset.tokenizer.pad_token_id
+                gen_texts = dataset.tokenizer.batch_decode(
+                    gen_tokens,
+                    skip_special_tokens=True,
+                    no_separate_color_tokens=dataset.no_separate_color_tokens,
+                )
+                # print(gen_texts)
+                # breakpoint()
 
             # Compare each gen_text with label_texts
             assert len(task_ids) == len(inverters) == bs, (len(task_ids), len(inverters), bs)
@@ -2381,8 +2363,8 @@ def main():
     parser.add_argument("--token_weighted_loss", action="store_true")
     parser.add_argument("--weird_cast", action="store_true")
     parser.add_argument("--no_tf32", action="store_true")
-    parser.add_argument("--demonstration_dropout", type=float, default=0.0)
-    parser.add_argument("--reset_rope", action="store_true")
+    parser.add_argument("--full_demonstration_dropout", type=float, default=0.0)
+    parser.add_argument("--partial_demonstration_dropout", type=float, default=0.0)
     parser.add_argument("--loss_on_first", action="store_true")
     parser.add_argument("--attention_reduction_ratio", type=float, default=1.0)
 
@@ -2423,7 +2405,8 @@ def main():
     parser.add_argument("--dry_eval_run", action="store_true")
     parser.add_argument("--warmup_epochs", type=int, default=1)
     parser.add_argument("--max_seq_len", type=int, default=8192)
-    parser.add_argument("--attention_dropout", type=float, default=0.0)
+    parser.add_argument("--full_attention_dropout", type=float, default=0.0)
+    parser.add_argument("--demonstration_attention_dropout", type=float, default=0.0) # activate naive selfattn but oom
     parser.add_argument("--program_dropout", type=float, default=0.0)
     parser.add_argument("--program_noise_std", type=float, default=0.0)
     parser.add_argument("--short_context", action='store_true')
@@ -2534,6 +2517,8 @@ def main():
         assert args.codebook_loss_linear_epochs == 0
     assert args.commitment_loss_offset_epochs >= args.warmup_cookbook_only_epochs
     assert args.extra_inference_pairs == 0
+    if args.demonstration_attention_dropout:
+        assert args.no_flash_attn
 
     if args.no_lora:
         args.untrainable_nbit = args.trainable_nbit # untrainable become trainable
@@ -2631,15 +2616,19 @@ def main():
     else:
         raise ValueError(f"unrecognized untrainable_nbit {args.untrainable_nbit}")
 
+    # load config here to set attention dropout params
+    config = LlamaConfig.from_pretrained(MODEL_NAME_TO_PATH[args.model_name])
+    config.attention_dropout = args.full_attention_dropout
+    config.demonstration_attention_dropout = args.demonstration_attention_dropout
+    if args.demonstration_attention_dropout > 0.0:
+        config._attn_implementation_autoset = False
+        config._attn_implementation = 'eager'
+
     base_model = MyLlamaForCausalLM.from_pretrained(
         pretrained_model_name_or_path=MODEL_NAME_TO_PATH[args.model_name],
+        config=config,
         **from_pretrained_kwargs,
     )
-
-    # attention dropout
-    for layer in base_model.model.layers:
-        layer.self_attn.attention_dropout = args.attention_dropout
-    base_model.config.attention_dropout = args.attention_dropout
 
     # program dropout
     program_dropout = nn.Dropout(p=args.program_dropout)
@@ -3230,8 +3219,8 @@ def main():
                         long_context_checkpointing_threshold=args.long_context_checkpointing_threshold,
                         token_weighted_loss=args.token_weighted_loss,
                         weird_cast=args.weird_cast,
-                        demonstration_dropout=args.demonstration_dropout,
-                        reset_rope=args.reset_rope,
+                        full_demonstration_dropout=args.full_demonstration_dropout,
+                        partial_demonstration_dropout=args.partial_demonstration_dropout,
                         loss_on_first=args.loss_on_first,
                         debug=args.debug,
                         contrastive_loss=contrastive_loss,
