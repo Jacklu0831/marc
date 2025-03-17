@@ -26,3 +26,7 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
     --tag 0317_arlongcache_consistencyloss1.0 \
     --consistency_loss_lambda 1.0 \
     --wandb
+
+# Submitted batch job 58466824
+# Submitted batch job 58466825
+# Submitted batch job 58466826

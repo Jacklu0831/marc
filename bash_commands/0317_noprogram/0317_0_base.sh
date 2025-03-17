@@ -92,3 +92,16 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
     --eval_batch_size 8 \
     --untrainable_nbit 4 \
     --wandb
+
+
+# Submitted batch job 58466746
+# Submitted batch job 58466747
+# Submitted batch job 58466748
+# Submitted batch job 58466749
+# Submitted batch job 58466750
+# Submitted batch job 58466751
+# Submitted batch job 58466752
+# Submitted batch job 58466753
+# Submitted batch job 58466754
+# Submitted batch job 58466755
+# Submitted batch job 58466756

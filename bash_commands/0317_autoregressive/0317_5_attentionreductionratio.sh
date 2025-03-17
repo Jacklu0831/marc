@@ -44,3 +44,9 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
     --tag 0317_arlongcache_attentionreductionratio0.9 \
     --attention_reduction_ratio 0.9 \
     --wandb
+
+# Submitted batch job 58466795
+# Submitted batch job 58466796
+# Submitted batch job 58466797
+# Submitted batch job 58466798
+# Submitted batch job 58466799

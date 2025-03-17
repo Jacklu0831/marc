@@ -6,6 +6,8 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
     --no_bos \
     --tag 0317_noprogram_ntoken16 \
     --ntoken 16 \
+    --train_batch_size 1 \
+    --eval_batch_size 8 \
     --wandb
 
 # noprogram ntoken16 attentioncutoff
@@ -15,6 +17,8 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
     --tag 0317_noprogram_ntoken16_attentioncutoff \
     --ntoken 16 \
     --attention_cutoff \
+    --train_batch_size 1 \
+    --eval_batch_size 8 \
     --wandb
 
 # noprogram ntoken16 attentioncutoff attendprevprograms
@@ -25,4 +29,10 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
     --ntoken 16 \
     --attention_cutoff \
     --attend_prev_programs \
+    --train_batch_size 1 \
+    --eval_batch_size 8 \
     --wandb
+
+# Submitted batch job 38666
+# Submitted batch job 38667
+# Submitted batch job 38668

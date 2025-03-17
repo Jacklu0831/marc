@@ -39,3 +39,8 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
     --invar_loss_lambda 1.0 \
     --invar_loss_margin 0.5 \
     --wandb
+
+# Submitted batch job 58466791
+# Submitted batch job 58466792
+# Submitted batch job 58466793
+# Submitted batch job 58466794

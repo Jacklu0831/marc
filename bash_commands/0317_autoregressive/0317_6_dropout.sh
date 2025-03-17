@@ -35,3 +35,8 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
     --tag 0317_arlongcache_partialdemonstrationdropout0.3 \
     --partial_demonstration_dropout 0.3 \
     --wandb
+
+# Submitted batch job 58466800
+# Submitted batch job 58466801
+# Submitted batch job 58466802
+# Submitted batch job 58466803
