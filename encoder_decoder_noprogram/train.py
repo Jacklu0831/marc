@@ -198,6 +198,8 @@ def evaluate(
     accelerator: Accelerator,
     batch_size: int,
     collate_fn: Callable,
+    trainable_nbit: int,
+    no_flash_attn: bool,
     dry_eval_run: bool,
     output_dir: str,
     ntokens: int,
@@ -427,8 +429,11 @@ def evaluate(
 
                     # debug: assert programs are programs based on stored intervals
                     for embs, attn, intervals in zip(inputs_embeds_with_programs, attention_mask_with_programs, program_intervals):
-                        for a, b in intervals:
-                            assert torch.equal(embs[a:b], program_embeddings('dummy'))
+                        for interval_i, (a, b) in enumerate(intervals):
+                            if interval_i == 0:
+                                assert torch.equal(embs[a:b], prior_embeddings('dummy'))
+                            else:
+                                assert torch.equal(embs[a:b], program_embeddings('dummy'))
                             assert attn[a:b].sum() == attn[a:b].numel()
 
                     # debug: assert no middle padding
@@ -437,6 +442,9 @@ def evaluate(
                         assert torch.all(attention_mask_with_programs[:, :-1] <= attention_mask_with_programs[:, 1:])
                     else:
                         assert torch.all(attention_mask_with_programs[:, :-1] >= attention_mask_with_programs[:, 1:])
+
+                    if not no_flash_attn:
+                        inputs_embeds_with_programs = inputs_embeds_with_programs.to(NBIT_TO_DTYPE[trainable_nbit])
 
                     # generate
                     if not attention_cutoff:
@@ -939,8 +947,11 @@ def model_loss(
 
     # debug: assert programs are programs based on stored intervals
     for embs, attn, lab, intervals in zip(inputs_embeds_with_programs, attention_mask_with_programs, label_ids_with_programs, program_intervals):
-        for a, b in intervals:
-            assert torch.equal(embs[a:b], program_embeddings('dummy'))
+        for interval_i, (a, b) in enumerate(intervals):
+            if interval_i == 0:
+                assert torch.equal(embs[a:b], prior_embeddings('dummy'))
+            else:
+                assert torch.equal(embs[a:b], program_embeddings('dummy'))
             assert attn[a:b].sum() == attn[a:b].numel()
             assert (lab[a:b] == -100).sum() == lab[a:b].numel()
 
@@ -1064,6 +1075,8 @@ def model_loss(
 
     # also added breakpoint here to test whether left and right padding generate the same loss over multiple iters (they do)
 
+    # print(ce_loss.item())
+    # breakpoint()
     return ce_loss, program_loss, total_loss
 
 
@@ -1809,6 +1822,8 @@ def main():
                 accelerator=accelerator,
                 batch_size=args.eval_batch_size,
                 collate_fn=eval_collate_fn,
+                trainable_nbit=args.trainable_nbit,
+                no_flash_attn=args.no_flash_attn,
                 dry_eval_run=args.dry_eval_run,
                 output_dir=args.output_dir,
                 ntokens=args.ntokens,
@@ -1826,6 +1841,8 @@ def main():
                 accelerator=accelerator,
                 batch_size=args.eval_batch_size,
                 collate_fn=eval_collate_fn,
+                trainable_nbit=args.trainable_nbit,
+                no_flash_attn=args.no_flash_attn,
                 dry_eval_run=args.dry_eval_run,
                 output_dir=args.output_dir,
                 ntokens=args.ntokens,
