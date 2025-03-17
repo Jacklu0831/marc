@@ -11,9 +11,10 @@
 # NOTE: fitting on diffnumpair is fine on one gpu, but cant for mutligpu because reduce requires SAME compute graph due to debug_fixed_order
 
 # TODO now WITH THE BIG FIX:
-# AR and noprogram baseline, numpair3, noaug, extraaug, extraaugsingle, 100/200 tasks
+# AR and noprogram baseline (two runs to make sure), numpair3, 100/200 tasks, nolora, llama3b, all with nobos constant lr, noaug, extraaug, extraaugsingle
 # AR ntoken search 2, 4, 8, 16, 32
 # AR everything: invarloss, programloss, consistencyloss, fullttention dropout, full/demonstration dropout, shortcontext (ntoken search)
+# TODO maybe: VAE FSQ stuff, longcontext, noprogram ntoken debug and run
 
 
 # make generate work with kv cache, finally works

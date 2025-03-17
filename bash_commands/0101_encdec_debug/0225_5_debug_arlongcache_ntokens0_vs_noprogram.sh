@@ -57,8 +57,8 @@ accelerate launch --main_process_port $MASTER_PORT encoder_decoder_noprogram/tra
 
 
 
-# baseline with ntoken0 left
-accelerate launch --main_process_port $MASTER_PORT encoder_decoder_noprogram_0310/train.py \
+# baseline with ntoken0 left (only check model loss)
+accelerate launch --main_process_port $MASTER_PORT encoder_decoder_noprogram/train.py \
     --train_data_dir ./data/re-arc/train_data_debug_overfit2_diffnumpair/tasks \
     --eval_train_dir ./data/re-arc/arc_original_debug_overfit2_diffnumpair/training \
     --eval_eval_dir ./data/re-arc/arc_original_debug_overfit2_diffnumpair/training \
@@ -67,13 +67,15 @@ accelerate launch --main_process_port $MASTER_PORT encoder_decoder_noprogram_031
     --trainable_nbit 32 \
     --no_tf32 \
     --no_flash_attn \
-    --ntokens 0 \
+    --ntokens 16 \
     --debug_no_resume \
     --debug \
+    --attention_cutoff \
+    --attend_prev_programs \
     --pad_side left
 
-# baseline with ntoken0 right
-accelerate launch --main_process_port $MASTER_PORT encoder_decoder_noprogram_0310/train.py \
+# baseline with ntoken0 right (only check model loss)
+accelerate launch --main_process_port $MASTER_PORT encoder_decoder_noprogram/train.py \
     --train_data_dir ./data/re-arc/train_data_debug_overfit2_diffnumpair/tasks \
     --eval_train_dir ./data/re-arc/arc_original_debug_overfit2_diffnumpair/training \
     --eval_eval_dir ./data/re-arc/arc_original_debug_overfit2_diffnumpair/training \
@@ -82,7 +84,9 @@ accelerate launch --main_process_port $MASTER_PORT encoder_decoder_noprogram_031
     --trainable_nbit 32 \
     --no_tf32 \
     --no_flash_attn \
-    --ntokens 0 \
+    --ntokens 16 \
     --debug_no_resume \
     --debug \
+    --attention_cutoff \
+    --attend_prev_programs \
     --pad_side right
