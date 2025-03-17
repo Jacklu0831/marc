@@ -468,6 +468,8 @@ def model_loss(
             return get_individual_loss(lm_logits=model_out.logits.half(), label_ids=label_ids)
         else:
             ce_loss = model_out.loss
+            # print(ce_loss.item())
+            # breakpoint()
             return ce_loss, torch.tensor(0.0, device=input_ids.device), ce_loss
 
     assert prior_embeddings is not None
@@ -827,6 +829,7 @@ def main():
         args.debug_no_resume = True
         args.eval_train_test_per_task = 1
         args.eval_eval_ratio = 0.01
+        args.samples_per_epoch = 8
 
     # check args
     if args.no_lora:
@@ -1250,6 +1253,7 @@ def main():
             total_loss_accum = 0.0
             grad_norm_accum = 0.0
 
+            train_dataset.set_rngs(epoch)
             for batch_idx, batch_data in enumerate(train_loader):
                 # skip batch idx if recovered run already encountered it
                 if batch_idx < resume_batch_idx:

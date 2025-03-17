@@ -217,20 +217,15 @@ class TrainDataset(Dataset):
         self.max_pair_len = max_pair_len
         self.allow_truncate = allow_truncate
 
+        self.num_workers = num_workers
+        self.process_index = process_index
+        self.seed = seed
+
         # separate input and output by newline
         self.newline_token_id = tokenize("\n", tokenizer)
 
-        # seed and process_index
-        if num_workers == 0:
-            self.rngs = [np.random.RandomState(seed + process_index)]
-        else:
-            self.rngs = [np.random.RandomState(seed + i) for i in range(num_workers * process_index, num_workers * (process_index + 1))]
-
-        # num pair must be the same across gpus
-        if num_workers == 0:
-            self.num_pair_rngs = [np.random.RandomState(seed)]
-        else:
-            self.num_pair_rngs = [np.random.RandomState(seed + i) for i in range(num_workers)]
+        # set rngs
+        self.set_rngs(epoch=0)
 
         # load data
         self.tasks = json.load(open(config_file))['train']
@@ -261,6 +256,19 @@ class TrainDataset(Dataset):
     def __getitem__(self, idx):
         # We'll do random sampling in the collate fn
         return 0
+
+    def set_rngs(self, epoch: int):
+        epoch_seed = epoch * 1000
+        # seed and process_index
+        if self.num_workers == 0:
+            self.rngs = [np.random.RandomState(self.seed + epoch_seed + self.process_index)]
+        else:
+            self.rngs = [np.random.RandomState(self.seed + epoch_seed + i) for i in range(self.num_workers * self.process_index, self.num_workers * (self.process_index + 1))]
+        # num pair must be the same across gpus
+        if self.num_workers == 0:
+            self.num_pair_rngs = [np.random.RandomState(self.seed + epoch_seed)]
+        else:
+            self.num_pair_rngs = [np.random.RandomState(self.seed + epoch_seed + i) for i in range(self.num_workers)]
 
 
 def collate_fn_train(batch: List[int], dataset: TrainDataset) -> Dict:
@@ -425,7 +433,7 @@ class EvalDataset:
             if with_empty_options:
                 tasks_to_remove.add(task)
 
-        if split == 'train':
+        if split == 'train' and not config_file.endswith('toy.json'):
             # remove tasks with 10+ options
             for task, test_pairs in task_to_test_pairs.items():
                 max_num_options = max(len(x['options']) for x in test_pairs)

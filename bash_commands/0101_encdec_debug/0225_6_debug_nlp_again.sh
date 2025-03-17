@@ -31,12 +31,11 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
     --model_name gpt2 \
     --no_lora \
     --debug_no_resume \
-    --num_workers 0 \
-    --eval_ratio 1.0 \
     --debug_fixed_order \
     --config_file MetaICL/config/toy.json \
     --data_dir MetaICL/data_toy \
     --samples_per_epoch 100 \
+    --lr_embedding 0.0 \
     --lr_other 0.0
 
 # overfit llama1b
@@ -46,8 +45,6 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
     --tag test \
     --model_name llama1b \
     --debug_no_resume \
-    --num_workers 0 \
-    --eval_ratio 1.0 \
     --debug_fixed_order \
     --config_file MetaICL/config/toy.json \
     --data_dir MetaICL/data_toy \
