@@ -37,7 +37,7 @@ from transformers import (
 )
 import bitsandbytes as bnb
 
-from data_utils import (
+from encoder_decoder_autoregressive_longcontext_caching_nlp.data_utils_old import (
     TrainDataset,
     EvalDataset,
     collate_fn_train,

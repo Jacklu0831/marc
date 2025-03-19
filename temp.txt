@@ -1,0 +1,52 @@
+ME
+58466755 cilvr                                                          noprogram_nomaxseqlen_0 PENDI    0:00 (Prior
+58466754 cilvr                                                    noprogram_extraaug0.3single_0 RUNNI    0:51 ga004
+58466753 cilvr                                                          noprogram_extraaug0.3_0 PENDI    0:00 (Prior
+58466752 cilvr                                                                noprogram_noaug_0 PENDI    0:00 (Prior
+58466751 cilvr                                                              noprogram_200task_0 PENDI    0:00 (Prior
+58466750 cilvr                                                              noprogram_100task_0 PENDI    0:00 (Prior
+58466749 cilvr                                                          noprogram_minnumpair3_0 PENDI    0:00 (Prior
+58466748 cilvr                                                               noprogram_nolora_0 PENDI    0:00 (Prior
+58466747 cilvr                                                                noprogram_repro_0 PENDI    0:00 (Prior
+58466746 cilvr                                                                 noprogram_base_0 PENDI    0:00 (Prior
+58466756 cilvr                                                              noprogram_llama3b_0 PENDI    0:00 (Prior
+
+MENGYE
+58466768 cilvr_a10               arlongcache_tokenweightedloss_0   mr3182  PENDING       0:00 2-00:00:00      1 (Priority)
+58466767 cilvr_a10                     arlongcache_nomaxseqlen_0   mr3182  PENDING       0:00 2-00:00:00      1 (Resources)
+58466771 cilvr_a10                         arlongcache_llama3b_0   mr3182  PENDING       0:00 2-00:00:00      1 (Priority)
+58466826 cilvr_a10              arlongcache_consistencyloss1.0_0   mr3182  PENDING       0:00 2-00:00:00      1 (Priority)
+58466825 cilvr_a10              arlongcache_consistencyloss0.3_0   mr3182  PENDING       0:00 2-00:00:00      1 (Priority)
+58466824 cilvr_a10              arlongcache_consistencyloss0.1_0   mr3182  PENDING       0:00 2-00:00:00      1 (Priority)
+58466766 cilvr_a10               arlongcache_extraaug0.3single_0   mr3182  PENDING       0:00 2-00:00:00      1 (Priority)
+58466765 cilvr_a10                     arlongcache_extraaug0.3_0   mr3182  PENDING       0:00 2-00:00:00      1 (Priority)
+58466764 cilvr_a10                           arlongcache_noaug_0   mr3182  PENDING       0:00 2-00:00:00      1 (Priority)
+58466763 cilvr_a10                         arlongcache_200task_0   mr3182  PENDING       0:00 2-00:00:00      1 (Priority)
+58466762 cilvr_a10                         arlongcache_100task_0   mr3182  PENDING       0:00 2-00:00:00      1 (Priority)
+58466761 cilvr_a10                     arlongcache_minnumpair3_0   mr3182  PENDING       0:00 2-00:00:00      1 (Priority)
+58466760 cilvr_a10                          arlongcache_nolora_0   mr3182  PENDING       0:00 2-00:00:00      1 (Priority)
+58466759 cilvr_a10                           arlongcache_repro_0   mr3182  PENDING       0:00 2-00:00:00      1 (Priority)
+58466758 cilvr_a10                            arlongcache_base_0   mr3182  PENDING       0:00 2-00:00:00      1 (Priority)
+
+ZHENBANG
+58466794 cilvr                                                  arlongcache_invar1.0margin0.5_0 PENDI    0:00 (Prior
+58466793 cilvr                                                  arlongcache_invar0.3margin0.5_0 PENDI    0:00 (Prior
+58466792 cilvr                                                  arlongcache_invar0.1margin0.5_0 PENDI    0:00 (Prior
+58466791 cilvr                                                 arlongcache_invar0.03margin0.5_0 PENDI    0:00 (Prior
+58466799 cilvr                                         arlongcache_attentionreductionratio0.9_0 PENDI    0:00 (Prior
+58466798 cilvr                                        arlongcache_attentionreductionratio0.75_0 PENDI    0:00 (Prior
+58466797 cilvr                                         arlongcache_attentionreductionratio0.5_0 PENDI    0:00 (Prior
+58466796 cilvr                                        arlongcache_attentionreductionratio0.25_0 PENDI    0:00 (Prior
+58466795 cilvr                                         arlongcache_attentionreductionratio0.0_0 PENDI    0:00 (Prior
+58466803 cilvr                                     arlongcache_partialdemonstrationdropout0.3_0 PENDI    0:00 (Prior
+58466802 cilvr                                     arlongcache_partialdemonstrationdropout0.1_0 PENDI    0:00 (Prior
+58466833 cilvr                                              arlongcache_shortcontext_ntoken64_0 PENDI    0:00 (Prior
+58466832 cilvr                                              arlongcache_shortcontext_ntoken16_0 PENDI    0:00 (Prior
+58466831 cilvr                                               arlongcache_shortcontext_ntoken4_0 PENDI    0:00 (Prior
+58466830 cilvr                                                           arlongcache_ntoken64_0 PENDI    0:00 (Prior
+58466829 cilvr                                                           arlongcache_ntoken16_0 PENDI    0:00 (Prior
+58466828 cilvr                                                            arlongcache_ntoken1_0 PENDI    0:00 (Prior
+
+KILLED
+58466801 cilvr                                        arlongcache_fulldemonstrationdropout0.3_0 PENDI    0:00 (Prior
+58466800 cilvr                                        arlongcache_fulldemonstrationdropout0.1_0 PENDI    0:00 (Prior
