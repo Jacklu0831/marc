@@ -92,11 +92,11 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
     --max_seq_len 10000000 \
     --wandb
 
-# arlongcache tokenweightedloss
+# arlongcache notokenweightedloss
 accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder_autoregressive_longcontext_caching/train.py \
     --lr_scheduler constant \
     --no_bos \
-    --tag 0317_arlongcache_tokenweightedloss \
+    --tag 0317_arlongcache_notokenweightedloss \
     --wandb
 
 # arlongcache llama3b
@@ -123,3 +123,7 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
 # Submitted batch job 58466767
 # Submitted batch job 58466768
 # Submitted batch job 58466771
+
+# resume base and nomaxseqlen
+# Submitted batch job 58602892
+# Submitted batch job 58602893

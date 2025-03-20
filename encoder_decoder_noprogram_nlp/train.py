@@ -577,8 +577,11 @@ def model_loss(
 
     # debug: assert programs are programs based on stored intervals
     for embs, attn, lab, intervals in zip(inputs_embeds_with_programs, attention_mask_with_programs, label_ids_with_programs, program_intervals):
-        for a, b in intervals:
-            assert torch.equal(embs[a:b], program_embeddings('dummy'))
+        for interval_i, (a, b) in enumerate(intervals):
+            if interval_i == 0:
+                assert torch.equal(embs[a:b], prior_embeddings('dummy'))
+            else:
+                assert torch.equal(embs[a:b], program_embeddings('dummy'))
             assert attn[a:b].sum() == attn[a:b].numel()
             assert (lab[a:b] == -100).sum() == lab[a:b].numel()
 
@@ -735,7 +738,7 @@ def main():
     parser.add_argument("--wandb", action="store_true")
     parser.add_argument("--output_dir", type=str, default="./encoder_decoder/outputs")
     parser.add_argument("--log_every", type=int, default=10)
-    parser.add_argument("--save_every", type=int, default=2000)
+    parser.add_argument("--save_every", type=int, default=250)
     parser.add_argument("--tracker_project_name", type=str, default="metaicl")
     parser.add_argument("--save_all_models", action="store_true") # otherwise save only best
 
@@ -748,7 +751,7 @@ def main():
     parser.add_argument("--debug_no_resume", action='store_true')
 
     # Model
-    parser.add_argument("--model_name", type=str, default="gpt2")
+    parser.add_argument("--model_name", type=str, default="llama1b")
     parser.add_argument("--no_flash_attn", action="store_true")
     parser.add_argument("--untrainable_nbit", type=float, choices=[3.6, 4, 8, 16, 32], default=16)
     parser.add_argument("--trainable_nbit", type=int, choices=[16, 32], default=16)
@@ -766,9 +769,9 @@ def main():
     parser.add_argument("--attend_prev_programs", action="store_true")
 
     # Training
-    parser.add_argument("--grad_accum_steps", type=int, default=1)
-    parser.add_argument("--train_batch_size", type=int, default=8)
-    parser.add_argument("--eval_batch_size", type=int, default=16) # 32 is fine, but dont want to risk
+    parser.add_argument("--grad_accum_steps", type=int, default=4)
+    parser.add_argument("--train_batch_size", type=int, default=2)
+    parser.add_argument("--eval_batch_size", type=int, default=4)
     parser.add_argument("--lr_embedding", type=float, default=1e-5)
     parser.add_argument("--lr_program", type=float, default=1e-5)
     parser.add_argument("--lr_prior", type=float, default=1e-5)
@@ -797,11 +800,11 @@ def main():
     parser.add_argument("--min_num_pair", type=int, default=17) # includes test pair
     parser.add_argument("--max_num_pair", type=int, default=17) # includes test pair
     parser.add_argument("--eval_min_num_pair", type=int, default=17) # includes test pair
-    parser.add_argument("--max_seq_len", type=int, default=1024)
-    parser.add_argument("--allow_truncate", action='store_true')
-    parser.add_argument("--max_pair_len", type=int, default=256)
-    parser.add_argument("--pad_side", type=str, choices=["left", "right"], default="left")
+    parser.add_argument("--max_seq_len", type=int, default=8192)
+    parser.add_argument("--max_pair_len", type=int, default=2048)
     parser.add_argument('--eval_seeds', type=str, nargs="+", default=['100'])
+    parser.add_argument("--pad_side", type=str, choices=["left", "right"], default="left")
+    parser.add_argument("--allow_truncate", action='store_true')
 
     # limit eval
     parser.add_argument('--eval_train_test_per_task', type=int, default=50)
