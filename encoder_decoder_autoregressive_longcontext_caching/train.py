@@ -3169,7 +3169,7 @@ def main():
         train_dataset.set_rngs(epoch)
         for batch_idx, batch_data in enumerate(train_loader):
             # skip batch idx if recovered run already encountered it
-            if batch_idx < resume_batch_idx:
+            if epoch == start_epoch and batch_idx < resume_batch_idx:
                 continue
 
             input_ids = [x.to(accelerator.device) for x in batch_data["input_ids"]]
