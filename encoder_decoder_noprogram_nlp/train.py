@@ -201,12 +201,6 @@ def evaluate(
     if program_embeddings is not None:
         program_embeddings.eval()
 
-    # get modules in case of DDP
-    module = model.module if isinstance(model, DistributedDataParallel) else model
-
-    # setup terminators and suppress warning
-    module.generation_config.pad_token_id = dataset.tokenizer.pad_token_id # type: ignore
-
     distributed_state = PartialState()
     output_list = []
 
@@ -246,7 +240,7 @@ def evaluate(
 
             with accelerator.autocast():
                 losses = model_loss(
-                    model=module,
+                    model=model,
                     tokenizer=dataset.tokenizer,
                     prior_embeddings=prior_embeddings,
                     program_embeddings=program_embeddings,
@@ -692,6 +686,8 @@ def model_loss(
 
     total_loss = ce_loss + program_loss_lambda * program_loss
 
+    # print(ce_loss.item())
+    # breakpoint()
     return ce_loss, program_loss, total_loss
 
 
@@ -863,9 +859,9 @@ def main():
         try:
             recovery_state_file = json.load(open(recovery_state_file_path, 'r'))
             if args.wandb:
-                assert set(recovery_state_file.keys()) == {"run_id", "global_step", "batch_idx", "epoch"}
+                assert set(recovery_state_file.keys()) == {"run_id", "global_step", "batch_idx", "epoch"}, 'wrong state keys'
             else:
-                assert set(recovery_state_file.keys()) == {"global_step", "batch_idx", "epoch"}
+                assert set(recovery_state_file.keys()) == {"global_step", "batch_idx", "epoch"}, 'wrong state keys'
             logger.info(f'loaded state from {recovery_state_file_path}')
         except Exception as e:
             recovery_state_file = None

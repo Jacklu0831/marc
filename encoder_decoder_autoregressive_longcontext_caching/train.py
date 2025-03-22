@@ -2410,7 +2410,6 @@ def main():
     parser.add_argument("--program_dropout", type=float, default=0.0)
     parser.add_argument("--program_noise_std", type=float, default=0.0)
     parser.add_argument("--short_context", action='store_true')
-    parser.add_argument("--num_task", action='store_true')
 
     # Evaluation
     parser.add_argument("--extra_inference_pairs", type=int, default=0)
@@ -3123,8 +3122,7 @@ def main():
 
     progress_bar = tqdm(
         range(num_training_steps),
-        desc="train",
-        # Only show the progress bar once on each machine.
+        desc="Train Steps",
         disable=not accelerator.is_local_main_process,
     )
     progress_bar.set_description("Total Train Steps")

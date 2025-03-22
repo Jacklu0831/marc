@@ -34,7 +34,7 @@ def debug_extra_pad_tensors(
     assert len(tensors) == len(padding_values)
     assert all(t.dim() == 2 for t in tensors)
     if pad_len == -1:
-        pad_len = random.randint(0, 15) # arbitrary
+        pad_len = random.randint(1, 15) # arbitrary
     padded_tensors = []
     for arg, padding_value in zip(tensors, padding_values):
         pad = torch.full((arg.shape[0], pad_len), padding_value, device=arg.device, dtype=arg.dtype)
@@ -143,7 +143,7 @@ def collate_data(
     tokenizer: Union[PreTrainedTokenizerFast, GPT2TokenizerFast],
     debug_random_pad: bool,
     debug_pad_len: int,
-    pad_side: str
+    pad_side: str,
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, List[int]]:
 
     batch_size = len(batch)
@@ -389,9 +389,10 @@ class EvalDataset:
         self.max_seq_len = max_seq_len
         self.max_pair_len = max_pair_len
         self.allow_truncate = allow_truncate
+        self.max_num_train_pair = max_num_train_pair # needed by collate
 
         # needed in evaluate
-        self.ntokens = ntokens
+        self.ntokens = ntokens # needed by eval
         self.split = split
 
         # separate input and output by newline
@@ -462,12 +463,13 @@ class EvalDataset:
         for task_i, (task, test_pairs) in enumerate(task_to_test_pairs.items()):
             logger.info(f'{task_i+1}/{len(task_to_test_pairs)}')
 
-            num_demonstration = int(rng.choice(range(min_num_train_pair, max_num_train_pair + 1), size=1))
-            demonstrations = task_to_demonstrations[task][:num_demonstration]
-
             test_added = 0 # we only add maximum of eval_test_per_task number of tests
             patience = 0 # some tasks just contains sequences that are too long
             for test_idx, test_pair in enumerate(test_pairs):
+                # get random demonstration pairs
+                num_demonstration = int(rng.choice(range(min_num_train_pair, max_num_train_pair + 1), size=1))
+                demonstrations = rng.choice(task_to_demonstrations[task], size=num_demonstration).tolist()
+
                 assert len(test_pair['options']) > 1
                 assert test_pair['output'] in test_pair['options']
                 correct_option = test_pair['output']
