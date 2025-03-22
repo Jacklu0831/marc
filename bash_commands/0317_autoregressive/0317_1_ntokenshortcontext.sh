@@ -63,3 +63,8 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
 # Submitted batch job 58466831
 # Submitted batch job 58466832
 # Submitted batch job 58466833
+
+# resume arlongcache shortcontext ntoken4, 16, 64
+# Submitted batch job 58648637
+# Submitted batch job 58648638
+# Submitted batch job 58648625

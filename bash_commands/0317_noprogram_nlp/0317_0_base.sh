@@ -13,6 +13,6 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
     --eval_pretrained \
     --wandb
 
-# Submitted batch job 58496820
-# Submitted batch job 58496821
+# Submitted batch job 58496820 # old gpt2 stuff
+# Submitted batch job 58496821 # old gpt2 stuff
 # Submitted batch job 58496822

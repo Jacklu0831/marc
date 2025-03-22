@@ -259,6 +259,9 @@ def evaluate(
                     debug=False,
                     individual_loss=True,
                 )
+                # print(losses.tolist())
+                # breakpoint()
+
             assert isinstance(losses, torch.Tensor)
             assert losses.shape[0] == len(task) == len(test_idx) == len(option) == len(correct_option) == bs
             for x0, x1, x2, x3, x4 in zip(losses, task, test_idx, option, correct_option):

@@ -124,6 +124,7 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
 # Submitted batch job 58466768
 # Submitted batch job 58466771
 
-# resume base and nomaxseqlen
+# resume base, nomaxseqlen, notokenweightedloss
 # Submitted batch job 58602892
 # Submitted batch job 58602893
+# Submitted batch job 58648662

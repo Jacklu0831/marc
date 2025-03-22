@@ -105,3 +105,6 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
 # Submitted batch job 58466754
 # Submitted batch job 58466755
 # Submitted batch job 58466756
+
+# resume llama3b
+# Submitted batch job 58648636
