@@ -314,3 +314,15 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
     --ttt_weight_epoch 10 \
     --leave_ns 1 \
     --select_tasks_path task_info_selected.csv
+
+
+
+
+
+# eval original
+# Submitted batch job 58656288
+# Submitted batch job 58656289
+
+# ttt
+# Submitted batch job 58656291
+# Submitted batch job 58656292

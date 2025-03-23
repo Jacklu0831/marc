@@ -94,8 +94,8 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
 
 
 
-# second part
-# tested that arlongcache ttt has same loss as noprogram (when arlongcache ntokens=0)
+# second part: tested that arlongcache ttt has same loss as noprogram (when arlongcache ntokens=0)
+# so basically their ttt datasets are identical, and ttt training setup like batchsize is correct
 
 # first obtain a noprogram checkpoint WITHOUT training
 accelerate launch --main_process_port $MASTER_PORT encoder_decoder_noprogram_copy/train.py \

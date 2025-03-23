@@ -1,8 +1,8 @@
 # for eval, run rtx8000
-# python make_sbatch.py --ngpu 1 --time 4 --bash_files bash_commands/0317_autoregressive/0322_0_eval_ttt.sh --rtx8000
+# python make_sbatch.py --ngpu 1 --time 4 --bash_files bash_commands/0317_noprogram/0322_0_eval_ttt.sh --rtx8000
 
 # for ttt, run a100
-# python make_sbatch.py --ngpu 1 --time 24 --bash_files bash_commands/0317_autoregressive/0322_0_eval_ttt.sh
+# python make_sbatch.py --ngpu 1 --time 24 --bash_files bash_commands/0317_noprogram/0322_0_eval_ttt.sh
 
 
 
@@ -312,3 +312,15 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
     --ttt_weight_epoch 10 \
     --leave_ns 1 \
     --select_tasks_path task_info_selected.csv
+
+
+
+
+
+# eval original
+# Submitted batch job 58656278
+# Submitted batch job 58656279
+
+# ttt
+# Submitted batch job 58656286
+# Submitted batch job 58656287
