@@ -20,7 +20,7 @@ from transformers import (
     AutoTokenizer,
     get_cosine_schedule_with_warmup,
     get_constant_schedule_with_warmup,
-    LlamaConfig.
+    LlamaConfig
 )
 from accelerate import Accelerator, InitProcessGroupKwargs
 from accelerate.logging import get_logger
@@ -167,6 +167,7 @@ def main():
     parser.add_argument("--no_normalize", action="store_true")
     parser.add_argument("--token_weighted_loss", action="store_true")
     parser.add_argument("--weird_cast", action="store_true")
+    parser.add_argument("--no_tf32", action="store_true")
     parser.add_argument("--full_demonstration_dropout", type=float, default=0.0)
     parser.add_argument("--partial_demonstration_dropout", type=float, default=0.0)
     parser.add_argument("--lr_scheduler", type=str, choices=["cosine", "constant"], default="cosine")
@@ -268,7 +269,6 @@ def main():
     init_process_process_kwargs.timeout = timedelta(seconds=28800)
     accelerator = Accelerator(
         gradient_accumulation_steps=args.grad_accum_steps,
-        mixed_precision="bf16",
         project_config=project_config,
         kwargs_handlers=[init_process_process_kwargs],
     )
@@ -276,7 +276,8 @@ def main():
     set_seed(args.seed + accelerator.process_index)
     if accelerator.is_main_process:
         os.makedirs(args.output_dir, exist_ok=True)
-    torch.backends.cuda.matmul.allow_tf32 = True
+    if not args.no_tf32:
+        torch.backends.cuda.matmul.allow_tf32 = True
     logger.info("Accelerator and seed set up.")
 
     # log args
@@ -644,6 +645,7 @@ def main():
 
         # Prepare with accelerator
         (
+            model,
             prior_embeddings,
             program_embeddings,
             vae_projection,
@@ -652,6 +654,7 @@ def main():
             optimizer,
             ttt_dataloader
         ) = accelerator.prepare(
+            model,
             prior_embeddings,
             program_embeddings,
             vae_projection,

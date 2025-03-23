@@ -130,6 +130,7 @@ def main():
     parser.add_argument("--gradient_checkpointing", action="store_true")
     parser.add_argument("--full_lora", action="store_true")
     parser.add_argument("--lr_scheduler", type=str, choices=["cosine", "constant"], default="cosine")
+    parser.add_argument("--no_tf32", action="store_true")
 
     # program loss
     parser.add_argument("--program_type", type=str, choices=["none", "random", "concat"], default="none")
@@ -196,7 +197,6 @@ def main():
     init_process_process_kwargs.timeout = timedelta(seconds=28800)
     accelerator = Accelerator(
         gradient_accumulation_steps=args.grad_accum_steps,
-        mixed_precision="bf16",
         project_config=project_config,
         kwargs_handlers=[init_process_process_kwargs],
     )
@@ -204,7 +204,8 @@ def main():
     set_seed(args.seed + accelerator.process_index)
     if accelerator.is_main_process:
         os.makedirs(args.output_dir, exist_ok=True)
-    torch.backends.cuda.matmul.allow_tf32 = True
+    if not args.no_tf32:
+        torch.backends.cuda.matmul.allow_tf32 = True
     logger.info("Accelerator and seed set up.")
 
     # log args
@@ -329,7 +330,7 @@ def main():
     model_weight_path = os.path.join(weight_dir, f"lora_epoch_{args.weight_epoch}")
     prior_embeddings_weight_path = None
     program_embeddings_weight_path = None
-    if args.ntokens > 0:
+    if args.ntokens != -1:
         prior_embeddings_weight_path = os.path.join(weight_dir, f"prior_embeddings_epoch_{args.weight_epoch}.pt")
         program_embeddings_weight_path = os.path.join(weight_dir, f"program_embeddings_epoch_{args.weight_epoch}.pt")
 
@@ -492,11 +493,13 @@ def main():
 
         # Prepare with accelerator
         (
+            model,
             optimizer,
             prior_embeddings,
             program_embeddings,
             ttt_dataloader
         ) = accelerator.prepare(
+            model,
             optimizer,
             prior_embeddings,
             program_embeddings,

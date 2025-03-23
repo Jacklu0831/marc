@@ -1,3 +1,4 @@
+from custom_llama import MyLlamaForCausalLM
 from typing import Optional
 import glob
 from pathlib import Path
@@ -9,17 +10,14 @@ import json
 from functools import partial
 import argparse
 import torch
-from transformers import (
-    AutoTokenizer,
-    AutoModelForCausalLM,
-)
+from transformers import AutoTokenizer
 from transformers.models.llama.modeling_llama import LlamaRMSNorm
 from accelerate import Accelerator, InitProcessGroupKwargs
 from accelerate.logging import get_logger
 from accelerate.utils import ProjectConfiguration, set_seed
 from peft import prepare_model_for_kbit_training # type: ignore
 
-from transformers import BitsAndBytesConfig
+from transformers import BitsAndBytesConfig, LlamaConfig
 from peft import PeftModel # type: ignore
 
 from data_utils import EvalDataset, collate_fn_eval, ARCTokenizer
@@ -69,6 +67,7 @@ def main():
     parser.add_argument("--flash_attn", action="store_true")
     parser.add_argument("--untrainable_nbit", type=float, choices=[3.6, 4, 8, 16, 32], default=16)
     parser.add_argument("--trainable_nbit", type=float, choices=[16, 32], default=16)
+    parser.add_argument("--no_tf32", action="store_true")
     parser.add_argument("--no_residual", action="store_true")
     parser.add_argument("--no_normalize", action="store_true")
     parser.add_argument("--weird_cast", action="store_true")
@@ -132,8 +131,6 @@ def main():
     parser.add_argument("--seed", type=int, default=0)
     args = parser.parse_args()
 
-    assert args.trainable_nbit == 16 # TODO, test otherwise
-
     # check args
     if args.model_name == "nemo8b":
         assert args.train_pad_side == args.gen_pad_side == "left"
@@ -148,7 +145,6 @@ def main():
     init_process_process_kwargs = InitProcessGroupKwargs()
     init_process_process_kwargs.timeout = timedelta(seconds=28800)
     accelerator = Accelerator(
-        mixed_precision="bf16",
         project_config=project_config,
         kwargs_handlers=[init_process_process_kwargs],
     )
@@ -156,7 +152,8 @@ def main():
     set_seed(args.seed + accelerator.process_index)
     if accelerator.is_main_process:
         os.makedirs(args.output_dir, exist_ok=True)
-    torch.backends.cuda.matmul.allow_tf32 = True
+    if not args.no_tf32:
+        torch.backends.cuda.matmul.allow_tf32 = True
     logger.info("Accelerator and seed set up.")
 
     # log args
@@ -200,8 +197,13 @@ def main():
     else:
         raise ValueError(f"unrecognized untrainable_nbit {args.untrainable_nbit}")
 
-    base_model = AutoModelForCausalLM.from_pretrained(
+    # load config here to set attention dropout params
+    config = LlamaConfig.from_pretrained(MODEL_NAME_TO_PATH[args.model_name])
+    config.demonstration_attention_dropout = 0.0
+
+    base_model = MyLlamaForCausalLM.from_pretrained(
         pretrained_model_name_or_path=MODEL_NAME_TO_PATH[args.model_name],
+        config=config,
         **from_pretrained_kwargs,
     )
 

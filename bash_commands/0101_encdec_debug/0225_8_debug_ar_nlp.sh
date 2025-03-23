@@ -2,8 +2,6 @@
 # test1: ensure arlongcache padleft and right same results (with all the dropout and reduction and stuff, shortcontext or not)
 # test2: ensure arlongcache ntoken=0 == baseline (pad left and pad right for both, all same model loss)
 
-for x1, x2 in zip(saved, saved_all_programs): print((x1-x2).abs().mean())
-
 
 # AR no toy, padleftvsright, losstype
 accelerate launch --main_process_port $MASTER_PORT encoder_decoder_autoregressive_longcontext_caching_nlp/train.py \

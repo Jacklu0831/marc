@@ -63,6 +63,7 @@ def main():
     parser.add_argument("--flash_attn", action="store_true")
     parser.add_argument("--untrainable_nbit", type=float, choices=[3.6, 4, 8, 16, 32], default=16)
     parser.add_argument("--trainable_nbit", type=int, choices=[16, 32], default=16)
+    parser.add_argument("--no_tf32", action="store_true")
 
     # Gist/thinking tokens
     parser.add_argument("--ntokens", type=int, default=-1)
@@ -97,8 +98,6 @@ def main():
     parser.add_argument("--seed", type=int, default=0)
     args = parser.parse_args()
 
-    assert args.trainable_nbit == 16 # TODO, test otherwise
-
     # check args
     if args.model_name == "nemo8b":
         assert args.pad_side == "left"
@@ -111,7 +110,6 @@ def main():
     init_process_process_kwargs = InitProcessGroupKwargs()
     init_process_process_kwargs.timeout = timedelta(seconds=28800)
     accelerator = Accelerator(
-        mixed_precision="bf16",
         project_config=project_config,
         kwargs_handlers=[init_process_process_kwargs],
     )
@@ -119,7 +117,8 @@ def main():
     set_seed(args.seed + accelerator.process_index)
     if accelerator.is_main_process:
         os.makedirs(args.output_dir, exist_ok=True)
-    torch.backends.cuda.matmul.allow_tf32 = True
+    if not args.no_tf32:
+        torch.backends.cuda.matmul.allow_tf32 = True
     logger.info("Accelerator and seed set up.")
 
     # log args
@@ -246,7 +245,7 @@ def main():
 
     prior_embeddings: Optional[ProgramEmbeddings] = None
     program_embeddings: Optional[ProgramEmbeddings] = None
-    if args.ntokens > 0:
+    if args.ntokens != -1:
         prior_embeddings = torch.load(
             prior_embeddings_weight_path,
             weights_only=False,
@@ -284,7 +283,7 @@ def main():
             if os.path.isdir(task_weight_dir) and len(task_name) == 8:
                 model_ttt_path = os.path.join(task_weight_dir, f"lora_epoch_{args.ttt_weight_epoch}.pt")
                 assert os.path.exists(model_ttt_path), model_ttt_path
-                if args.ntokens > 0:
+                if args.ntokens != -1:
                     prior_embeddings_ttt_path = os.path.join(task_weight_dir, f"prior_embeddings_epoch_{args.ttt_weight_epoch}.pt")
                     assert os.path.exists(prior_embeddings_ttt_path), prior_embeddings_ttt_path
                     program_embeddings_ttt_path = os.path.join(task_weight_dir, f"program_embeddings_epoch_{args.ttt_weight_epoch}.pt")
@@ -303,7 +302,7 @@ def main():
         logger.info(f"found {len(ttt_param_names)} ttt params")
 
     # Prepare with accelerator
-    model = accelerator.prepare(model)
+    model, prior_embeddings, program_embeddings = accelerator.prepare(model, prior_embeddings, program_embeddings)
 
     # Build evaluation dataset
     dataset = EvalDataset(
@@ -337,6 +336,8 @@ def main():
         accelerator=accelerator,
         batch_size=args.batch_size,
         collate_fn=collate_fn,
+        trainable_nbit=args.trainable_nbit,
+        no_flash_attn=not args.flash_attn,
         dry_eval_run=False,
         output_dir=args.output_dir,
         ntokens=args.ntokens,
