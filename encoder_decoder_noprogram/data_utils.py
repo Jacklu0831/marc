@@ -1184,7 +1184,7 @@ def collate_fn_ttt(batch: List[Dict], dataset: TTTDataset) -> Dict:
     attention_mask = [x["attention_mask"] for x in batch]
     label_ids = [x["label_ids"] for x in batch]
     pair_start_idxs = [x["pair_start_idxs"] for x in batch]
-    assert all(start_idxs[0] == 1 for start_idxs in pair_start_idxs)
+    assert all(start_idxs[0] == 1 - dataset.no_bos for start_idxs in pair_start_idxs)
 
     input_ids_lens = [len(x) for x in input_ids]
     input_ids = pad_sequence_with_side(input_ids, padding_value=dataset.tokenizer.pad_token_id, side=dataset.pad_side)

@@ -178,8 +178,6 @@ def main():
     if args.model_name == "nemo8b":
         assert args.pad_side == "left"
 
-    assert args.trainable_nbit == 16 # TODO, test otherwise
-
     # default to saving the last epoch
     if args.save_epochs == -1:
         args.save_epochs = args.num_epochs
@@ -569,6 +567,8 @@ def main():
                             debug=False,
                             no_bos=args.no_bos,
                         )
+                        # print(total_loss.item())
+                        # breakpoint()
 
                     accelerator.backward(total_loss)
                     if accelerator.sync_gradients:

@@ -250,8 +250,6 @@ def main():
     if args.demonstration_attention_dropout:
         assert args.no_flash_attn
 
-    assert args.trainable_nbit == 16 # TODO, test otherwise
-
     # default to saving the last epoch
     if args.save_epochs == -1:
         args.save_epochs = args.num_epochs
@@ -756,6 +754,8 @@ def main():
                             short_context=args.short_context,
                             attention_reduction_ratio=args.attention_reduction_ratio,
                         )
+                        # print(total_loss.item())
+                        # breakpoint()
 
                     accelerator.backward(total_loss)
                     if accelerator.sync_gradients:
