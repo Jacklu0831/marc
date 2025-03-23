@@ -32,90 +32,29 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
 
 
 
-# ttt 0317_noprogram_base augextra
-accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder_noprogram/ttt.py \
-    --lr_scheduler constant \
-    --no_bos \
-    --select_tasks_path task_info_selected.csv \
-    --weight_dir 0317_noprogram_base \
-    --weight_epoch 24 \
-    --tag augextra \
-    --num_epochs 10 \
-    --save_epochs 2 \
-    --aug_type extra
+# # ttt 0317_noprogram_base augextra
+# accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder_noprogram/ttt.py \
+#     --lr_scheduler constant \
+#     --no_bos \
+#     --select_tasks_path task_info_selected.csv \
+#     --weight_dir 0317_noprogram_base \
+#     --weight_epoch 24 \
+#     --tag augextra \
+#     --num_epochs 10 \
+#     --save_epochs 2 \
+#     --aug_type extra
 
-# ttt 0317_noprogram_base augd8
-accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder_noprogram/ttt.py \
-    --lr_scheduler constant \
-    --no_bos \
-    --select_tasks_path task_info_selected.csv \
-    --weight_dir 0317_noprogram_base \
-    --weight_epoch 24 \
-    --tag augd8 \
-    --num_epochs 10 \
-    --save_epochs 2 \
-    --aug_type d8
-
-
-
-
-
-
-
-# eval 0317_noprogram_base augd8 epoch2 leavens0
-accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder_noprogram/evaluate.py \
-    --no_bos \
-    --tag epoch2 \
-    --weight_dir 0317_noprogram_base \
-    --weight_epoch 24 \
-    --ttt_weight_dir ttt_augd8_0317_noprogram_base \
-    --ttt_weight_epoch 2 \
-    --leave_ns 0 \
-    --select_tasks_path task_info_selected.csv
-
-# eval 0317_noprogram_base augd8 epoch4 leavens0
-accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder_noprogram/evaluate.py \
-    --no_bos \
-    --tag epoch4 \
-    --weight_dir 0317_noprogram_base \
-    --weight_epoch 24 \
-    --ttt_weight_dir ttt_augd8_0317_noprogram_base \
-    --ttt_weight_epoch 4 \
-    --leave_ns 0 \
-    --select_tasks_path task_info_selected.csv
-
-# eval 0317_noprogram_base augd8 epoch6 leavens0
-accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder_noprogram/evaluate.py \
-    --no_bos \
-    --tag epoch6 \
-    --weight_dir 0317_noprogram_base \
-    --weight_epoch 24 \
-    --ttt_weight_dir ttt_augd8_0317_noprogram_base \
-    --ttt_weight_epoch 6 \
-    --leave_ns 0 \
-    --select_tasks_path task_info_selected.csv
-
-# eval 0317_noprogram_base augd8 epoch8 leavens0
-accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder_noprogram/evaluate.py \
-    --no_bos \
-    --tag epoch8 \
-    --weight_dir 0317_noprogram_base \
-    --weight_epoch 24 \
-    --ttt_weight_dir ttt_augd8_0317_noprogram_base \
-    --ttt_weight_epoch 8 \
-    --leave_ns 0 \
-    --select_tasks_path task_info_selected.csv
-
-# eval 0317_noprogram_base augd8 epoch10 leavens0
-accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder_noprogram/evaluate.py \
-    --no_bos \
-    --tag epoch10 \
-    --weight_dir 0317_noprogram_base \
-    --weight_epoch 24 \
-    --ttt_weight_dir ttt_augd8_0317_noprogram_base \
-    --ttt_weight_epoch 10 \
-    --leave_ns 0 \
-    --select_tasks_path task_info_selected.csv
+# # ttt 0317_noprogram_base augd8
+# accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder_noprogram/ttt.py \
+#     --lr_scheduler constant \
+#     --no_bos \
+#     --select_tasks_path task_info_selected.csv \
+#     --weight_dir 0317_noprogram_base \
+#     --weight_epoch 24 \
+#     --tag augd8 \
+#     --num_epochs 10 \
+#     --save_epochs 2 \
+#     --aug_type d8
 
 
 
@@ -123,64 +62,123 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
 
 
 
+# # eval 0317_noprogram_base augd8 epoch2 leavens0
+# accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder_noprogram/evaluate.py \
+#     --no_bos \
+#     --tag epoch2 \
+#     --weight_dir 0317_noprogram_base \
+#     --weight_epoch 24 \
+#     --ttt_weight_dir ttt_augd8_0317_noprogram_base \
+#     --ttt_weight_epoch 2 \
+#     --leave_ns 0 \
+#     --select_tasks_path task_info_selected.csv
+
+# # eval 0317_noprogram_base augd8 epoch4 leavens0
+# accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder_noprogram/evaluate.py \
+#     --no_bos \
+#     --tag epoch4 \
+#     --weight_dir 0317_noprogram_base \
+#     --weight_epoch 24 \
+#     --ttt_weight_dir ttt_augd8_0317_noprogram_base \
+#     --ttt_weight_epoch 4 \
+#     --leave_ns 0 \
+#     --select_tasks_path task_info_selected.csv
+
+# # eval 0317_noprogram_base augd8 epoch6 leavens0
+# accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder_noprogram/evaluate.py \
+#     --no_bos \
+#     --tag epoch6 \
+#     --weight_dir 0317_noprogram_base \
+#     --weight_epoch 24 \
+#     --ttt_weight_dir ttt_augd8_0317_noprogram_base \
+#     --ttt_weight_epoch 6 \
+#     --leave_ns 0 \
+#     --select_tasks_path task_info_selected.csv
+
+# # eval 0317_noprogram_base augd8 epoch8 leavens0
+# accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder_noprogram/evaluate.py \
+#     --no_bos \
+#     --tag epoch8 \
+#     --weight_dir 0317_noprogram_base \
+#     --weight_epoch 24 \
+#     --ttt_weight_dir ttt_augd8_0317_noprogram_base \
+#     --ttt_weight_epoch 8 \
+#     --leave_ns 0 \
+#     --select_tasks_path task_info_selected.csv
+
+# # eval 0317_noprogram_base augd8 epoch10 leavens0
+# accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder_noprogram/evaluate.py \
+#     --no_bos \
+#     --tag epoch10 \
+#     --weight_dir 0317_noprogram_base \
+#     --weight_epoch 24 \
+#     --ttt_weight_dir ttt_augd8_0317_noprogram_base \
+#     --ttt_weight_epoch 10 \
+#     --leave_ns 0 \
+#     --select_tasks_path task_info_selected.csv
 
 
-# eval 0317_noprogram_base augd8 epoch2 leavens1
-accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder_noprogram/evaluate.py \
-    --no_bos \
-    --tag epoch2 \
-    --weight_dir 0317_noprogram_base \
-    --weight_epoch 24 \
-    --ttt_weight_dir ttt_augd8_0317_noprogram_base \
-    --ttt_weight_epoch 2 \
-    --leave_ns 1 \
-    --select_tasks_path task_info_selected.csv
-
-# eval 0317_noprogram_base augd8 epoch4 leavens1
-accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder_noprogram/evaluate.py \
-    --no_bos \
-    --tag epoch4 \
-    --weight_dir 0317_noprogram_base \
-    --weight_epoch 24 \
-    --ttt_weight_dir ttt_augd8_0317_noprogram_base \
-    --ttt_weight_epoch 4 \
-    --leave_ns 1 \
-    --select_tasks_path task_info_selected.csv
-
-# eval 0317_noprogram_base augd8 epoch6 leavens1
-accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder_noprogram/evaluate.py \
-    --no_bos \
-    --tag epoch6 \
-    --weight_dir 0317_noprogram_base \
-    --weight_epoch 24 \
-    --ttt_weight_dir ttt_augd8_0317_noprogram_base \
-    --ttt_weight_epoch 6 \
-    --leave_ns 1 \
-    --select_tasks_path task_info_selected.csv
-
-# eval 0317_noprogram_base augd8 epoch8 leavens1
-accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder_noprogram/evaluate.py \
-    --no_bos \
-    --tag epoch8 \
-    --weight_dir 0317_noprogram_base \
-    --weight_epoch 24 \
-    --ttt_weight_dir ttt_augd8_0317_noprogram_base \
-    --ttt_weight_epoch 8 \
-    --leave_ns 1 \
-    --select_tasks_path task_info_selected.csv
-
-# eval 0317_noprogram_base augd8 epoch10 leavens1
-accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder_noprogram/evaluate.py \
-    --no_bos \
-    --tag epoch10 \
-    --weight_dir 0317_noprogram_base \
-    --weight_epoch 24 \
-    --ttt_weight_dir ttt_augd8_0317_noprogram_base \
-    --ttt_weight_epoch 10 \
-    --leave_ns 1 \
-    --select_tasks_path task_info_selected.csv
 
 
+
+
+
+
+
+# # eval 0317_noprogram_base augd8 epoch2 leavens1
+# accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder_noprogram/evaluate.py \
+#     --no_bos \
+#     --tag epoch2 \
+#     --weight_dir 0317_noprogram_base \
+#     --weight_epoch 24 \
+#     --ttt_weight_dir ttt_augd8_0317_noprogram_base \
+#     --ttt_weight_epoch 2 \
+#     --leave_ns 1 \
+#     --select_tasks_path task_info_selected.csv
+
+# # eval 0317_noprogram_base augd8 epoch4 leavens1
+# accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder_noprogram/evaluate.py \
+#     --no_bos \
+#     --tag epoch4 \
+#     --weight_dir 0317_noprogram_base \
+#     --weight_epoch 24 \
+#     --ttt_weight_dir ttt_augd8_0317_noprogram_base \
+#     --ttt_weight_epoch 4 \
+#     --leave_ns 1 \
+#     --select_tasks_path task_info_selected.csv
+
+# # eval 0317_noprogram_base augd8 epoch6 leavens1
+# accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder_noprogram/evaluate.py \
+#     --no_bos \
+#     --tag epoch6 \
+#     --weight_dir 0317_noprogram_base \
+#     --weight_epoch 24 \
+#     --ttt_weight_dir ttt_augd8_0317_noprogram_base \
+#     --ttt_weight_epoch 6 \
+#     --leave_ns 1 \
+#     --select_tasks_path task_info_selected.csv
+
+# # eval 0317_noprogram_base augd8 epoch8 leavens1
+# accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder_noprogram/evaluate.py \
+#     --no_bos \
+#     --tag epoch8 \
+#     --weight_dir 0317_noprogram_base \
+#     --weight_epoch 24 \
+#     --ttt_weight_dir ttt_augd8_0317_noprogram_base \
+#     --ttt_weight_epoch 8 \
+#     --leave_ns 1 \
+#     --select_tasks_path task_info_selected.csv
+
+# # eval 0317_noprogram_base augd8 epoch10 leavens1
+# accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder_noprogram/evaluate.py \
+#     --no_bos \
+#     --tag epoch10 \
+#     --weight_dir 0317_noprogram_base \
+#     --weight_epoch 24 \
+#     --ttt_weight_dir ttt_augd8_0317_noprogram_base \
+#     --ttt_weight_epoch 10 \
+#     --leave_ns 1 \
+#     --select_tasks_path task_info_selected.csv
 
 
 
@@ -195,131 +193,133 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
 
 
 
-# eval 0317_noprogram_base augextra epoch2 leavens0
-accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder_noprogram/evaluate.py \
-    --no_bos \
-    --tag epoch2 \
-    --weight_dir 0317_noprogram_base \
-    --weight_epoch 24 \
-    --ttt_weight_dir ttt_augextra_0317_noprogram_base \
-    --ttt_weight_epoch 2 \
-    --leave_ns 0 \
-    --select_tasks_path task_info_selected.csv
-
-# eval 0317_noprogram_base augextra epoch4 leavens0
-accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder_noprogram/evaluate.py \
-    --no_bos \
-    --tag epoch4 \
-    --weight_dir 0317_noprogram_base \
-    --weight_epoch 24 \
-    --ttt_weight_dir ttt_augextra_0317_noprogram_base \
-    --ttt_weight_epoch 4 \
-    --leave_ns 0 \
-    --select_tasks_path task_info_selected.csv
-
-# eval 0317_noprogram_base augextra epoch6 leavens0
-accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder_noprogram/evaluate.py \
-    --no_bos \
-    --tag epoch6 \
-    --weight_dir 0317_noprogram_base \
-    --weight_epoch 24 \
-    --ttt_weight_dir ttt_augextra_0317_noprogram_base \
-    --ttt_weight_epoch 6 \
-    --leave_ns 0 \
-    --select_tasks_path task_info_selected.csv
-
-# eval 0317_noprogram_base augextra epoch8 leavens0
-accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder_noprogram/evaluate.py \
-    --no_bos \
-    --tag epoch8 \
-    --weight_dir 0317_noprogram_base \
-    --weight_epoch 24 \
-    --ttt_weight_dir ttt_augextra_0317_noprogram_base \
-    --ttt_weight_epoch 8 \
-    --leave_ns 0 \
-    --select_tasks_path task_info_selected.csv
-
-# eval 0317_noprogram_base augextra epoch10 leavens0
-accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder_noprogram/evaluate.py \
-    --no_bos \
-    --tag epoch10 \
-    --weight_dir 0317_noprogram_base \
-    --weight_epoch 24 \
-    --ttt_weight_dir ttt_augextra_0317_noprogram_base \
-    --ttt_weight_epoch 10 \
-    --leave_ns 0 \
-    --select_tasks_path task_info_selected.csv
 
 
+# # eval 0317_noprogram_base augextra epoch2 leavens0
+# accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder_noprogram/evaluate.py \
+#     --no_bos \
+#     --tag epoch2 \
+#     --weight_dir 0317_noprogram_base \
+#     --weight_epoch 24 \
+#     --ttt_weight_dir ttt_augextra_0317_noprogram_base \
+#     --ttt_weight_epoch 2 \
+#     --leave_ns 0 \
+#     --select_tasks_path task_info_selected.csv
 
+# # eval 0317_noprogram_base augextra epoch4 leavens0
+# accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder_noprogram/evaluate.py \
+#     --no_bos \
+#     --tag epoch4 \
+#     --weight_dir 0317_noprogram_base \
+#     --weight_epoch 24 \
+#     --ttt_weight_dir ttt_augextra_0317_noprogram_base \
+#     --ttt_weight_epoch 4 \
+#     --leave_ns 0 \
+#     --select_tasks_path task_info_selected.csv
 
+# # eval 0317_noprogram_base augextra epoch6 leavens0
+# accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder_noprogram/evaluate.py \
+#     --no_bos \
+#     --tag epoch6 \
+#     --weight_dir 0317_noprogram_base \
+#     --weight_epoch 24 \
+#     --ttt_weight_dir ttt_augextra_0317_noprogram_base \
+#     --ttt_weight_epoch 6 \
+#     --leave_ns 0 \
+#     --select_tasks_path task_info_selected.csv
+
+# # eval 0317_noprogram_base augextra epoch8 leavens0
+# accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder_noprogram/evaluate.py \
+#     --no_bos \
+#     --tag epoch8 \
+#     --weight_dir 0317_noprogram_base \
+#     --weight_epoch 24 \
+#     --ttt_weight_dir ttt_augextra_0317_noprogram_base \
+#     --ttt_weight_epoch 8 \
+#     --leave_ns 0 \
+#     --select_tasks_path task_info_selected.csv
+
+# # eval 0317_noprogram_base augextra epoch10 leavens0
+# accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder_noprogram/evaluate.py \
+#     --no_bos \
+#     --tag epoch10 \
+#     --weight_dir 0317_noprogram_base \
+#     --weight_epoch 24 \
+#     --ttt_weight_dir ttt_augextra_0317_noprogram_base \
+#     --ttt_weight_epoch 10 \
+#     --leave_ns 0 \
+#     --select_tasks_path task_info_selected.csv
 
 
 
 
 
-# eval 0317_noprogram_base augextra epoch2 leavens1
-accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder_noprogram/evaluate.py \
-    --no_bos \
-    --tag epoch2 \
-    --weight_dir 0317_noprogram_base \
-    --weight_epoch 24 \
-    --ttt_weight_dir ttt_augextra_0317_noprogram_base \
-    --ttt_weight_epoch 2 \
-    --leave_ns 1 \
-    --select_tasks_path task_info_selected.csv
 
-# eval 0317_noprogram_base augextra epoch4 leavens1
-accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder_noprogram/evaluate.py \
-    --no_bos \
-    --tag epoch4 \
-    --weight_dir 0317_noprogram_base \
-    --weight_epoch 24 \
-    --ttt_weight_dir ttt_augextra_0317_noprogram_base \
-    --ttt_weight_epoch 4 \
-    --leave_ns 1 \
-    --select_tasks_path task_info_selected.csv
 
-# eval 0317_noprogram_base augextra epoch6 leavens1
-accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder_noprogram/evaluate.py \
-    --no_bos \
-    --tag epoch6 \
-    --weight_dir 0317_noprogram_base \
-    --weight_epoch 24 \
-    --ttt_weight_dir ttt_augextra_0317_noprogram_base \
-    --ttt_weight_epoch 6 \
-    --leave_ns 1 \
-    --select_tasks_path task_info_selected.csv
 
-# eval 0317_noprogram_base augextra epoch8 leavens1
-accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder_noprogram/evaluate.py \
-    --no_bos \
-    --tag epoch8 \
-    --weight_dir 0317_noprogram_base \
-    --weight_epoch 24 \
-    --ttt_weight_dir ttt_augextra_0317_noprogram_base \
-    --ttt_weight_epoch 8 \
-    --leave_ns 1 \
-    --select_tasks_path task_info_selected.csv
 
-# eval 0317_noprogram_base augextra epoch10 leavens1
-accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder_noprogram/evaluate.py \
-    --no_bos \
-    --tag epoch10 \
-    --weight_dir 0317_noprogram_base \
-    --weight_epoch 24 \
-    --ttt_weight_dir ttt_augextra_0317_noprogram_base \
-    --ttt_weight_epoch 10 \
-    --leave_ns 1 \
-    --select_tasks_path task_info_selected.csv
+# # eval 0317_noprogram_base augextra epoch2 leavens1
+# accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder_noprogram/evaluate.py \
+#     --no_bos \
+#     --tag epoch2 \
+#     --weight_dir 0317_noprogram_base \
+#     --weight_epoch 24 \
+#     --ttt_weight_dir ttt_augextra_0317_noprogram_base \
+#     --ttt_weight_epoch 2 \
+#     --leave_ns 1 \
+#     --select_tasks_path task_info_selected.csv
+
+# # eval 0317_noprogram_base augextra epoch4 leavens1
+# accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder_noprogram/evaluate.py \
+#     --no_bos \
+#     --tag epoch4 \
+#     --weight_dir 0317_noprogram_base \
+#     --weight_epoch 24 \
+#     --ttt_weight_dir ttt_augextra_0317_noprogram_base \
+#     --ttt_weight_epoch 4 \
+#     --leave_ns 1 \
+#     --select_tasks_path task_info_selected.csv
+
+# # eval 0317_noprogram_base augextra epoch6 leavens1
+# accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder_noprogram/evaluate.py \
+#     --no_bos \
+#     --tag epoch6 \
+#     --weight_dir 0317_noprogram_base \
+#     --weight_epoch 24 \
+#     --ttt_weight_dir ttt_augextra_0317_noprogram_base \
+#     --ttt_weight_epoch 6 \
+#     --leave_ns 1 \
+#     --select_tasks_path task_info_selected.csv
+
+# # eval 0317_noprogram_base augextra epoch8 leavens1
+# accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder_noprogram/evaluate.py \
+#     --no_bos \
+#     --tag epoch8 \
+#     --weight_dir 0317_noprogram_base \
+#     --weight_epoch 24 \
+#     --ttt_weight_dir ttt_augextra_0317_noprogram_base \
+#     --ttt_weight_epoch 8 \
+#     --leave_ns 1 \
+#     --select_tasks_path task_info_selected.csv
+
+# # eval 0317_noprogram_base augextra epoch10 leavens1
+# accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder_noprogram/evaluate.py \
+#     --no_bos \
+#     --tag epoch10 \
+#     --weight_dir 0317_noprogram_base \
+#     --weight_epoch 24 \
+#     --ttt_weight_dir ttt_augextra_0317_noprogram_base \
+#     --ttt_weight_epoch 10 \
+#     --leave_ns 1 \
+#     --select_tasks_path task_info_selected.csv
 
 
 
 
 
 # eval original
-# Submitted batch job 58656278
-# Submitted batch job 58656279
+# Submitted batch job 58666095
+# Submitted batch job 58666096
 
 # ttt
 # Submitted batch job 58656286

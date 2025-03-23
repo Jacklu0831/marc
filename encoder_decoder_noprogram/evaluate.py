@@ -102,7 +102,7 @@ def main():
     if args.model_name == "nemo8b":
         assert args.pad_side == "left"
 
-    args.tag = f"eval_{args.tag}_{args.ttt_weight_dir}"
+    args.tag = f"eval_{args.tag}_{args.weight_dir}_{args.ttt_weight_dir}"
     args.output_dir = os.path.join(args.output_dir, args.tag)
 
     # Setup accelerator
