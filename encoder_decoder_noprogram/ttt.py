@@ -530,6 +530,13 @@ def main():
         if program_embeddings is not None:
             program_embeddings.train()
 
+        # # debug: check if train eval and ttt load the same exact model and whether model is refreshed properly
+        # input_ids = torch.tensor([list(range(20)), list(range(20))], device=accelerator.device, dtype=torch.int64)
+        # attention_mask = torch.full(input_ids.shape, 1, device=accelerator.device, dtype=torch.int64)
+        # ce_loss = model(input_ids=input_ids, attention_mask=attention_mask, labels=input_ids).loss
+        # print(ce_loss.item())
+        # breakpoint()
+
         # start training
         for epoch in range(args.num_epochs):
             for batch_data in ttt_dataloader:
@@ -590,14 +597,11 @@ def main():
         # zero grads
         optimizer.state.clear()
         model.zero_grad(set_to_none=True)
-        if prior_embeddings is not None:
-            prior_embeddings.zero_grad(set_to_none=True)
-        if program_embeddings is not None:
-            program_embeddings.zero_grad(set_to_none=True)
 
         # delete stuff
         del ttt_datasets[0], ttt_dataloader
         del optimizer, lr_scheduler, progress_bar
+        del prior_embeddings, program_embeddings
 
         # more cleaning
         gc.collect()

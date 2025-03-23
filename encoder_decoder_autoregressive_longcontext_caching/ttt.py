@@ -157,20 +157,20 @@ def main():
 
     # Model
     parser.add_argument("--model_name", type=str, default="llama1b")
-    parser.add_argument("--flash_attn", action="store_true")
+    parser.add_argument("--no_flash_attn", action="store_true")
     parser.add_argument("--untrainable_nbit", type=float, choices=[3.6, 4, 8, 16, 32], default=16)
     parser.add_argument("--trainable_nbit", type=int, choices=[16, 32], default=16)
     parser.add_argument("--gradient_checkpointing", action="store_true")
-    parser.add_argument("--ar_gradient_checkpointing", action="store_true")
     parser.add_argument("--full_lora", action="store_true")
+    parser.add_argument("--lr_scheduler", type=str, choices=["cosine", "constant"], default="cosine")
+    parser.add_argument("--no_tf32", action="store_true")
+    parser.add_argument("--ar_gradient_checkpointing", action="store_true")
     parser.add_argument("--no_residual", action="store_true")
     parser.add_argument("--no_normalize", action="store_true")
     parser.add_argument("--token_weighted_loss", action="store_true")
     parser.add_argument("--weird_cast", action="store_true")
-    parser.add_argument("--no_tf32", action="store_true")
     parser.add_argument("--full_demonstration_dropout", type=float, default=0.0)
     parser.add_argument("--partial_demonstration_dropout", type=float, default=0.0)
-    parser.add_argument("--lr_scheduler", type=str, choices=["cosine", "constant"], default="cosine")
     parser.add_argument("--attention_reduction_ratio", type=float, default=1.0)
 
     # program loss
@@ -202,12 +202,11 @@ def main():
     parser.add_argument("--max_grad_norm", default=1.0, type=float, help="Max gradient norm.")
     parser.add_argument("--optimizer", type=str, choices=["adamw8bit", "adamw", "sgd"], default="adamw")
     parser.add_argument("--warmup_epochs", type=int, default=0)
-    parser.add_argument("--max_seq_len", type=int, default=8192)
+    parser.add_argument("--save_epochs", type=int, default=-1)
     parser.add_argument("--full_attention_dropout", type=float, default=0.0)
     parser.add_argument("--demonstration_attention_dropout", type=float, default=0.0) # activate naive selfattn but oom
     parser.add_argument("--program_dropout", type=float, default=0.0)
     parser.add_argument("--program_noise_std", type=float, default=0.0)
-    parser.add_argument("--save_epochs", type=int, default=-1)
     parser.add_argument("--short_context", action='store_true')
 
     # scheduled extra losses
@@ -235,9 +234,10 @@ def main():
     parser.add_argument("--select_tasks_path", type=str, default=None)
     parser.add_argument("--num_workers", type=int, default=8)
     parser.add_argument("--pad_side", type=str, choices=["left", "right"], default="right")
-    parser.add_argument("--no_dim", action='store_true')
     parser.add_argument("--no_separate_color_tokens", action='store_true')
-    parser.add_argument("--no_bos", action="store_true")
+    parser.add_argument("--max_seq_len", type=int, default=8192)
+    parser.add_argument("--no_bos", action='store_true')
+    parser.add_argument("--no_dim", action='store_true')
     parser.add_argument("--only_first_bos", action="store_true")
 
     parser.add_argument("--ntokens", type=int, default=4)
@@ -248,7 +248,7 @@ def main():
     if args.model_name == "nemo8b":
         assert args.pad_side == "left"
     if args.demonstration_attention_dropout:
-        assert not args.flash_attn
+        assert args.no_flash_attn
 
     assert args.trainable_nbit == 16 # TODO, test otherwise
 
@@ -298,7 +298,7 @@ def main():
         "cache_dir": "./encoder_decoder_cache",
         "low_cpu_mem_usage": True,
     }
-    if args.flash_attn:
+    if not args.no_flash_attn:
         from_pretrained_kwargs["attn_implementation"] = "flash_attention_2"
     if args.untrainable_nbit in NBIT_TO_DTYPE:
         from_pretrained_kwargs["torch_dtype"] = NBIT_TO_DTYPE[args.untrainable_nbit]
@@ -693,6 +693,13 @@ def main():
             program_norm.train()
         program_dropout.train()
 
+        # # debug: check if train eval and ttt load the same exact model
+        # input_ids = torch.tensor([list(range(20)), list(range(20))], device=accelerator.device, dtype=torch.int64)
+        # attention_mask = torch.full(input_ids.shape, 1, device=accelerator.device, dtype=torch.int64)
+        # ce_loss = model(input_ids=input_ids, attention_mask=attention_mask, labels=input_ids).loss
+        # print(ce_loss.item())
+        # breakpoint()
+
         # start training
         for epoch in range(args.num_epochs):
             for batch_data in ttt_dataloader:
@@ -780,18 +787,11 @@ def main():
         # zero grads
         optimizer.state.clear()
         model.zero_grad(set_to_none=True)
-        prior_embeddings.zero_grad(set_to_none=True)
-        program_embeddings.zero_grad(set_to_none=True)
-        if vae_projection is not None:
-            vae_projection.zero_grad(set_to_none=True)
-        if quantizer is not None:
-            quantizer.zero_grad(set_to_none=True)
-        if program_norm is not None:
-            program_norm.zero_grad(set_to_none=True)
 
         # delete stuff
         del ttt_datasets[0], ttt_dataloader
         del optimizer, lr_scheduler, progress_bar
+        del prior_embeddings, program_embeddings, vae_projection, quantizer, program_norm
 
         # more cleaning
         gc.collect()

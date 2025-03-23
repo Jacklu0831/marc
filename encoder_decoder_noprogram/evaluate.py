@@ -325,6 +325,13 @@ def main():
     )
     collate_fn = partial(collate_fn_eval, dataset=dataset)
 
+    # debug: check if train eval and ttt load the same exact model
+    # input_ids = torch.tensor([list(range(20)), list(range(20))], device=accelerator.device, dtype=torch.int64)
+    # attention_mask = torch.full(input_ids.shape, 1, device=accelerator.device, dtype=torch.int64)
+    # ce_loss = model(input_ids=input_ids, attention_mask=attention_mask, labels=input_ids).loss
+    # print(ce_loss.item())
+    # breakpoint()
+
     # evaluate
     exact_acc, valid_grid, correct_grid_dim, token_acc, relaxed_token_acc, texts, votes, competition_sub_acc, competition_all_acc, ttt_provided = evaluate(
         task_to_ttt_path=task_to_ttt_path,

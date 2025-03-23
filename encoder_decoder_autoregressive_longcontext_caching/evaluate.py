@@ -115,17 +115,6 @@ def main():
     parser.add_argument("--augment_n", type=int, default=0)
     parser.add_argument("--permute_iters", type=int, default=0)
 
-    # gradient search eval
-    parser.add_argument("--gs_iters", type=int, default=0)
-    parser.add_argument("--gs_lr", type=float, default=1.0)
-    parser.add_argument("--gs_beta1", type=float, default=0.9)
-    parser.add_argument("--gs_beta2", type=float, default=0.9)
-    parser.add_argument("--gs_batch_size", type=int, default=2)
-    parser.add_argument("--gs_optimizer", type=str, choices=["adamw", "sgd"], default="adamw")
-    parser.add_argument("--gs_lr_scheduler", type=str, choices=["cosine", "constant"], default="cosine")
-    parser.add_argument("--gs_max_grad_norm", default=1e8, type=float, help="Max gradient norm.")
-    parser.add_argument("--gs_take_best", action="store_true")
-
     # Virtual tokens approach
     parser.add_argument("--ntokens", type=int, default=4)
     parser.add_argument("--seed", type=int, default=0)
@@ -134,8 +123,6 @@ def main():
     # check args
     if args.model_name == "nemo8b":
         assert args.train_pad_side == args.gen_pad_side == "left"
-    if args.gs_iters > 0:
-        assert args.batch_size == 1
 
     args.tag = f"eval_{args.tag}_{args.ttt_weight_dir}"
     args.output_dir = os.path.join(args.output_dir, args.tag)
@@ -433,6 +420,13 @@ def main():
         only_first_bos=args.only_first_bos,
     )
     collate_fn = partial(collate_fn_eval, dataset=dataset)
+
+    # # debug: check if train eval and ttt load the same exact model
+    # input_ids = torch.tensor([list(range(20)), list(range(20))], device=accelerator.device, dtype=torch.int64)
+    # attention_mask = torch.full(input_ids.shape, 1, device=accelerator.device, dtype=torch.int64)
+    # ce_loss = model(input_ids=input_ids, attention_mask=attention_mask, labels=input_ids).loss
+    # print(ce_loss.item())
+    # breakpoint()
 
     # evaluate
     exact_acc, valid_grid, correct_grid_dim, token_acc, relaxed_token_acc, texts, \
