@@ -2210,6 +2210,7 @@ def main():
             eval_test_per_task=args.eval_train_test_per_task,
             eval_ratio=args.eval_train_ratio,
             split='train',
+            debug_fixed_order=args.debug_fixed_order,
         )
         for eval_seed in args.eval_seeds
     ]
@@ -2234,6 +2235,7 @@ def main():
             eval_test_per_task=args.eval_eval_test_per_task,
             eval_ratio=args.eval_eval_ratio,
             split='test',
+            debug_fixed_order=args.debug_fixed_order,
         )
         for eval_seed in args.eval_seeds
     ]

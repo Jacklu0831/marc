@@ -394,6 +394,7 @@ class EvalDataset:
         eval_test_per_task: int,
         eval_ratio: float,
         split: str,
+        debug_fixed_order: bool,
     ):
         self.tokenizer = tokenizer
         self.debug_random_pad = debug_random_pad
@@ -403,6 +404,7 @@ class EvalDataset:
         self.max_seq_len = max_seq_len
         self.max_pair_len = max_pair_len
         self.max_num_train_pair = max_num_train_pair # needed by collate
+        self.debug_fixed_order = debug_fixed_order
 
         # needed in evaluate
         self.ntokens = ntokens # needed by eval
@@ -481,7 +483,10 @@ class EvalDataset:
             for test_idx, test_pair in enumerate(test_pairs):
                 # get random demonstration pairs
                 num_demonstration = int(rng.choice(range(min_num_train_pair, max_num_train_pair + 1), size=1))
-                demonstrations = rng.choice(task_to_demonstrations[task], size=num_demonstration).tolist()
+                if debug_fixed_order:
+                    demonstrations = task_to_demonstrations[task][:num_demonstration]
+                else:
+                    demonstrations = rng.choice(task_to_demonstrations[task], size=num_demonstration).tolist()
 
                 assert len(test_pair['options']) > 1
                 assert test_pair['output'] in test_pair['options']
