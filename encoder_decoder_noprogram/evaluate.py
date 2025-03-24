@@ -94,6 +94,17 @@ def main():
     parser.add_argument("--augment_n", type=int, default=0)
     parser.add_argument("--permute_iters", type=int, default=0)
 
+    # gradient search
+    parser.add_argument("--gs_iters", type=int, default=0)
+    parser.add_argument("--gs_lr", type=float, default=1.0)
+    parser.add_argument("--gs_beta1", type=float, default=0.9)
+    parser.add_argument("--gs_beta2", type=float, default=0.9)
+    parser.add_argument("--gs_batch_size", type=int, default=2)
+    parser.add_argument("--gs_optimizer", type=str, choices=["adamw", "sgd"], default="adamw")
+    parser.add_argument("--gs_lr_scheduler", type=str, choices=["cosine", "constant"], default="cosine")
+    parser.add_argument("--gs_max_grad_norm", default=1e8, type=float, help="Max gradient norm.")
+    parser.add_argument("--gs_take_best", action="store_true")
+
     # Virtual tokens approach
     parser.add_argument("--seed", type=int, default=0)
     args = parser.parse_args()
@@ -347,6 +358,15 @@ def main():
         no_flash_attn=not args.flash_attn,
         dry_eval_run=False,
         output_dir=args.output_dir,
+        gs_iters=args.gs_iters,
+        gs_lr=args.gs_lr,
+        gs_beta1=args.gs_beta1,
+        gs_beta2=args.gs_beta2,
+        gs_batch_size=args.gs_batch_size,
+        gs_optimizer=args.gs_optimizer,
+        gs_max_grad_norm=args.gs_max_grad_norm,
+        gs_lr_scheduler=args.gs_lr_scheduler,
+        gs_take_best=args.gs_take_best,
         ntokens=args.ntokens,
         attention_cutoff=args.attention_cutoff,
         attend_prev_programs=args.attend_prev_programs,

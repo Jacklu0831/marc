@@ -21,6 +21,7 @@ from torch.nn.parallel import DistributedDataParallel
 from torch.utils.data import DataLoader
 from transformers import (
     AutoTokenizer,
+    get_constant_schedule,
     get_cosine_schedule_with_warmup,
     get_constant_schedule_with_warmup,
 )
@@ -38,8 +39,10 @@ import bitsandbytes as bnb
 from data_utils import (
     TrainDataset,
     EvalDataset,
+    GSDataset,
     collate_fn_train,
     collate_fn_eval,
+    collate_fn_gs,
     collate_fn_train_dummy,
     collate_fn_eval_dummy,
     ARCTokenizer,
@@ -184,6 +187,179 @@ def get_memory_footprint(module: nn.Module):
         sum(p.nelement() * p.element_size() for p in module.buffers())
 
 
+@torch.enable_grad()
+def gradient_search(
+        batch_idx: int,
+        eval_dataset: EvalDataset,
+        accelerator: Accelerator,
+        model: Union[nn.Module, DistributedDataParallel],
+        # inputs
+        past_key_values: Tuple[Tuple[torch.Tensor, torch.Tensor]],
+        past_key_values_attention_mask: torch.Tensor,
+        # config
+        iters: int,
+        lr: float,
+        beta1: float,
+        beta2: float,
+        batch_size: int,
+        optimizer: str,
+        lr_scheduler: str,
+        max_grad_norm: float,
+        take_best: bool,
+    ) -> Tuple[Tuple[torch.Tensor, torch.Tensor]]:
+    # NOTE: demonstration interval
+
+    # note gradient checkpointing does not matter because we are freezing the model here
+    # however, if we choose to tune the decoder as well, then gradient checkpointing might be desired
+    # didnt use grad accum, dont think needed
+
+    if past_key_values is not None:
+        assert past_key_values[0][0].shape[0] == 1
+    if past_key_values_attention_mask is not None:
+        assert past_key_values_attention_mask.shape[0] == 1
+
+    # dataset and dataloader
+    gs_dataset = GSDataset(
+        task=eval_dataset.eval_tasks[batch_idx],
+        tokenizer=eval_dataset.tokenizer,
+        debug_random_pad=eval_dataset.debug_random_pad,
+        debug_pad_len=eval_dataset.debug_pad_len,
+        train_pad_side=eval_dataset.pad_side,
+        no_separate_color_tokens=eval_dataset.no_separate_color_tokens,
+        no_bos=eval_dataset.no_bos,
+    )
+    if take_best:
+        assert batch_size >= len(gs_dataset)
+    batch_size = min(batch_size, len(gs_dataset))
+    gs_collate_fn = partial(collate_fn_gs, dataset=gs_dataset)
+    gs_loader = DataLoader(
+        gs_dataset,
+        batch_size=batch_size,
+        shuffle=True,
+        collate_fn=gs_collate_fn,
+        drop_last=False,
+        num_workers=0,
+    )
+
+    # get program parameters
+    program_params = []
+    for layer_k, layer_v in past_key_values:
+        program_params.append(layer_k)
+        program_params.append(layer_v)
+
+    # set requires grad
+    assert all(not p.requires_grad for p in program_params)
+    for p in program_params:
+        p.requires_grad = True
+
+    # expand to match predicted program with batch size
+    past_key_values = tuple(
+        (
+            layer_k.expand(batch_size, *layer_k.shape[1:]),
+            layer_v.expand(batch_size, *layer_v.shape[1:]),
+        )
+        for layer_k, layer_v in past_key_values
+    ) # type: ignore
+    past_key_values_attention_mask = past_key_values_attention_mask.expand(batch_size, *past_key_values_attention_mask.shape[1:])
+
+    # optimizer
+    if optimizer == 'adamw':
+        optim = torch.optim.AdamW(program_params, weight_decay=0.0, lr=lr, betas=(beta1, beta2)) # type: ignore
+    else:
+        optim = torch.optim.SGD(program_params, lr=lr) # type: ignore
+
+    # lr scheduler
+    if lr_scheduler == "cosine":
+        scheduler = get_cosine_schedule_with_warmup(optim, num_warmup_steps=0, num_training_steps=iters)
+    else:
+        scheduler = get_constant_schedule(optim)
+
+    # prepare stuff (no difference on singlegpu, havent tested on multigpu)
+    # model, optim, gs_loader = accelerator.prepare(model, optim, gs_loader)
+
+    # prepare some stuff
+    curr_iter = 0
+    best_loss = float("inf")
+    best_past_key_values = past_key_values
+    model.train()
+
+    module = model.module if isinstance(model, DistributedDataParallel) else model
+    embed_tokens = module.model.embed_tokens if hasattr(module.model, "embed_tokens") else module.model.model.embed_tokens
+
+    # train!
+    while curr_iter < iters:
+        for batch in gs_loader:
+            pair_input_ids = batch["input_ids"].to(accelerator.device)
+            pair_attention_mask = batch["attention_mask"].to(accelerator.device)
+            pair_label_ids = batch["label_ids"].to(accelerator.device)
+            device, dtype = pair_input_ids.device, pair_input_ids.dtype
+
+            with accelerator.autocast():
+                pair_inputs_embeds = embed_tokens(pair_input_ids)
+                pair_attention_mask = torch.cat([past_key_values_attention_mask, pair_attention_mask], dim=1)
+
+                # build position ids (does NOT depend on dropout)
+                attention_mask_just_for_kv = pair_attention_mask[:, :past_key_values[0][0].shape[2]]
+                attention_mask_after_kv = pair_attention_mask[:, past_key_values[0][0].shape[2]:]
+                position_ids = []
+                for mask_for_kv, mask_after_kv in zip(attention_mask_just_for_kv, attention_mask_after_kv):
+                    sequence_position_ids = torch.zeros(pair_inputs_embeds.shape[1], device=device, dtype=dtype)
+                    position_start = mask_for_kv.sum()
+                    n_new_positions = mask_after_kv.sum()
+                    new_positions = torch.tensor(range(position_start, position_start + n_new_positions), device=device, dtype=dtype)
+                    if gs_dataset.train_pad_side == "right":
+                        sequence_position_ids[:n_new_positions] = new_positions
+                    else:
+                        sequence_position_ids[-n_new_positions:] = new_positions
+                    position_ids.append(sequence_position_ids)
+                position_ids = torch.stack(position_ids)
+
+                model_kwargs = {
+                    "inputs_embeds": pair_inputs_embeds,
+                    "attention_mask": pair_attention_mask,
+                    "labels": pair_label_ids,
+                    "use_cache": True,
+                    "past_key_values": past_key_values,
+                    "position_ids": position_ids,
+                }
+
+                # get ce loss
+                loss = model(**model_kwargs).loss
+                # print(loss.item())
+                # breakpoint()
+
+            accelerator.backward(loss)
+            accelerator.clip_grad_norm_(program_params, max_grad_norm)
+            optim.step()
+            scheduler.step()
+            optim.zero_grad()
+
+            if take_best and loss.item() < best_loss:
+                best_loss = loss.item()
+                best_past_key_values = tuple(
+                    (layer_k.detach().clone(), layer_v.detach().clone())
+                    for layer_k, layer_v in past_key_values
+                )
+
+            curr_iter += 1
+            if curr_iter >= iters:
+                break
+
+    model.eval()
+
+    if take_best:
+        past_key_values = best_past_key_values  # type: ignore
+
+    # shrink to match predicted program with batch size 1
+    if batch_size > 1:
+        past_key_values = tuple(
+            (layer_k[:1], layer_v[:1])
+            for layer_k, layer_v in past_key_values
+        ) # type: ignore
+
+    return past_key_values
+
+
 ################################################
 # Evaluate with cross-entropy + exact-match
 ################################################
@@ -202,6 +378,15 @@ def evaluate(
     no_flash_attn: bool,
     dry_eval_run: bool,
     output_dir: str,
+    gs_iters: int,
+    gs_batch_size: int,
+    gs_lr: float,
+    gs_beta1: float,
+    gs_beta2: float,
+    gs_optimizer: str,
+    gs_max_grad_norm: float,
+    gs_lr_scheduler: str,
+    gs_take_best: bool,
     ntokens: int,
     attention_cutoff: bool,
     attend_prev_programs: bool,
@@ -331,23 +516,121 @@ def evaluate(
             # get tensors
             task_ids = batch["task_ids"]
             inverters = batch["inverters"]
-            gen_input_ids = batch["gen_input_ids"].to(accelerator.device)
-            gen_attention_mask = batch["gen_attention_mask"].to(accelerator.device)
-            gen_input_ids_lens = batch["gen_input_ids_lens"]
+            all_input_ids = batch["all_input_ids"].to(accelerator.device)
+            all_attention_mask = batch["all_attention_mask"].to(accelerator.device)
+            all_input_ids_lens = batch["all_input_ids_lens"]
             out_token_length = batch["out_token_length"]
             label_texts = batch["label_texts"]
             pair_start_idxs = batch["pair_start_idxs"]
+            # for gs (no ntoken)
+            demon_input_ids = batch["demon_input_ids"].to(accelerator.device)
+            demon_attention_mask = batch["demon_attention_mask"].to(accelerator.device)
+            gen_input_ids = batch["gen_input_ids"].to(accelerator.device)
+            gen_attention_mask = batch["gen_attention_mask"].to(accelerator.device)
 
             # compute accuracy
-            with accelerator.autocast():
-                arbitrary_increase = 5
-                if program_embeddings is None:
+            arbitrary_increase = 5
+
+            if program_embeddings is None and gs_iters > 0:
+                with accelerator.autocast():
+                    # perform 2-step noprogram generation with gs
                     assert prior_embeddings is None
-                    # generate with no program
+                    device, dtype = demon_input_ids.device, demon_input_ids.dtype
+
+                    # necessary for padside left and does not change when padside is right, idky
+                    position_ids = []
+                    for m in demon_attention_mask:
+                        sequence_position_ids = torch.zeros(demon_input_ids.shape[1], device=device, dtype=dtype)
+                        n_new_positions = m.sum()
+                        new_positions = torch.tensor(range(n_new_positions), device=device, dtype=dtype)
+                        if dataset.pad_side == "right":
+                            sequence_position_ids[:n_new_positions] = new_positions
+                        else:
+                            sequence_position_ids[-n_new_positions:] = new_positions
+                        position_ids.append(sequence_position_ids)
+                    position_ids = torch.stack(position_ids)
+
+                    past_key_values = model(
+                        input_ids=demon_input_ids,
+                        attention_mask=demon_attention_mask,
+                        output_hidden_states=True,
+                        position_ids=position_ids,
+                    ).past_key_values
+                    past_key_values_attention_mask = demon_attention_mask # rename for convenience
+
+                # construct new programs and kv to be filled
+                new_past_key_values = tuple([[], []] for _ in past_key_values)
+                assert past_key_values[0][0].shape[0] == bs
+
+                if not no_flash_attn:
+                    past_key_values = tuple(
+                        (
+                            layer_k.to(NBIT_TO_DTYPE[trainable_nbit]),
+                            layer_v.to(NBIT_TO_DTYPE[trainable_nbit]),
+                        )
+                        for layer_k, layer_v in past_key_values
+                    )
+
+                # gradient search is done individually for simplicity
+                with accelerator.no_sync(model):
+                    for batch_i, batch_idx in enumerate(batch_idxs):
+
+                        # extract the batchsize1 task inputs
+                        assert past_key_values is not None and past_key_values_attention_mask is not None
+                        task_past_key_values = tuple(
+                            (layer_k[batch_i: batch_i+1].detach().clone(), layer_v[batch_i: batch_i+1].detach().clone())
+                            for layer_k, layer_v in past_key_values
+                        )
+                        task_past_key_values_attention_mask = past_key_values_attention_mask[batch_i:batch_i+1].detach().clone()
+
+                        # search!
+                        task_past_key_values = gradient_search(
+                            batch_idx=batch_idx,
+                            eval_dataset=dataset,
+                            accelerator=accelerator,
+                            model=model,
+                            # inputs
+                            past_key_values=task_past_key_values, # type: ignore
+                            past_key_values_attention_mask=task_past_key_values_attention_mask,
+                            # config
+                            iters=gs_iters,
+                            lr=gs_lr,
+                            beta1=gs_beta1,
+                            beta2=gs_beta2,
+                            batch_size=gs_batch_size,
+                            optimizer=gs_optimizer,
+                            lr_scheduler=gs_lr_scheduler,
+                            max_grad_norm=gs_max_grad_norm,
+                            take_best=gs_take_best,
+                        )
+
+                        # fill new kv, no need to update kv attention mask
+                        for layer_i, (layer_k, layer_v) in enumerate(task_past_key_values):
+                            new_past_key_values[layer_i][0].append(layer_k)
+                            new_past_key_values[layer_i][1].append(layer_v)
+
+                    # finally, tuple-lize kv and rename
+                    past_key_values = tuple(
+                        (torch.cat(layer_k), torch.cat(layer_v))
+                        for layer_k, layer_v in new_past_key_values
+                    )
+
+                with accelerator.autocast():
+                    # second step to generate
+                    # add past key values portion to input_ids and attention mask
+                    # the padding of input_ids is ignored
+                    pad_len = past_key_values_attention_mask.shape[1]
+                    gen_input_ids = torch.cat([
+                        torch.full((bs, pad_len), 0, device=accelerator.device, dtype=gen_input_ids.dtype),
+                        gen_input_ids,
+                    ], dim=1)
+                    gen_attention_mask = torch.cat([past_key_values_attention_mask, gen_attention_mask], dim=1)
+
                     gen_tokens = module.generate(
                         input_ids=gen_input_ids,
                         attention_mask=gen_attention_mask,
-                        max_new_tokens=max(out_token_length) + arbitrary_increase, # arbitrary increase
+                        past_key_values=past_key_values,
+                        max_new_tokens=max(out_token_length) + arbitrary_increase,
                         num_return_sequences=1,
                         temperature=1.0,
                         top_p=1.0,
@@ -355,30 +638,38 @@ def evaluate(
                         eos_token_id=[dataset.tokenizer.eos_token_id],
                     )
                     gen_tokens = gen_tokens[:, gen_input_ids.shape[1]:]
-                    assert len(gen_tokens) == len(out_token_length)
-                    for t, l in zip(gen_tokens, out_token_length):
-                        t[l + arbitrary_increase:] = dataset.tokenizer.pad_token_id
-                    gen_texts = dataset.tokenizer.batch_decode(
-                        gen_tokens,
-                        skip_special_tokens=True,
-                        no_separate_color_tokens=dataset.no_separate_color_tokens,
+
+            elif program_embeddings is None:
+                # perform single-step noprogram generation with gs
+                assert prior_embeddings is None
+                with accelerator.autocast():
+                    gen_tokens = module.generate(
+                        input_ids=all_input_ids,
+                        attention_mask=all_attention_mask,
+                        max_new_tokens=max(out_token_length) + arbitrary_increase, # arbitrary increase
+                        num_return_sequences=1,
+                        temperature=1.0,
+                        top_p=1.0,
+                        do_sample=False,
+                        eos_token_id=[dataset.tokenizer.eos_token_id],
                     )
-                    # print(gen_texts)
-                    # breakpoint()
-                else:
-                    assert prior_embeddings is not None
+                    gen_tokens = gen_tokens[:, all_input_ids.shape[1]:]
+
+            else:
+                assert prior_embeddings is not None
+                with accelerator.autocast():
                     # generate with no program
-                    device, dtype = gen_input_ids.device, gen_input_ids.dtype
+                    device, dtype = all_input_ids.device, all_input_ids.dtype
                     max_num_pairs = max(len(start_idxs) for start_idxs in pair_start_idxs)
                     pad_embeds = embed_tokens(torch.tensor(dataset.tokenizer.pad_token_id, device=device)) # (hidden_dim,)
-                    gen_inputs_embeds = embed_tokens(gen_input_ids)
+                    all_inputs_embeds = embed_tokens(all_input_ids)
 
                     # insert program embeddings
                     inputs_embeds_with_programs = []
                     attention_mask_with_programs = []
                     program_intervals = []
 
-                    for task_input_ids, task_inputs_embeds, task_attention_mask, input_ids_len, start_idxs in zip(gen_input_ids, gen_inputs_embeds, gen_attention_mask, gen_input_ids_lens, pair_start_idxs):
+                    for task_input_ids, task_inputs_embeds, task_attention_mask, input_ids_len, start_idxs in zip(all_input_ids, all_inputs_embeds, all_attention_mask, all_input_ids_lens, pair_start_idxs):
                         assert start_idxs[0] == 1 - dataset.no_bos # first pair starts after bos
                         # start_idxs are offset if padding side is left
                         if dataset.pad_side == "left":
@@ -424,7 +715,7 @@ def evaluate(
                     # stack and check, now we have the three inputs with programs
                     inputs_embeds_with_programs = torch.stack(inputs_embeds_with_programs)
                     attention_mask_with_programs = torch.stack(attention_mask_with_programs)
-                    assert inputs_embeds_with_programs.shape[1] == gen_input_ids.shape[1] + max_num_pairs * ntokens
+                    assert inputs_embeds_with_programs.shape[1] == all_input_ids.shape[1] + max_num_pairs * ntokens
                     assert inputs_embeds_with_programs.shape[:2] == attention_mask_with_programs.shape[:2]
 
                     # debug: assert programs are programs based on stored intervals
@@ -471,31 +762,15 @@ def evaluate(
                             program_intervals=program_intervals,
                             attend_prev_programs=attend_prev_programs,
                         )
-                    assert len(gen_tokens) == len(out_token_length)
-                    for t, l in zip(gen_tokens, out_token_length):
-                        t[l + arbitrary_increase:] = dataset.tokenizer.pad_token_id
-                    gen_texts = dataset.tokenizer.batch_decode(
-                        gen_tokens,
-                        skip_special_tokens=True,
-                        no_separate_color_tokens=dataset.no_separate_color_tokens,
-                    )
 
-                    # DBEUG: when ntoken0
-                    # gen_tokens2 = module.generate(
-                    #     input_ids=gen_input_ids,
-                    #     attention_mask=gen_attention_mask,
-                    #     max_new_tokens=max(out_token_length) + arbitrary_increase, # arbitrary increase
-                    #     num_return_sequences=1,
-                    #     temperature=1.0,
-                    #     top_p=1.0,
-                    #     do_sample=False,
-                    #     eos_token_id=[dataset.tokenizer.eos_token_id],
-                    # )
-                    # gen_tokens2 = gen_tokens2[:, gen_input_ids.shape[1]:]
-                    # assert len(gen_tokens2) == len(out_token_length)
-                    # for t, l in zip(gen_tokens2, out_token_length):
-                    #     t[l + arbitrary_increase:] = dataset.tokenizer.pad_token_id
-                    # assert torch.equal(gen_tokens, gen_tokens2)
+            assert len(gen_tokens) == len(out_token_length)
+            for t, l in zip(gen_tokens, out_token_length):
+                t[l + arbitrary_increase:] = dataset.tokenizer.pad_token_id
+            gen_texts = dataset.tokenizer.batch_decode(
+                gen_tokens,
+                skip_special_tokens=True,
+                no_separate_color_tokens=dataset.no_separate_color_tokens,
+            )
 
             # Compare each gen_text with label_texts
             assert len(task_ids) == len(inverters) == bs, (len(task_ids), len(inverters), bs)
@@ -1220,6 +1495,28 @@ def main():
     parser.add_argument("--eval_eval_augment_n", type=int, default=0)
     parser.add_argument("--eval_eval_permute_iters", type=int, default=0)
 
+    # gradient search train
+    parser.add_argument("--train_gs_iters", type=int, default=0)
+    parser.add_argument("--train_gs_lr", type=float, default=1.0)
+    parser.add_argument("--train_gs_beta1", type=float, default=0.9)
+    parser.add_argument("--train_gs_beta2", type=float, default=0.9)
+    parser.add_argument("--train_gs_batch_size", type=int, default=2)
+    parser.add_argument("--train_gs_optimizer", type=str, choices=["adamw", "sgd"], default="adamw")
+    parser.add_argument("--train_gs_lr_scheduler", type=str, choices=["cosine", "constant"], default="cosine")
+    parser.add_argument("--train_gs_max_grad_norm", default=1e8, type=float, help="Max gradient norm.")
+    parser.add_argument("--train_gs_take_best", action="store_true")
+
+    # gradient search eval
+    parser.add_argument("--eval_gs_iters", type=int, default=0)
+    parser.add_argument("--eval_gs_lr", type=float, default=1.0)
+    parser.add_argument("--eval_gs_beta1", type=float, default=0.9)
+    parser.add_argument("--eval_gs_beta2", type=float, default=0.9)
+    parser.add_argument("--eval_gs_batch_size", type=int, default=2)
+    parser.add_argument("--eval_gs_optimizer", type=str, choices=["adamw", "sgd"], default="adamw")
+    parser.add_argument("--eval_gs_lr_scheduler", type=str, choices=["cosine", "constant"], default="cosine")
+    parser.add_argument("--eval_gs_max_grad_norm", default=1e8, type=float, help="Max gradient norm.")
+    parser.add_argument("--eval_gs_take_best", action="store_true")
+
     # Lora
     parser.add_argument("--lora_rank", type=int, default=256)
     parser.add_argument("--lora_alpha", type=float, default=24.0)
@@ -1826,6 +2123,15 @@ def main():
                 no_flash_attn=args.no_flash_attn,
                 dry_eval_run=args.dry_eval_run,
                 output_dir=args.output_dir,
+                gs_iters=args.train_gs_iters,
+                gs_lr=args.train_gs_lr,
+                gs_beta1=args.train_gs_beta1,
+                gs_beta2=args.train_gs_beta2,
+                gs_batch_size=args.train_gs_batch_size,
+                gs_optimizer=args.train_gs_optimizer,
+                gs_max_grad_norm=args.train_gs_max_grad_norm,
+                gs_lr_scheduler=args.train_gs_lr_scheduler,
+                gs_take_best=args.train_gs_take_best,
                 ntokens=args.ntokens,
                 attention_cutoff=args.attention_cutoff,
                 attend_prev_programs=args.attend_prev_programs,
@@ -1845,6 +2151,15 @@ def main():
                 no_flash_attn=args.no_flash_attn,
                 dry_eval_run=args.dry_eval_run,
                 output_dir=args.output_dir,
+                gs_iters=args.eval_gs_iters,
+                gs_lr=args.eval_gs_lr,
+                gs_beta1=args.eval_gs_beta1,
+                gs_beta2=args.eval_gs_beta2,
+                gs_batch_size=args.eval_gs_batch_size,
+                gs_optimizer=args.eval_gs_optimizer,
+                gs_max_grad_norm=args.eval_gs_max_grad_norm,
+                gs_lr_scheduler=args.eval_gs_lr_scheduler,
+                gs_take_best=args.eval_gs_take_best,
                 ntokens=args.ntokens,
                 attention_cutoff=args.attention_cutoff,
                 attend_prev_programs=args.attend_prev_programs,

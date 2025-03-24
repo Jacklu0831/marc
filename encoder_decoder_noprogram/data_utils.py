@@ -839,7 +839,7 @@ class EvalDataset:
         pair_idx_to_input_ids = []
         pair_idx_to_attention_mask = []
         pair_idx_to_label_ids = []
-        gen_input_ids = []
+        all_input_ids = [] # all demonstration pairs and the last input grid
         gen_output_ids = None
 
         for pair_i in range(num_pair):
@@ -853,9 +853,9 @@ class EvalDataset:
             attention_mask = torch.full(input_ids.shape, 1, dtype=torch.int64)
             # gen ids
             if pair_i < num_pair - 1:
-                gen_input_ids.append(torch.cat([input_grid_ids, output_grid_ids]))
+                all_input_ids.append(torch.cat([input_grid_ids, output_grid_ids]))
             else:
-                gen_input_ids.append(input_grid_ids)
+                all_input_ids.append(input_grid_ids)
                 gen_output_ids = output_grid_ids
             # label id for all except first pair
             label_ids = torch.full(input_grid_ids.shape, -100, dtype=torch.int64)
@@ -879,10 +879,16 @@ class EvalDataset:
         if len(input_ids) > self.max_seq_len:
             return None
 
-        gen_input_ids = torch.cat(gen_input_ids)
+        # for gs (no ntoken)
+        demon_input_ids = torch.cat(all_input_ids[:-1])
+        demon_attention_mask = torch.full(demon_input_ids.shape, 1, dtype=torch.int64)
+        gen_input_ids = all_input_ids[-1]
+        gen_attention_mask = torch.full(gen_input_ids.shape, 1, dtype=torch.int64)
+
+        all_input_ids = torch.cat(all_input_ids)
         assert isinstance(gen_output_ids, torch.Tensor)
         out_token_length = len(gen_output_ids) - 1 # remove eos token
-        gen_attention_mask = torch.full(gen_input_ids.shape, 1, dtype=torch.int64)
+        all_attention_mask = torch.full(all_input_ids.shape, 1, dtype=torch.int64)
         label_texts = self.tokenizer.decode(
             gen_output_ids,
             no_separate_color_tokens=self.no_separate_color_tokens
@@ -894,11 +900,16 @@ class EvalDataset:
             "input_ids": input_ids,
             "attention_mask": attention_mask,
             "label_ids": label_ids,
-            "gen_input_ids": gen_input_ids,
-            "gen_attention_mask": gen_attention_mask,
+            "all_input_ids": all_input_ids,
+            "all_attention_mask": all_attention_mask,
             "out_token_length": out_token_length,
             "label_texts": label_texts,  # used for exact match
             "pair_start_idxs": pair_start_idxs,
+            # for gs (no ntoken)
+            "demon_input_ids": demon_input_ids,
+            "demon_attention_mask": demon_attention_mask,
+            "gen_input_ids": gen_input_ids,
+            "gen_attention_mask": gen_attention_mask,
         }
 
     def __len__(self):
@@ -914,8 +925,8 @@ def collate_fn_eval(batch: List[Dict], dataset: EvalDataset) -> Dict:
     input_ids = [x["input_ids"] for x in batch]
     attention_mask = [x["attention_mask"] for x in batch]
     label_ids = [x["label_ids"] for x in batch]
-    gen_input_ids = [x["gen_input_ids"] for x in batch]
-    gen_attention_mask = [x["gen_attention_mask"] for x in batch]
+    all_input_ids = [x["all_input_ids"] for x in batch]
+    all_attention_mask = [x["all_attention_mask"] for x in batch]
     out_token_length = [x["out_token_length"] for x in batch]
     label_texts = [x["label_texts"] for x in batch]
     pair_start_idxs = [x["pair_start_idxs"] for x in batch]
@@ -926,14 +937,39 @@ def collate_fn_eval(batch: List[Dict], dataset: EvalDataset) -> Dict:
     attention_mask = pad_sequence_with_side(attention_mask, padding_value=0, side=dataset.pad_side)
     label_ids = pad_sequence_with_side(label_ids, padding_value=-100, side=dataset.pad_side)
 
-    gen_input_ids_lens = [len(x) for x in gen_input_ids]
-    gen_input_ids = pad_sequence_with_side(gen_input_ids, padding_value=dataset.tokenizer.pad_token_id, side=dataset.pad_side)
-    gen_attention_mask = pad_sequence_with_side(gen_attention_mask, padding_value=0, side=dataset.pad_side)
+    all_input_ids_lens = [len(x) for x in all_input_ids]
+    all_input_ids = pad_sequence_with_side(all_input_ids, padding_value=dataset.tokenizer.pad_token_id, side=dataset.pad_side)
+    all_attention_mask = pad_sequence_with_side(all_attention_mask, padding_value=0, side=dataset.pad_side)
 
     if dataset.debug_random_pad or dataset.debug_pad_len > -1:
         input_ids, attention_mask, label_ids = debug_extra_pad_tensors(
             [input_ids, attention_mask, label_ids],
             padding_values=[dataset.tokenizer.pad_token_id, 0, -100],
+            pad_len=dataset.debug_pad_len,
+            side=dataset.pad_side,
+        )
+        all_input_ids, all_attention_mask = debug_extra_pad_tensors(
+            [all_input_ids, all_attention_mask],
+            padding_values=[dataset.tokenizer.pad_token_id, 0],
+            pad_len=dataset.debug_pad_len,
+            side=dataset.pad_side,
+        )
+
+    # for gs (no ntoken)
+    demon_input_ids = [x["demon_input_ids"] for x in batch]
+    demon_attention_mask = [x["demon_attention_mask"] for x in batch]
+    gen_input_ids = [x["gen_input_ids"] for x in batch]
+    gen_attention_mask = [x["gen_attention_mask"] for x in batch]
+
+    demon_input_ids = pad_sequence_with_side(demon_input_ids, padding_value=dataset.tokenizer.pad_token_id, side=dataset.pad_side)
+    demon_attention_mask = pad_sequence_with_side(demon_attention_mask, padding_value=0, side=dataset.pad_side)
+    gen_input_ids = pad_sequence_with_side(gen_input_ids, padding_value=dataset.tokenizer.pad_token_id, side=dataset.pad_side)
+    gen_attention_mask = pad_sequence_with_side(gen_attention_mask, padding_value=0, side=dataset.pad_side)
+
+    if dataset.debug_random_pad or dataset.debug_pad_len > -1:
+        demon_input_ids, demon_attention_mask = debug_extra_pad_tensors(
+            [demon_input_ids, demon_attention_mask],
+            padding_values=[dataset.tokenizer.pad_token_id, 0],
             pad_len=dataset.debug_pad_len,
             side=dataset.pad_side,
         )
@@ -950,13 +986,18 @@ def collate_fn_eval(batch: List[Dict], dataset: EvalDataset) -> Dict:
         "input_ids": input_ids,
         "attention_mask": attention_mask,
         "label_ids": label_ids,
-        "gen_input_ids": gen_input_ids,
-        "gen_attention_mask": gen_attention_mask,
+        "all_input_ids": all_input_ids,
+        "all_attention_mask": all_attention_mask,
         "out_token_length": out_token_length,
         "label_texts": label_texts,
         "input_ids_lens": input_ids_lens,
-        "gen_input_ids_lens": gen_input_ids_lens,
+        "all_input_ids_lens": all_input_ids_lens,
         "pair_start_idxs": pair_start_idxs,
+        # for gs (no ntoken)
+        "demon_input_ids": demon_input_ids,
+        "demon_attention_mask": demon_attention_mask,
+        "gen_input_ids": gen_input_ids,
+        "gen_attention_mask": gen_attention_mask,
     }
     return batch_dict
 
@@ -969,9 +1010,9 @@ def collate_fn_eval_dummy(batch: List[Dict], dataset: EvalDataset) -> Dict:
     attention_mask = torch.full((batch_size, dataset.debug_len), 1, dtype=torch.int64, device='cpu')
     input_ids_lens = [dataset.debug_len] * batch_size
 
-    gen_input_ids = torch.randint(0, 30, (batch_size, dataset.debug_len * 9 // 10 + 1), dtype=torch.int64, device='cpu')
-    gen_attention_mask = torch.full((batch_size, dataset.debug_len * 9 // 10 + 1), 1, dtype=torch.int64, device='cpu')
-    gen_input_ids_lens = [dataset.debug_len * 9 // 10 + 1] * batch_size
+    all_input_ids = torch.randint(0, 30, (batch_size, dataset.debug_len * 9 // 10 + 1), dtype=torch.int64, device='cpu')
+    all_attention_mask = torch.full((batch_size, dataset.debug_len * 9 // 10 + 1), 1, dtype=torch.int64, device='cpu')
+    all_input_ids_lens = [dataset.debug_len * 9 // 10 + 1] * batch_size
 
     if not dataset.no_bos:
         pair_start_idxs = [list(range(1, dataset.debug_len * 9 // 10, dataset.debug_len // 15))[:10] for _ in range(batch_size)]
@@ -982,19 +1023,107 @@ def collate_fn_eval_dummy(batch: List[Dict], dataset: EvalDataset) -> Dict:
     out_token_length = [dataset.debug_len // 10 + 1] * batch_size
     label_texts = ['1\n1\n1'] * batch_size
 
+    # for gs (no ntoken)
+    demon_input_ids = torch.randint(0, 30, (batch_size, dataset.debug_len * 8 // 10 + 1), dtype=torch.int64, device='cpu')
+    demon_attention_mask = torch.full((batch_size, dataset.debug_len * 8 // 10 + 1), 1, dtype=torch.int64, device='cpu')
+    gen_input_ids = torch.randint(0, 30, (batch_size, dataset.debug_len // 10 + 1), dtype=torch.int64, device='cpu')
+    gen_attention_mask = torch.full((batch_size, dataset.debug_len // 10 + 1), 1, dtype=torch.int64, device='cpu')
+
     batch_dict = {
         "task_ids": task_ids,
         "inverters": [""] * batch_size,
         "input_ids": input_ids,
         "attention_mask": attention_mask,
         "label_ids": input_ids,
-        "gen_input_ids": gen_input_ids,
-        "gen_attention_mask": gen_attention_mask,
+        "all_input_ids": all_input_ids,
+        "all_attention_mask": all_attention_mask,
         "out_token_length": out_token_length,
         "label_texts": label_texts,
         "input_ids_lens": input_ids_lens,
-        "gen_input_ids_lens": gen_input_ids_lens,
+        "all_input_ids_lens": all_input_ids_lens,
         "pair_start_idxs": pair_start_idxs,
+        # for gs (no ntoken)
+        "demon_input_ids": demon_input_ids,
+        "demon_attention_mask": demon_attention_mask,
+        "gen_input_ids": gen_input_ids,
+        "gen_attention_mask": gen_attention_mask,
+    }
+    return batch_dict
+
+
+########################################
+# Gradient Search Dataset
+########################################
+class GSDataset(Dataset):
+    def __init__(
+        self,
+        task: Task,
+        tokenizer: ARCTokenizer,
+        debug_random_pad: bool,
+        debug_pad_len: int,
+        train_pad_side: str,
+        no_separate_color_tokens: bool,
+        no_bos: bool,
+    ):
+        self.task = task
+        self.tokenizer = tokenizer
+        self.debug_random_pad = debug_random_pad
+        self.debug_pad_len = debug_pad_len
+        self.train_pad_side = train_pad_side
+        self.no_separate_color_tokens = no_separate_color_tokens
+        self.no_bos = no_bos
+
+        # format data (only use demonstration pairs)
+        self.parsed_examples = [self.format(example) for example in task.train_examples]
+
+    def __len__(self):
+        return len(self.parsed_examples)
+
+    def __getitem__(self, idx):
+        return self.parsed_examples[idx]
+
+    def format(self, example: Example) -> Optional[Dict]:
+        # tasks are filtered by EvalDataset already, shouldn't have grids too big
+        assert max(example.input.shape) <= 30 and max(example.output.shape) <= 30
+
+        input_grid_ids, output_grid_ids = self.tokenizer.get_input_and_output_grid_ids(
+            example=example,
+            add_bos=False,
+            no_separate_color_tokens=self.no_separate_color_tokens,
+        )
+        input_ids = torch.cat([input_grid_ids, output_grid_ids])
+        attention_mask = torch.full(input_ids.shape, 1, dtype=torch.int64)
+        label_ids = torch.full(input_grid_ids.shape, -100, dtype=torch.int64)
+        label_ids = torch.cat([label_ids, output_grid_ids])
+
+        return {
+            "input_ids": input_ids,
+            "attention_mask": attention_mask,
+            "label_ids": label_ids,
+        }
+
+
+def collate_fn_gs(batch: List[Dict], dataset: GSDataset) -> Dict:
+    input_ids = [x["input_ids"] for x in batch]
+    attention_mask = [x["attention_mask"] for x in batch]
+    label_ids = [x["label_ids"] for x in batch]
+
+    input_ids = pad_sequence_with_side(input_ids, padding_value=dataset.tokenizer.pad_token_id, side=dataset.train_pad_side)
+    attention_mask = pad_sequence_with_side(attention_mask, padding_value=0, side=dataset.train_pad_side)
+    label_ids = pad_sequence_with_side(label_ids, padding_value=-100, side=dataset.train_pad_side)
+
+    if dataset.debug_random_pad or dataset.debug_pad_len > -1:
+        input_ids, attention_mask, label_ids = debug_extra_pad_tensors(
+            [input_ids, attention_mask, label_ids],
+            padding_values=[dataset.tokenizer.pad_token_id, 0, -100],
+            pad_len=dataset.debug_pad_len,
+            side=dataset.train_pad_side,
+        )
+
+    batch_dict = {
+        "input_ids": input_ids,
+        "attention_mask": attention_mask,
+        "label_ids": label_ids,
     }
     return batch_dict
 
