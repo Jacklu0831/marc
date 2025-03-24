@@ -72,12 +72,17 @@ def parse_pairs(
     newline_token_id: torch.Tensor,
     loss_type: str,
     allow_truncate: bool,
-) -> Optional[Tuple[torch.Tensor, torch.Tensor, torch.Tensor, np.ndarray]]:
+    is_train: bool,
+) -> Optional[Tuple[torch.Tensor, torch.Tensor, torch.Tensor, np.ndarray,
+                    Optional[torch.Tensor], Optional[torch.Tensor], Optional[torch.Tensor], Optional[torch.Tensor], Optional[torch.Tensor]]]:
 
     # compute input_ids, attention_mask, label_ids for each pair
     input_ids_of_each_pair = []
     label_ids_of_each_pair = []
     final_output_start_idx = -1
+
+    # for gs (no ntoken)
+    demon_input_ids = []
 
     for pair_i, pair in enumerate(pairs):
         # tokenize
@@ -112,6 +117,10 @@ def parse_pairs(
         input_ids_of_each_pair.append(input_ids)
         label_ids_of_each_pair.append(label_ids)
 
+        # for gs (no token)
+        demon_input_ids.append(input_input_ids)
+        demon_input_ids.append(output_input_ids)
+
     # start idxs computed from cumsum of lengths of pairs except last
     pair_start_idxs = np.cumsum([0, *[len(x) for x in input_ids_of_each_pair[:-1]]]).tolist()
 
@@ -135,7 +144,22 @@ def parse_pairs(
         else:
             return None
 
-    return input_ids, attention_mask, label_ids, pair_start_idxs
+    # for gs (no ntoken)
+    if not is_train:
+        # gen input ids
+        gen_input_ids = torch.cat(demon_input_ids[-2:])
+        gen_attention_mask = torch.full(gen_input_ids.shape, 1, dtype=torch.int64)
+        # gen label ids
+        gen_label_ids = torch.full(demon_input_ids[-2].shape, -100, dtype=input_ids.dtype)
+        gen_label_ids = torch.cat([gen_label_ids, demon_input_ids[-1]])
+        # demon input ids
+        demon_input_ids = torch.cat(demon_input_ids[:-2])
+        demon_attention_mask = torch.full(demon_input_ids.shape, 1, dtype=torch.int64)
+    else:
+        gen_input_ids, gen_attention_mask, gen_label_ids, demon_input_ids, demon_attention_mask = None, None, None, None, None
+
+    return input_ids, attention_mask, label_ids, pair_start_idxs, \
+        gen_input_ids, gen_attention_mask, gen_label_ids, demon_input_ids, demon_attention_mask
 
 
 def collate_data(
@@ -302,10 +326,11 @@ def collate_fn_train(batch: List[int], dataset: TrainDataset) -> Dict:
             newline_token_id=dataset.newline_token_id,
             loss_type=dataset.loss_type,
             allow_truncate=dataset.allow_truncate,
+            is_train=True,
         )
         if out == None:
             continue
-        input_ids, attention_mask, label_ids, pair_start_idxs = out
+        input_ids, attention_mask, label_ids, pair_start_idxs, _, _, _, _, _ = out
 
         # add to batch
         out_batch.append({
@@ -380,6 +405,7 @@ class EvalDataset:
         eval_ratio: float,
         split: str,
         allow_truncate: bool,
+        debug_fixed_order: bool,
     ):
         self.tokenizer = tokenizer
         self.debug_random_pad = debug_random_pad
@@ -390,6 +416,7 @@ class EvalDataset:
         self.max_pair_len = max_pair_len
         self.allow_truncate = allow_truncate
         self.max_num_train_pair = max_num_train_pair # needed by collate
+        self.debug_fixed_order = debug_fixed_order
 
         # needed in evaluate
         self.ntokens = ntokens # needed by eval
@@ -468,7 +495,10 @@ class EvalDataset:
             for test_idx, test_pair in enumerate(test_pairs):
                 # get random demonstration pairs
                 num_demonstration = int(rng.choice(range(min_num_train_pair, max_num_train_pair + 1), size=1))
-                demonstrations = rng.choice(task_to_demonstrations[task], size=num_demonstration).tolist()
+                if debug_fixed_order:
+                    demonstrations = task_to_demonstrations[task][:num_demonstration]
+                else:
+                    demonstrations = rng.choice(task_to_demonstrations[task], size=num_demonstration).tolist()
 
                 assert len(test_pair['options']) > 1
                 assert test_pair['output'] in test_pair['options']
@@ -512,10 +542,11 @@ class EvalDataset:
             newline_token_id=self.newline_token_id,
             loss_type="only_last",
             allow_truncate=self.allow_truncate,
+            is_train=False,
         )
         if out == None:
             return None
-        input_ids, attention_mask, label_ids, pair_start_idxs = out
+        input_ids, attention_mask, label_ids, pair_start_idxs, gen_input_ids, gen_attention_mask, gen_label_ids, demon_input_ids, demon_attention_mask = out
 
         return {
             "task": task,
@@ -526,6 +557,13 @@ class EvalDataset:
             "pair_start_idxs": pair_start_idxs,
             "option": test_pair['output'],
             "correct_option": correct_option,
+            # for gs (no ntoken)
+            "demon_input_ids": demon_input_ids,
+            "demon_attention_mask": demon_attention_mask,
+            "gen_input_ids": gen_input_ids,
+            "gen_label_ids": gen_label_ids,
+            "gen_attention_mask": gen_attention_mask,
+            "demonstrations_pairs": demonstrations,
         }
 
     def __len__(self):
@@ -547,12 +585,44 @@ def collate_fn_eval(batch: List[Dict], dataset: EvalDataset) -> Dict:
     )
     assert len(all_input_ids) == batch_size
 
+    # eval only
     pair_start_idxs = [x['pair_start_idxs'] for x in batch]
     task = [x['task'] for x in batch]
     test_idx = [x['test_idx'] for x in batch]
     option = [x['option'] for x in batch]
     correct_option = [x['correct_option'] for x in batch]
     assert all(start_idxs[0] == 0 for start_idxs in pair_start_idxs)
+
+    # for gs (no token)
+    demon_input_ids = [x['demon_input_ids'] for x in batch]
+    demon_attention_mask = [x['demon_attention_mask'] for x in batch]
+    gen_input_ids = [x['gen_input_ids'] for x in batch]
+    gen_attention_mask = [x['gen_attention_mask'] for x in batch]
+    gen_label_ids = [x['gen_label_ids'] for x in batch]
+
+    # collate
+    assert isinstance(dataset.tokenizer.pad_token_id, int)
+    demon_input_ids = pad_sequence_with_side(demon_input_ids, padding_value=dataset.tokenizer.pad_token_id, side=dataset.pad_side)
+    demon_attention_mask = pad_sequence_with_side(demon_attention_mask, padding_value=0, side=dataset.pad_side)
+    gen_input_ids = pad_sequence_with_side(gen_input_ids, padding_value=dataset.tokenizer.pad_token_id, side=dataset.pad_side)
+    gen_attention_mask = pad_sequence_with_side(gen_attention_mask, padding_value=0, side=dataset.pad_side)
+    gen_label_ids = pad_sequence_with_side(gen_label_ids, padding_value=-100, side=dataset.pad_side)
+    assert all_input_ids.shape == all_attention_mask.shape == all_label_ids.shape
+
+    # extra padding
+    if dataset.debug_random_pad or dataset.debug_pad_len > -1:
+        demon_input_ids, demon_attention_mask = debug_extra_pad_tensors(
+            [demon_input_ids, demon_attention_mask],
+            padding_values=[dataset.tokenizer.pad_token_id, 0],
+            pad_len=dataset.debug_pad_len,
+            side=dataset.pad_side,
+        )
+        gen_input_ids, gen_attention_mask, gen_label_ids = debug_extra_pad_tensors(
+            [gen_input_ids, gen_attention_mask, gen_label_ids],
+            padding_values=[dataset.tokenizer.pad_token_id, 0, -100],
+            pad_len=dataset.debug_pad_len,
+            side=dataset.pad_side,
+        )
 
     return {
         'task': task,
@@ -564,6 +634,12 @@ def collate_fn_eval(batch: List[Dict], dataset: EvalDataset) -> Dict:
         'pair_start_idxs': pair_start_idxs,
         "option": option,
         "correct_option": correct_option,
+        # for gs (no ntoken)
+        "demon_input_ids": demon_input_ids,
+        "demon_attention_mask": demon_attention_mask,
+        "gen_input_ids": gen_input_ids,
+        "gen_attention_mask": gen_attention_mask,
+        "gen_label_ids": gen_label_ids,
     }
 
 
@@ -576,6 +652,12 @@ def collate_fn_eval_dummy(batch: List[int], dataset: EvalDataset) -> Dict:
     input_ids_lens = [dataset.debug_len] * batch_size
     pair_start_idxs = [[0] + sorted(random.sample(range(2, dataset.debug_len), k=dataset.max_num_train_pair)) for _ in range(batch_size)]
 
+    # for gs (no ntoken)
+    demon_input_ids = torch.randint(0, 30, (batch_size, dataset.debug_len * 8 // 10), dtype=torch.int64, device='cpu')
+    demon_attention_mask = torch.full(demon_input_ids.shape, 1, dtype=torch.int64, device='cpu')
+    gen_input_ids = torch.randint(0, 30, (batch_size, dataset.debug_len * 2 // 10), dtype=torch.int64, device='cpu')
+    gen_attention_mask = torch.full(gen_input_ids.shape, 1, dtype=torch.int64, device='cpu')
+
     return {
         "task": ["dummy"] * batch_size,
         "test_idx": list(range(batch_size)),
@@ -586,4 +668,95 @@ def collate_fn_eval_dummy(batch: List[int], dataset: EvalDataset) -> Dict:
         "pair_start_idxs": pair_start_idxs,
         "option": [''] * batch_size,
         "correct_option": [''] * batch_size,
+        # for gs (no ntoken)
+        "demon_input_ids": demon_input_ids,
+        "demon_attention_mask": demon_attention_mask,
+        "gen_input_ids": gen_input_ids,
+        "gen_attention_mask": gen_attention_mask,
+        "gen_label_ids": gen_input_ids,
     }
+
+########################################
+# Gradient Search Dataset
+########################################
+class GSDataset(Dataset):
+    def __init__(
+        self,
+        demonstration_pairs: List[Dict],
+        tokenizer: Union[PreTrainedTokenizerFast, GPT2TokenizerFast],
+        debug_random_pad: bool,
+        debug_pad_len: int,
+        train_pad_side: str,
+        max_pair_len: int,
+    ):
+        self.demonstration_pairs = demonstration_pairs
+        self.tokenizer = tokenizer
+        self.debug_random_pad = debug_random_pad
+        self.debug_pad_len = debug_pad_len
+        self.train_pad_side = train_pad_side
+        self.max_pair_len = max_pair_len
+
+        # separate input and output by newline
+        self.newline_token_id = tokenize("\n", tokenizer)
+
+        # format data (only use demonstration pairs)
+        self.parsed_examples = [self.format(example) for example in demonstration_pairs]
+
+    def __len__(self):
+        return len(self.parsed_examples)
+
+    def __getitem__(self, idx):
+        return self.parsed_examples[idx]
+
+    def format(self, pair: Dict) -> Optional[Dict]:
+        # tokenize
+        input_input_ids = tokenize(pair['input'], self.tokenizer)
+        output_input_ids = tokenize(pair['output'], self.tokenizer)
+
+        # truncate each pair like in metaICL, not account for newlines tho
+        if len(input_input_ids) > self.max_pair_len - len(output_input_ids):
+            input_input_ids = input_input_ids[: self.max_pair_len - len(output_input_ids)]
+
+        # append delimiter to input
+        input_input_ids = torch.cat([input_input_ids, self.newline_token_id])
+
+        # prepend \n\n for inputs that are not first
+        input_input_ids = torch.cat([self.newline_token_id, self.newline_token_id, input_input_ids])
+
+        # create input_ids and label_ids
+        input_ids = torch.cat([input_input_ids, output_input_ids])
+        attention_mask = torch.full(input_ids.shape, 1, dtype=torch.int64)
+        label_ids = torch.full(input_input_ids.shape, -100, dtype=input_ids.dtype)
+        label_ids = torch.cat([label_ids, output_input_ids])
+
+        return {
+            "input_ids": input_ids,
+            "attention_mask": attention_mask,
+            "label_ids": label_ids,
+        }
+
+
+def collate_fn_gs(batch: List[Dict], dataset: GSDataset) -> Dict:
+    input_ids = [x["input_ids"] for x in batch]
+    attention_mask = [x["attention_mask"] for x in batch]
+    label_ids = [x["label_ids"] for x in batch]
+
+    assert isinstance(dataset.tokenizer.pad_token_id, int)
+    input_ids = pad_sequence_with_side(input_ids, padding_value=dataset.tokenizer.pad_token_id, side=dataset.train_pad_side)
+    attention_mask = pad_sequence_with_side(attention_mask, padding_value=0, side=dataset.train_pad_side)
+    label_ids = pad_sequence_with_side(label_ids, padding_value=-100, side=dataset.train_pad_side)
+
+    if dataset.debug_random_pad or dataset.debug_pad_len > -1:
+        input_ids, attention_mask, label_ids = debug_extra_pad_tensors(
+            [input_ids, attention_mask, label_ids],
+            padding_values=[dataset.tokenizer.pad_token_id, 0, -100],
+            pad_len=dataset.debug_pad_len,
+            side=dataset.train_pad_side,
+        )
+
+    batch_dict = {
+        "input_ids": input_ids,
+        "attention_mask": attention_mask,
+        "label_ids": label_ids,
+    }
+    return batch_dict

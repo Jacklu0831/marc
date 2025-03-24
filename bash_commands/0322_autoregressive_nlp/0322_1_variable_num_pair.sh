@@ -1,4 +1,4 @@
-# python make_sbatch.py --ngpu 1 --time 48 --bash_files bash_commands/0322_autoregressive_nlp/0322_1_variable_num_pair.sh
+# python make_sbatch.py --ngpu 2 --time 48 --bash_files bash_commands/0322_autoregressive_nlp/0322_1_variable_num_pair.sh
 
 # arlongcache nlp llama1b lora excludefirst
 accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder_autoregressive_longcontext_caching_nlp/train.py \
@@ -25,6 +25,6 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
     --eval_min_num_pair 2 \
     --wandb
 
-# Submitted batch job 58652026
-# Submitted batch job 58652027
-# Submitted batch job 58652028
+# Submitted batch job 58682556
+# Submitted batch job 58682557
+# Submitted batch job 58682558

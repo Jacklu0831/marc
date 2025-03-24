@@ -20,6 +20,7 @@ from torch.nn.parallel import DistributedDataParallel
 from torch.utils.data import DataLoader
 from transformers import (
     AutoTokenizer,
+    get_constant_schedule,
     get_cosine_schedule_with_warmup,
     get_constant_schedule_with_warmup,
     AutoModelForCausalLM,
@@ -38,8 +39,10 @@ import bitsandbytes as bnb
 from data_utils import (
     TrainDataset,
     EvalDataset,
+    GSDataset,
     collate_fn_train,
     collate_fn_eval,
+    collate_fn_gs,
     collate_fn_train_dummy,
     collate_fn_eval_dummy,
     pad_sequence_with_side,
@@ -177,6 +180,178 @@ def compute_macrof1_or_accuracy(predictions, groundtruths, is_classification) ->
     return float(np.mean(f1s))
 
 
+@torch.enable_grad()
+def gradient_search(
+        batch_idx: int,
+        eval_dataset: EvalDataset,
+        accelerator: Accelerator,
+        model: Union[nn.Module, DistributedDataParallel],
+        # inputs
+        past_key_values: Tuple[Tuple[torch.Tensor, torch.Tensor]],
+        past_key_values_attention_mask: torch.Tensor,
+        # config
+        iters: int,
+        lr: float,
+        beta1: float,
+        beta2: float,
+        batch_size: int,
+        optimizer: str,
+        lr_scheduler: str,
+        max_grad_norm: float,
+        take_best: bool,
+    ) -> Tuple[Tuple[torch.Tensor, torch.Tensor]]:
+    # NOTE: demonstration interval
+
+    # note gradient checkpointing does not matter because we are freezing the model here
+    # however, if we choose to tune the decoder as well, then gradient checkpointing might be desired
+    # didnt use grad accum, dont think needed
+
+    if past_key_values is not None:
+        assert past_key_values[0][0].shape[0] == 1
+    if past_key_values_attention_mask is not None:
+        assert past_key_values_attention_mask.shape[0] == 1
+
+    # dataset and dataloader
+    gs_dataset = GSDataset(
+        demonstration_pairs=eval_dataset.data[batch_idx]['demonstrations_pairs'],
+        tokenizer=eval_dataset.tokenizer,
+        debug_random_pad=eval_dataset.debug_random_pad,
+        debug_pad_len=eval_dataset.debug_pad_len,
+        train_pad_side=eval_dataset.pad_side,
+        max_pair_len=eval_dataset.max_pair_len,
+    )
+    if take_best:
+        assert batch_size >= len(gs_dataset)
+    batch_size = min(batch_size, len(gs_dataset))
+    gs_collate_fn = partial(collate_fn_gs, dataset=gs_dataset)
+    gs_loader = DataLoader(
+        gs_dataset,
+        batch_size=batch_size,
+        shuffle=True,
+        collate_fn=gs_collate_fn,
+        drop_last=False,
+        num_workers=0,
+    )
+
+    # get program parameters
+    program_params = []
+    for layer_k, layer_v in past_key_values:
+        program_params.append(layer_k)
+        program_params.append(layer_v)
+
+    # set requires grad
+    assert all(not p.requires_grad for p in program_params)
+    for p in program_params:
+        p.requires_grad = True
+
+    # expand to match predicted program with batch size
+    past_key_values = tuple(
+        (
+            layer_k.expand(batch_size, *layer_k.shape[1:]),
+            layer_v.expand(batch_size, *layer_v.shape[1:]),
+        )
+        for layer_k, layer_v in past_key_values
+    ) # type: ignore
+    past_key_values_attention_mask = past_key_values_attention_mask.expand(batch_size, *past_key_values_attention_mask.shape[1:])
+
+    # optimizer
+    if optimizer == 'adamw':
+        optim = torch.optim.AdamW(program_params, weight_decay=0.0, lr=lr, betas=(beta1, beta2)) # type: ignore
+    else:
+        optim = torch.optim.SGD(program_params, lr=lr) # type: ignore
+
+    # lr scheduler
+    if lr_scheduler == "cosine":
+        scheduler = get_cosine_schedule_with_warmup(optim, num_warmup_steps=0, num_training_steps=iters)
+    else:
+        scheduler = get_constant_schedule(optim)
+
+    # prepare stuff (no difference on singlegpu, havent tested on multigpu)
+    # model, optim, gs_loader = accelerator.prepare(model, optim, gs_loader)
+
+    # prepare some stuff
+    curr_iter = 0
+    best_loss = float("inf")
+    best_past_key_values = past_key_values
+    model.train()
+
+    module = model.module if isinstance(model, DistributedDataParallel) else model
+    embed_tokens = module.model.embed_tokens if hasattr(module.model, "embed_tokens") else module.model.model.embed_tokens
+
+    # train!
+    while curr_iter < iters:
+        for batch in gs_loader:
+            pair_input_ids = batch["input_ids"].to(accelerator.device)
+            pair_attention_mask = batch["attention_mask"].to(accelerator.device)
+            pair_label_ids = batch["label_ids"].to(accelerator.device)
+            device, dtype = pair_input_ids.device, pair_input_ids.dtype
+
+            with accelerator.autocast():
+                pair_inputs_embeds = embed_tokens(pair_input_ids)
+                pair_attention_mask = torch.cat([past_key_values_attention_mask, pair_attention_mask], dim=1)
+
+                # build position ids (does NOT depend on dropout)
+                attention_mask_just_for_kv = pair_attention_mask[:, :past_key_values[0][0].shape[2]]
+                attention_mask_after_kv = pair_attention_mask[:, past_key_values[0][0].shape[2]:]
+                position_ids = []
+                for mask_for_kv, mask_after_kv in zip(attention_mask_just_for_kv, attention_mask_after_kv):
+                    sequence_position_ids = torch.zeros(pair_inputs_embeds.shape[1], device=device, dtype=dtype)
+                    position_start = mask_for_kv.sum()
+                    n_new_positions = mask_after_kv.sum()
+                    new_positions = torch.tensor(range(position_start, position_start + n_new_positions), device=device, dtype=dtype)
+                    if gs_dataset.train_pad_side == "right":
+                        sequence_position_ids[:n_new_positions] = new_positions
+                    else:
+                        sequence_position_ids[-n_new_positions:] = new_positions
+                    position_ids.append(sequence_position_ids)
+                position_ids = torch.stack(position_ids)
+
+                model_kwargs = {
+                    "inputs_embeds": pair_inputs_embeds,
+                    "attention_mask": pair_attention_mask,
+                    "labels": pair_label_ids,
+                    "use_cache": True,
+                    "past_key_values": past_key_values,
+                    "position_ids": position_ids,
+                }
+
+                # get ce loss
+                loss = model(**model_kwargs).loss
+                # print(loss.item())
+                # breakpoint()
+
+            accelerator.backward(loss)
+            accelerator.clip_grad_norm_(program_params, max_grad_norm)
+            optim.step()
+            scheduler.step()
+            optim.zero_grad()
+
+            if take_best and loss.item() < best_loss:
+                best_loss = loss.item()
+                best_past_key_values = tuple(
+                    (layer_k.detach().clone(), layer_v.detach().clone())
+                    for layer_k, layer_v in past_key_values
+                )
+
+            curr_iter += 1
+            if curr_iter >= iters:
+                break
+
+    model.eval()
+
+    if take_best:
+        past_key_values = best_past_key_values  # type: ignore
+
+    # shrink to match predicted program with batch size 1
+    if batch_size > 1:
+        past_key_values = tuple(
+            (layer_k[:1], layer_v[:1])
+            for layer_k, layer_v in past_key_values
+        ) # type: ignore
+
+    return past_key_values
+
+
 ################################################
 # Evaluate with cross-entropy + exact-match
 ################################################
@@ -189,10 +364,21 @@ def evaluate(
     accelerator: Accelerator,
     batch_size: int,
     collate_fn: Callable,
+    trainable_nbit: int,
+    no_flash_attn: bool,
     dry_eval_run: bool,
     attention_cutoff: bool,
     attend_prev_programs: bool,
     log_every: int,
+    gs_iters: int,
+    gs_batch_size: int,
+    gs_lr: float,
+    gs_beta1: float,
+    gs_beta2: float,
+    gs_optimizer: str,
+    gs_max_grad_norm: float,
+    gs_lr_scheduler: str,
+    gs_take_best: bool,
 ) -> Tuple[float, List]:
 
     model.eval()
@@ -200,6 +386,10 @@ def evaluate(
         prior_embeddings.eval()
     if program_embeddings is not None:
         program_embeddings.eval()
+
+    # get modules in case of DDP
+    module = model.module if isinstance(model, DistributedDataParallel) else model
+    embed_tokens = module.model.embed_tokens if hasattr(module.model, "embed_tokens") else module.model.model.embed_tokens
 
     distributed_state = PartialState()
     output_list = []
@@ -237,30 +427,155 @@ def evaluate(
             pair_start_idxs = batch["pair_start_idxs"]
             option = batch['option']
             correct_option = batch['correct_option']
+            # for gs (no ntoken)
+            demon_input_ids = batch["demon_input_ids"].to(accelerator.device)
+            demon_attention_mask = batch["demon_attention_mask"].to(accelerator.device)
+            gen_input_ids = batch["gen_input_ids"].to(accelerator.device)
+            gen_attention_mask = batch["gen_attention_mask"].to(accelerator.device)
+            gen_label_ids = batch["gen_label_ids"].to(accelerator.device)
 
-            with accelerator.autocast():
-                losses = model_loss(
-                    model=model,
-                    tokenizer=dataset.tokenizer,
-                    prior_embeddings=prior_embeddings,
-                    program_embeddings=program_embeddings,
-                    input_ids=input_ids,
-                    attention_mask=attention_mask,
-                    label_ids=label_ids,
-                    input_ids_lens=input_ids_lens,
-                    pair_start_idxs=pair_start_idxs,
-                    ntokens=dataset.ntokens,
-                    pad_side=dataset.pad_side,
-                    program_loss_lambda_scheduler=None,
-                    global_step=0,
-                    program_type='none',
-                    attention_cutoff=attention_cutoff,
-                    attend_prev_programs=attend_prev_programs,
-                    debug=False,
-                    individual_loss=True,
-                )
-                # print(losses.tolist())
-                # breakpoint()
+            if program_embeddings is None and gs_iters > 0:
+                with accelerator.autocast():
+                    # perform 2-step noprogram generation with gs
+                    assert prior_embeddings is None
+                    device, dtype = demon_input_ids.device, demon_input_ids.dtype
+
+                    # necessary for padside left and does not change when padside is right, idky
+                    position_ids = []
+                    for m in demon_attention_mask:
+                        sequence_position_ids = torch.zeros(demon_input_ids.shape[1], device=device, dtype=dtype)
+                        n_new_positions = m.sum()
+                        new_positions = torch.tensor(range(n_new_positions), device=device, dtype=dtype)
+                        if dataset.pad_side == "right":
+                            sequence_position_ids[:n_new_positions] = new_positions
+                        else:
+                            sequence_position_ids[-n_new_positions:] = new_positions
+                        position_ids.append(sequence_position_ids)
+                    position_ids = torch.stack(position_ids)
+
+                    past_key_values = model(
+                        input_ids=demon_input_ids,
+                        attention_mask=demon_attention_mask,
+                        output_hidden_states=True,
+                        position_ids=position_ids,
+                    ).past_key_values
+                    past_key_values_attention_mask = demon_attention_mask # rename for convenience
+
+                # construct new programs and kv to be filled
+                new_past_key_values = tuple([[], []] for _ in past_key_values)
+                assert past_key_values[0][0].shape[0] == bs
+
+                if not no_flash_attn:
+                    past_key_values = tuple(
+                        (
+                            layer_k.to(NBIT_TO_DTYPE[trainable_nbit]),
+                            layer_v.to(NBIT_TO_DTYPE[trainable_nbit]),
+                        )
+                        for layer_k, layer_v in past_key_values
+                    )
+
+                # gradient search is done individually for simplicity
+                with accelerator.no_sync(model):
+                    for batch_i, batch_idx in enumerate(batch_idxs):
+
+                        # extract the batchsize1 task inputs
+                        assert past_key_values is not None and past_key_values_attention_mask is not None
+                        task_past_key_values = tuple(
+                            (layer_k[batch_i: batch_i+1].detach().clone(), layer_v[batch_i: batch_i+1].detach().clone())
+                            for layer_k, layer_v in past_key_values
+                        )
+                        task_past_key_values_attention_mask = past_key_values_attention_mask[batch_i:batch_i+1].detach().clone()
+
+                        # search!
+                        task_past_key_values = gradient_search(
+                            batch_idx=batch_idx,
+                            eval_dataset=dataset,
+                            accelerator=accelerator,
+                            model=model,
+                            # inputs
+                            past_key_values=task_past_key_values, # type: ignore
+                            past_key_values_attention_mask=task_past_key_values_attention_mask,
+                            # config
+                            iters=gs_iters,
+                            lr=gs_lr,
+                            beta1=gs_beta1,
+                            beta2=gs_beta2,
+                            batch_size=gs_batch_size,
+                            optimizer=gs_optimizer,
+                            lr_scheduler=gs_lr_scheduler,
+                            max_grad_norm=gs_max_grad_norm,
+                            take_best=gs_take_best,
+                        )
+
+                        # fill new kv, no need to update kv attention mask
+                        for layer_i, (layer_k, layer_v) in enumerate(task_past_key_values):
+                            new_past_key_values[layer_i][0].append(layer_k)
+                            new_past_key_values[layer_i][1].append(layer_v)
+
+                    # finally, tuple-lize kv and rename
+                    past_key_values = tuple(
+                        (torch.cat(layer_k), torch.cat(layer_v))
+                        for layer_k, layer_v in new_past_key_values
+                    )
+
+                with accelerator.autocast():
+                    # second step to generate
+                    gen_inputs_embeds = embed_tokens(gen_input_ids)
+                    if not no_flash_attn:
+                        gen_inputs_embeds = gen_inputs_embeds.to(NBIT_TO_DTYPE[trainable_nbit])
+
+                    # add past key values portion to attention mask
+                    gen_attention_mask = torch.cat([past_key_values_attention_mask, gen_attention_mask], dim=1)
+
+                    # build position ids (does NOT depend on dropout)
+                    attention_mask_just_for_kv = gen_attention_mask[:, :past_key_values[0][0].shape[2]]
+                    attention_mask_after_kv = gen_attention_mask[:, past_key_values[0][0].shape[2]:]
+                    position_ids = []
+                    for mask_for_kv, mask_after_kv in zip(attention_mask_just_for_kv, attention_mask_after_kv):
+                        sequence_position_ids = torch.zeros(gen_inputs_embeds.shape[1], device=device, dtype=dtype)
+                        position_start = mask_for_kv.sum()
+                        n_new_positions = mask_after_kv.sum()
+                        new_positions = torch.tensor(range(position_start, position_start + n_new_positions), device=device, dtype=dtype)
+                        if dataset.pad_side == "right":
+                            sequence_position_ids[:n_new_positions] = new_positions
+                        else:
+                            sequence_position_ids[-n_new_positions:] = new_positions
+                        position_ids.append(sequence_position_ids)
+                    position_ids = torch.stack(position_ids)
+
+                    model_out = model(
+                        inputs_embeds=gen_inputs_embeds,
+                        attention_mask=gen_attention_mask,
+                        past_key_values=past_key_values,
+                        position_ids=position_ids,
+                    )
+                    losses = get_individual_loss(lm_logits=model_out.logits.half(), label_ids=gen_label_ids)
+
+            else:
+                with accelerator.autocast():
+                    losses = model_loss(
+                        model=model,
+                        tokenizer=dataset.tokenizer,
+                        prior_embeddings=prior_embeddings,
+                        program_embeddings=program_embeddings,
+                        input_ids=input_ids,
+                        attention_mask=attention_mask,
+                        label_ids=label_ids,
+                        input_ids_lens=input_ids_lens,
+                        pair_start_idxs=pair_start_idxs,
+                        ntokens=dataset.ntokens,
+                        pad_side=dataset.pad_side,
+                        program_loss_lambda_scheduler=None,
+                        global_step=0,
+                        program_type='none',
+                        attention_cutoff=attention_cutoff,
+                        attend_prev_programs=attend_prev_programs,
+                        debug=False,
+                        individual_loss=True,
+                    )
+
+            # print(losses.tolist())
+            # breakpoint()
 
             assert isinstance(losses, torch.Tensor)
             assert losses.shape[0] == len(task) == len(test_idx) == len(option) == len(correct_option) == bs
@@ -811,6 +1126,28 @@ def main():
     parser.add_argument('--eval_eval_test_per_task', type=int, default=10000000)
     parser.add_argument('--eval_eval_ratio', type=float, default=1.0)
 
+    # gradient search train
+    parser.add_argument("--train_gs_iters", type=int, default=0)
+    parser.add_argument("--train_gs_lr", type=float, default=1.0)
+    parser.add_argument("--train_gs_beta1", type=float, default=0.9)
+    parser.add_argument("--train_gs_beta2", type=float, default=0.9)
+    parser.add_argument("--train_gs_batch_size", type=int, default=2)
+    parser.add_argument("--train_gs_optimizer", type=str, choices=["adamw", "sgd"], default="adamw")
+    parser.add_argument("--train_gs_lr_scheduler", type=str, choices=["cosine", "constant"], default="cosine")
+    parser.add_argument("--train_gs_max_grad_norm", default=1e8, type=float, help="Max gradient norm.")
+    parser.add_argument("--train_gs_take_best", action="store_true")
+
+    # gradient search eval
+    parser.add_argument("--eval_gs_iters", type=int, default=0)
+    parser.add_argument("--eval_gs_lr", type=float, default=1.0)
+    parser.add_argument("--eval_gs_beta1", type=float, default=0.9)
+    parser.add_argument("--eval_gs_beta2", type=float, default=0.9)
+    parser.add_argument("--eval_gs_batch_size", type=int, default=2)
+    parser.add_argument("--eval_gs_optimizer", type=str, choices=["adamw", "sgd"], default="adamw")
+    parser.add_argument("--eval_gs_lr_scheduler", type=str, choices=["cosine", "constant"], default="cosine")
+    parser.add_argument("--eval_gs_max_grad_norm", default=1e8, type=float, help="Max gradient norm.")
+    parser.add_argument("--eval_gs_take_best", action="store_true")
+
     # Lora
     parser.add_argument("--lora_rank", type=int, default=256)
     parser.add_argument("--lora_alpha", type=float, default=24.0)
@@ -1181,6 +1518,7 @@ def main():
             eval_ratio=args.eval_train_ratio,
             split='train',
             allow_truncate=args.allow_truncate,
+            debug_fixed_order=args.debug_fixed_order,
         )
         for eval_seed in args.eval_seeds
     ]
@@ -1206,6 +1544,7 @@ def main():
             eval_ratio=args.eval_eval_ratio,
             split='test',
             allow_truncate=args.allow_truncate,
+            debug_fixed_order=args.debug_fixed_order,
         )
         for eval_seed in args.eval_seeds
     ]
@@ -1361,10 +1700,21 @@ def main():
                     accelerator=accelerator,
                     batch_size=args.eval_batch_size,
                     collate_fn=eval_collate_fn,
+                    trainable_nbit=args.trainable_nbit,
+                    no_flash_attn=args.no_flash_attn,
                     dry_eval_run=args.dry_eval_run,
                     attention_cutoff=args.attention_cutoff,
                     attend_prev_programs=args.attend_prev_programs,
                     log_every=args.log_every,
+                    gs_iters=args.train_gs_iters,
+                    gs_lr=args.train_gs_lr,
+                    gs_beta1=args.train_gs_beta1,
+                    gs_beta2=args.train_gs_beta2,
+                    gs_batch_size=args.train_gs_batch_size,
+                    gs_optimizer=args.train_gs_optimizer,
+                    gs_max_grad_norm=args.train_gs_max_grad_norm,
+                    gs_lr_scheduler=args.train_gs_lr_scheduler,
+                    gs_take_best=args.train_gs_take_best,
                 )
                 if dataset_i == 0:
                     train_all_output_list = output_list
@@ -1382,10 +1732,21 @@ def main():
                     accelerator=accelerator,
                     batch_size=args.eval_batch_size,
                     collate_fn=eval_collate_fn,
+                    trainable_nbit=args.trainable_nbit,
+                    no_flash_attn=args.no_flash_attn,
                     dry_eval_run=args.dry_eval_run,
                     attention_cutoff=args.attention_cutoff,
                     attend_prev_programs=args.attend_prev_programs,
                     log_every=args.log_every,
+                    gs_iters=args.eval_gs_iters,
+                    gs_lr=args.eval_gs_lr,
+                    gs_beta1=args.eval_gs_beta1,
+                    gs_beta2=args.eval_gs_beta2,
+                    gs_batch_size=args.eval_gs_batch_size,
+                    gs_optimizer=args.eval_gs_optimizer,
+                    gs_max_grad_norm=args.eval_gs_max_grad_norm,
+                    gs_lr_scheduler=args.eval_gs_lr_scheduler,
+                    gs_take_best=args.eval_gs_take_best,
                 )
                 if dataset_i == 0:
                     eval_all_output_list = output_list
@@ -1439,6 +1800,13 @@ def main():
                         epoch=epoch,
                     )
                 epoch_to_total_score[epoch] = eval_score
+
+    # # debug: check if train eval and ttt load the same exact model
+    # input_ids = torch.tensor([list(range(20)), list(range(20))], device=accelerator.device, dtype=torch.int64)
+    # attention_mask = torch.full(input_ids.shape, 1, device=accelerator.device, dtype=torch.int64)
+    # ce_loss = model(input_ids=input_ids, attention_mask=attention_mask, labels=input_ids).loss
+    # print(ce_loss.item())
+    # breakpoint()
 
     accelerator.end_training()
     logger.info("All done training.")
