@@ -34,15 +34,10 @@ parser.add_argument('--gb', type=int, help='bash file of commands', default=32)
 parser.add_argument('--ngpu', type=int, help='bash file of commands', default=1)
 parser.add_argument('--ncpu', type=int, help='bash file of commands', default=8)
 parser.add_argument('--time', type=str, help='bash file of commands', required=True)
-<<<<<<< HEAD
 parser.add_argument('--sbatch_dir', type=str, help='bash file of commands', default='/scratch/zy3101/marc/sbatch_files')
-=======
-parser.add_argument('--sbatch_dir', type=str, help='bash file of commands', default='/scratch/yl11330/marc/sbatch_files')
 parser.add_argument('--burst', action='store_true')
 parser.add_argument('--multi_node', action='store_true')
 parser.add_argument('--rtx8000', action='store_true')
-
->>>>>>> origin/main
 args = parser.parse_args()
 
 # remove existing sbatch files
@@ -61,6 +56,7 @@ if args.burst:
     }[args.ngpu]
     template = template.replace("$PARTITION", f"#SBATCH --partition {partition}")
     template = template.replace("$CONSTRAINT", "")
+    template = template.replace("$GITPULL", "git pull;")
 else:
     template = template.replace("$REQUEUE", "")
     template = template.replace("$ACCOUNT", "")
@@ -69,6 +65,7 @@ else:
         template = template.replace("$CONSTRAINT", "#SBATCH --constraint='rtx8000'")
     else:
         template = template.replace("$CONSTRAINT", "#SBATCH --constraint='a100|h100'")
+    template = template.replace("$GITPULL", "")
 
 if args.multi_node:
     template = template.replace('$NODE', str(args.ngpu))

@@ -7,6 +7,13 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
     --min_num_pair 8 \
     --wandb
 
+# noprogram base minnumpair8 rerun
+accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder_noprogram/train.py \
+    --lr_scheduler constant \
+    --tag 0222_noprogram_base_minnumpair8_rerun \
+    --min_num_pair 8 \
+    --wandb
+
 # noprogram ntoken16 minnumpair8
 accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder_noprogram/train.py \
     --lr_scheduler constant \
@@ -35,6 +42,7 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
     --wandb
 
 # Submitted batch job 57840166
-# Submitted batch job 57840167
-# Submitted batch job 57840168
-# Submitted batch job 57840169
+# Submitted batch job 57858318
+# Submitted batch job 57901717
+# Submitted batch job 57840168 # killed
+# Submitted batch job 57840169 # killed

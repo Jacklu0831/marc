@@ -1,3 +1,4 @@
+from custom_llama import MyLlamaForCausalLM
 from transformers.models.llama.modeling_llama import LlamaRMSNorm
 import time
 from transformers.tokenization_utils_fast import PreTrainedTokenizerFast
@@ -17,8 +18,9 @@ from torch.nn.parallel import DistributedDataParallel
 from torch.utils.data import DataLoader
 from transformers import (
     AutoTokenizer,
-    AutoModelForCausalLM,
     get_cosine_schedule_with_warmup,
+    get_constant_schedule_with_warmup,
+    LlamaConfig
 )
 from accelerate import Accelerator, InitProcessGroupKwargs
 from accelerate.logging import get_logger
@@ -38,6 +40,7 @@ from train import (
     set_up_main_process_logger,
     model_loss,
     initialize_program_embeddings,
+    ContrastiveLoss,
 )
 
 import os
@@ -154,18 +157,24 @@ def main():
 
     # Model
     parser.add_argument("--model_name", type=str, default="llama1b")
-    parser.add_argument("--flash_attn", action="store_true")
+    parser.add_argument("--no_flash_attn", action="store_true")
     parser.add_argument("--untrainable_nbit", type=float, choices=[3.6, 4, 8, 16, 32], default=16)
     parser.add_argument("--trainable_nbit", type=int, choices=[16, 32], default=16)
     parser.add_argument("--gradient_checkpointing", action="store_true")
-    parser.add_argument("--ar_gradient_checkpointing", action="store_true")
     parser.add_argument("--full_lora", action="store_true")
+    parser.add_argument("--lr_scheduler", type=str, choices=["cosine", "constant"], default="cosine")
+    parser.add_argument("--no_tf32", action="store_true")
+    parser.add_argument("--ar_gradient_checkpointing", action="store_true")
     parser.add_argument("--no_residual", action="store_true")
     parser.add_argument("--no_normalize", action="store_true")
     parser.add_argument("--token_weighted_loss", action="store_true")
     parser.add_argument("--weird_cast", action="store_true")
-    parser.add_argument("--demonstration_dropout", type=float, default=0.0)
-    parser.add_argument("--reset_rope", action="store_true")
+    parser.add_argument("--full_demonstration_dropout", type=float, default=0.0)
+    parser.add_argument("--partial_demonstration_dropout", type=float, default=0.0)
+    parser.add_argument("--attention_reduction_ratio", type=float, default=1.0)
+
+    # program loss
+    parser.add_argument("--program_type", type=str, choices=["none", "random", "concat"], default="none")
 
     # long context
     parser.add_argument("--long_context_checkpointing_threshold", type=int, default=0)
@@ -193,13 +202,20 @@ def main():
     parser.add_argument("--max_grad_norm", default=1.0, type=float, help="Max gradient norm.")
     parser.add_argument("--optimizer", type=str, choices=["adamw8bit", "adamw", "sgd"], default="adamw")
     parser.add_argument("--warmup_epochs", type=int, default=0)
-    parser.add_argument("--max_seq_len", type=int, default=8192)
-    parser.add_argument("--attention_dropout", type=float, default=0.0)
+    parser.add_argument("--save_epochs", type=int, default=-1)
+    parser.add_argument("--full_attention_dropout", type=float, default=0.0)
+    parser.add_argument("--demonstration_attention_dropout", type=float, default=0.0) # activate naive selfattn but oom
     parser.add_argument("--program_dropout", type=float, default=0.0)
     parser.add_argument("--program_noise_std", type=float, default=0.0)
-    parser.add_argument("--save_epochs", type=int, default=-1)
+    parser.add_argument("--short_context", action='store_true')
 
     # scheduled extra losses
+    parser.add_argument("--consistency_loss_lambda", type=float, default=0.0)
+    parser.add_argument("--consistency_loss_offset_epochs", type=int, default=0)
+    parser.add_argument("--consistency_loss_linear_epochs", type=int, default=0)
+    parser.add_argument("--program_loss_lambda", type=float, default=1.0)
+    parser.add_argument("--program_loss_offset_epochs", type=int, default=0)
+    parser.add_argument("--program_loss_linear_epochs", type=int, default=0)
     parser.add_argument("--commitment_loss_lambda", type=float, default=0.1)
     parser.add_argument("--commitment_loss_offset_epochs", type=int, default=0)
     parser.add_argument("--commitment_loss_linear_epochs", type=int, default=0)
@@ -218,18 +234,21 @@ def main():
     parser.add_argument("--select_tasks_path", type=str, default=None)
     parser.add_argument("--num_workers", type=int, default=8)
     parser.add_argument("--pad_side", type=str, choices=["left", "right"], default="right")
-    parser.add_argument("--no_dim", action='store_true')
     parser.add_argument("--no_separate_color_tokens", action='store_true')
+    parser.add_argument("--max_seq_len", type=int, default=8192)
+    parser.add_argument("--no_bos", action='store_true')
+    parser.add_argument("--no_dim", action='store_true')
+    parser.add_argument("--only_first_bos", action="store_true")
 
-    parser.add_argument("--ntokens", type=int, default=16)
+    parser.add_argument("--ntokens", type=int, default=4)
     parser.add_argument("--seed", type=int, default=0)
     args = parser.parse_args()
 
     # check args
     if args.model_name == "nemo8b":
         assert args.pad_side == "left"
-
-    assert args.trainable_nbit == 16 # TODO, test otherwise
+    if args.demonstration_attention_dropout:
+        assert args.no_flash_attn
 
     # default to saving the last epoch
     if args.save_epochs == -1:
@@ -248,7 +267,6 @@ def main():
     init_process_process_kwargs.timeout = timedelta(seconds=28800)
     accelerator = Accelerator(
         gradient_accumulation_steps=args.grad_accum_steps,
-        mixed_precision="bf16",
         project_config=project_config,
         kwargs_handlers=[init_process_process_kwargs],
     )
@@ -256,7 +274,8 @@ def main():
     set_seed(args.seed + accelerator.process_index)
     if accelerator.is_main_process:
         os.makedirs(args.output_dir, exist_ok=True)
-    torch.backends.cuda.matmul.allow_tf32 = True
+    if not args.no_tf32:
+        torch.backends.cuda.matmul.allow_tf32 = True
     logger.info("Accelerator and seed set up.")
 
     # log args
@@ -277,7 +296,7 @@ def main():
         "cache_dir": "./encoder_decoder_cache",
         "low_cpu_mem_usage": True,
     }
-    if args.flash_attn:
+    if not args.no_flash_attn:
         from_pretrained_kwargs["attn_implementation"] = "flash_attention_2"
     if args.untrainable_nbit in NBIT_TO_DTYPE:
         from_pretrained_kwargs["torch_dtype"] = NBIT_TO_DTYPE[args.untrainable_nbit]
@@ -300,15 +319,19 @@ def main():
     else:
         raise ValueError(f"unrecognized untrainable_nbit {args.untrainable_nbit}")
 
-    base_model = AutoModelForCausalLM.from_pretrained(
+    # load config here to set attention dropout params
+    config = LlamaConfig.from_pretrained(MODEL_NAME_TO_PATH[args.model_name])
+    config.attention_dropout = args.full_attention_dropout
+    config.demonstration_attention_dropout = args.demonstration_attention_dropout
+    if args.demonstration_attention_dropout > 0.0:
+        config._attn_implementation_autoset = False
+        config._attn_implementation = 'eager'
+
+    base_model = MyLlamaForCausalLM.from_pretrained(
         pretrained_model_name_or_path=MODEL_NAME_TO_PATH[args.model_name],
+        config=config,
         **from_pretrained_kwargs,
     )
-
-    # attention dropout
-    for layer in base_model.model.layers:
-        layer.self_attn.attention_dropout = args.attention_dropout
-    base_model.config.attention_dropout = args.attention_dropout
 
     # program dropout
     program_dropout = nn.Dropout(p=args.program_dropout)
@@ -463,6 +486,8 @@ def main():
         no_dim=args.no_dim,
         no_separate_color_tokens=args.no_separate_color_tokens,
         max_seq_len=args.max_seq_len,
+        no_bos=args.no_bos,
+        only_first_bos=args.only_first_bos,
     )
 
     # save memory by making datasets on the fly
@@ -563,12 +588,17 @@ def main():
         # LR schedule
         steps_per_epoch = len(ttt_dataset) // (args.batch_size * args.grad_accum_steps * accelerator.num_processes)
         num_training_steps = steps_per_epoch * args.num_epochs
-        lr_scheduler = get_cosine_schedule_with_warmup(
-            optimizer,
-            num_warmup_steps=steps_per_epoch * args.grad_accum_steps * args.warmup_epochs,
-            num_training_steps=num_training_steps * args.grad_accum_steps * args.warmup_epochs
-        )
-        logger.info(f'lr scheduler with {num_training_steps} warmup steps')
+        if args.lr_scheduler == 'cosine':
+            lr_scheduler = get_cosine_schedule_with_warmup(
+                optimizer,
+                num_warmup_steps=steps_per_epoch * args.grad_accum_steps * args.warmup_epochs,
+                num_training_steps=num_training_steps * args.grad_accum_steps,
+            )
+        else:
+            lr_scheduler = get_constant_schedule_with_warmup(
+                optimizer=optimizer,
+                num_warmup_steps=steps_per_epoch * args.grad_accum_steps * args.warmup_epochs,
+            )
 
         # lambda schedulers
         kl_loss_lambda_scheduler = LambdaScheduler(
@@ -589,9 +619,31 @@ def main():
             linear_epochs=args.commitment_loss_linear_epochs,
             steps_per_epoch=steps_per_epoch,
         )
+        program_loss_lambda_scheduler = LambdaScheduler(
+            loss_lambda=args.program_loss_lambda,
+            start_epoch=args.program_loss_offset_epochs,
+            linear_epochs=args.program_loss_linear_epochs,
+            steps_per_epoch=steps_per_epoch,
+        )
+        consistency_loss_lambda_scheduler = LambdaScheduler(
+            loss_lambda=args.consistency_loss_lambda,
+            start_epoch=args.consistency_loss_offset_epochs,
+            linear_epochs=args.consistency_loss_linear_epochs,
+            steps_per_epoch=steps_per_epoch,
+        )
+        # dummy invar loss
+        invar_loss_lambda_scheduler = LambdaScheduler(
+            loss_lambda=0.0,
+            start_epoch=0,
+            linear_epochs=0,
+            steps_per_epoch=steps_per_epoch,
+        )
+
+        contrastive_loss = ContrastiveLoss(margin=0.5) # NOTIMPLEMENTED
 
         # Prepare with accelerator
         (
+            model,
             prior_embeddings,
             program_embeddings,
             vae_projection,
@@ -600,6 +652,7 @@ def main():
             optimizer,
             ttt_dataloader
         ) = accelerator.prepare(
+            model,
             prior_embeddings,
             program_embeddings,
             vae_projection,
@@ -638,6 +691,13 @@ def main():
             program_norm.train()
         program_dropout.train()
 
+        # # debug: check if train eval and ttt load the same exact model
+        # input_ids = torch.tensor([list(range(20)), list(range(20))], device=accelerator.device, dtype=torch.int64)
+        # attention_mask = torch.full(input_ids.shape, 1, device=accelerator.device, dtype=torch.int64)
+        # ce_loss = model(input_ids=input_ids, attention_mask=attention_mask, labels=input_ids).loss
+        # print(ce_loss.item())
+        # breakpoint()
+
         # start training
         for epoch in range(args.num_epochs):
             for batch_data in ttt_dataloader:
@@ -649,7 +709,7 @@ def main():
 
                 with accelerator.accumulate(model, prior_embeddings, program_embeddings, vae_projection, quantizer, program_norm):
                     with accelerator.autocast():
-                        _, _, _, _, _, total_loss, _ = model_loss(
+                        _, _, _, _, _, _, _, _, total_loss, _ = model_loss(
                             # model
                             model=model,
                             prior_embeddings=prior_embeddings,
@@ -669,12 +729,15 @@ def main():
                             ntokens=args.ntokens,
                             pad_side=args.pad_side,
                             kl_loss_lambda_scheduler=kl_loss_lambda_scheduler,
-
                             codebook_loss_lambda_scheduler=codebook_loss_lambda_scheduler,
                             commitment_loss_lambda_scheduler=commitment_loss_lambda_scheduler,
+                            program_loss_lambda_scheduler=program_loss_lambda_scheduler,
+                            consistency_loss_lambda_scheduler=consistency_loss_lambda_scheduler,
+                            invar_loss_lambda_scheduler=invar_loss_lambda_scheduler, # NOTIMPLEMENTED
                             global_step=global_step,
                             no_residual=args.no_residual,
                             no_discrete_prior=args.no_discrete_prior,
+                            program_type=args.program_type,
                             train_codebook_only=False,
                             ar_gradient_checkpointing=args.ar_gradient_checkpointing,
                             program_noise_std=args.program_noise_std,
@@ -683,9 +746,16 @@ def main():
                             token_weighted_loss=args.token_weighted_loss,
                             weird_cast=args.weird_cast,
                             loss_on_first=True,
-                            demonstration_dropout=args.demonstration_dropout,
-                            reset_rope=args.reset_rope,
+                            full_demonstration_dropout=args.full_demonstration_dropout,
+                            partial_demonstration_dropout=args.partial_demonstration_dropout,
+                            debug=False,
+                            contrastive_loss=contrastive_loss, # NOTIMPLEMENTED
+                            is_same=True, # NOTIMPLEMENTED
+                            short_context=args.short_context,
+                            attention_reduction_ratio=args.attention_reduction_ratio,
                         )
+                        # print(total_loss.item())
+                        # breakpoint()
 
                     accelerator.backward(total_loss)
                     if accelerator.sync_gradients:
@@ -717,18 +787,11 @@ def main():
         # zero grads
         optimizer.state.clear()
         model.zero_grad(set_to_none=True)
-        prior_embeddings.zero_grad(set_to_none=True)
-        program_embeddings.zero_grad(set_to_none=True)
-        if vae_projection is not None:
-            vae_projection.zero_grad(set_to_none=True)
-        if quantizer is not None:
-            quantizer.zero_grad(set_to_none=True)
-        if program_norm is not None:
-            program_norm.zero_grad(set_to_none=True)
 
         # delete stuff
         del ttt_datasets[0], ttt_dataloader
         del optimizer, lr_scheduler, progress_bar
+        del prior_embeddings, program_embeddings, vae_projection, quantizer, program_norm
 
         # more cleaning
         gc.collect()

@@ -63,6 +63,7 @@ def main():
     parser.add_argument("--flash_attn", action="store_true")
     parser.add_argument("--untrainable_nbit", type=float, choices=[3.6, 4, 8, 16, 32], default=16)
     parser.add_argument("--trainable_nbit", type=int, choices=[16, 32], default=16)
+    parser.add_argument("--no_tf32", action="store_true")
 
     # Gist/thinking tokens
     parser.add_argument("--ntokens", type=int, default=-1)
@@ -82,6 +83,7 @@ def main():
     parser.add_argument("--max_seq_len", type=int, default=8192)
     parser.add_argument("--pad_side", type=str, choices=["left", "right"], default="left")
     parser.add_argument("--no_separate_color_tokens", action='store_true')
+    parser.add_argument("--no_bos", action='store_true')
 
     # eval data
     parser.add_argument("--data_dir", type=str, default="./data/re-arc/arc_original/evaluation")
@@ -92,17 +94,26 @@ def main():
     parser.add_argument("--augment_n", type=int, default=0)
     parser.add_argument("--permute_iters", type=int, default=0)
 
+    # gradient search
+    parser.add_argument("--gs_iters", type=int, default=0)
+    parser.add_argument("--gs_lr", type=float, default=1.0)
+    parser.add_argument("--gs_beta1", type=float, default=0.9)
+    parser.add_argument("--gs_beta2", type=float, default=0.9)
+    parser.add_argument("--gs_batch_size", type=int, default=2)
+    parser.add_argument("--gs_optimizer", type=str, choices=["adamw", "sgd"], default="adamw")
+    parser.add_argument("--gs_lr_scheduler", type=str, choices=["cosine", "constant"], default="cosine")
+    parser.add_argument("--gs_max_grad_norm", default=1e8, type=float, help="Max gradient norm.")
+    parser.add_argument("--gs_take_best", action="store_true")
+
     # Virtual tokens approach
     parser.add_argument("--seed", type=int, default=0)
     args = parser.parse_args()
-
-    assert args.trainable_nbit == 16 # TODO, test otherwise
 
     # check args
     if args.model_name == "nemo8b":
         assert args.pad_side == "left"
 
-    args.tag = f"eval_{args.tag}_{args.weight_dir}"
+    args.tag = f"eval_{args.tag}_{args.weight_dir}_{args.ttt_weight_dir}"
     args.output_dir = os.path.join(args.output_dir, args.tag)
 
     # Setup accelerator
@@ -110,7 +121,6 @@ def main():
     init_process_process_kwargs = InitProcessGroupKwargs()
     init_process_process_kwargs.timeout = timedelta(seconds=28800)
     accelerator = Accelerator(
-        mixed_precision="bf16",
         project_config=project_config,
         kwargs_handlers=[init_process_process_kwargs],
     )
@@ -118,7 +128,8 @@ def main():
     set_seed(args.seed + accelerator.process_index)
     if accelerator.is_main_process:
         os.makedirs(args.output_dir, exist_ok=True)
-    torch.backends.cuda.matmul.allow_tf32 = True
+    if not args.no_tf32:
+        torch.backends.cuda.matmul.allow_tf32 = True
     logger.info("Accelerator and seed set up.")
 
     # log args
@@ -245,7 +256,7 @@ def main():
 
     prior_embeddings: Optional[ProgramEmbeddings] = None
     program_embeddings: Optional[ProgramEmbeddings] = None
-    if args.ntokens > 0:
+    if args.ntokens != -1:
         prior_embeddings = torch.load(
             prior_embeddings_weight_path,
             weights_only=False,
@@ -283,7 +294,7 @@ def main():
             if os.path.isdir(task_weight_dir) and len(task_name) == 8:
                 model_ttt_path = os.path.join(task_weight_dir, f"lora_epoch_{args.ttt_weight_epoch}.pt")
                 assert os.path.exists(model_ttt_path), model_ttt_path
-                if args.ntokens > 0:
+                if args.ntokens != -1:
                     prior_embeddings_ttt_path = os.path.join(task_weight_dir, f"prior_embeddings_epoch_{args.ttt_weight_epoch}.pt")
                     assert os.path.exists(prior_embeddings_ttt_path), prior_embeddings_ttt_path
                     program_embeddings_ttt_path = os.path.join(task_weight_dir, f"program_embeddings_epoch_{args.ttt_weight_epoch}.pt")
@@ -302,7 +313,7 @@ def main():
         logger.info(f"found {len(ttt_param_names)} ttt params")
 
     # Prepare with accelerator
-    model = accelerator.prepare(model)
+    model, prior_embeddings, program_embeddings = accelerator.prepare(model, prior_embeddings, program_embeddings)
 
     # Build evaluation dataset
     dataset = EvalDataset(
@@ -321,8 +332,16 @@ def main():
         debug_len=-1,
         no_separate_color_tokens=args.no_separate_color_tokens,
         max_seq_len=args.max_seq_len,
+        no_bos=args.no_bos,
     )
     collate_fn = partial(collate_fn_eval, dataset=dataset)
+
+    # debug: check if train eval and ttt load the same exact model
+    # input_ids = torch.tensor([list(range(20)), list(range(20))], device=accelerator.device, dtype=torch.int64)
+    # attention_mask = torch.full(input_ids.shape, 1, device=accelerator.device, dtype=torch.int64)
+    # ce_loss = model(input_ids=input_ids, attention_mask=attention_mask, labels=input_ids).loss
+    # print(ce_loss.item())
+    # breakpoint()
 
     # evaluate
     exact_acc, valid_grid, correct_grid_dim, token_acc, relaxed_token_acc, texts, votes, competition_sub_acc, competition_all_acc, ttt_provided = evaluate(
@@ -331,13 +350,23 @@ def main():
         model=model,
         prior_embeddings=prior_embeddings,
         program_embeddings=program_embeddings,
-        tokenizer=tokenizer,
         dataset=dataset,
         accelerator=accelerator,
         batch_size=args.batch_size,
         collate_fn=collate_fn,
+        trainable_nbit=args.trainable_nbit,
+        no_flash_attn=not args.flash_attn,
         dry_eval_run=False,
         output_dir=args.output_dir,
+        gs_iters=args.gs_iters,
+        gs_lr=args.gs_lr,
+        gs_beta1=args.gs_beta1,
+        gs_beta2=args.gs_beta2,
+        gs_batch_size=args.gs_batch_size,
+        gs_optimizer=args.gs_optimizer,
+        gs_max_grad_norm=args.gs_max_grad_norm,
+        gs_lr_scheduler=args.gs_lr_scheduler,
+        gs_take_best=args.gs_take_best,
         ntokens=args.ntokens,
         attention_cutoff=args.attention_cutoff,
         attend_prev_programs=args.attend_prev_programs,

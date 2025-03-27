@@ -100,9 +100,3 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
 # Submitted batch job 57709401 # eval on 80 tasks, worse than all tasks
 # Submitted batch job 57709402 # eval on tasks, slightly higher than training, excuse me
 # Submitted batch job 57709403 # not OOM! 28hr
-
-# Submitted batch job 57852670
-# Submitted batch job 57852671
-# Submitted batch job 57852672
-# Submitted batch job 57852673
-# Submitted batch job 57852674

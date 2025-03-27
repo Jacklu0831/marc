@@ -31,6 +31,6 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
     --wandb
 
 # Submitted batch job 57580892
-# Submitted batch job 57580893
+# Submitted batch job 57891043
 # Submitted batch job 57580894
 # Submitted batch job 57580895

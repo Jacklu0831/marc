@@ -18,6 +18,7 @@ from torch.utils.data import DataLoader
 from transformers import (
     AutoTokenizer,
     get_cosine_schedule_with_warmup,
+    get_constant_schedule_with_warmup,
 )
 from accelerate import Accelerator, InitProcessGroupKwargs
 from accelerate.logging import get_logger
@@ -34,6 +35,7 @@ from train import (
     model_loss,
     ProgramEmbeddings,
     initialize_program_embeddings,
+    LambdaScheduler,
 )
 
 import os
@@ -122,11 +124,19 @@ def main():
 
     # Model
     parser.add_argument("--model_name", type=str, default="llama1b")
-    parser.add_argument("--flash_attn", action="store_true")
+    parser.add_argument("--no_flash_attn", action="store_true")
     parser.add_argument("--untrainable_nbit", type=float, choices=[3.6, 4, 8, 16, 32], default=16)
-    parser.add_argument("--trainable_nbit", type=float, choices=[16, 32], default=16)
+    parser.add_argument("--trainable_nbit", type=int, choices=[16, 32], default=16)
     parser.add_argument("--gradient_checkpointing", action="store_true")
     parser.add_argument("--full_lora", action="store_true")
+    parser.add_argument("--lr_scheduler", type=str, choices=["cosine", "constant"], default="cosine")
+    parser.add_argument("--no_tf32", action="store_true")
+
+    # program loss
+    parser.add_argument("--program_type", type=str, choices=["none", "random", "concat"], default="none")
+    parser.add_argument("--program_loss_lambda", type=float, default=1.0)
+    parser.add_argument("--program_loss_offset_epochs", type=int, default=0)
+    parser.add_argument("--program_loss_linear_epochs", type=int, default=0)
 
     # Gist/thinking tokens
     parser.add_argument("--ntokens", type=int, default=-1)
@@ -159,6 +169,7 @@ def main():
     parser.add_argument("--pad_side", type=str, choices=["left", "right"], default="right")
     parser.add_argument("--no_separate_color_tokens", action='store_true')
     parser.add_argument("--max_seq_len", type=int, default=8192)
+    parser.add_argument("--no_bos", action='store_true')
 
     parser.add_argument("--seed", type=int, default=0)
     args = parser.parse_args()
@@ -166,8 +177,6 @@ def main():
     # check args
     if args.model_name == "nemo8b":
         assert args.pad_side == "left"
-
-    assert args.trainable_nbit == 16 # TODO, test otherwise
 
     # default to saving the last epoch
     if args.save_epochs == -1:
@@ -186,7 +195,6 @@ def main():
     init_process_process_kwargs.timeout = timedelta(seconds=28800)
     accelerator = Accelerator(
         gradient_accumulation_steps=args.grad_accum_steps,
-        mixed_precision="bf16",
         project_config=project_config,
         kwargs_handlers=[init_process_process_kwargs],
     )
@@ -194,7 +202,8 @@ def main():
     set_seed(args.seed + accelerator.process_index)
     if accelerator.is_main_process:
         os.makedirs(args.output_dir, exist_ok=True)
-    torch.backends.cuda.matmul.allow_tf32 = True
+    if not args.no_tf32:
+        torch.backends.cuda.matmul.allow_tf32 = True
     logger.info("Accelerator and seed set up.")
 
     # log args
@@ -215,7 +224,7 @@ def main():
         "cache_dir": "./encoder_decoder_cache",
         "low_cpu_mem_usage": True,
     }
-    if args.flash_attn:
+    if not args.no_flash_attn:
         from_pretrained_kwargs["attn_implementation"] = "flash_attention_2"
     if args.untrainable_nbit in NBIT_TO_DTYPE:
         from_pretrained_kwargs["torch_dtype"] = NBIT_TO_DTYPE[args.untrainable_nbit]
@@ -319,7 +328,7 @@ def main():
     model_weight_path = os.path.join(weight_dir, f"lora_epoch_{args.weight_epoch}")
     prior_embeddings_weight_path = None
     program_embeddings_weight_path = None
-    if args.ntokens > 0:
+    if args.ntokens != -1:
         prior_embeddings_weight_path = os.path.join(weight_dir, f"prior_embeddings_epoch_{args.weight_epoch}.pt")
         program_embeddings_weight_path = os.path.join(weight_dir, f"program_embeddings_epoch_{args.weight_epoch}.pt")
 
@@ -379,6 +388,7 @@ def main():
         debug_no_aug=args.debug_no_aug,
         aug_type=args.aug_type,
         no_separate_color_tokens=args.no_separate_color_tokens,
+        no_bos=args.no_bos,
     )
 
     # save memory by making datasets on the fly
@@ -459,20 +469,35 @@ def main():
         # LR schedule
         steps_per_epoch = len(ttt_dataset) // (args.batch_size * args.grad_accum_steps * accelerator.num_processes)
         num_training_steps = steps_per_epoch * args.num_epochs
-        lr_scheduler = get_cosine_schedule_with_warmup(
-            optimizer,
-            num_warmup_steps=steps_per_epoch * args.grad_accum_steps * args.warmup_epochs,
-            num_training_steps=num_training_steps * args.grad_accum_steps * args.warmup_epochs
+        if args.lr_scheduler == 'cosine':
+            lr_scheduler = get_cosine_schedule_with_warmup(
+                optimizer,
+                num_warmup_steps=steps_per_epoch * args.grad_accum_steps * args.warmup_epochs,
+                num_training_steps=num_training_steps * args.grad_accum_steps,
+            )
+        else:
+            lr_scheduler = get_constant_schedule_with_warmup(
+                optimizer=optimizer,
+                num_warmup_steps=steps_per_epoch * args.grad_accum_steps * args.warmup_epochs,
+            )
+
+        # lambda schedulers
+        program_loss_lambda_scheduler = LambdaScheduler(
+            loss_lambda=args.program_loss_lambda,
+            start_epoch=args.program_loss_offset_epochs,
+            linear_epochs=args.program_loss_linear_epochs,
+            steps_per_epoch=steps_per_epoch,
         )
-        logger.info(f'lr scheduler with {num_training_steps} warmup steps')
 
         # Prepare with accelerator
         (
+            model,
             optimizer,
             prior_embeddings,
             program_embeddings,
             ttt_dataloader
         ) = accelerator.prepare(
+            model,
             optimizer,
             prior_embeddings,
             program_embeddings,
@@ -503,6 +528,13 @@ def main():
         if program_embeddings is not None:
             program_embeddings.train()
 
+        # # debug: check if train eval and ttt load the same exact model and whether model is refreshed properly
+        # input_ids = torch.tensor([list(range(20)), list(range(20))], device=accelerator.device, dtype=torch.int64)
+        # attention_mask = torch.full(input_ids.shape, 1, device=accelerator.device, dtype=torch.int64)
+        # ce_loss = model(input_ids=input_ids, attention_mask=attention_mask, labels=input_ids).loss
+        # print(ce_loss.item())
+        # breakpoint()
+
         # start training
         for epoch in range(args.num_epochs):
             for batch_data in ttt_dataloader:
@@ -514,7 +546,7 @@ def main():
 
                 with accelerator.accumulate(model, prior_embeddings, program_embeddings):
                     with accelerator.autocast():
-                        ce_loss = model_loss(
+                        _, _, total_loss = model_loss(
                             model=model,
                             tokenizer=tokenizer,
                             prior_embeddings=prior_embeddings,
@@ -526,19 +558,21 @@ def main():
                             pair_start_idxs=pair_start_idxs,
                             ntokens=args.ntokens,
                             pad_side=args.pad_side,
+                            program_loss_lambda_scheduler=program_loss_lambda_scheduler,
+                            global_step=global_step,
+                            program_type=args.program_type,
                             attention_cutoff=args.attention_cutoff,
                             attend_prev_programs=args.attend_prev_programs,
+                            debug_len=-1,
+                            debug=False,
+                            no_bos=args.no_bos,
                         )
+                        # print(total_loss.item())
+                        # breakpoint()
 
-                        ce_loss = model(
-                            input_ids=input_ids,
-                            attention_mask=attention_mask,
-                            labels=label_ids,
-                        ).loss
-
-                    accelerator.backward(ce_loss)
+                    accelerator.backward(total_loss)
                     if accelerator.sync_gradients:
-                        accelerator.clip_grad_norm_(all_params, args.max_grad_norm).item() / args.grad_accum_steps # type: ignore
+                        accelerator.clip_grad_norm_(all_params, args.max_grad_norm).item() # type: ignore
                     optimizer.step()
                     lr_scheduler.step()
                     optimizer.zero_grad()
@@ -567,6 +601,7 @@ def main():
         # delete stuff
         del ttt_datasets[0], ttt_dataloader
         del optimizer, lr_scheduler, progress_bar
+        del prior_embeddings, program_embeddings
 
         # more cleaning
         gc.collect()

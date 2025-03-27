@@ -1,3 +1,4 @@
+from custom_llama import MyLlamaForCausalLM
 from typing import Optional
 import glob
 from pathlib import Path
@@ -9,17 +10,14 @@ import json
 from functools import partial
 import argparse
 import torch
-from transformers import (
-    AutoTokenizer,
-    AutoModelForCausalLM,
-)
+from transformers import AutoTokenizer
 from transformers.models.llama.modeling_llama import LlamaRMSNorm
 from accelerate import Accelerator, InitProcessGroupKwargs
 from accelerate.logging import get_logger
 from accelerate.utils import ProjectConfiguration, set_seed
 from peft import prepare_model_for_kbit_training # type: ignore
 
-from transformers import BitsAndBytesConfig
+from transformers import BitsAndBytesConfig, LlamaConfig
 from peft import PeftModel # type: ignore
 
 from data_utils import EvalDataset, collate_fn_eval, ARCTokenizer
@@ -69,9 +67,11 @@ def main():
     parser.add_argument("--flash_attn", action="store_true")
     parser.add_argument("--untrainable_nbit", type=float, choices=[3.6, 4, 8, 16, 32], default=16)
     parser.add_argument("--trainable_nbit", type=float, choices=[16, 32], default=16)
+    parser.add_argument("--no_tf32", action="store_true")
     parser.add_argument("--no_residual", action="store_true")
     parser.add_argument("--no_normalize", action="store_true")
     parser.add_argument("--weird_cast", action="store_true")
+    parser.add_argument("--attention_reduction_ratio", type=float, default=1.0)
 
     # vqvae
     parser.add_argument("--codebook_size", type=int, default=-1)
@@ -89,7 +89,7 @@ def main():
     parser.add_argument("--ttt_weight_epoch", type=int, default=-1)
 
     # Evaluation
-    parser.add_argument("--batch_size", type=int, default=16)
+    parser.add_argument("--batch_size", type=int, default=2)
     parser.add_argument("--max_seq_len", type=int, default=8192)
     parser.add_argument("--max_num_pair", type=int, default=8) # includes test pair
     parser.add_argument("--extra_inference_pairs", type=int, default=0)
@@ -99,8 +99,12 @@ def main():
     # data
     parser.add_argument("--train_pad_side", type=str, choices=["left", "right"], default="right")
     parser.add_argument("--gen_pad_side", type=str, choices=["left", "right"], default="left")
+    parser.add_argument("--kv_pad_side", type=str, choices=["left", "right"], default="right")
     parser.add_argument("--no_dim", action='store_true')
     parser.add_argument("--no_separate_color_tokens", action='store_true')
+    parser.add_argument("--no_bos", action="store_true")
+    parser.add_argument("--only_first_bos", action="store_true")
+    parser.add_argument("--short_context", action='store_true')
 
     # eval data
     parser.add_argument("--data_dir", type=str, default="./data/re-arc/arc_original/evaluation")
@@ -111,31 +115,16 @@ def main():
     parser.add_argument("--augment_n", type=int, default=0)
     parser.add_argument("--permute_iters", type=int, default=0)
 
-    # gradient search eval
-    parser.add_argument("--gs_iters", type=int, default=0)
-    parser.add_argument("--gs_lr", type=float, default=1.0)
-    parser.add_argument("--gs_beta1", type=float, default=0.9)
-    parser.add_argument("--gs_beta2", type=float, default=0.9)
-    parser.add_argument("--gs_batch_size", type=int, default=2)
-    parser.add_argument("--gs_optimizer", type=str, choices=["adamw", "sgd"], default="adamw")
-    parser.add_argument("--gs_lr_scheduler", type=str, choices=["cosine", "constant"], default="cosine")
-    parser.add_argument("--gs_max_grad_norm", default=1e8, type=float, help="Max gradient norm.")
-    parser.add_argument("--gs_take_best", action="store_true")
-
     # Virtual tokens approach
-    parser.add_argument("--ntokens", type=int, default=16)
+    parser.add_argument("--ntokens", type=int, default=4)
     parser.add_argument("--seed", type=int, default=0)
     args = parser.parse_args()
-
-    assert args.trainable_nbit == 16 # TODO, test otherwise
 
     # check args
     if args.model_name == "nemo8b":
         assert args.train_pad_side == args.gen_pad_side == "left"
-    if args.gs_iters > 0:
-        assert args.batch_size == 1
 
-    args.tag = f"eval_{args.tag}_{args.weight_dir}"
+    args.tag = f"eval_{args.tag}_{args.weight_dir}_{args.ttt_weight_dir}"
     args.output_dir = os.path.join(args.output_dir, args.tag)
 
     # Setup accelerator
@@ -143,7 +132,6 @@ def main():
     init_process_process_kwargs = InitProcessGroupKwargs()
     init_process_process_kwargs.timeout = timedelta(seconds=28800)
     accelerator = Accelerator(
-        mixed_precision="bf16",
         project_config=project_config,
         kwargs_handlers=[init_process_process_kwargs],
     )
@@ -151,7 +139,8 @@ def main():
     set_seed(args.seed + accelerator.process_index)
     if accelerator.is_main_process:
         os.makedirs(args.output_dir, exist_ok=True)
-    torch.backends.cuda.matmul.allow_tf32 = True
+    if not args.no_tf32:
+        torch.backends.cuda.matmul.allow_tf32 = True
     logger.info("Accelerator and seed set up.")
 
     # log args
@@ -195,8 +184,13 @@ def main():
     else:
         raise ValueError(f"unrecognized untrainable_nbit {args.untrainable_nbit}")
 
-    base_model = AutoModelForCausalLM.from_pretrained(
+    # load config here to set attention dropout params
+    config = LlamaConfig.from_pretrained(MODEL_NAME_TO_PATH[args.model_name])
+    config.demonstration_attention_dropout = 0.0
+
+    base_model = MyLlamaForCausalLM.from_pretrained(
         pretrained_model_name_or_path=MODEL_NAME_TO_PATH[args.model_name],
+        config=config,
         **from_pretrained_kwargs,
     )
 
@@ -422,8 +416,17 @@ def main():
         limit_inference_pairs_strict=args.limit_inference_pairs_strict,
         max_num_train_pair=args.max_num_pair - 1,
         max_seq_len=args.max_seq_len,
+        no_bos=args.no_bos,
+        only_first_bos=args.only_first_bos,
     )
     collate_fn = partial(collate_fn_eval, dataset=dataset)
+
+    # # debug: check if train eval and ttt load the same exact model
+    # input_ids = torch.tensor([list(range(20)), list(range(20))], device=accelerator.device, dtype=torch.int64)
+    # attention_mask = torch.full(input_ids.shape, 1, device=accelerator.device, dtype=torch.int64)
+    # ce_loss = model(input_ids=input_ids, attention_mask=attention_mask, labels=input_ids).loss
+    # print(ce_loss.item())
+    # breakpoint()
 
     # evaluate
     exact_acc, valid_grid, correct_grid_dim, token_acc, relaxed_token_acc, texts, \
@@ -449,6 +452,9 @@ def main():
         output_dir=args.output_dir,
         no_codebook=False,
         weird_cast=args.weird_cast,
+        short_context=args.short_context,
+        kv_pad_side=args.kv_pad_side,
+        attention_reduction_ratio=args.attention_reduction_ratio,
     )
 
     if accelerator.is_main_process:
