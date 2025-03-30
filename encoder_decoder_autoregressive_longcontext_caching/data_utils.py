@@ -1284,8 +1284,8 @@ class EvalDataset:
         # min and max sequence length
         min_len, max_len = 1e6, 0
         for d in parsed_data:
-            min_len = min(min_len, sum(len(i) for i in d['input_ids'])) # type: ignore
-            max_len = max(max_len, sum(len(i) for i in d['input_ids'])) # type: ignore
+            min_len = min(min_len, sum(len(i) for i in d['input_ids']) + len(d['gen_input_ids']) + d['out_token_length'] + 1) # type: ignore
+            max_len = max(max_len, sum(len(i) for i in d['input_ids']) + len(d['gen_input_ids']) + d['out_token_length'] + 1) # type: ignore
         logger.info(f"encoder sequence length range from {min_len} to {max_len}]")
         del parsed_data
 

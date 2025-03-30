@@ -179,8 +179,8 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
 
 
 # lr1e-2
-# Submitted batch job 58790438
-# Submitted batch job 58790439
-# Submitted batch job 58790440
-# Submitted batch job 58790441
-# Submitted batch job 58790442
+# Submitted batch job 58790438 # 0.1525
+# Submitted batch job 58790439 # 0.1875
+# Submitted batch job 58790440 # 0.1725
+# Submitted batch job 58790441 # 0.15
+# Submitted batch job 58790442 # 0.155

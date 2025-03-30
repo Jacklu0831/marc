@@ -1,5 +1,5 @@
 # for eval 80 task with voting
-# python make_sbatch.py --ngpu 1 --time 4 --bash_files bash_commands/0317_noprogram/0322_1_eval_ttt_voting.sh --rtx8000
+# python make_sbatch.py --ngpu 1 --time 4 --bash_files bash_commands/0317_autoregressive/0322_1_eval_ttt_voting.sh --rtx8000
 
 # voting 0317_arlongcache_base nottt leavens0
 accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder_autoregressive_longcontext_caching/evaluate.py \
@@ -89,3 +89,12 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
     --permute_n 2 \
     --augment_n 5 \
     --leave_ns_inc
+
+
+
+# Submitted batch job 58849536
+# Submitted batch job 58849537
+# Submitted batch job 58849538
+# Submitted batch job 58849539
+# Submitted batch job 58849540
+# Submitted batch job 58849541
