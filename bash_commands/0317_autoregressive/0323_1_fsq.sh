@@ -30,35 +30,41 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
     --fsq_L 8 8 8 6 5 \
     --wandb
 
-# arlongcache fsq1024 shortcontext
-accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder_autoregressive_longcontext_caching_0323/train.py \
-    --lr_scheduler constant \
-    --no_bos \
-    --token_weighted_loss \
-    --tag 0317_arlongcache_fsq1024_shortcontext \
-    --no_normalize \
-    --fsq_L 8 5 5 5 \
-    --short_context \
-    --wandb
+# # arlongcache fsq1024 shortcontext
+# accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder_autoregressive_longcontext_caching_0323/train.py \
+#     --lr_scheduler constant \
+#     --no_bos \
+#     --token_weighted_loss \
+#     --tag 0317_arlongcache_fsq1024_shortcontext \
+#     --no_normalize \
+#     --fsq_L 8 5 5 5 \
+#     --short_context \
+#     --wandb
 
-# arlongcache fsq4096 shortcontext
-accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder_autoregressive_longcontext_caching_0323/train.py \
-    --lr_scheduler constant \
-    --no_bos \
-    --token_weighted_loss \
-    --tag 0317_arlongcache_fsq4096_shortcontext \
-    --no_normalize \
-    --fsq_L 7 5 5 5 5 \
-    --short_context \
-    --wandb
+# # arlongcache fsq4096 shortcontext
+# accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder_autoregressive_longcontext_caching_0323/train.py \
+#     --lr_scheduler constant \
+#     --no_bos \
+#     --token_weighted_loss \
+#     --tag 0317_arlongcache_fsq4096_shortcontext \
+#     --no_normalize \
+#     --fsq_L 7 5 5 5 5 \
+#     --short_context \
+#     --wandb
 
-# arlongcache fsq16384 shortcontext
-accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder_autoregressive_longcontext_caching_0323/train.py \
-    --lr_scheduler constant \
-    --no_bos \
-    --token_weighted_loss \
-    --tag 0317_arlongcache_fsq16384_shortcontext \
-    --no_normalize \
-    --fsq_L 8 8 8 6 5 \
-    --short_context \
-    --wandb
+# # arlongcache fsq16384 shortcontext
+# accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder_autoregressive_longcontext_caching_0323/train.py \
+#     --lr_scheduler constant \
+#     --no_bos \
+#     --token_weighted_loss \
+#     --tag 0317_arlongcache_fsq16384_shortcontext \
+#     --no_normalize \
+#     --fsq_L 8 8 8 6 5 \
+#     --short_context \
+#     --wandb
+
+
+# Submitted batch job 58758615
+# Submitted batch job 58758616
+# Submitted batch job 58758618
+# didnt run shortcontext

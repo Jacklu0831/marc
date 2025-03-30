@@ -772,6 +772,9 @@ def evaluate(
                 no_separate_color_tokens=dataset.no_separate_color_tokens,
             )
 
+            # print(gen_texts)
+            # breakpoint()
+
             # Compare each gen_text with label_texts
             assert len(task_ids) == len(inverters) == bs, (len(task_ids), len(inverters), bs)
             assert len(gen_texts) == len(label_texts) == bs, (len(gen_texts), len(label_texts), bs)
@@ -1122,7 +1125,9 @@ def model_loss(
     embed_tokens = module.model.embed_tokens if hasattr(module.model, "embed_tokens") else module.model.model.embed_tokens
     batch_size = input_ids.shape[0]
     device, dtype = input_ids.device, input_ids.dtype
-    max_num_pairs = max(len(start_idxs) for start_idxs in pair_start_idxs)
+
+    assert len(set(len(start_idxs) for start_idxs in pair_start_idxs)) == 1 # all same num pairs
+    num_pairs = len(pair_start_idxs[0])
 
     # get embeddings
     pad_embeds = embed_tokens(torch.tensor(tokenizer.pad_token_id, device=device)) # (hidden_dim,)
@@ -1192,21 +1197,6 @@ def model_loss(
         else:
             for m in task_attention_mask_with_programs[:-1]: assert m.sum() == m.numel()
 
-        # some programs in batch have fewer pairs, pad manually, so hacky
-        pad_length = (max_num_pairs - len(start_idxs)) * ntokens
-        task_pad_inputs_embeds = pad_embeds[None, ...].expand(pad_length, -1)
-        task_pad_attention_mask = torch.full((pad_length,), 0, device=device, dtype=dtype)
-        task_pad_label_ids = torch.full((pad_length,), -100, device=device, dtype=dtype)
-        if pad_side == 'left':
-            task_inputs_embeds_with_programs.insert(0, task_pad_inputs_embeds)
-            task_attention_mask_with_programs.insert(0, task_pad_attention_mask)
-            task_label_ids_with_programs.insert(0, task_pad_label_ids)
-            task_program_intervals = [(x[0] + pad_length, x[1] + pad_length) for x in task_program_intervals]
-        else:
-            task_inputs_embeds_with_programs.append(task_pad_inputs_embeds)
-            task_attention_mask_with_programs.append(task_pad_attention_mask)
-            task_label_ids_with_programs.append(task_pad_label_ids)
-
         # concat all
         inputs_embeds_with_programs.append(torch.cat(task_inputs_embeds_with_programs))
         attention_mask_with_programs.append(torch.cat(task_attention_mask_with_programs))
@@ -1217,7 +1207,7 @@ def model_loss(
     inputs_embeds_with_programs = torch.stack(inputs_embeds_with_programs)
     attention_mask_with_programs = torch.stack(attention_mask_with_programs)
     label_ids_with_programs = torch.stack(label_ids_with_programs)
-    assert inputs_embeds_with_programs.shape[1] == input_ids.shape[1] + max_num_pairs * ntokens
+    assert inputs_embeds_with_programs.shape[1] == input_ids.shape[1] + num_pairs * ntokens
     assert inputs_embeds_with_programs.shape[:2] == attention_mask_with_programs.shape[:2] == label_ids_with_programs.shape[:2]
 
     # debug: assert programs are programs based on stored intervals
@@ -1259,7 +1249,7 @@ def model_loss(
     program_loss = torch.tensor(0.0, device=device)
     if program_type != 'none':
         hidden_states = model_out.hidden_states[-1] # (batch_size, seq_len, hidden_dim) # type: ignore
-        # e.g., p0 x0 y0 p1 x1 y1 p2 x2 y2 (max_num_pairs=3)
+        # e.g., p0 x0 y0 p1 x1 y1 p2 x2 y2 (num_pairs=3)
         # get all programs and format
         programs = [] # batch_size x (num_pair, ntokens, hidden_dim)
         for task_program_intervals, task_hidden_states in zip(program_intervals, hidden_states):
@@ -1270,12 +1260,12 @@ def model_loss(
         if program_type == 'concat':
             # concatenate all programs and a random pair
             select_program = torch.cat([x for x in programs], dim=1)
-            select_idx = int(torch.randint(low=0, high=max_num_pairs, size=(1,)).item())
+            select_idx = int(torch.randint(low=0, high=num_pairs, size=(1,)).item())
         else:
             # select random program and a random pair AFTER it
-            program_idx = int(torch.randint(low=2, high=max_num_pairs, size=(1,)).item()) # do not select the first two
+            program_idx = int(torch.randint(low=2, high=num_pairs, size=(1,)).item()) # do not select the first two
             select_program = programs[program_idx]
-            select_idx = int(torch.randint(low=program_idx, high=max_num_pairs, size=(1,)).item())
+            select_idx = int(torch.randint(low=program_idx, high=num_pairs, size=(1,)).item())
         # format pair data
         select_pair_inputs_embeds = [x[select_idx] for x in pair_inputs_embeds]
         select_pair_attention_mask = [x[select_idx] for x in pair_attention_mask]
@@ -1333,22 +1323,9 @@ def model_loss(
             labels=select_pair_label_ids,
         )
         program_loss = model_out.loss
-        program_loss /= max_num_pairs # normalize based on num pairs to not dominate
+        program_loss /= num_pairs # normalize based on num pairs to not dominate
 
     total_loss = ce_loss + program_loss_lambda * program_loss
-
-    # DEBUG when ntoken=1
-    # model_out_2 = model(
-    #     input_ids=input_ids,
-    #     attention_mask=attention_mask,
-    #     labels=label_ids,
-    #     output_hidden_states=True,
-    # )
-    # hidden_states_1 = model_out.hidden_states[-1] # (batch_size, seq_len, hidden_dim) # type: ignore
-    # hidden_states_2 = model_out_2.hidden_states[-1] # (batch_size, seq_len, hidden_dim) # type: ignore
-    # print('hidden state difference', (hidden_states_1 - hidden_states_2).abs().mean().item() / hidden_states_2.abs().mean().item())
-
-    # also added breakpoint here to test whether left and right padding generate the same loss over multiple iters (they do)
 
     # print(ce_loss.item())
     # breakpoint()
@@ -1544,6 +1521,8 @@ def main():
     assert args.min_num_pair >= 3
     if args.program_type != 'none':
         assert args.min_num_pair == args.max_num_pair
+    if args.attention_cutoff:
+        assert args.no_flash_attn # flashattn only support (bs, seqlen) attention
 
     if args.no_lora:
         args.untrainable_nbit = args.trainable_nbit # untrainable become trainable

@@ -181,6 +181,7 @@ def main():
 
     # vqvae
     parser.add_argument("--codebook_size", type=int, default=-1)
+    parser.add_argument("--fsq_L", metavar='N', type=int, nargs='+', default=[])
     parser.add_argument("--no_discrete_prior", action="store_true")
     parser.add_argument("--warmup_cookbook_only_epochs", type=int, default=0)
 
@@ -423,7 +424,7 @@ def main():
     if args.vae:
         vae_projection_weight_path = os.path.join(weight_dir, f"vae_projection_epoch_{args.weight_epoch}.pt")
     quantizer_weight_path = None
-    if args.codebook_size > 0:
+    if args.codebook_size > 0 or args.fsq_L != []:
         quantizer_weight_path = os.path.join(weight_dir, f"quantizer_epoch_{args.weight_epoch}.pt")
     program_norm_weight_path = None
     if not args.no_normalize:
@@ -706,6 +707,7 @@ def main():
                 label_ids = [x.to(accelerator.device) for x in batch_data["label_ids"]]
                 input_ids_lens = batch_data["input_ids_lens"]
                 num_pairs = batch_data["num_pairs"]
+                task_identifiers = batch_data["task_identifiers"]
 
                 with accelerator.accumulate(model, prior_embeddings, program_embeddings, vae_projection, quantizer, program_norm):
                     with accelerator.autocast():
@@ -719,12 +721,14 @@ def main():
                             program_norm=program_norm,
                             program_dropout=program_dropout,
                             tokenizer=tokenizer,
+                            accelerator=accelerator,
                             # data
                             input_ids=input_ids,
                             attention_mask=attention_mask,
                             label_ids=label_ids,
                             input_ids_lens=input_ids_lens,
                             num_pairs=num_pairs,
+                            task_identifiers=task_identifiers,
                             # others
                             ntokens=args.ntokens,
                             pad_side=args.pad_side,
@@ -753,6 +757,8 @@ def main():
                             is_same=True, # NOTIMPLEMENTED
                             short_context=args.short_context,
                             attention_reduction_ratio=args.attention_reduction_ratio,
+                            program_cache=None,
+                            prior_embed_ratio=1.0,
                         )
                         # print(total_loss.item())
                         # breakpoint()

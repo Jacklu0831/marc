@@ -14,7 +14,7 @@ import random
 import torch
 from torch.utils.data import Dataset, get_worker_info
 from torch.nn.utils.rnn import pad_sequence
-from typing import Dict, List, Tuple, Iterator, Union
+from typing import Dict, List, Tuple, Union
 from pathlib import Path
 from typing import List, Optional
 import numpy as np
@@ -522,6 +522,7 @@ class TrainDataset(Dataset):
         max_seq_len: int,
         no_bos: bool,
         only_first_bos: bool,
+        same_task_identifier_across_gpus: bool,
     ):
         self.re_arc_ratio = re_arc_ratio
         self.concept_arc_ratio = concept_arc_ratio
@@ -548,6 +549,7 @@ class TrainDataset(Dataset):
         self.max_seq_len = max_seq_len
         self.no_bos = no_bos
         self.only_first_bos = only_first_bos
+        self.same_task_identifier_across_gpus = same_task_identifier_across_gpus
 
         self.num_workers = num_workers
         self.process_index = process_index
@@ -621,9 +623,9 @@ class TrainDataset(Dataset):
             self.rngs = [np.random.RandomState(self.seed + epoch_seed + i) for i in range(self.num_workers * self.process_index, self.num_workers * (self.process_index + 1))]
         # num pair must be the same across gpus
         if self.num_workers == 0:
-            self.num_pair_rngs = [np.random.RandomState(self.seed + epoch_seed)]
+            self.gpu_consistent_rngs = [np.random.RandomState(self.seed + epoch_seed)]
         else:
-            self.num_pair_rngs = [np.random.RandomState(self.seed + epoch_seed + i) for i in range(self.num_workers)]
+            self.gpu_consistent_rngs = [np.random.RandomState(self.seed + epoch_seed + i) for i in range(self.num_workers)]
 
 
 def collate_fn_train(batch: List[int], dataset: TrainDataset) -> Dict:
@@ -633,7 +635,8 @@ def collate_fn_train(batch: List[int], dataset: TrainDataset) -> Dict:
     worker_info = get_worker_info()
     worker_id = worker_info.id if worker_info is not None else 0 # could be single-thread
     rng = dataset.rngs[int(worker_id)]
-    num_pair_rng = dataset.num_pair_rngs[int(worker_id)]
+    gpu_consistent_rng = dataset.gpu_consistent_rngs[int(worker_id)]
+    task_identifier_rng = gpu_consistent_rng if dataset.same_task_identifier_across_gpus else rng
 
     # the restriction here is to enforce all list of pairs in batch are equal length
     all_task_ids = []
@@ -641,21 +644,22 @@ def collate_fn_train(batch: List[int], dataset: TrainDataset) -> Dict:
     all_np_chosen_pairs = []
 
     # must sample this number of pairs to avoid GPU synchronization issues
-    required_num_pair = num_pair_rng.choice(list(range(dataset.min_num_pair, dataset.max_num_pair + 1)))
+    required_num_pair = gpu_consistent_rng.choice(list(range(dataset.min_num_pair, dataset.max_num_pair + 1)))
+    task_identifiers = []
 
     # sample random task from random dataset, if grid size >30 or does not have enough for required_num_pair, retry
     while len(all_task_ids) < batch_size:
-        dataset_name = rng.choice(["re-arc", "concept-arc", "arc-heavy"], p=dataset.normalized_ratio)
+        dataset_name = task_identifier_rng.choice(["re-arc", "concept-arc", "arc-heavy"], p=dataset.normalized_ratio)
 
         # STEP 1: get task id and pairs, sample task id until reaching num chosen pair
         if dataset_name == "re-arc":
-            task_id = rng.choice(list(dataset.arc_train_id_to_pairs.keys()))
+            task_id = task_identifier_rng.choice(list(dataset.arc_train_id_to_pairs.keys()))
             all_pairs = dataset.arc_train_id_to_pairs[task_id]
         elif dataset_name == "concept-arc":
-            task_id = rng.choice(list(dataset.concept_arc_id_to_pairs.keys()))
+            task_id = task_identifier_rng.choice(list(dataset.concept_arc_id_to_pairs.keys()))
             all_pairs = dataset.concept_arc_id_to_pairs[task_id]
         else:
-            idx = rng.choice(list(range(len(dataset.heavy_arc_data))))
+            idx = task_identifier_rng.choice(list(range(len(dataset.heavy_arc_data))))
             task_id = f"heavy{idx}"
             all_pairs = dataset.heavy_arc_data[int(idx)]["examples"]
             all_pairs = [{"input": pair[0], "output": pair[1]} for pair in all_pairs]
@@ -670,13 +674,13 @@ def collate_fn_train(batch: List[int], dataset: TrainDataset) -> Dict:
 
         # STEP 2: decide on extra augmentations and io augmentation choice for pairs
         if not dataset.no_d8:
-            d8_augmenter = rng.choice(dataset.d8_augmenters) # type: ignore
+            d8_augmenter = task_identifier_rng.choice(dataset.d8_augmenters) # type: ignore
         else:
             d8_augmenter = None
 
-        if rng.rand() < dataset.extra_augment_ratio:
-            extra_augmenter = rng.choice(dataset.extra_augmenters) # type: ignore
-            io_augmentation_choice = rng.choice(["input_only", "output_only", "both"]) if dataset.extra_augment_single_grid else "both"
+        if task_identifier_rng.rand() < dataset.extra_augment_ratio:
+            extra_augmenter = task_identifier_rng.choice(dataset.extra_augmenters) # type: ignore
+            io_augmentation_choice = task_identifier_rng.choice(["input_only", "output_only", "both"]) if dataset.extra_augment_single_grid else "both"
         else:
             extra_augmenter = None
             io_augmentation_choice = None
@@ -734,6 +738,11 @@ def collate_fn_train(batch: List[int], dataset: TrainDataset) -> Dict:
         token_lens.append(token_len)
         all_np_chosen_pairs.append(np_chosen_pairs)
 
+        # used for program caching
+        task_identifiers.append(
+            '-'.join([dataset_name, task_id, str(d8_augmenter), str(extra_augmenter), str(io_augmentation_choice)])
+        )
+
     # apply color and pair permutation
     tasks = [Task(
         name=task_id,
@@ -748,7 +757,12 @@ def collate_fn_train(batch: List[int], dataset: TrainDataset) -> Dict:
         tasks = [PermuteExamples().apply_to_task(task, to_input=True, to_output=True, rng=rng) for task in tasks]
 
     if not dataset.no_color_permute:
-        tasks = [PermuteColors().apply_to_task(task, to_input=True, to_output=True, rng=rng) for task in tasks]
+        temp = []
+        for task_i, task in enumerate(tasks):
+            augmenter = PermuteColors()
+            temp.append(augmenter.apply_to_task(task, to_input=True, to_output=True, rng=rng))
+            task_identifiers[task_i] += f'-{str(augmenter._color_map)}'
+        tasks = temp
 
     # we do a lil parsing
     pair_idx_to_input_ids = []
@@ -838,7 +852,6 @@ def collate_fn_train(batch: List[int], dataset: TrainDataset) -> Dict:
         extra_padded_label_ids = padded_label_ids
 
     # for i in range(len(extra_padded_input_ids)): print(dataset.tokenizer.decode(extra_padded_input_ids[i][1], no_separate_color_tokens=dataset.no_separate_color_tokens), '\n')
-
     batch_dict = {
         "input_ids": extra_padded_input_ids,
         "attention_mask": extra_padded_attention_mask,
@@ -846,6 +859,7 @@ def collate_fn_train(batch: List[int], dataset: TrainDataset) -> Dict:
         "input_ids_lens": input_ids_lens,
         "num_pairs": [required_num_pair] * batch_size,
         "is_same": False,
+        "task_identifiers": task_identifiers,
     }
     return batch_dict
 
@@ -939,7 +953,7 @@ def collate_fn_train_invar(batch: List[int], dataset: TrainDataset) -> Dict:
     worker_info = get_worker_info()
     worker_id = worker_info.id if worker_info is not None else 0 # could be single-thread
     rng = dataset.rngs[int(worker_id)]
-    num_pair_rng = dataset.num_pair_rngs[int(worker_id)]
+    num_pair_rng = dataset.gpu_consistent_rngs[int(worker_id)]
 
     # must sample this number of pairs to avoid GPU synchronization issues
     required_num_pair = num_pair_rng.choice(list(range(dataset.min_num_pair, dataset.max_num_pair + 1)))
@@ -1105,6 +1119,7 @@ def collate_fn_train_invar(batch: List[int], dataset: TrainDataset) -> Dict:
         "input_ids_lens": input_ids_lens,
         "num_pairs": [required_num_pair] * batch_size,
         "is_same": is_same,
+        "task_identifiers": ["-"] * batch_size,
     }
     return batch_dict
 
@@ -1134,6 +1149,7 @@ def collate_fn_train_dummy(batch: List[int], dataset: TrainDataset) -> Dict:
         "input_ids_lens": input_ids_lens,
         "num_pairs": [dataset.max_num_pair] * batch_size,
         "is_same": False,
+        "task_identifiers": ["-"] * batch_size,
     }
 
 
@@ -1432,30 +1448,6 @@ class EvalDataset:
     def __getitem__(self, idx):
         return self.format_and_filter(self.eval_tasks[idx])
 
-    def get_io_permuted_batches(self, batch_idxs: List[int]) -> Iterator[Tuple[List[Dict], List[bool]]]:
-        # TODO: optionally can leave1, but might mess with underlying program
-        batch_size = len(batch_idxs)
-        eval_tasks = [self.eval_tasks[idx] for idx in batch_idxs]
-
-        rng = np.random.RandomState(self.seed)
-        permutations_of_tasks = []
-        for task in eval_tasks:
-            num_train_examples = len(task.train_examples)
-            # first permutation is always default
-            permutations = list(itertools.permutations(range(num_train_examples)))
-            permutations = [permutations[0]] + rng.permutation(permutations[1:]).tolist()[:self.permute_iters]
-            permutations_of_tasks.append(permutations)
-
-        max_num_permutation = max(len(p) for p in permutations_of_tasks)
-        assert max_num_permutation > 0
-        for permute_i in range(max_num_permutation):
-            avail = [len(permutations) > permute_i for permutations in permutations_of_tasks]
-            permutations = [permutations_of_tasks[idx][permute_i] for idx in range(batch_size) if avail[idx]]
-            avail_eval_tasks = [eval_tasks[idx] for idx in range(batch_size) if avail[idx]]
-            permuted_tasks = [self.format_and_filter(task, permutation, self.extra_inference_pairs) for task, permutation in zip(avail_eval_tasks, permutations)]
-            assert all(x is not None for x in permuted_tasks)
-            yield (permuted_tasks, avail) # type: ignore
-
 
 def collate_fn_eval(batch: List[Dict], dataset: EvalDataset) -> Dict:
     task_ids = [x['task_id'] for x in batch]
@@ -1597,10 +1589,9 @@ class GSDataset(Dataset):
         self,
         task: Task,
         tokenizer: ARCTokenizer,
-        ntokens: int,
         debug_random_pad: bool,
         debug_pad_len: int,
-        gen_pad_side: str,
+        train_pad_side: str,
         no_dim: bool,
         no_separate_color_tokens: bool,
         no_bos: bool,
@@ -1608,10 +1599,9 @@ class GSDataset(Dataset):
     ):
         self.task = task
         self.tokenizer = tokenizer
-        self.ntokens = ntokens
         self.debug_random_pad = debug_random_pad
         self.debug_pad_len = debug_pad_len
-        self.gen_pad_side = gen_pad_side
+        self.train_pad_side = train_pad_side
         self.no_dim = no_dim
         self.no_separate_color_tokens = no_separate_color_tokens
         self.no_bos = no_bos
@@ -1638,10 +1628,8 @@ class GSDataset(Dataset):
         )
         input_ids = torch.cat([input_grid_ids, output_grid_ids])
         attention_mask = torch.full(input_ids.shape, 1, dtype=torch.int64)
-        label_ids = torch.cat([
-            torch.full(input_grid_ids.shape, -100, dtype=torch.int64),
-            output_grid_ids,
-        ])
+        label_ids = torch.full(input_grid_ids.shape, -100, dtype=torch.int64)
+        label_ids = torch.cat([label_ids, output_grid_ids])
 
         return {
             "input_ids": input_ids,
@@ -1656,16 +1644,16 @@ def collate_fn_gs(batch: List[Dict], dataset: GSDataset) -> Dict:
     label_ids = [x["label_ids"] for x in batch]
 
     input_ids_lens = [len(x) for x in input_ids]
-    input_ids = pad_sequence_with_side(input_ids, padding_value=dataset.tokenizer.pad_token_id, side=dataset.gen_pad_side)
-    attention_mask = pad_sequence_with_side(attention_mask, padding_value=0, side=dataset.gen_pad_side)
-    label_ids = pad_sequence_with_side(label_ids, padding_value=-100, side=dataset.gen_pad_side)
+    input_ids = pad_sequence_with_side(input_ids, padding_value=dataset.tokenizer.pad_token_id, side=dataset.train_pad_side)
+    attention_mask = pad_sequence_with_side(attention_mask, padding_value=0, side=dataset.train_pad_side)
+    label_ids = pad_sequence_with_side(label_ids, padding_value=-100, side=dataset.train_pad_side)
 
-    if dataset.debug_random_pad and dataset.debug_pad_len > -1:
+    if dataset.debug_random_pad or dataset.debug_pad_len > -1:
         input_ids, attention_mask, label_ids = debug_extra_pad_tensors(
             [input_ids, attention_mask, label_ids],
             padding_values=[dataset.tokenizer.pad_token_id, 0, -100],
             pad_len=dataset.debug_pad_len,
-            side=dataset.gen_pad_side,
+            side=dataset.train_pad_side,
         )
 
     batch_dict = {

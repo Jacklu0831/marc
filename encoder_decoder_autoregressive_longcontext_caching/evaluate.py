@@ -75,6 +75,7 @@ def main():
 
     # vqvae
     parser.add_argument("--codebook_size", type=int, default=-1)
+    parser.add_argument("--fsq_L", metavar='N', type=int, nargs='+', default=[])
     parser.add_argument("--no_discrete_prior", action="store_true")
 
     # vae
@@ -114,6 +115,18 @@ def main():
     parser.add_argument("--permute_n", type=int, default=0)
     parser.add_argument("--augment_n", type=int, default=0)
     parser.add_argument("--permute_iters", type=int, default=0)
+
+    # gradient search train
+    parser.add_argument("--gs_iters", type=int, default=0)
+    parser.add_argument("--gs_lr", type=float, default=1.0)
+    parser.add_argument("--gs_beta1", type=float, default=0.9)
+    parser.add_argument("--gs_beta2", type=float, default=0.9)
+    parser.add_argument("--gs_batch_size", type=int, default=2)
+    parser.add_argument("--gs_optimizer", type=str, choices=["adamw", "sgd"], default="adamw")
+    parser.add_argument("--gs_lr_scheduler", type=str, choices=["cosine", "constant"], default="cosine")
+    parser.add_argument("--gs_max_grad_norm", default=1e8, type=float, help="Max gradient norm.")
+    parser.add_argument("--gs_take_best", action="store_true")
+    parser.add_argument("--gs_train_past_kv", action="store_true")
 
     # Virtual tokens approach
     parser.add_argument("--ntokens", type=int, default=4)
@@ -296,7 +309,7 @@ def main():
             map_location=accelerator.device
         )
     quantizer: Optional[Quantizer] = None
-    if args.codebook_size > 0:
+    if args.codebook_size > 0 or args.fsq_L != []:
         quantizer = torch.load(
             quantizer_weight_path,
             weights_only=False,
@@ -353,7 +366,7 @@ def main():
                 if args.vae:
                     vae_projection_ttt_path = os.path.join(task_weight_dir, f"vae_projection_epoch_{args.ttt_weight_epoch}.pt")
                     assert os.path.exists(vae_projection_ttt_path), vae_projection_ttt_path
-                if args.codebook_size > 0:
+                if args.codebook_size > 0 or args.fsq_L != []:
                     quantizer_ttt_path = os.path.join(task_weight_dir, f"quantizer_epoch_{args.ttt_weight_epoch}.pt")
                     assert os.path.exists(quantizer_ttt_path), quantizer_ttt_path
                 if not args.no_normalize:
@@ -450,6 +463,16 @@ def main():
         no_residual=args.no_residual,
         no_discrete_prior=args.no_discrete_prior,
         output_dir=args.output_dir,
+        gs_iters=args.gs_iters,
+        gs_lr=args.gs_lr,
+        gs_beta1=args.gs_beta1,
+        gs_beta2=args.gs_beta2,
+        gs_batch_size=args.gs_batch_size,
+        gs_optimizer=args.gs_optimizer,
+        gs_max_grad_norm=args.gs_max_grad_norm,
+        gs_lr_scheduler=args.gs_lr_scheduler,
+        gs_take_best=args.gs_take_best,
+        gs_train_past_kv=args.gs_train_past_kv,
         no_codebook=False,
         weird_cast=args.weird_cast,
         short_context=args.short_context,

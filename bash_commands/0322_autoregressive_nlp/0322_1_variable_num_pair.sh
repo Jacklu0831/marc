@@ -24,3 +24,7 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
     --loss_type exclude_first \
     --eval_min_num_pair 2 \
     --wandb
+
+# Submitted batch job 58723175
+# Submitted batch job 58723176
+# Submitted batch job 58723177
