@@ -127,6 +127,7 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
 # resume base, nomaxseqlen, llama3b, 100task, 200task
 # Submitted batch job 58602892
 # Submitted batch job 58602893
-# Submitted batch job 58698112
+# Submitted batch job 58698112 # llama3b failed??? dont know why
+# Submitted batch job 58882187 # retrying llama3b
 # Submitted batch job 58698142
 # Submitted batch job 58698152

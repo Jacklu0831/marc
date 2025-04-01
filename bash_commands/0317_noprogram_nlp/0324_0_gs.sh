@@ -12,66 +12,66 @@
 # if need more efficiency: caching kv
 
 
-# # noprogram nlp eval gs0
-# accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder_noprogram_nlp/evaluate.py \
-#     --tag gs0 \
-#     --batch_size 4 \
-#     --flash_attn \
-#     --weight_dir 0317_noprogram_nlp_llama1b_lora \
-#     --weight_epoch 6 \
-#     --eval_ratio 0.1
+# noprogram nlp eval gs0
+accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder_noprogram_nlp/evaluate.py \
+    --tag gs0 \
+    --batch_size 4 \
+    --flash_attn \
+    --weight_dir 0317_noprogram_nlp_llama1b_lora \
+    --weight_epoch 6 \
+    --eval_ratio 0.1
 
-# # noprogram nlp eval gs1 lr1e-3
-# accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder_noprogram_nlp/evaluate.py \
-#     --tag gs1_lr1e-3 \
-#     --batch_size 4 \
-#     --flash_attn \
-#     --weight_dir 0317_noprogram_nlp_llama1b_lora \
-#     --weight_epoch 6 \
-#     --gs_batch_size 100000 \
-#     --gs_iters 1 \
-#     --gs_take_best \
-#     --eval_ratio 0.03 \
-#     --gs_lr 1e-3
+# noprogram nlp eval gs1 lr1e-3
+accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder_noprogram_nlp/evaluate.py \
+    --tag gs1_lr1e-3 \
+    --batch_size 4 \
+    --flash_attn \
+    --weight_dir 0317_noprogram_nlp_llama1b_lora \
+    --weight_epoch 6 \
+    --gs_batch_size 100000 \
+    --gs_iters 1 \
+    --gs_take_best \
+    --eval_ratio 0.03 \
+    --gs_lr 1e-3
 
-# # noprogram nlp eval gs5 lr1e-3
-# accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder_noprogram_nlp/evaluate.py \
-#     --tag gs5_lr1e-3 \
-#     --batch_size 4 \
-#     --flash_attn \
-#     --weight_dir 0317_noprogram_nlp_llama1b_lora \
-#     --weight_epoch 6 \
-#     --gs_batch_size 100000 \
-#     --gs_iters 5 \
-#     --gs_take_best \
-#     --eval_ratio 0.1 \
-#     --gs_lr 1e-3
+# noprogram nlp eval gs5 lr1e-3
+accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder_noprogram_nlp/evaluate.py \
+    --tag gs5_lr1e-3 \
+    --batch_size 4 \
+    --flash_attn \
+    --weight_dir 0317_noprogram_nlp_llama1b_lora \
+    --weight_epoch 6 \
+    --gs_batch_size 100000 \
+    --gs_iters 5 \
+    --gs_take_best \
+    --eval_ratio 0.1 \
+    --gs_lr 1e-3
 
-# # noprogram nlp eval gs25 lr1e-3
-# accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder_noprogram_nlp/evaluate.py \
-#     --tag gs25_lr1e-3 \
-#     --batch_size 4 \
-#     --flash_attn \
-#     --weight_dir 0317_noprogram_nlp_llama1b_lora \
-#     --weight_epoch 6 \
-#     --gs_batch_size 100000 \
-#     --gs_iters 25 \
-#     --gs_take_best \
-#     --eval_ratio 0.1 \
-#     --gs_lr 1e-3
+# noprogram nlp eval gs25 lr1e-3
+accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder_noprogram_nlp/evaluate.py \
+    --tag gs25_lr1e-3 \
+    --batch_size 4 \
+    --flash_attn \
+    --weight_dir 0317_noprogram_nlp_llama1b_lora \
+    --weight_epoch 6 \
+    --gs_batch_size 100000 \
+    --gs_iters 25 \
+    --gs_take_best \
+    --eval_ratio 0.1 \
+    --gs_lr 1e-3
 
-# # noprogram nlp eval gs100 lr1e-3
-# accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder_noprogram_nlp/evaluate.py \
-#     --tag gs100_lr1e-3 \
-#     --batch_size 4 \
-#     --flash_attn \
-#     --weight_dir 0317_noprogram_nlp_llama1b_lora \
-#     --weight_epoch 6 \
-#     --gs_batch_size 100000 \
-#     --gs_iters 100 \
-#     --gs_take_best \
-#     --eval_ratio 0.1 \
-#     --gs_lr 1e-3
+# noprogram nlp eval gs100 lr1e-3
+accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encoder_decoder_noprogram_nlp/evaluate.py \
+    --tag gs100_lr1e-3 \
+    --batch_size 4 \
+    --flash_attn \
+    --weight_dir 0317_noprogram_nlp_llama1b_lora \
+    --weight_epoch 6 \
+    --gs_batch_size 100000 \
+    --gs_iters 100 \
+    --gs_take_best \
+    --eval_ratio 0.1 \
+    --gs_lr 1e-3
 
 # ran gs0 locally, 0.5529916921087135
 # Submitted batch job 58758707 # 0.5996211590616561
@@ -136,7 +136,7 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 encode
     --gs_lr 1e-2
 
 # one more round, lr1e-2
-# Submitted batch job 58790413
-# Submitted batch job 58790414
-# Submitted batch job 58790421
-# Submitted batch job 58790422
+# Submitted batch job 58790413 # 0.5007874982453357
+# Submitted batch job 58790414 # 0.5264443928192845
+# Submitted batch job 58790421 # 0.4783184666815821
+# Submitted batch job 58790422 # 0.4814779830329907
