@@ -817,8 +817,8 @@ def main():
     parser.add_argument("--ttt_lr_scheduler", type=str, choices=["cosine", "constant"], default="cosine")
     parser.add_argument("--ttt_max_grad_norm", default=1.0, type=float, help="Max gradient norm.")
     parser.add_argument("--ttt_permute_n", type=int, default=40)
-    parser.add_argument("--ttt_lora_rank", type=int, default=128)
-    parser.add_argument("--ttt_lora_alpha", type=int, default=16)
+    parser.add_argument("--ttt_lora_rank", type=int, default=64)
+    parser.add_argument("--ttt_lora_alpha", type=int, default=64)
 
     # gradient search
     parser.add_argument("--gs_iters", type=int, default=0)
@@ -836,8 +836,8 @@ def main():
 
     # gradient search with lora (NOT COMPATIBLE WITH TTT)
     parser.add_argument("--gs_lora", action='store_true')
-    parser.add_argument("--gs_lora_rank", type=int, default=128)
-    parser.add_argument("--gs_lora_alpha", type=int, default=16)
+    parser.add_argument("--gs_lora_rank", type=int, default=64)
+    parser.add_argument("--gs_lora_alpha", type=int, default=64)
     parser.add_argument("--gs_lora_lr", type=float, default=1e-4)
 
     args = parser.parse_args()
