@@ -133,15 +133,21 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 infere
     --eval_seeds 100 \
     --gs_no_key
 
-# Submitted batch job 59016380
-# Submitted batch job 59016381
-# Submitted batch job 59016382
-# Submitted batch job 59016383
-# Submitted batch job 59016384
-# Submitted batch job 59016385
-# Submitted batch job 59016386
-# Submitted batch job 59016387
-# Submitted batch job 59016388
-# Submitted batch job 59016389
-# Submitted batch job 59016390
-# Submitted batch job 59016391
+# numparam 20551680, times 3sec, 16sec, 65sec, 160sec
+# lr1e-2
+# Submitted batch job 59016380 # 0.399
+# Submitted batch job 59016381 # 0.393
+# Submitted batch job 59016382 # 0.383
+# Submitted batch job 59016383 # 0.383
+
+# lr1e-3
+# Submitted batch job 59016384 # 0.370
+# Submitted batch job 59016385 # 0.393
+# Submitted batch job 59016386 # 0.401
+# Submitted batch job 59016387 # 0.404
+
+# lr1e-4
+# Submitted batch job 59016388 # 0.361
+# Submitted batch job 59016389 # 0.363
+# Submitted batch job 59016390 # 0.373
+# Submitted batch job 59016391 # 0.370

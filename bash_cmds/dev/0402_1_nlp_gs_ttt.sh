@@ -168,4 +168,5 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 infere
 # TODO: test memory for rtx8000
 
 
-# LOTS experiments
+
+# there is also a baseline experiment where we compare to ttt

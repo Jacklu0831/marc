@@ -5,7 +5,7 @@ import gc
 from transformers.tokenization_utils_fast import PreTrainedTokenizerFast
 from datetime import timedelta
 from collections import defaultdict
-from typing import Union, Callable, List, Tuple, Optional, Iterator
+from typing import Union, Callable, List, Tuple, Iterator
 import pprint
 import math
 import json
@@ -18,16 +18,14 @@ from torch.nn.parallel import DistributedDataParallel
 from torch.utils.data import DataLoader
 from transformers import (
     AutoTokenizer,
-    get_constant_schedule,
     get_cosine_schedule_with_warmup,
     get_constant_schedule_with_warmup,
     AutoModelForCausalLM,
-    GPT2LMHeadModel,
 )
 from accelerate import Accelerator, PartialState, InitProcessGroupKwargs
 from accelerate.logging import get_logger
 from accelerate.utils import ProjectConfiguration, set_seed, gather_object
-from peft import LoraConfig, TaskType, get_peft_model, prepare_model_for_kbit_training # type: ignore
+from peft import prepare_model_for_kbit_training # type: ignore
 
 import logging
 import datasets
@@ -38,13 +36,10 @@ import bitsandbytes as bnb
 from data_utils import (
     TrainDataset,
     EvalDataset,
-    GSDataset,
     collate_fn_train,
     collate_fn_eval,
-    collate_fn_gs,
     collate_fn_train_dummy,
     collate_fn_eval_dummy,
-    pad_sequence_with_side,
 )
 
 import os
@@ -451,15 +446,6 @@ def main():
     parser.add_argument('--eval_eval_test_per_task', type=int, default=10000000)
     parser.add_argument('--eval_eval_ratio', type=float, default=1.0)
 
-    # Lora
-    parser.add_argument("--lora_rank", type=int, default=256)
-    parser.add_argument("--lora_alpha", type=float, default=24.0)
-    parser.add_argument("--lora_dropout", type=float, default=0.0)
-    parser.add_argument('--lora_target_modules', type=str, nargs="+", default=[
-        'q_proj','k_proj','v_proj','o_proj','gate_proj','up_proj','down_proj'
-    ])
-    parser.add_argument("--no_rslora", action='store_true')
-
     parser.add_argument("--seed", type=int, default=0)
     args = parser.parse_args()
 
@@ -636,7 +622,7 @@ def main():
     logger.info(f"len(train_dataset) = {len(train_dataset)}")
     logger.info(f"len(train_loader) = {len(train_loader)}")
 
-    # Param groups for LoRA
+    # Param groups
     all_params = []
     for param in model.parameters():
         if param.requires_grad:

@@ -63,7 +63,7 @@ else:
     template = template.replace("$ACCOUNT", "")
     template = template.replace("$PARTITION", "")
     if args.rtx8000:
-        template = template.replace("$CONSTRAINT", "#SBATCH --constraint='rtx8000'")
+        template = template.replace("$CONSTRAINT", "#SBATCH --constraint='rtx8000|a100|h100'")
     else:
         template = template.replace("$CONSTRAINT", "#SBATCH --constraint='a100|h100'")
     template = template.replace("$GITPULL", "")

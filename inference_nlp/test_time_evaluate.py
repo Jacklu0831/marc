@@ -419,6 +419,10 @@ def test_time_evaluate(
     ttt_time = sum(ttt_time_list) / len(ttt_time_list)
     gs_time = sum(gs_time_list) / len(gs_time_list)
 
+    # remove cache model
+    if accelerator.is_main_process:
+        os.system(f"rm -rf {cached_model_path}")
+
     return score, ttt_num_data, gs_num_data, ttt_num_params, gs_num_params, ttt_time, gs_time, output_list
 
 

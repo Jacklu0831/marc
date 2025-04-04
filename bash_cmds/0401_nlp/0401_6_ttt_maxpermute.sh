@@ -1,63 +1,57 @@
-# python make_sbatch.py --ngpu 1 --time 8 --bash_files bash_cmds/0401_nlp/0401_5_ttt_morepermute.sh --rtx8000
+# python make_sbatch.py --ngpu 1 --time 8 --bash_files bash_cmds/0401_nlp/0401_6_ttt_maxpermute.sh --rtx8000
 # full batch ttt, use lr1e-4 and lora cfg from paper
 # ttt paper bolded 1e-4 for ARC and BBH, no need to search further. 1e-2 seems too big so not trying it
 
 
 
-# nlp ttt5 permuten400
+# nlp ttt5 permuten1000
 accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_nlp/test_time_evaluate.py \
-    --tag ttt5_permuten400 \
+    --tag ttt5_permuten1000 \
     --weight_dir nlp_pretrained \
     --weight_epoch 0 \
     --ttt_iters 5 \
-    --ttt_permute_n 400 \
+    --ttt_permute_n 1000 \
     --eval_seeds 100
 
-# nlp ttt25 permuten400
+# nlp ttt25 permuten1000
 accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_nlp/test_time_evaluate.py \
-    --tag ttt25_permuten400 \
+    --tag ttt25_permuten1000 \
     --weight_dir nlp_pretrained \
     --weight_epoch 0 \
     --ttt_iters 25 \
-    --ttt_permute_n 400 \
+    --ttt_permute_n 1000 \
     --eval_seeds 100
 
-# nlp ttt100 permuten400
+# nlp ttt100 permuten1000
 accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_nlp/test_time_evaluate.py \
-    --tag ttt100_permuten400 \
+    --tag ttt100_permuten1000 \
     --weight_dir nlp_pretrained \
     --weight_epoch 0 \
     --ttt_iters 100 \
-    --ttt_permute_n 400 \
+    --ttt_permute_n 1000 \
     --eval_seeds 100
 
-# nlp ttt250 permuten400
+# nlp ttt250 permuten1000
 accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_nlp/test_time_evaluate.py \
-    --tag ttt250_permuten400 \
+    --tag ttt250_permuten1000 \
     --weight_dir nlp_pretrained \
     --weight_epoch 0 \
     --ttt_iters 250 \
-    --ttt_permute_n 400 \
+    --ttt_permute_n 1000 \
     --eval_seeds 100
 
-# nlp ttt500 permuten400
+# nlp ttt500 permuten1000
 accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_nlp/test_time_evaluate.py \
-    --tag ttt500_permuten400 \
+    --tag ttt500_permuten1000 \
     --weight_dir nlp_pretrained \
     --weight_epoch 0 \
     --ttt_iters 500 \
-    --ttt_permute_n 400 \
+    --ttt_permute_n 1000 \
     --eval_seeds 100
 
 
-# Submitted batch job 59016370 # 0.384, 47185920, 9.15
-# Submitted batch job 59016371 # 0.409, 47185920, 35.54
-# Submitted batch job 59016372 # 0.452, 47185920, 134.04
-# Submitted batch job 59016373 # 0.456, 47185920, 333.22
-# Submitted batch job 59025558
-
-
-# 'eval/score': 0.4562853881692602,
-# 'eval/ttt_num_data': 400.0,
-# 'eval/ttt_num_params': 47185920.0,
-# 'eval/ttt_time': 333.2197384039561
+# Submitted batch job 59025570
+# Submitted batch job 59025571
+# Submitted batch job 59025572
+# Submitted batch job 59025573
+# Submitted batch job 59025574
