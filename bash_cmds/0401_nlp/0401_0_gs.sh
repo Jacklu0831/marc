@@ -1,4 +1,4 @@
-# python make_sbatch.py --ngpu 1 --time 1 --bash_files bash_cmds/0401_nlp/0401_0_gs.sh
+# python make_sbatch.py --ngpu 1 --time 4 --bash_files bash_cmds/0401_nlp/0401_0_gs.sh --rtx8000
 
 # # run locally, just create a model ckpt
 # accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_nlp/train.py \
@@ -171,23 +171,19 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 infere
     --gs_lr 1e-5 \
     --eval_seeds 100
 
-
-
-
-
-# Submitted batch job 59006342
-# Submitted batch job 59006343
-# Submitted batch job 59006344
-# Submitted batch job 59006345
-# Submitted batch job 59006346
-# Submitted batch job 59006347
-# Submitted batch job 59006348
-# Submitted batch job 59006349
-# Submitted batch job 59006350
-# Submitted batch job 59006351
-# Submitted batch job 59006352
-# Submitted batch job 59006353
-# Submitted batch job 59006354
-# Submitted batch job 59006355
-# Submitted batch job 59006356
-# Submitted batch job 59006357
+# Submitted batch job 59006396
+# Submitted batch job 59006397
+# Submitted batch job 59006398
+# Submitted batch job 59006399
+# Submitted batch job 59006400
+# Submitted batch job 59006401
+# Submitted batch job 59006402
+# Submitted batch job 59006403
+# Submitted batch job 59006404
+# Submitted batch job 59006405
+# Submitted batch job 59006406
+# Submitted batch job 59006407
+# Submitted batch job 59006408
+# Submitted batch job 59006409
+# Submitted batch job 59006410
+# Submitted batch job 59006411

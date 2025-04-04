@@ -393,6 +393,7 @@ class EvalDataset:
         self.allow_truncate = allow_truncate
         self.delimiter = delimiter
         self.debug_max_len = debug_max_len
+        self.seed = seed
 
         # needed in evaluate
         self.split = split
@@ -497,6 +498,17 @@ class EvalDataset:
         self.task_to_demonstrations = {t: task_to_demonstrations[t] for t in self.tasks}
         assert set(self.tasks) == set(self.task_to_demonstrations.keys())
         logger.info(f'eval split {split}-{eval_seed} filtered to {len(self.tasks)}/{total_unfiltered_tasks} tasks, {filtered_total_test}/{unfiltered_total_test} tests, {len(self.data)}/{unfiltered_total_sample} samples')
+
+        # debug: check demon pairs are same for each task
+        task_to_demon = {}
+        for d in self.data:
+            assert d['demon_attention_mask'].numel() == d['demon_attention_mask'].sum()
+            task, ids = d['task'], d['demon_input_ids']
+            if task not in task_to_demon:
+                task_to_demon[task] = ids
+            assert torch.equal(ids, task_to_demon[task])
+        del task_to_demon
+
 
     def format_and_filter(self, demonstrations: List[Dict], test_pair: Dict, test_idx: int, correct_option: str) -> Optional[Dict]:
         # make sure they are all the same task with the same non-empty options
@@ -650,7 +662,7 @@ class GSDataset(Dataset):
         tokenizer: Union[PreTrainedTokenizerFast, GPT2TokenizerFast],
         debug_random_pad: bool,
         debug_pad_len: int,
-        train_pad_side: str,
+        pad_side: str,
         past_kv_len: int,
         max_seq_len: int,
         max_pair_len: int,
@@ -661,7 +673,7 @@ class GSDataset(Dataset):
         self.tokenizer = tokenizer
         self.debug_random_pad = debug_random_pad
         self.debug_pad_len = debug_pad_len
-        self.train_pad_side = train_pad_side
+        self.pad_side = pad_side
         self.past_kv_len = past_kv_len
         self.max_seq_len = max_seq_len
         self.max_pair_len = max_pair_len
@@ -728,16 +740,16 @@ def collate_fn_gs(batch: List[Dict], dataset: GSDataset) -> Dict:
     label_ids = [x["label_ids"] for x in batch]
 
     assert isinstance(dataset.tokenizer.pad_token_id, int)
-    input_ids = pad_sequence_with_side(input_ids, padding_value=dataset.tokenizer.pad_token_id, side=dataset.train_pad_side)
-    attention_mask = pad_sequence_with_side(attention_mask, padding_value=0, side=dataset.train_pad_side)
-    label_ids = pad_sequence_with_side(label_ids, padding_value=-100, side=dataset.train_pad_side)
+    input_ids = pad_sequence_with_side(input_ids, padding_value=dataset.tokenizer.pad_token_id, side=dataset.pad_side)
+    attention_mask = pad_sequence_with_side(attention_mask, padding_value=0, side=dataset.pad_side)
+    label_ids = pad_sequence_with_side(label_ids, padding_value=-100, side=dataset.pad_side)
 
     if dataset.debug_random_pad or dataset.debug_pad_len > -1:
         input_ids, attention_mask, label_ids = debug_extra_pad_tensors(
             [input_ids, attention_mask, label_ids],
             padding_values=[dataset.tokenizer.pad_token_id, 0, -100],
             pad_len=dataset.debug_pad_len,
-            side=dataset.train_pad_side,
+            side=dataset.pad_side,
         )
 
     batch_dict = {
@@ -761,3 +773,134 @@ def collate_fn_gs_dummy(batch: List[Dict], dataset: GSDataset) -> Dict:
         "label_ids": input_ids,
     }
     return batch_dict
+
+
+########################################
+# Test-Time-Training Dataset
+########################################
+class TTTDataset(Dataset):
+    def __init__(
+        self,
+        demonstration_pairs: List[Dict],
+        tokenizer: Union[PreTrainedTokenizerFast, GPT2TokenizerFast],
+        debug_random_pad: bool,
+        debug_pad_len: int,
+        pad_side: str,
+        max_seq_len: int,
+        max_pair_len: int,
+        allow_truncate: bool,
+        delimiter: str,
+        permute_n: int,
+        seed: int,
+    ):
+        self.demonstration_pairs = demonstration_pairs
+        self.tokenizer = tokenizer
+        self.debug_random_pad = debug_random_pad
+        self.debug_pad_len = debug_pad_len
+        self.pad_side = pad_side
+        self.max_seq_len = max_seq_len
+        self.max_pair_len = max_pair_len
+        self.allow_truncate = allow_truncate
+        self.delimiter = delimiter
+        self.permute_n = permute_n
+        self.seed = seed
+
+        # separate input and output by newline
+        self.delimiter_token_id = tokenize(delimiter, tokenizer)
+
+        # generate data
+        self.data = self.unique_permutations(
+            permute_n=permute_n,
+            seed=seed
+        )
+
+    def unique_permutations(self, permute_n: int, seed: int):
+        rng = np.random.RandomState(seed)
+        seen = set()
+        all_data = []
+
+        for _ in range(1000):
+            perm = tuple(rng.permutation(len(self.demonstration_pairs)))
+            if perm in seen:
+                continue
+
+            seen.add(perm)
+            pairs = [self.demonstration_pairs[i] for i in perm]
+            data = self.format_and_filter(
+                demonstrations=pairs[:-1],
+                test_pair=pairs[-1],
+            )
+            if data is not None:
+                all_data.append(data)
+
+            if len(all_data) >= permute_n:
+                break
+
+        return all_data
+
+    def format_and_filter(self, demonstrations: List[Dict], test_pair: Dict) -> Optional[Dict]:
+        # make sure they are all the same task with the same non-empty options
+        task = test_pair['task']
+        assert all(e['task'] == task for e in demonstrations) # test and demonstration pair have same task (dont need same option)
+
+        out = parse_pairs(
+            pairs=demonstrations + [test_pair],
+            tokenizer=self.tokenizer,
+            max_pair_len=self.max_pair_len,
+            max_seq_len=self.max_seq_len,
+            delimiter_token_id=self.delimiter_token_id,
+            loss_type="only_last",
+            allow_truncate=self.allow_truncate,
+            is_train=True,
+        )
+
+        if out == None:
+            return None
+        input_ids, attention_mask, label_ids, _, _, _, _, _ = out
+
+        return {
+            "input_ids": input_ids,
+            "attention_mask": attention_mask,
+            "label_ids": label_ids,
+        }
+
+    def __len__(self):
+        return len(self.data)
+
+    def __getitem__(self, idx):
+        return self.data[idx]
+
+
+
+def collate_fn_ttt(batch: List[Dict], dataset: TTTDataset) -> Dict:
+    input_ids, attention_mask, label_ids, _ = collate_data(
+        batch=batch,
+        tokenizer=dataset.tokenizer,
+        debug_random_pad=dataset.debug_random_pad,
+        debug_pad_len=dataset.debug_pad_len,
+        pad_side=dataset.pad_side,
+    )
+
+    # dataset.tokenizer.decode(input_ids[2], skip_special_tokens=True)
+    # attention_mask[2]
+    # dataset.tokenizer.decode(label_ids[2][label_ids[2] != -100])
+
+    return {
+        'input_ids': input_ids,
+        'attention_mask': attention_mask,
+        'label_ids': label_ids,
+    }
+
+
+def collate_fn_ttt_dummy(batch: List[int], dataset: TTTDataset) -> Dict:
+    batch_size = len(batch)
+    del batch  # we don't use it directly
+
+    input_ids = torch.randint(0, 30, (batch_size, dataset.max_seq_len), dtype=torch.int64, device='cpu')
+    attention_mask = torch.full((batch_size, dataset.max_seq_len), 1, dtype=torch.int64, device='cpu')
+
+    return {
+        "input_ids": input_ids,
+        "attention_mask": attention_mask,
+        "label_ids": input_ids,
+    }
