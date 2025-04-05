@@ -704,6 +704,14 @@ class EvalDataset:
         tasks.sort(key=lambda d: d.name)
         logger.info(f"found {len(tasks)} tasks")
 
+        # we pad pairs here for gs to be max batch size
+        if debug_max_len:
+            max_num_pair = max(len(t.train_examples) for t in tasks)
+            for t in tasks:
+                n_example = len(t.train_examples)
+                if n_example > 0:
+                    t.train_examples += np.random.choice(t.train_examples, size=max_num_pair-n_example).tolist()
+
         # print task num io
         task_num_ios = [len(task.train_examples) for task in tasks]
         logger.info(f"task num io range from {min(task_num_ios)} to {max(task_num_ios)}")
@@ -993,10 +1001,10 @@ def collate_fn_eval_dummy(batch: List[Dict], dataset: EvalDataset) -> Dict:
     label_texts = ['1\n1\n1'] * batch_size
 
     # for gs (no ntoken)
-    demon_input_ids = torch.randint(0, 30, (batch_size, dataset.max_seq_len * 8 // 10 + 1), dtype=torch.int64, device='cpu')
-    demon_attention_mask = torch.full((batch_size, dataset.max_seq_len * 8 // 10 + 1), 1, dtype=torch.int64, device='cpu')
-    gen_input_ids = torch.randint(0, 30, (batch_size, dataset.max_seq_len // 10 + 1), dtype=torch.int64, device='cpu')
-    gen_attention_mask = torch.full((batch_size, dataset.max_seq_len // 10 + 1), 1, dtype=torch.int64, device='cpu')
+    demon_input_ids = torch.randint(0, 30, (batch_size, dataset.max_seq_len * 7 // 8), dtype=torch.int64, device='cpu')
+    demon_attention_mask = torch.full((batch_size, dataset.max_seq_len * 7 // 8), 1, dtype=torch.int64, device='cpu')
+    gen_input_ids = torch.randint(0, 30, (batch_size, dataset.max_seq_len // 8), dtype=torch.int64, device='cpu')
+    gen_attention_mask = torch.full((batch_size, dataset.max_seq_len // 8), 1, dtype=torch.int64, device='cpu')
 
     batch_dict = {
         "task_ids": task_ids,
@@ -1102,8 +1110,8 @@ def collate_fn_gs_dummy(batch: List[Dict], dataset: GSDataset) -> Dict:
     batch_size = len(batch)
     del batch  # we don't use it directly
 
-    input_ids = torch.randint(0, 30, (batch_size, dataset.max_seq_len), dtype=torch.int64, device='cpu')
-    attention_mask = torch.full((batch_size, dataset.max_seq_len), 1, dtype=torch.int64, device='cpu')
+    input_ids = torch.randint(0, 30, (batch_size, dataset.max_seq_len // 8), dtype=torch.int64, device='cpu')
+    attention_mask = torch.full((batch_size, dataset.max_seq_len // 8), 1, dtype=torch.int64, device='cpu')
 
     batch_dict = {
         "input_ids": input_ids,

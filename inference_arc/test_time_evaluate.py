@@ -154,7 +154,7 @@ def test_time_evaluate(
             assert data is not None
             demon_input_ids = data['demon_input_ids'].unsqueeze(0).to(accelerator.device)
             if dataset.debug_max_len:
-                demon_input_ids = torch.randint(0, 30, (1, dataset.max_seq_len - 100), dtype=torch.int64, device=accelerator.device)
+                demon_input_ids = torch.randint(0, 30, (1, dataset.max_seq_len * 7 // 8), dtype=torch.int64, device=accelerator.device)
 
             # model: load cached for fresh model
             del model
@@ -267,6 +267,7 @@ def test_time_evaluate(
                     gen_attention_mask,
                 ], dim=1)
 
+                # print('generate', gen_attention_mask.shape)
                 gen_tokens = model.generate(
                     input_ids=gen_input_ids,
                     attention_mask=gen_attention_mask,
@@ -729,6 +730,7 @@ def run_gs(
                 }
 
                 # get ce loss
+                # print('gs', pair_attention_mask.shape)
                 loss = model(**model_kwargs).loss
 
                 # print(loss.item())
@@ -826,7 +828,7 @@ def main():
     parser.add_argument("--gs_beta1", type=float, default=0.9)
     parser.add_argument("--gs_beta2", type=float, default=0.999)
     parser.add_argument("--gs_weight_decay", type=float, default=0.0)
-    parser.add_argument("--gs_batch_size", type=int, default=16)
+    parser.add_argument("--gs_batch_size", type=int, default=100000)
     parser.add_argument("--gs_grad_accum_steps", type=int, default=1)
     parser.add_argument("--gs_optimizer", type=str, choices=["adamw", "sgd"], default="adamw")
     parser.add_argument("--gs_lr_scheduler", type=str, choices=["cosine", "constant"], default="cosine")
