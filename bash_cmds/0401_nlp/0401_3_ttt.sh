@@ -36,7 +36,16 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 infere
     --ttt_iters 250 \
     --eval_seeds 100
 
-# Submitted batch job 59022487
-# Submitted batch job 59022488
-# Submitted batch job 59022489
-# Submitted batch job 59022490
+# nlp ttt500
+accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_nlp/test_time_evaluate.py \
+    --tag ttt500 \
+    --weight_dir nlp_pretrained \
+    --weight_epoch 0 \
+    --ttt_iters 500 \
+    --eval_seeds 100
+
+# Submitted batch job 59029831
+# Submitted batch job 59029832
+# Submitted batch job 59029833
+# Submitted batch job 59029834
+# Submitted batch job 59029835

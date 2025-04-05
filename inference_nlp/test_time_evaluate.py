@@ -124,11 +124,8 @@ def test_time_evaluate(
     output_dir: str,
 ) -> Tuple[float, float, float, float, float, float, float, List]:
 
-    model.eval()
-
     # get modules in case of DDP
-    module = model.module if isinstance(model, DistributedDataParallel) else model
-    embed_tokens = module.transformer.wte
+    model = model.module if isinstance(model, DistributedDataParallel) else model
 
     # We perform test-time adaptation in 2 stages.
     # First stage produces KV cache, num trainable params, runtime, num data. Second stage simply performs model loss/generation
@@ -166,6 +163,7 @@ def test_time_evaluate(
             # model: load cached for fresh model
             del model
             model = AutoModelForCausalLM.from_pretrained(cached_model_path).to(accelerator.device)
+            model.eval()
 
             # logging
             ttt_num_data, gs_num_data = 0, 0
@@ -309,6 +307,7 @@ def test_time_evaluate(
                         for layer_k, layer_v in batch_past_key_values
                     )
 
+                embed_tokens = model.transformer.wte
                 with accelerator.autocast():
                     # second step to generate
                     gen_inputs_embeds = embed_tokens(gen_input_ids)
@@ -932,6 +931,10 @@ def main():
 
     # Prepare with accelerator
     model = accelerator.prepare(model)
+
+    # we dont train model so
+    for p in model.parameters():
+        p.requires_grad = False
 
     # Build evaluation dataset
     datasets = [

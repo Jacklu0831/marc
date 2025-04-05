@@ -1,28 +1,43 @@
+import gc
+import time
 from tqdm import tqdm
-import math
 from collections import defaultdict
-from accelerate.utils import ProjectConfiguration, set_seed, gather_object
-from torch.nn.parallel import DistributedDataParallel
-from accelerate import Accelerator, PartialState, InitProcessGroupKwargs
-from typing import Union, Callable
-from torch import nn
-from transformers.tokenization_utils_fast import PreTrainedTokenizerFast
+from typing import Union, Tuple
 from datetime import timedelta
 import pprint
 import json
 from functools import partial
 import argparse
+from arclib.arc import Task
+
 import torch
-from transformers import AutoTokenizer
-from accelerate import Accelerator, InitProcessGroupKwargs
+from torch import nn
+from torch.nn.parallel import DistributedDataParallel
+from torch.utils.data import DataLoader
+from accelerate import Accelerator, PartialState, InitProcessGroupKwargs
+from accelerate.utils import ProjectConfiguration, set_seed, gather_object
 from accelerate.logging import get_logger
-from accelerate.utils import ProjectConfiguration, set_seed
-from peft import prepare_model_for_kbit_training # type: ignore
 
-from transformers import BitsAndBytesConfig, AutoModelForCausalLM
-from peft import PeftModel # type: ignore
+from transformers import (
+    AutoTokenizer,
+    BitsAndBytesConfig,
+    AutoModelForCausalLM,
+    get_constant_schedule,
+    get_cosine_schedule_with_warmup,
+)
+from transformers.tokenization_utils_fast import PreTrainedTokenizerFast
+from peft import LoraConfig, TaskType, PeftModel, get_peft_model, prepare_model_for_kbit_training # type: ignore
 
-from data_utils import EvalDataset, collate_fn_eval, ARCTokenizer
+from data_utils import (
+    ARCTokenizer,
+    EvalDataset,
+    GSDataset,
+    TTTDataset,
+    collate_fn_gs,
+    collate_fn_gs_dummy,
+    collate_fn_ttt,
+    collate_fn_ttt_dummy,
+)
 from train import (
     set_up_main_process_logger,
     initialize_program_embeddings,
@@ -31,7 +46,6 @@ from train import (
     list2d_to_tuple,
     invert_and_vote,
     grid_2d_to_text,
-    chunks,
 )
 
 
@@ -61,18 +75,52 @@ def test_time_evaluate(
     model: Union[nn.Module, DistributedDataParallel],
     dataset: EvalDataset,
     accelerator: Accelerator,
-    batch_size: int,
-    collate_fn: Callable,
+    trainable_nbit: int,
+    no_flash_attn: bool,
+    gs_iters: int,
+    gs_batch_size: int,
+    gs_grad_accum_steps: int,
+    gs_lr: float,
+    gs_beta1: float,
+    gs_beta2: float,
+    gs_weight_decay: float,
+    gs_optimizer: str,
+    gs_max_grad_norm: float,
+    gs_no_key: bool,
+    gs_no_value: bool,
+    gs_lr_scheduler: str,
+    gs_lora: bool,
+    gs_lora_rank: int,
+    gs_lora_alpha: int,
+    gs_lora_lr: float,
+    ttt_iters: int,
+    ttt_batch_size: int,
+    ttt_grad_accum_steps: int,
+    ttt_lr: float,
+    ttt_weight_decay: float,
+    ttt_optimizer: str,
+    ttt_max_grad_norm: float,
+    ttt_lr_scheduler: str,
+    ttt_lora_rank: int,
+    ttt_lora_alpha: int,
+    ttt_permute_n: int,
+    output_dir: str,
 ):
     model.eval()
 
     # get modules in case of DDP
-    module = model.module if isinstance(model, DistributedDataParallel) else model
+    model = model.module if isinstance(model, DistributedDataParallel) else model
+    model.generation_config.pad_token_id = dataset.tokenizer.pad_token_id
 
-    # setup terminators and suppress warning
-    module.generation_config.pad_token_id = dataset.tokenizer.pad_token_id
+    # We perform test-time adaptation in 2 stages.
+    # First stage produces KV cache, num trainable params, runtime, num data. Second stage simply performs model loss/generation
 
-    distributed_state = PartialState()
+    # STAGE 1: demonstration pair processing
+    ttt_num_data_list, gs_num_data_list = [], []
+    ttt_num_params_list, gs_num_params_list = [], []
+    ttt_time_list, gs_time_list = [], []
+
+    # outputs
     task_id_and_text_list = []
     task_id_and_inverter_grids = []
     exact_acc_list = []
@@ -81,95 +129,210 @@ def test_time_evaluate(
     token_acc_list = []
     relaxed_token_acc_list = []
 
-    data_idxs = list(range(len(dataset)))
-    assert len(data_idxs) >= accelerator.num_processes # avoid padding issue
+    # we need to cache model in case of ttt or gs with trainable lora
+    cached_model_path = os.path.join(output_dir, 'eval_cached_model')
+    if accelerator.is_main_process:
+        accelerator.unwrap_model(model).save_pretrained(cached_model_path)
 
-    with distributed_state.split_between_processes(data_idxs) as process_data_idxs:
-        assert isinstance(process_data_idxs, list)
-        n_batches = math.ceil(len(process_data_idxs) / batch_size)
-        data_idx_iterator = tqdm(chunks(process_data_idxs, batch_size), total=n_batches)  # type: ignore
+    # group tasks based on task name
+    task_name_to_eval_idxs = defaultdict(list)
+    for task_i, task in enumerate(dataset.eval_tasks):
+        assert task_i not in task_name_to_eval_idxs[task.name]
+        task_name_to_eval_idxs[task.name].append(task_i)
+    task_names = sorted(task_name_to_eval_idxs.keys())
+    assert all(len(v) == 1 for v in task_name_to_eval_idxs.values())
 
-        for batch_idxs in data_idx_iterator:
-            bs = len(batch_idxs)
-            batch_data = [dataset[i] for i in batch_idxs]
-            batch = collate_fn(batch_data)
+    distributed_state = PartialState()
+    with distributed_state.split_between_processes(task_names) as process_task_names:
+        assert isinstance(process_task_names, list)
 
-            # get tensors
-            task_ids = batch["task_ids"]
-            inverters = batch["inverters"]
-            all_input_ids = batch["all_input_ids"].to(accelerator.device)
-            all_attention_mask = batch["all_attention_mask"].to(accelerator.device)
-            out_token_length = batch["out_token_length"]
-            label_texts = batch["label_texts"]
+        # for now, let's not worry about voting
+        for task_name in tqdm(process_task_names, desc='Task'):
+            # data: get demonstration ids, assume no permute or augmentation
+            task_idx = task_name_to_eval_idxs[task_name][0]
+            data = dataset[task_idx]
+            assert data is not None
+            demon_input_ids = data['demon_input_ids'].unsqueeze(0).to(accelerator.device)
+            if dataset.debug_max_len:
+                demon_input_ids = torch.randint(0, 30, (1, dataset.max_seq_len - 100), dtype=torch.int64, device=accelerator.device)
 
-            # compute accuracy
-            arbitrary_increase = 5
+            # model: load cached for fresh model
+            del model
+            model = AutoModelForCausalLM.from_pretrained(cached_model_path).to(accelerator.device)
+            model.eval()
 
-            # perform single-step noprogram generation with gs
+            # logging
+            ttt_num_data, gs_num_data = 0, 0
+            ttt_num_params, gs_num_params = 0, 0
+            ttt_time, gs_time = 0.0, 0.0
+
+            # use ttt to refine model
+            if ttt_iters > 0:
+                with accelerator.no_sync(model):
+                    start_time = time.time()
+                    model, ttt_num_data, ttt_num_params = run_ttt(
+                        task=dataset.eval_tasks[task_idx],
+                        eval_dataset=dataset,
+                        accelerator=accelerator,
+                        model=model,
+                        iters=ttt_iters,
+                        batch_size=ttt_batch_size,
+                        grad_accum_steps=ttt_grad_accum_steps,
+                        lr=ttt_lr,
+                        weight_decay=ttt_weight_decay,
+                        optimizer=ttt_optimizer,
+                        max_grad_norm=ttt_max_grad_norm,
+                        lr_scheduler=ttt_lr_scheduler,
+                        lora_rank=ttt_lora_rank,
+                        lora_alpha=ttt_lora_alpha,
+                        permute_n=ttt_permute_n,
+                    )
+                    ttt_time = time.time() - start_time
+                    torch.cuda.empty_cache()
+                    gc.collect()
+
+            # compute kv with model (ttt or not)
             with accelerator.autocast():
-                gen_tokens = module.generate(
-                    input_ids=all_input_ids,
-                    attention_mask=all_attention_mask,
-                    max_new_tokens=max(out_token_length) + arbitrary_increase, # arbitrary increase
+                past_key_values = model(input_ids=demon_input_ids, output_hidden_states=True).past_key_values
+
+            # use gs to refine kv
+            if gs_iters > 0:
+                with accelerator.no_sync(model):
+                    assert past_key_values is not None
+                    assert past_key_values[0][0].shape[0] == 1
+                    if not no_flash_attn:
+                        past_key_values = tuple(
+                            (
+                                layer_k.to(NBIT_TO_DTYPE[trainable_nbit]),
+                                layer_v.to(NBIT_TO_DTYPE[trainable_nbit]),
+                            )
+                            for layer_k, layer_v in past_key_values
+                        )
+
+                    start_time = time.time()
+                    model, past_key_values, gs_num_data, gs_num_params = run_gs(
+                        task=dataset.eval_tasks[task_idx],
+                        eval_dataset=dataset,
+                        accelerator=accelerator,
+                        model=model,
+                        # inputs
+                        past_key_values=past_key_values, # type: ignore
+                        # config
+                        iters=gs_iters,
+                        lr=gs_lr,
+                        beta1=gs_beta1,
+                        beta2=gs_beta2,
+                        weight_decay=gs_weight_decay,
+                        batch_size=gs_batch_size,
+                        grad_accum_steps=gs_grad_accum_steps,
+                        optimizer=gs_optimizer,
+                        max_grad_norm=gs_max_grad_norm,
+                        no_key=gs_no_key,
+                        no_value=gs_no_value,
+                        lr_scheduler=gs_lr_scheduler,
+                        lora=gs_lora,
+                        lora_rank=gs_lora_rank,
+                        lora_alpha=gs_lora_alpha,
+                        lora_lr=gs_lora_lr,
+                    )
+                    gs_time = time.time() - start_time
+                    torch.cuda.empty_cache()
+                    gc.collect()
+
+            # logging
+            ttt_num_data_list.append(ttt_num_data)
+            gs_num_data_list.append(gs_num_data)
+            ttt_num_params_list.append(ttt_num_params)
+            gs_num_params_list.append(gs_num_params)
+            ttt_time_list.append(ttt_time)
+            gs_time_list.append(gs_time)
+
+            # STAGE 2: apply model and kv to all tests
+            arbitrary_increase = 5
+            out_token_length = data['out_token_length']
+            gen_input_ids = data['gen_input_ids'].unsqueeze(0).to(accelerator.device)
+            gen_attention_mask = data['gen_attention_mask'].unsqueeze(0).to(accelerator.device)
+
+            with accelerator.autocast():
+                # second step to generate
+                # add past key values portion to input_ids and attention mask
+                # the padding of input_ids is ignored
+                past_key_values[0][0].shape[2]
+                gen_input_ids = torch.cat([
+                    torch.zeros((1, past_key_values[0][0].shape[2]), device=accelerator.device, dtype=torch.int64),
+                    gen_input_ids,
+                ], dim=1)
+                gen_attention_mask = torch.cat([
+                    torch.ones((1, past_key_values[0][0].shape[2]), device=accelerator.device, dtype=torch.int64),
+                    gen_attention_mask,
+                ], dim=1)
+
+                gen_tokens = model.generate(
+                    input_ids=gen_input_ids,
+                    attention_mask=gen_attention_mask,
+                    past_key_values=past_key_values,
+                    max_new_tokens=out_token_length + arbitrary_increase,
                     num_return_sequences=1,
                     temperature=1.0,
                     top_p=1.0,
                     do_sample=False,
                     eos_token_id=[dataset.tokenizer.eos_token_id],
                 )
-                gen_tokens = gen_tokens[:, all_input_ids.shape[1]:]
+                assert gen_tokens.shape[0] == 1
+                gen_tokens = gen_tokens[0, gen_input_ids.shape[1]:]
 
-            assert len(gen_tokens) == len(out_token_length)
-            for t, l in zip(gen_tokens, out_token_length):
-                t[l + arbitrary_increase:] = dataset.tokenizer.pad_token_id
+            gen_tokens[out_token_length + arbitrary_increase:] = dataset.tokenizer.pad_token_id
             gen_texts = dataset.tokenizer.batch_decode(
-                gen_tokens,
+                gen_tokens.unsqueeze(0),
                 skip_special_tokens=True,
                 no_separate_color_tokens=dataset.no_separate_color_tokens,
             )
+            assert len(gen_texts) == 1
+            gen_text = gen_texts[0]
 
             # print(gen_texts)
             # breakpoint()
 
+            task_id = data["task_id"]
+            inverter = data["inverter"]
+            label_text = data["label_texts"]
+
             # Compare each gen_text with label_texts
-            assert len(task_ids) == len(inverters) == bs, (len(task_ids), len(inverters), bs)
-            assert len(gen_texts) == len(label_texts) == bs, (len(gen_texts), len(label_texts), bs)
-            for task_id, inverter, gen_text, label_text in zip(task_ids, inverters, gen_texts, label_texts):
-                relaxed_token_acc_list.append(best_match_count(gen_text, label_text) / len(label_text))
-                # is valid grid
-                gen_grid, gen_is_grid = text_to_2d_grid(text=gen_text)
-                label_grid, label_is_grid = text_to_2d_grid(text=label_text)
-                assert label_is_grid
-                valid_grid_list.append(int(gen_is_grid))
-                if not gen_is_grid:
-                    task_id_and_text_list.append((task_id, gen_text, label_text))
-                    exact_acc_list.append(0)
-                    correct_grid_dim_list.append(0)
-                    token_acc_list.append(0)
-                    continue
-                assert isinstance(gen_grid, list)
-                assert isinstance(label_grid, list)
-                # now we know it's a valid grid
-                gen_text = grid_2d_to_text(gen_grid)
+            relaxed_token_acc_list.append(best_match_count(gen_text, label_text) / len(label_text))
+            # is valid grid
+            gen_grid, gen_is_grid = text_to_2d_grid(text=gen_text)
+            label_grid, label_is_grid = text_to_2d_grid(text=label_text)
+            assert label_is_grid
+            valid_grid_list.append(int(gen_is_grid))
+            if not gen_is_grid:
                 task_id_and_text_list.append((task_id, gen_text, label_text))
-                gen_grid, label_grid = list2d_to_tuple(gen_grid), list2d_to_tuple(label_grid)
-                # exact acc
-                exact_acc_list.append(int(gen_grid == label_grid))
-                # save gen and gt grid
-                task_id_and_inverter_grids.append((task_id, inverter, gen_grid, label_grid))
-                # correct grid dim
-                is_correct_grid_dim = (len(gen_grid) == len(label_grid) and len(gen_grid[0]) == len(label_grid[0]))
-                correct_grid_dim_list.append(int(is_correct_grid_dim))
-                if not is_correct_grid_dim:
-                    token_acc_list.append(0)
-                    continue
-                # token acc
-                grid_size = len(label_grid) * len(label_grid[0])
-                num_token_correct = 0
-                for gen_row, label_row in zip(gen_grid, label_grid):
-                    for gen_x, label_x in zip(gen_row, label_row):
-                        num_token_correct += int(gen_x == label_x)
-                token_acc_list.append(num_token_correct / grid_size)
+                exact_acc_list.append(0)
+                correct_grid_dim_list.append(0)
+                token_acc_list.append(0)
+                continue
+            assert isinstance(gen_grid, list)
+            assert isinstance(label_grid, list)
+            # now we know it's a valid grid
+            gen_text = grid_2d_to_text(gen_grid)
+            task_id_and_text_list.append((task_id, gen_text, label_text))
+            gen_grid, label_grid = list2d_to_tuple(gen_grid), list2d_to_tuple(label_grid)
+            # exact acc
+            exact_acc_list.append(int(gen_grid == label_grid))
+            # save gen and gt grid
+            task_id_and_inverter_grids.append((task_id, inverter, gen_grid, label_grid))
+            # correct grid dim
+            is_correct_grid_dim = (len(gen_grid) == len(label_grid) and len(gen_grid[0]) == len(label_grid[0]))
+            correct_grid_dim_list.append(int(is_correct_grid_dim))
+            if not is_correct_grid_dim:
+                token_acc_list.append(0)
+                continue
+            # token acc
+            grid_size = len(label_grid) * len(label_grid[0])
+            num_token_correct = 0
+            for gen_row, label_row in zip(gen_grid, label_grid):
+                for gen_x, label_x in zip(gen_row, label_row):
+                    num_token_correct += int(gen_x == label_x)
+            token_acc_list.append(num_token_correct / grid_size)
 
     distributed_state.wait_for_everyone()
     # results
@@ -233,6 +396,351 @@ def test_time_evaluate(
         votes, competition_sub_acc, competition_all_acc
 
 
+@torch.enable_grad()
+def run_ttt(
+    task: Task,
+    eval_dataset: EvalDataset,
+    accelerator: Accelerator,
+    model: Union[nn.Module, DistributedDataParallel],
+    # config
+    iters: int,
+    batch_size: int,
+    grad_accum_steps: int,
+    lr: float,
+    weight_decay: float,
+    optimizer: str,
+    max_grad_norm: float,
+    lr_scheduler: str,
+    lora_rank: int,
+    lora_alpha: int,
+    permute_n: int,
+) -> Tuple[nn.Module, int, int]:
+
+    peft_config = LoraConfig(
+        r=lora_rank,
+        lora_alpha=lora_alpha,
+        target_modules=['q_proj', 'v_proj', 'gate_proj', 'up_proj', 'down_proj'],
+        task_type=TaskType.CAUSAL_LM,
+    )
+    model = get_peft_model(model, peft_config) # type: ignore
+    # model.print_trainable_parameters()
+
+    # get program parameters
+    lora_params = []
+    for n, p in model.named_parameters():
+        assert p.requires_grad == ('lora' in n)
+        if p.requires_grad:
+            lora_params.append(p)
+    num_params = sum(p.numel() for p in lora_params)
+
+    # dataset and dataloader
+    ttt_dataset = TTTDataset(
+        task=task,
+        tokenizer=eval_dataset.tokenizer,
+        debug_random_pad=eval_dataset.debug_random_pad,
+        debug_pad_len=eval_dataset.debug_pad_len,
+        pad_side=eval_dataset.pad_side,
+        max_seq_len=eval_dataset.max_seq_len,
+        permute_n=permute_n,
+        seed=eval_dataset.seed,
+        no_separate_color_tokens=eval_dataset.no_separate_color_tokens,
+        no_bos=eval_dataset.no_bos,
+    )
+    if len(ttt_dataset) == 0:
+        return model, 0, num_params
+
+    batch_size = min(batch_size, len(ttt_dataset))
+    ttt_collate_fn = partial(collate_fn_ttt, dataset=ttt_dataset)
+    if eval_dataset.debug_max_len:
+        ttt_collate_fn = partial(collate_fn_ttt_dummy, dataset=ttt_dataset)
+    ttt_loader = DataLoader(
+        ttt_dataset,
+        batch_size=batch_size,
+        shuffle=True,
+        collate_fn=ttt_collate_fn,
+        drop_last=True,
+        num_workers=0,
+    )
+
+    # optimizer
+    if optimizer == 'adamw':
+        optim = torch.optim.AdamW(lora_params, weight_decay=weight_decay, lr=lr) # type: ignore
+    else:
+        optim = torch.optim.SGD(lora_params, lr=lr) # type: ignore
+    optim.zero_grad()
+
+    # lr scheduler
+    if lr_scheduler == "cosine":
+        scheduler = get_cosine_schedule_with_warmup(optim, num_warmup_steps=0, num_training_steps=iters)
+    else:
+        scheduler = get_constant_schedule(optim)
+
+    # prepare stuff (no difference on singlegpu, havent tested on multigpu)
+    # model, optim, ttt_loader = accelerator.prepare(model, optim, ttt_loader)
+
+    # prepare some stuff
+    model.train()
+
+    # train!
+    curr_iter = 0
+    while curr_iter < iters:
+        for batch in ttt_loader:
+            input_ids = batch["input_ids"].to(accelerator.device)
+            attention_mask = batch["attention_mask"].to(accelerator.device)
+            label_ids = batch["label_ids"].to(accelerator.device)
+            device, dtype = input_ids.device, input_ids.dtype
+
+            # necessary
+            with accelerator.autocast():
+                # build position ids
+                position_ids = torch.zeros((batch_size, input_ids.shape[1]), device=device, dtype=torch.int64)
+                mask_lens = attention_mask.sum(dim=1)
+                for task_position_ids, mask_len in zip(position_ids, mask_lens):
+                    assert mask_len > 0
+                    new_positions = torch.tensor(range(mask_len), device=device, dtype=dtype)
+                    if ttt_dataset.pad_side == "right":
+                        task_position_ids[:mask_len] = new_positions
+                    else:
+                        task_position_ids[-mask_len:] = new_positions
+
+                loss = model(
+                    input_ids=input_ids,
+                    attention_mask=attention_mask,
+                    labels=label_ids,
+                    position_ids=position_ids,
+                ).loss
+
+                # print(loss.item())
+                # breakpoint()
+
+            accelerator.backward(loss)
+
+            if (curr_iter + 1) % grad_accum_steps == 0 or curr_iter == iters - 1:
+                accelerator.clip_grad_norm_(lora_params, max_grad_norm)
+                optim.step()
+                scheduler.step()
+                optim.zero_grad()
+
+            curr_iter += 1
+            if curr_iter >= iters:
+                break
+
+    model.eval()
+    model = merge_lora(model)
+
+    return model, len(ttt_dataset), num_params
+
+
+@torch.enable_grad()
+def run_gs(
+    task: Task,
+    eval_dataset: EvalDataset,
+    accelerator: Accelerator,
+    model: Union[nn.Module, DistributedDataParallel],
+    # inputs
+    past_key_values: Tuple[Tuple[torch.Tensor, torch.Tensor]],
+    # config
+    iters: int,
+    lr: float,
+    beta1: float,
+    beta2: float,
+    weight_decay: float,
+    batch_size: int,
+    grad_accum_steps: int,
+    optimizer: str,
+    max_grad_norm: float,
+    no_key: bool,
+    no_value: bool,
+    lr_scheduler: str,
+    lora: bool,
+    lora_rank: int,
+    lora_alpha: int,
+    lora_lr: float,
+) -> Tuple[nn.Module, Tuple[Tuple[torch.Tensor, torch.Tensor]], int, int]:
+
+    # optional lora
+    if lora:
+        peft_config = LoraConfig(
+            r=lora_rank,
+            lora_alpha=lora_alpha,
+            target_modules=['q_proj', 'v_proj', 'gate_proj', 'up_proj', 'down_proj'],
+            task_type=TaskType.CAUSAL_LM,
+        )
+        model = get_peft_model(model, peft_config) # type: ignore
+        # model.print_trainable_parameters()
+
+    # this copying is necessary because torch is dumb as hell
+    assert past_key_values[0][0].shape[0] == 1
+    past_key_values = tuple(
+        (layer_k.detach().clone(), layer_v.detach().clone())
+        for layer_k, layer_v in past_key_values
+    ) # type: ignore
+
+    # get program parameters
+    program_params = []
+    for layer_k, layer_v in past_key_values:
+        if not no_key:
+            program_params.append(layer_k)
+        if not no_value:
+            program_params.append(layer_v)
+    num_params = sum(p.numel() for p in program_params)
+
+    # get lora parameters
+    lora_params = []
+    if lora:
+        lora_params = []
+        for n, p in model.named_parameters():
+            assert p.requires_grad == ('lora' in n)
+            if p.requires_grad:
+                lora_params.append(p)
+        num_params += sum(p.numel() for p in lora_params)
+
+    # dataset and dataloader
+    gs_dataset = GSDataset(
+        task=task,
+        tokenizer=eval_dataset.tokenizer,
+        debug_random_pad=eval_dataset.debug_random_pad,
+        debug_pad_len=eval_dataset.debug_pad_len,
+        pad_side=eval_dataset.pad_side,
+        no_separate_color_tokens=eval_dataset.no_separate_color_tokens,
+        no_bos=eval_dataset.no_bos,
+        max_seq_len=eval_dataset.max_seq_len,
+    )
+    if len(gs_dataset) == 0:
+        if lora:
+            model = merge_lora(model)
+        return model, past_key_values, 0, num_params
+
+    batch_size = min(batch_size, len(gs_dataset))
+    gs_collate_fn = partial(collate_fn_gs, dataset=gs_dataset)
+    if eval_dataset.debug_max_len:
+        gs_collate_fn = partial(collate_fn_gs_dummy, dataset=gs_dataset)
+    gs_loader = DataLoader(
+        gs_dataset,
+        batch_size=batch_size,
+        shuffle=True,
+        collate_fn=gs_collate_fn,
+        drop_last=True,
+        num_workers=0,
+    )
+
+    # set requires grad
+    assert all(not p.requires_grad for p in program_params)
+    for p in program_params:
+        p.requires_grad = True
+
+    # optimizer
+    optimizer_grouped_params = [
+        {"params": program_params, "lr": lr},
+        {"params": lora_params, "lr": lora_lr},
+    ]
+    all_params = program_params + lora_params
+    if optimizer == 'adamw':
+        optim = torch.optim.AdamW(optimizer_grouped_params, weight_decay=weight_decay, betas=(beta1, beta2)) # type: ignore
+    else:
+        optim = torch.optim.SGD(optimizer_grouped_params, lr=lr) # type: ignore
+    optim.zero_grad()
+
+    # lr scheduler
+    if lr_scheduler == "cosine":
+        scheduler = get_cosine_schedule_with_warmup(optim, num_warmup_steps=0, num_training_steps=iters)
+    else:
+        scheduler = get_constant_schedule(optim)
+
+    # prepare stuff (no difference on singlegpu, havent tested on multigpu)
+    # model, optim, gs_loader = accelerator.prepare(model, optim, gs_loader)
+
+    # prepare some stuff
+    model.train()
+
+    module = model.module if isinstance(model, DistributedDataParallel) else model
+    embed_tokens = module.model.embed_tokens if not lora else module.model.model.embed_tokens
+
+    # expand to match predicted program with batch size
+    past_key_values = tuple(
+        (
+            layer_k.expand(batch_size, *layer_k.shape[1:]),
+            layer_v.expand(batch_size, *layer_v.shape[1:]),
+        )
+        for layer_k, layer_v in past_key_values
+    ) # type: ignore
+    past_kv_len = past_key_values[0][0].shape[2]
+
+    # train!
+    curr_iter = 0
+    while curr_iter < iters:
+        for batch in gs_loader:
+            pair_input_ids = batch["input_ids"].to(accelerator.device)
+            pair_attention_mask = batch["attention_mask"].to(accelerator.device)
+            pair_label_ids = batch["label_ids"].to(accelerator.device)
+            device, dtype = pair_input_ids.device, pair_input_ids.dtype
+
+            with accelerator.autocast():
+                # build position ids
+                position_ids = torch.zeros((batch_size, pair_input_ids.shape[1]), device=device, dtype=torch.int64)
+                mask_lens = pair_attention_mask.sum(dim=1)
+                for task_position_ids, mask_len in zip(position_ids, mask_lens):
+                    assert mask_len > 0
+                    new_positions = torch.tensor(range(past_kv_len, past_kv_len + mask_len), device=device, dtype=dtype)
+                    if gs_dataset.pad_side == "right":
+                        task_position_ids[:mask_len] = new_positions
+                    else:
+                        task_position_ids[-mask_len:] = new_positions
+
+                pair_inputs_embeds = embed_tokens(pair_input_ids)
+                pair_attention_mask = torch.cat([
+                    torch.ones((batch_size, past_kv_len), device=accelerator.device, dtype=torch.int64),
+                    pair_attention_mask
+                ], dim=1)
+
+                model_kwargs = {
+                    "inputs_embeds": pair_inputs_embeds,
+                    "attention_mask": pair_attention_mask,
+                    "labels": pair_label_ids,
+                    "use_cache": True,
+                    "past_key_values": past_key_values,
+                    "position_ids": position_ids,
+                }
+
+                # get ce loss
+                loss = model(**model_kwargs).loss
+
+                # print(loss.item())
+                # breakpoint() # test without position ids
+
+            accelerator.backward(loss)
+
+            if (curr_iter + 1) % grad_accum_steps == 0 or curr_iter == iters - 1:
+                accelerator.clip_grad_norm_(all_params, max_grad_norm)
+                optim.step()
+                scheduler.step()
+                optim.zero_grad()
+
+            curr_iter += 1
+            if curr_iter >= iters:
+                break
+
+    model.eval()
+    if lora:
+        model = merge_lora(model)
+
+    # shrink to bs1
+    if batch_size > 1:
+        assert torch.equal(past_key_values[0][0][0], past_key_values[0][0][1])
+    past_key_values = tuple(
+        (layer_k[:1].detach().clone(), layer_v[:1].detach().clone())
+        for layer_k, layer_v in past_key_values
+    ) # type: ignore
+
+    return model, past_key_values, len(gs_dataset), num_params
+
+
+def merge_lora(model: nn.Module) -> nn.Module:
+    model.merge_and_unload() # required for the case of gs with lora
+    model = model.model # no peftmodel class
+    del model.peft_config # type: ignore
+    return model
+
 
 def main():
     parser = argparse.ArgumentParser()
@@ -243,6 +751,8 @@ def main():
 
     # Debug
     parser.add_argument("--debug_max_len", action='store_true')
+    parser.add_argument("--debug_random_pad", action="store_true")
+    parser.add_argument("--debug_pad_len", type=int, default=-1)
 
     # Model
     parser.add_argument("--model_name", type=str, default="llama1b")
@@ -257,7 +767,6 @@ def main():
     parser.add_argument("--weight_epoch", type=int, required=True)
 
     # Evaluation & data
-    parser.add_argument("--batch_size", type=int, default=4)
     parser.add_argument("--max_seq_len", type=int, default=8192)
     parser.add_argument("--pad_side", type=str, choices=["left", "right"], default="left")
     parser.add_argument("--no_separate_color_tokens", action='store_true')
@@ -282,8 +791,8 @@ def main():
     parser.add_argument("--ttt_lr_scheduler", type=str, choices=["cosine", "constant"], default="cosine")
     parser.add_argument("--ttt_max_grad_norm", default=1.0, type=float, help="Max gradient norm.")
     parser.add_argument("--ttt_permute_n", type=int, default=40)
-    parser.add_argument("--ttt_lora_rank", type=int, default=64)
-    parser.add_argument("--ttt_lora_alpha", type=int, default=64)
+    parser.add_argument("--ttt_lora_rank", type=int, default=128)
+    parser.add_argument("--ttt_lora_alpha", type=int, default=16)
 
     # gradient search
     parser.add_argument("--gs_iters", type=int, default=0)
@@ -301,8 +810,8 @@ def main():
 
     # gradient search with lora (NOT COMPATIBLE WITH TTT)
     parser.add_argument("--gs_lora", action='store_true')
-    parser.add_argument("--gs_lora_rank", type=int, default=64)
-    parser.add_argument("--gs_lora_alpha", type=int, default=64)
+    parser.add_argument("--gs_lora_rank", type=int, default=128)
+    parser.add_argument("--gs_lora_alpha", type=int, default=16)
     parser.add_argument("--gs_lora_lr", type=float, default=1e-4)
 
     args = parser.parse_args()
@@ -454,6 +963,13 @@ def main():
     # Prepare with accelerator
     model = accelerator.prepare(model)
 
+    # we dont train model so
+    for p in model.parameters():
+        p.requires_grad = False
+
+    # merge lora because arc uses it
+    model = merge_lora(model)
+
     # Build evaluation dataset
     dataset = EvalDataset(
         args.data_dir,
@@ -465,30 +981,50 @@ def main():
         permute_iters=args.permute_iters,
         seed=args.seed,
         tokenizer=tokenizer,
-        debug_random_pad=False,
-        debug_pad_len=-1,
+        debug_random_pad=args.debug_random_pad,
+        debug_pad_len=args.debug_pad_len,
         pad_side=args.pad_side,
         debug_max_len=args.debug_max_len,
         no_separate_color_tokens=args.no_separate_color_tokens,
         max_seq_len=args.max_seq_len,
         no_bos=args.no_bos,
     )
-    collate_fn = partial(collate_fn_eval, dataset=dataset)
-
-    # debug: check if train eval and ttt load the same exact model
-    # input_ids = torch.tensor([list(range(20)), list(range(20))], device=accelerator.device, dtype=torch.int64)
-    # attention_mask = torch.full(input_ids.shape, 1, device=accelerator.device, dtype=torch.int64)
-    # ce_loss = model(input_ids=input_ids, attention_mask=attention_mask, labels=input_ids).loss
-    # print(ce_loss.item())
-    # breakpoint()
 
     # evaluate
     exact_acc, valid_grid, correct_grid_dim, token_acc, relaxed_token_acc, texts, votes, competition_sub_acc, competition_all_acc = test_time_evaluate(
         model=model,
         dataset=dataset,
         accelerator=accelerator,
-        batch_size=args.batch_size,
-        collate_fn=collate_fn,
+        trainable_nbit=args.trainable_nbit,
+        no_flash_attn=not args.flash_attn,
+        gs_iters=args.gs_iters,
+        gs_lr=args.gs_lr,
+        gs_beta1=args.gs_beta1,
+        gs_beta2=args.gs_beta2,
+        gs_weight_decay=args.gs_weight_decay,
+        gs_batch_size=args.gs_batch_size,
+        gs_grad_accum_steps=args.gs_grad_accum_steps,
+        gs_optimizer=args.gs_optimizer,
+        gs_max_grad_norm=args.gs_max_grad_norm,
+        gs_no_key=args.gs_no_key,
+        gs_no_value=args.gs_no_value,
+        gs_lr_scheduler=args.gs_lr_scheduler,
+        gs_lora=args.gs_lora,
+        gs_lora_rank=args.gs_lora_rank,
+        gs_lora_alpha=args.gs_lora_alpha,
+        gs_lora_lr=args.gs_lora_lr,
+        ttt_iters=args.ttt_iters,
+        ttt_lr=args.ttt_lr,
+        ttt_weight_decay=args.ttt_weight_decay,
+        ttt_batch_size=args.ttt_batch_size,
+        ttt_grad_accum_steps=args.ttt_grad_accum_steps,
+        ttt_optimizer=args.ttt_optimizer,
+        ttt_lr_scheduler=args.ttt_lr_scheduler,
+        ttt_max_grad_norm=args.ttt_max_grad_norm,
+        ttt_lora_rank=args.ttt_lora_rank,
+        ttt_lora_alpha=args.ttt_lora_alpha,
+        ttt_permute_n=args.ttt_permute_n,
+        output_dir=args.output_dir,
     )
 
     if accelerator.is_main_process:

@@ -165,8 +165,18 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 infere
 #     'eval/ttt_time': 2.4248283817654563}
 
 # TODO: gslora gets bad performance, why
-# TODO: test memory for rtx8000
 
 
 
-# there is also a baseline experiment where we compare to ttt
+# gs isnt performing so well, why? lets try to overfit
+accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_nlp_0404/test_time_evaluate.py \
+    --config_file MetaICL/config/toy.json \
+    --data_dir MetaICL/data_toy_gs \
+    --tag test \
+    --weight_dir test \
+    --weight_epoch 0 \
+    --eval_ratio 0.01 \
+    --eval_seeds 100 \
+    --gs_batch_size 16 \
+    --gs_iters 0 \
+    --gs_lr 1e-2

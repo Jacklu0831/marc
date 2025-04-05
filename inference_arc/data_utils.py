@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import List, Optional
 import numpy as np
 
+from arclib.arc import Task, Example
 from arclib.augmenters import (
     inverse,
     PermuteExamples,
@@ -35,7 +36,6 @@ from arclib.augmenters import (
 )
 from accelerate.logging import get_logger
 
-from arclib.arc import Task, Example
 
 logger = get_logger(__name__, log_level="INFO")
 
@@ -566,10 +566,6 @@ def collate_fn_train(batch: List[int], dataset: TrainDataset) -> Dict:
             pair_idx_to_attention_mask.append(attention_mask)
             pair_idx_to_label_ids.append(label_ids)
 
-        # start idxs computed from cumsum of lengths of pairs except last, set first start idx to 1 for bos
-        pair_start_idxs = np.cumsum([0, *[len(x) for x in pair_idx_to_input_ids[:-1]]]).tolist()
-        pair_start_idxs[0] = 0 if dataset.no_bos else 1
-
         input_ids = torch.cat(pair_idx_to_input_ids)
         attention_mask = torch.cat(pair_idx_to_attention_mask)
         label_ids = torch.cat(pair_idx_to_label_ids)
@@ -582,18 +578,11 @@ def collate_fn_train(batch: List[int], dataset: TrainDataset) -> Dict:
             "input_ids": input_ids,
             "attention_mask": attention_mask,
             "label_ids": label_ids,
-            "pair_start_idxs": pair_start_idxs,
         })
 
     input_ids = [x['input_ids'] for x in out_list]
     attention_mask = [x['attention_mask'] for x in out_list]
     label_ids = [x['label_ids'] for x in out_list]
-
-    pair_start_idxs = [x['pair_start_idxs'] for x in out_list]
-    if not dataset.no_bos:
-        assert all(start_idxs[0] == 1 for start_idxs in pair_start_idxs)
-    else:
-        assert all(start_idxs[0] == 0 for start_idxs in pair_start_idxs)
     input_ids_lens = [len(i) for i in input_ids]
 
     # pad
@@ -614,7 +603,6 @@ def collate_fn_train(batch: List[int], dataset: TrainDataset) -> Dict:
         "attention_mask": attention_mask,
         "label_ids": label_ids,
         "input_ids_lens": input_ids_lens,
-        "pair_start_idxs": pair_start_idxs,
     }
     return batch_dict
 
@@ -627,17 +615,11 @@ def collate_fn_train_dummy(batch: List[int], dataset: TrainDataset) -> Dict:
     attention_mask = torch.full((batch_size, dataset.max_seq_len), 1, dtype=torch.int64, device='cpu')
     input_ids_lens = [dataset.max_seq_len] * batch_size
 
-    if not dataset.no_bos:
-        pair_start_idxs = [list(range(1, dataset.max_seq_len * 9 // 10, dataset.max_seq_len // 15))[:10] for _ in range(batch_size)]
-    else:
-        pair_start_idxs = [list(range(0, dataset.max_seq_len * 9 // 10, dataset.max_seq_len // 15))[:10] for _ in range(batch_size)]
-
     return {
         "input_ids": input_ids,
         "attention_mask": attention_mask,
         "label_ids": input_ids,
         "input_ids_lens": input_ids_lens,
-        "pair_start_idxs": pair_start_idxs,
     }
 
 
@@ -867,10 +849,6 @@ class EvalDataset:
             pair_idx_to_attention_mask.append(attention_mask)
             pair_idx_to_label_ids.append(label_ids)
 
-        # start idxs computed from cumsum of lengths of pairs except last, plus one for bos
-        pair_start_idxs = np.cumsum([0, *[len(x) for x in pair_idx_to_input_ids[:-1]]]).tolist()
-        pair_start_idxs[0] = 0 if self.no_bos else 1
-
         input_ids = torch.cat(pair_idx_to_input_ids)
         attention_mask = torch.cat(pair_idx_to_attention_mask)
         label_ids = torch.cat(pair_idx_to_label_ids)
@@ -904,7 +882,6 @@ class EvalDataset:
             "all_attention_mask": all_attention_mask,
             "out_token_length": out_token_length,
             "label_texts": label_texts,  # used for exact match
-            "pair_start_idxs": pair_start_idxs,
             # for gs (no ntoken)
             "demon_input_ids": demon_input_ids,
             "demon_attention_mask": demon_attention_mask,
@@ -929,8 +906,6 @@ def collate_fn_eval(batch: List[Dict], dataset: EvalDataset) -> Dict:
     all_attention_mask = [x["all_attention_mask"] for x in batch]
     out_token_length = [x["out_token_length"] for x in batch]
     label_texts = [x["label_texts"] for x in batch]
-    pair_start_idxs = [x["pair_start_idxs"] for x in batch]
-    assert all(start_idxs[0] == 1 - dataset.no_bos for start_idxs in pair_start_idxs)
 
     input_ids_lens = [len(x) for x in input_ids]
     input_ids = pad_sequence_with_side(input_ids, padding_value=dataset.tokenizer.pad_token_id, side=dataset.pad_side)
@@ -992,7 +967,6 @@ def collate_fn_eval(batch: List[Dict], dataset: EvalDataset) -> Dict:
         "label_texts": label_texts,
         "input_ids_lens": input_ids_lens,
         "all_input_ids_lens": all_input_ids_lens,
-        "pair_start_idxs": pair_start_idxs,
         # for gs (no ntoken)
         "demon_input_ids": demon_input_ids,
         "demon_attention_mask": demon_attention_mask,
@@ -1013,11 +987,6 @@ def collate_fn_eval_dummy(batch: List[Dict], dataset: EvalDataset) -> Dict:
     all_input_ids = torch.randint(0, 30, (batch_size, dataset.max_seq_len * 9 // 10 + 1), dtype=torch.int64, device='cpu')
     all_attention_mask = torch.full((batch_size, dataset.max_seq_len * 9 // 10 + 1), 1, dtype=torch.int64, device='cpu')
     all_input_ids_lens = [dataset.max_seq_len * 9 // 10 + 1] * batch_size
-
-    if not dataset.no_bos:
-        pair_start_idxs = [list(range(1, dataset.max_seq_len * 9 // 10, dataset.max_seq_len // 15))[:10] for _ in range(batch_size)]
-    else:
-        pair_start_idxs = [list(range(0, dataset.max_seq_len * 9 // 10, dataset.max_seq_len // 15))[:10] for _ in range(batch_size)]
 
     task_ids = [str(x) for x in range(100000, 100000 + batch_size)]
     out_token_length = [dataset.max_seq_len // 10 + 1] * batch_size
@@ -1041,7 +1010,6 @@ def collate_fn_eval_dummy(batch: List[Dict], dataset: EvalDataset) -> Dict:
         "label_texts": label_texts,
         "input_ids_lens": input_ids_lens,
         "all_input_ids_lens": all_input_ids_lens,
-        "pair_start_idxs": pair_start_idxs,
         # for gs (no ntoken)
         "demon_input_ids": demon_input_ids,
         "demon_attention_mask": demon_attention_mask,
@@ -1061,17 +1029,19 @@ class GSDataset(Dataset):
         tokenizer: ARCTokenizer,
         debug_random_pad: bool,
         debug_pad_len: int,
-        train_pad_side: str,
+        pad_side: str,
         no_separate_color_tokens: bool,
         no_bos: bool,
+        max_seq_len: int,
     ):
         self.task = task
         self.tokenizer = tokenizer
         self.debug_random_pad = debug_random_pad
         self.debug_pad_len = debug_pad_len
-        self.train_pad_side = train_pad_side
+        self.pad_side = pad_side
         self.no_separate_color_tokens = no_separate_color_tokens
         self.no_bos = no_bos
+        self.max_seq_len = max_seq_len
 
         # format data (only use demonstration pairs)
         self.parsed_examples = [self.format(example) for example in task.train_examples]
@@ -1108,16 +1078,16 @@ def collate_fn_gs(batch: List[Dict], dataset: GSDataset) -> Dict:
     attention_mask = [x["attention_mask"] for x in batch]
     label_ids = [x["label_ids"] for x in batch]
 
-    input_ids = pad_sequence_with_side(input_ids, padding_value=dataset.tokenizer.pad_token_id, side=dataset.train_pad_side)
-    attention_mask = pad_sequence_with_side(attention_mask, padding_value=0, side=dataset.train_pad_side)
-    label_ids = pad_sequence_with_side(label_ids, padding_value=-100, side=dataset.train_pad_side)
+    input_ids = pad_sequence_with_side(input_ids, padding_value=dataset.tokenizer.pad_token_id, side=dataset.pad_side)
+    attention_mask = pad_sequence_with_side(attention_mask, padding_value=0, side=dataset.pad_side)
+    label_ids = pad_sequence_with_side(label_ids, padding_value=-100, side=dataset.pad_side)
 
     if dataset.debug_random_pad or dataset.debug_pad_len > -1:
         input_ids, attention_mask, label_ids = debug_extra_pad_tensors(
             [input_ids, attention_mask, label_ids],
             padding_values=[dataset.tokenizer.pad_token_id, 0, -100],
             pad_len=dataset.debug_pad_len,
-            side=dataset.train_pad_side,
+            side=dataset.pad_side,
         )
 
     batch_dict = {
@@ -1128,127 +1098,81 @@ def collate_fn_gs(batch: List[Dict], dataset: GSDataset) -> Dict:
     return batch_dict
 
 
+def collate_fn_gs_dummy(batch: List[Dict], dataset: GSDataset) -> Dict:
+    batch_size = len(batch)
+    del batch  # we don't use it directly
+
+    input_ids = torch.randint(0, 30, (batch_size, dataset.max_seq_len), dtype=torch.int64, device='cpu')
+    attention_mask = torch.full((batch_size, dataset.max_seq_len), 1, dtype=torch.int64, device='cpu')
+
+    batch_dict = {
+        "input_ids": input_ids,
+        "attention_mask": attention_mask,
+        "label_ids": input_ids,
+    }
+    return batch_dict
+
+
 ########################################
 # Test-Time-Training Dataset
 ########################################
 class TTTDataset(Dataset):
     def __init__(
         self,
-        data_path: str,
-        max_samples_per_task: int,
-        permute_n: int,
+        task: Task,
         tokenizer: ARCTokenizer,
-        max_seq_len: int,
-        seed: int,
+        debug_random_pad: bool,
+        debug_pad_len: int,
         pad_side: str,
-        debug_no_aug: bool,
-        aug_type: str,
+        max_seq_len: int,
+        permute_n: int,
+        seed: int,
         no_separate_color_tokens: bool,
         no_bos: bool,
     ):
-        self.permute_n = permute_n
+        self.task = task
         self.tokenizer = tokenizer
-        self.max_seq_len = max_seq_len
-        self.seed = seed
+        self.debug_random_pad = debug_random_pad
+        self.debug_pad_len = debug_pad_len
         self.pad_side = pad_side
-        self.debug_no_aug = debug_no_aug
+        self.max_seq_len = max_seq_len
+        self.permute_n = permute_n
+        self.seed = seed
         self.no_separate_color_tokens = no_separate_color_tokens
         self.no_bos = no_bos
 
-        # get all augmenters
-        d8_augmenters = get_d8_augmenters(include_identity=False)
-        extra_augmenters = get_mit_augmenters(include_basic=True, include_size=True, include_chain=True, include_repeat=True)
-        if aug_type == "none":
-            augmenters = []
-        elif aug_type == "both":
-            augmenters = d8_augmenters + extra_augmenters
-        elif aug_type == "d8":
-            augmenters = d8_augmenters
-        else:
-            augmenters = extra_augmenters
-
-        # keep unique augmenters
-        self.augmenters = []
-        for aug in augmenters:
-            if str(aug) not in [str(x) for x in self.augmenters]:
-                self.augmenters.append(aug)
-
-        # load data
-        self.task_id = Path(data_path).stem
-        with open(data_path, "r") as f:
-            task_data = json.load(f)
-
-        # create task
-        train_examples = [Example(input=np.array(x["input"]), output=np.array(x["output"])) for x in task_data['train']]
-        self.task = Task(
-            name=f'{self.task_id}',
-            train_examples=train_examples,
-            test_example=None, # type: ignore
+        # generate data
+        self.data = self.unique_permutations(
+            permute_n=permute_n,
+            seed=seed,
         )
 
-        # get data
+    def unique_permutations(self, permute_n: int, seed: int):
         rng = np.random.RandomState(seed)
-        self.ttt_tasks = self.task_to_ttt_filtered_data(max_gen=max_samples_per_task)
-        rng.shuffle(self.ttt_tasks) # type: ignore
+        seen = set()
+        all_data = []
 
-    def task_to_ttt_filtered_data(self, max_gen: int) -> List[Task]:
-        # if leave 1 is enough, return it
-        leave_1_train_tasks = self.task_to_ttt_filtered_data_leave_n(leave_n=1, max_gen=max_gen)
-        if len(leave_1_train_tasks) >= max_gen:
-            return leave_1_train_tasks
-        # else generate leave 2 and append to leave 1
-        max_gen_leave_2 = max_gen - len(leave_1_train_tasks)
-        leave_1_train_tasks += self.task_to_ttt_filtered_data_leave_n(leave_n=2, max_gen=max_gen_leave_2)
-        return leave_1_train_tasks
+        for _ in range(1000):
+            perm = tuple(rng.permutation(len(self.task.train_examples)))
+            if perm in seen:
+                continue
 
-    def task_to_ttt_filtered_data_leave_n(self, leave_n: int, max_gen: int) -> List[Task]:
-        rng = np.random.RandomState(self.seed)
-
-        # get leave_n tasks
-        initial_tasks = []
-        n_train_examples = len(self.task.train_examples)
-        for test_idx in range(n_train_examples):
-            potential_train_idxs = set(range(n_train_examples)) - {test_idx}
-            # we already remove i, so we need to remove n-1 more
-            for leave_idxs in itertools.combinations(potential_train_idxs, leave_n - 1):
-                train_idxs = potential_train_idxs - set(leave_idxs)
-                examples = self.task.train_examples.copy()
-                initial_tasks.append(
-                    Task(name="", train_examples=[examples[i] for i in train_idxs], test_example=examples[test_idx])
+            seen.add(perm)
+            permuted_examples = [self.task.train_examples[i] for i in perm]
+            data = self.format_and_filter(
+                task=Task(
+                    name=self.task.name,
+                    train_examples=permuted_examples[:-1],
+                    test_example=permuted_examples[-1],
                 )
+            )
+            if data is not None:
+                all_data.append(data)
 
-        if self.debug_no_aug:
-            augmented_tasks = initial_tasks
-        else:
-            # get augmented tasks
-            augmented_tasks = []
-            for augmenter in self.augmenters:
-                for task in initial_tasks:
-                    task = augmenter.apply_to_task(task, to_input=True, to_output=True, rng=rng)
-                    if task.max_height() <= 30 and task.max_width() <= 30:
-                        augmented_tasks.append(task)
-            augmented_tasks = list(dict.fromkeys(augmented_tasks + initial_tasks))
-
-            # get permute-color then i/o-permuted tasks
-            color_and_permute_augmented_tasks = []
-            for _ in range(self.permute_n):
-                for task in augmented_tasks:
-                    new_task = task
-                    if len(self.augmenters) > 0:
-                        new_task = PermuteColors().apply_to_task(task, to_input=True, to_output=True, rng=rng)
-                    new_task = PermuteExamples().apply_to_task(new_task, rng=rng, to_input=True, to_output=True)
-                    color_and_permute_augmented_tasks.append(new_task)
-            augmented_tasks = list(dict.fromkeys(color_and_permute_augmented_tasks + augmented_tasks))
-
-        # format
-        rng.shuffle(augmented_tasks)
-        filtered_tasks = []
-        for task in augmented_tasks:
-            if len(filtered_tasks) >= max_gen:
+            if len(all_data) >= permute_n:
                 break
-            if self.format_and_filter(task) is not None:
-                filtered_tasks.append(task)
-        return filtered_tasks
+
+        return all_data
 
     def format_and_filter(self, task: Task) -> Optional[Dict]:
         # big grids are filtered out during augmentation already
@@ -1282,10 +1206,6 @@ class TTTDataset(Dataset):
             pair_idx_to_attention_mask.append(attention_mask)
             pair_idx_to_label_ids.append(label_ids)
 
-        # start idxs computed from cumsum of lengths of pairs except last, plus one for bos
-        pair_start_idxs = np.cumsum([0, *[len(x) for x in pair_idx_to_input_ids[:-1]]]).tolist()
-        pair_start_idxs[0] = 0 if self.no_bos else 1
-
         input_ids = torch.cat(pair_idx_to_input_ids)
         attention_mask = torch.cat(pair_idx_to_attention_mask)
         label_ids = torch.cat(pair_idx_to_label_ids)
@@ -1298,32 +1218,50 @@ class TTTDataset(Dataset):
             "input_ids": input_ids,
             "attention_mask": attention_mask,
             "label_ids": label_ids,
-            "pair_start_idxs": pair_start_idxs,
         }
 
     def __len__(self):
-        return len(self.ttt_tasks)
+        return len(self.data)
 
     def __getitem__(self, idx):
-        return self.format_and_filter(self.ttt_tasks[idx])
+        return self.data[idx]
 
 
 def collate_fn_ttt(batch: List[Dict], dataset: TTTDataset) -> Dict:
     input_ids = [x["input_ids"] for x in batch]
     attention_mask = [x["attention_mask"] for x in batch]
     label_ids = [x["label_ids"] for x in batch]
-    pair_start_idxs = [x["pair_start_idxs"] for x in batch]
-    assert all(start_idxs[0] == 1 - dataset.no_bos for start_idxs in pair_start_idxs)
 
     input_ids_lens = [len(x) for x in input_ids]
     input_ids = pad_sequence_with_side(input_ids, padding_value=dataset.tokenizer.pad_token_id, side=dataset.pad_side)
     attention_mask = pad_sequence_with_side(attention_mask, padding_value=0, side=dataset.pad_side)
     label_ids = pad_sequence_with_side(label_ids, padding_value=-100, side=dataset.pad_side)
 
+    if dataset.debug_random_pad or dataset.debug_pad_len > -1:
+        input_ids, attention_mask, label_ids = debug_extra_pad_tensors(
+            [input_ids, attention_mask, label_ids],
+            padding_values=[dataset.tokenizer.pad_token_id, 0, -100],
+            pad_len=dataset.debug_pad_len,
+            side=dataset.pad_side,
+        )
+
     return {
         "input_ids": input_ids,
         "attention_mask": attention_mask,
         "label_ids": label_ids,
         "input_ids_lens": input_ids_lens,
-        "pair_start_idxs": pair_start_idxs,
+    }
+
+
+def collate_fn_ttt_dummy(batch: List[Dict], dataset: TTTDataset) -> Dict:
+    batch_size = len(batch)
+    del batch  # we don't use it directly
+
+    input_ids = torch.randint(0, 30, (batch_size, dataset.max_seq_len), dtype=torch.int64, device='cpu')
+    attention_mask = torch.full((batch_size, dataset.max_seq_len), 1, dtype=torch.int64, device='cpu')
+
+    return {
+        "input_ids": input_ids,
+        "attention_mask": attention_mask,
+        "label_ids": input_ids,
     }
