@@ -45,8 +45,68 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 infere
     --eval_seeds 100
 
 
-# Submitted batch job 59034438
-# Submitted batch job 59034439
-# Submitted batch job 59034440
-# Submitted batch job 59034441
-# Submitted batch job 59034442
+
+
+
+
+
+
+# nlp ft ttt5 permuten1000
+accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_nlp/test_time_evaluate.py \
+    --tag ft_ttt5_permuten1000 \
+    --weight_dir 0401_nlp_gpt2_notruncate \
+    --weight_epoch 5 \
+    --ttt_iters 5 \
+    --ttt_permute_n 1000 \
+    --eval_seeds 100
+
+# nlp ft ttt25 permuten1000
+accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_nlp/test_time_evaluate.py \
+    --tag ft_ttt25_permuten1000 \
+    --weight_dir 0401_nlp_gpt2_notruncate \
+    --weight_epoch 5 \
+    --ttt_iters 25 \
+    --ttt_permute_n 1000 \
+    --eval_seeds 100
+
+# nlp ft ttt100 permuten1000
+accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_nlp/test_time_evaluate.py \
+    --tag ft_ttt100_permuten1000 \
+    --weight_dir 0401_nlp_gpt2_notruncate \
+    --weight_epoch 5 \
+    --ttt_iters 100 \
+    --ttt_permute_n 1000 \
+    --eval_seeds 100
+
+# nlp ft ttt250 permuten1000
+accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_nlp/test_time_evaluate.py \
+    --tag ft_ttt250_permuten1000 \
+    --weight_dir 0401_nlp_gpt2_notruncate \
+    --weight_epoch 5 \
+    --ttt_iters 250 \
+    --ttt_permute_n 1000 \
+    --eval_seeds 100
+
+# nlp ft ttt500 permuten1000
+accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_nlp/test_time_evaluate.py \
+    --tag ft_ttt500_permuten1000 \
+    --weight_dir 0401_nlp_gpt2_notruncate \
+    --weight_epoch 5 \
+    --ttt_iters 500 \
+    --ttt_permute_n 1000 \
+    --eval_seeds 100
+
+
+# permuten40
+# Submitted batch job 59034438 # 0.418
+# Submitted batch job 59034439 # 0.433
+# Submitted batch job 59034440 # 0.449
+# Submitted batch job 59034441 # 0.451
+# Submitted batch job 59034442 # 0.462
+
+# permuten1000
+# Submitted batch job 59034426 # 0.389
+# Submitted batch job 59034427 # 0.422
+# Submitted batch job 59034428 # 0.455
+# Submitted batch job 59034429 # 0.464
+# Submitted batch job 59034430 # 0.452

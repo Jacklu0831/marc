@@ -122,17 +122,17 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 infere
     --eval_seeds 100
 
 
-# Submitted batch job 59022384 # 0.39983283281538023
-# Submitted batch job 59022385 # 0.39429861102417085
-# Submitted batch job 59022386 # 0.3895231819077186
-# Submitted batch job 59022387 # 0.3880149043711646
+# Submitted batch job 59022384 # 0.400
+# Submitted batch job 59022385 # 0.394
+# Submitted batch job 59022386 # 0.390
+# Submitted batch job 59022387 # 0.388
 
-# Submitted batch job 59022388 # 0.37055021096107754
-# Submitted batch job 59034229
-# Submitted batch job 59034230
-# Submitted batch job 59034231
+# Submitted batch job 59022388 # 0.371
+# Submitted batch job 59034229 # 0.396
+# Submitted batch job 59034230 # 0.401
+# Submitted batch job 59034231 # 0.404
 
-# Submitted batch job 59034232
-# Submitted batch job 59034233
-# Submitted batch job 59034234
-# Submitted batch job 59034235
+# Submitted batch job 59034232 # 0.361
+# Submitted batch job 59034233 # 0.363
+# Submitted batch job 59034234 # 0.374
+# Submitted batch job 59034235 # 0.370

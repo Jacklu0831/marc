@@ -133,17 +133,21 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 infere
     --gs_max_grad_norm 1e8 \
     --eval_seeds 100
 
-# Submitted batch job 59035092
-# Submitted batch job 59035093
-# Submitted batch job 59035094
-# Submitted batch job 59035095
 
-# Submitted batch job 59035096
-# Submitted batch job 59035097
-# Submitted batch job 59035098
-# Submitted batch job 59035099
+# gslr1e-2
+# Submitted batch job 59035092 # 0.399
+# Submitted batch job 59035093 # 0.396
+# Submitted batch job 59035094 # 0.394
+# Submitted batch job 59035095 # 0.388
 
-# Submitted batch job 59035100
-# Submitted batch job 59035101
-# Submitted batch job 59035102
-# Submitted batch job 59035103
+# gslr1e-3
+# Submitted batch job 59035096 # 0.371
+# Submitted batch job 59035097 # 0.396
+# Submitted batch job 59035098 # 0.401
+# Submitted batch job 59035099 # 0.404
+
+# gslr1e-4
+# Submitted batch job 59035100 # 0.361
+# Submitted batch job 59035101 # 0.363
+# Submitted batch job 59035102 # 0.374
+# Submitted batch job 59035103 # 0.370

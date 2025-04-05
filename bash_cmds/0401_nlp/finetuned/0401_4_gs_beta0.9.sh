@@ -3,7 +3,7 @@
 
 # ft nlp gs5 lr1e-2
 accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_nlp/test_time_evaluate.py \
-    --tag ft_gs5_lr1e-2 \
+    --tag ft_gs5_lr1e-2_beta0.9 \
     --weight_dir 0401_nlp_gpt2_notruncate \
     --weight_epoch 5 \
     --gs_iters 5 \
@@ -13,7 +13,7 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 infere
 
 # ft nlp gs25 lr1e-2
 accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_nlp/test_time_evaluate.py \
-    --tag ft_gs25_lr1e-2 \
+    --tag ft_gs25_lr1e-2_beta0.9 \
     --weight_dir 0401_nlp_gpt2_notruncate \
     --weight_epoch 5 \
     --gs_iters 25 \
@@ -23,7 +23,7 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 infere
 
 # ft nlp gs100 lr1e-2
 accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_nlp/test_time_evaluate.py \
-    --tag ft_gs100_lr1e-2 \
+    --tag ft_gs100_lr1e-2_beta0.9 \
     --weight_dir 0401_nlp_gpt2_notruncate \
     --weight_epoch 5 \
     --gs_iters 100 \
@@ -33,7 +33,7 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 infere
 
 # ft nlp gs250 lr1e-2
 accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_nlp/test_time_evaluate.py \
-    --tag ft_gs250_lr1e-2 \
+    --tag ft_gs250_lr1e-2_beta0.9 \
     --weight_dir 0401_nlp_gpt2_notruncate \
     --weight_epoch 5 \
     --gs_iters 250 \
@@ -46,7 +46,7 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 infere
 
 # ft nlp gs5 lr1e-3
 accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_nlp/test_time_evaluate.py \
-    --tag ft_gs5_lr1e-3 \
+    --tag ft_gs5_lr1e-3_beta0.9 \
     --weight_dir 0401_nlp_gpt2_notruncate \
     --weight_epoch 5 \
     --gs_iters 5 \
@@ -56,7 +56,7 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 infere
 
 # ft nlp gs25 lr1e-3
 accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_nlp/test_time_evaluate.py \
-    --tag ft_gs25_lr1e-3 \
+    --tag ft_gs25_lr1e-3_beta0.9 \
     --weight_dir 0401_nlp_gpt2_notruncate \
     --weight_epoch 5 \
     --gs_iters 25 \
@@ -66,7 +66,7 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 infere
 
 # ft nlp gs100 lr1e-3
 accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_nlp/test_time_evaluate.py \
-    --tag ft_gs100_lr1e-3 \
+    --tag ft_gs100_lr1e-3_beta0.9 \
     --weight_dir 0401_nlp_gpt2_notruncate \
     --weight_epoch 5 \
     --gs_iters 100 \
@@ -76,7 +76,7 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 infere
 
 # ft nlp gs250 lr1e-3
 accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_nlp/test_time_evaluate.py \
-    --tag ft_gs250_lr1e-3 \
+    --tag ft_gs250_lr1e-3_beta0.9 \
     --weight_dir 0401_nlp_gpt2_notruncate \
     --weight_epoch 5 \
     --gs_iters 250 \
@@ -95,7 +95,7 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 infere
 
 # ft nlp gs5 lr1e-4
 accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_nlp/test_time_evaluate.py \
-    --tag ft_gs5_lr1e-4 \
+    --tag ft_gs5_lr1e-4_beta0.9 \
     --weight_dir 0401_nlp_gpt2_notruncate \
     --weight_epoch 5 \
     --gs_iters 5 \
@@ -105,7 +105,7 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 infere
 
 # ft nlp gs25 lr1e-4
 accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_nlp/test_time_evaluate.py \
-    --tag ft_gs25_lr1e-4 \
+    --tag ft_gs25_lr1e-4_beta0.9 \
     --weight_dir 0401_nlp_gpt2_notruncate \
     --weight_epoch 5 \
     --gs_iters 25 \
@@ -115,7 +115,7 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 infere
 
 # ft nlp gs100 lr1e-4
 accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_nlp/test_time_evaluate.py \
-    --tag ft_gs100_lr1e-4 \
+    --tag ft_gs100_lr1e-4_beta0.9 \
     --weight_dir 0401_nlp_gpt2_notruncate \
     --weight_epoch 5 \
     --gs_iters 100 \
@@ -125,7 +125,7 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 infere
 
 # ft nlp gs250 lr1e-4
 accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_nlp/test_time_evaluate.py \
-    --tag ft_gs250_lr1e-4 \
+    --tag ft_gs250_lr1e-4_beta0.9 \
     --weight_dir 0401_nlp_gpt2_notruncate \
     --weight_epoch 5 \
     --gs_iters 250 \
@@ -133,17 +133,22 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 infere
     --gs_beta2 0.9 \
     --eval_seeds 100
 
-# Submitted batch job 59034486
-# Submitted batch job 59034487
-# Submitted batch job 59034488
-# Submitted batch job 59034489
 
-# Submitted batch job 59034490
-# Submitted batch job 59034491
-# Submitted batch job 59034492
-# Submitted batch job 59034493
 
-# Submitted batch job 59034494
-# Submitted batch job 59034495
-# Submitted batch job 59034496
-# Submitted batch job 59034497
+# lr1e-2
+# Submitted batch job 59046972
+# Submitted batch job 59046973
+# Submitted batch job 59046974
+# Submitted batch job 59046975
+
+# lr1e-3
+# Submitted batch job 59046976
+# Submitted batch job 59046977
+# Submitted batch job 59046978
+# Submitted batch job 59046979
+
+# lr1e-4
+# Submitted batch job 59046980
+# Submitted batch job 59046981
+# Submitted batch job 59046982
+# Submitted batch job 59046983

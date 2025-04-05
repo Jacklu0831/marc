@@ -110,6 +110,8 @@ def test_time_evaluate(
     gs_lora_rank: int,
     gs_lora_alpha: int,
     gs_lora_lr: float,
+    gs_lora_beta1: float,
+    gs_lora_beta2: float,
     ttt_iters: int,
     ttt_batch_size: int,
     ttt_grad_accum_steps: int,
@@ -239,6 +241,8 @@ def test_time_evaluate(
                         lora_rank=gs_lora_rank,
                         lora_alpha=gs_lora_alpha,
                         lora_lr=gs_lora_lr,
+                        lora_beta1=gs_lora_beta1,
+                        lora_beta2=gs_lora_beta2,
                     )
                     gs_time = time.time() - start_time
                     torch.cuda.empty_cache()
@@ -585,6 +589,8 @@ def run_gs(
     lora_rank: int,
     lora_alpha: int,
     lora_lr: float,
+    lora_beta1: float,
+    lora_beta2: float,
 ) -> Tuple[nn.Module, Tuple[Tuple[torch.Tensor, torch.Tensor]], int, int]:
 
     # optional lora
@@ -662,12 +668,12 @@ def run_gs(
 
     # optimizer
     optimizer_grouped_params = [
-        {"params": program_params, "lr": lr},
-        {"params": lora_params, "lr": lora_lr},
+        {"params": program_params, "lr": lr, 'betas': (beta1, beta2)},
+        {"params": lora_params, "lr": lora_lr, 'betas': (lora_beta1, lora_beta2)},
     ]
     all_params = program_params + lora_params
     if optimizer == 'adamw':
-        optim = torch.optim.AdamW(optimizer_grouped_params, weight_decay=weight_decay, betas=(beta1, beta2)) # type: ignore
+        optim = torch.optim.AdamW(optimizer_grouped_params, weight_decay=weight_decay) # type: ignore
     else:
         optim = torch.optim.SGD(optimizer_grouped_params, lr=lr) # type: ignore
     optim.zero_grad()
@@ -842,6 +848,8 @@ def main():
     parser.add_argument("--gs_lora_rank", type=int, default=64)
     parser.add_argument("--gs_lora_alpha", type=int, default=64)
     parser.add_argument("--gs_lora_lr", type=float, default=1e-4)
+    parser.add_argument("--gs_lora_beta1", type=float, default=0.9)
+    parser.add_argument("--gs_lora_beta2", type=float, default=0.999)
 
     args = parser.parse_args()
     args.delimiter = " " if args.delimiter == 'space' else "\n"
@@ -995,6 +1003,8 @@ def main():
             gs_lora_rank=args.gs_lora_rank,
             gs_lora_alpha=args.gs_lora_alpha,
             gs_lora_lr=args.gs_lora_lr,
+            gs_lora_beta1=args.gs_lora_beta1,
+            gs_lora_beta2=args.gs_lora_beta2,
             ttt_iters=args.ttt_iters,
             ttt_lr=args.ttt_lr,
             ttt_weight_decay=args.ttt_weight_decay,

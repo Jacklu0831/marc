@@ -96,14 +96,16 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 infere
     --eval_seeds 100
 
 
+# ttt permuten1000 iters250
 
+# gslr1e-3
+# Submitted batch job 59034273 # 0.458
+# Submitted batch job 59034274 # 0.452
+# Submitted batch job 59034275 # 0.457
+# Submitted batch job 59034276 # 0.449
 
-# Submitted batch job 59034273
-# Submitted batch job 59034274
-# Submitted batch job 59034275
-# Submitted batch job 59034276
-
-# Submitted batch job 59034277
-# Submitted batch job 59034278
-# Submitted batch job 59034279
-# Submitted batch job 59034280
+# gslr1e-4
+# Submitted batch job 59034277 # 0.454
+# Submitted batch job 59034278 # 0.455
+# Submitted batch job 59034279 # 0.458
+# Submitted batch job 59034280 # 0.454

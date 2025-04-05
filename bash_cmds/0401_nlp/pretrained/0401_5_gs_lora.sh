@@ -150,18 +150,22 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 infere
 
 
 
+# gsiters250 gslr1e-3
 
-# Submitted batch job 59034248
-# Submitted batch job 59034249
-# Submitted batch job 59034250
-# Submitted batch job 59034251
+# gslora1e-3
+# Submitted batch job 59034248 # 0.381
+# Submitted batch job 59034249 # 0.416
+# Submitted batch job 59034250 # 0.425
+# Submitted batch job 59034251 # 0.417
 
-# Submitted batch job 59034252
-# Submitted batch job 59034253
-# Submitted batch job 59034254
-# Submitted batch job 59034255
+# gslora1e-4
+# Submitted batch job 59034252 # 0.393
+# Submitted batch job 59034253 # 0.408
+# Submitted batch job 59034254 # 0.412
+# Submitted batch job 59034255 # 0.421
 
-# Submitted batch job 59034256
-# Submitted batch job 59034257
-# Submitted batch job 59034258
-# Submitted batch job 59034259
+# gslora1e-5
+# Submitted batch job 59034256 # 0.372
+# Submitted batch job 59034257 # 0.398
+# Submitted batch job 59034258 # 0.409
+# Submitted batch job 59034259 # 0.406

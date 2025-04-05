@@ -51,8 +51,8 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 infere
     --ttt_max_grad_norm 1e8 \
     --eval_seeds 100
 
-# Submitted batch job 59035172
-# Submitted batch job 59035173
-# Submitted batch job 59035174
-# Submitted batch job 59035175
-# Submitted batch job 59035176
+# Submitted batch job 59035172 # 0.394
+# Submitted batch job 59035173 # 0.434
+# Submitted batch job 59035174 # 0.458
+# Submitted batch job 59035175 # 0.456
+# Submitted batch job 59035176 # 0.458
