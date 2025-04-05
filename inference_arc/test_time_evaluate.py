@@ -344,6 +344,14 @@ def test_time_evaluate(
     correct_grid_dim_list = gather_object(correct_grid_dim_list)
     token_acc_list = gather_object(token_acc_list)
     relaxed_token_acc_list = gather_object(relaxed_token_acc_list)
+    # other logging
+    # results
+    ttt_num_data_list = gather_object(ttt_num_data_list)
+    gs_num_data_list = gather_object(gs_num_data_list)
+    ttt_num_params_list = gather_object(ttt_num_params_list)
+    gs_num_params_list = gather_object(gs_num_params_list)
+    ttt_time_list = gather_object(ttt_time_list)
+    gs_time_list = gather_object(gs_time_list)
 
     assert len(task_id_and_text_list) == len(dataset), (len(task_id_and_text_list), len(dataset))
     assert len(exact_acc_list) == len(dataset), (len(exact_acc_list), len(dataset))
@@ -351,6 +359,12 @@ def test_time_evaluate(
     assert len(correct_grid_dim_list) == len(dataset), (len(correct_grid_dim_list), len(dataset))
     assert len(token_acc_list) == len(dataset), (len(token_acc_list), len(dataset))
     assert len(relaxed_token_acc_list) == len(dataset), (len(relaxed_token_acc_list), len(dataset))
+    assert len(ttt_num_data_list) == len(task_name_to_eval_idxs), (len(ttt_num_data_list), len(task_name_to_eval_idxs))
+    assert len(gs_num_data_list) == len(task_name_to_eval_idxs), (len(gs_num_data_list), len(task_name_to_eval_idxs))
+    assert len(ttt_num_params_list) == len(task_name_to_eval_idxs), (len(ttt_num_params_list), len(task_name_to_eval_idxs))
+    assert len(gs_num_params_list) == len(task_name_to_eval_idxs), (len(gs_num_params_list), len(task_name_to_eval_idxs))
+    assert len(ttt_time_list) == len(task_name_to_eval_idxs), (len(ttt_time_list), len(task_name_to_eval_idxs))
+    assert len(gs_time_list) == len(task_name_to_eval_idxs), (len(gs_time_list), len(task_name_to_eval_idxs))
 
     # average metrics
     # note these are all computed without accounting for skipped eval grids
@@ -392,8 +406,20 @@ def test_time_evaluate(
     competition_sub_acc = competition_sub_correct / sum(len(corrects) for corrects in task_name_to_corrects.values())
     competition_all_acc = competition_all_correct / len(task_name_to_corrects)
 
+    # average others
+    ttt_num_data = sum(ttt_num_data_list) / len(ttt_num_data_list)
+    gs_num_data = sum(gs_num_data_list) / len(gs_num_data_list)
+    ttt_num_params = sum(ttt_num_params_list) / len(ttt_num_params_list)
+    gs_num_params = sum(gs_num_params_list) / len(gs_num_params_list)
+    ttt_time = sum(ttt_time_list) / len(ttt_time_list)
+    gs_time = sum(gs_time_list) / len(gs_time_list)
+
+    # remove cache model
+    if accelerator.is_main_process:
+        os.system(f"rm -rf {cached_model_path}")
+
     return exact_acc, valid_grid, correct_grid_dim, token_acc, relaxed_token_acc, task_id_to_texts, \
-        votes, competition_sub_acc, competition_all_acc
+        votes, competition_sub_acc, competition_all_acc, ttt_num_data, gs_num_data, ttt_num_params, gs_num_params, ttt_time, gs_time
 
 
 @torch.enable_grad()
@@ -991,7 +1017,8 @@ def main():
     )
 
     # evaluate
-    exact_acc, valid_grid, correct_grid_dim, token_acc, relaxed_token_acc, texts, votes, competition_sub_acc, competition_all_acc = test_time_evaluate(
+    exact_acc, valid_grid, correct_grid_dim, token_acc, relaxed_token_acc, texts, votes, competition_sub_acc, competition_all_acc, \
+         ttt_num_data, gs_num_data, ttt_num_params, gs_num_params, ttt_time, gs_time = test_time_evaluate(
         model=model,
         dataset=dataset,
         accelerator=accelerator,
@@ -1037,6 +1064,13 @@ def main():
             "eval/relaxed_token_acc": relaxed_token_acc,
             "eval/competition_sub_acc": competition_sub_acc,
             "eval/competition_all_acc": competition_all_acc,
+            # others
+            "eval/ttt_num_data": ttt_num_data,
+            "eval/gs_num_data": gs_num_data,
+            "eval/ttt_num_params": ttt_num_params,
+            "eval/gs_num_params": gs_num_params,
+            "eval/ttt_time": ttt_time,
+            "eval/gs_time": gs_time,
         }
         logger.info(f'Evaluation results:\n{pprint.pformat(metric_dict, indent=4)}')
 
