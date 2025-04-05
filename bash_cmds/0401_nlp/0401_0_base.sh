@@ -25,6 +25,6 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 infere
     --delimiter newline \
     --wandb
 
-# Submitted batch job 59006197
-# Submitted batch job 59006198
-# Submitted batch job 59006199
+# Submitted batch job 59006197 # middle
+# Submitted batch job 59006198 # best
+# Submitted batch job 59006199 # worst
