@@ -5,7 +5,7 @@ import gc
 from transformers.tokenization_utils_fast import PreTrainedTokenizerFast
 from datetime import timedelta
 from collections import defaultdict
-from typing import Union, Callable, List, Tuple, Iterator
+from typing import Union, Callable, List, Tuple, Iterator, Any
 import pprint
 import math
 import json
@@ -86,7 +86,7 @@ def set_up_main_process_logger(accelerator, logger):
         transformers.utils.logging.set_verbosity_error()
 
 
-def chunks(lst: List[int], n: int) -> Iterator[List[int]]:
+def chunks(lst: List[Any], n: int) -> Iterator[List[Any]]:
     for i in range(0, len(lst), n):
         yield lst[i:i + n]
 

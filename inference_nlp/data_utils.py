@@ -74,7 +74,7 @@ def parse_pairs(
     allow_truncate: bool,
     is_train: bool,
 ) -> Optional[Tuple[torch.Tensor, torch.Tensor, torch.Tensor,
-                    Optional[torch.Tensor], Optional[torch.Tensor], Optional[torch.Tensor], Optional[torch.Tensor], Optional[torch.Tensor]]]:
+                    Optional[torch.Tensor], Optional[torch.Tensor], Optional[torch.Tensor], Optional[torch.Tensor], Optional[torch.Tensor], Optional[List]]]:
 
     # compute input_ids, attention_mask, label_ids for each pair
     input_ids_of_each_pair = []
@@ -83,6 +83,7 @@ def parse_pairs(
 
     # for gs (no ntoken)
     demon_input_ids = []
+    demon_start_idxs = [0]
 
     for pair_i, pair in enumerate(pairs):
         # tokenize
@@ -121,6 +122,10 @@ def parse_pairs(
         demon_input_ids.append(input_input_ids)
         demon_input_ids.append(output_input_ids)
 
+        # dont need genpair, dont need last demon pair
+        if pair_i < len(pairs) - 2:
+            demon_start_idxs.append(demon_start_idxs[-1] + len(input_ids))
+
     # concat
     input_ids = torch.cat(input_ids_of_each_pair)
     attention_mask = torch.full(input_ids.shape, 1, dtype=input_ids.dtype)
@@ -153,10 +158,10 @@ def parse_pairs(
         demon_input_ids = torch.cat(demon_input_ids[:-2])
         demon_attention_mask = torch.full(demon_input_ids.shape, 1, dtype=torch.int64)
     else:
-        gen_input_ids, gen_attention_mask, gen_label_ids, demon_input_ids, demon_attention_mask = None, None, None, None, None
+        gen_input_ids, gen_attention_mask, gen_label_ids, demon_input_ids, demon_attention_mask, demon_start_idxs = None, None, None, None, None, None
 
     return input_ids, attention_mask, label_ids, \
-        gen_input_ids, gen_attention_mask, gen_label_ids, demon_input_ids, demon_attention_mask
+        gen_input_ids, gen_attention_mask, gen_label_ids, demon_input_ids, demon_attention_mask, demon_start_idxs
 
 
 def collate_data(
@@ -316,7 +321,7 @@ def collate_fn_train(batch: List[int], dataset: TrainDataset) -> Dict:
         )
         if out == None:
             continue
-        input_ids, attention_mask, label_ids, _, _, _, _, _ = out
+        input_ids, attention_mask, label_ids, _, _, _, _, _, _ = out
 
         # add to batch
         out_batch.append({
@@ -500,14 +505,19 @@ class EvalDataset:
         logger.info(f'eval split {split}-{eval_seed} filtered to {len(self.tasks)}/{total_unfiltered_tasks} tasks, {filtered_total_test}/{unfiltered_total_test} tests, {len(self.data)}/{unfiltered_total_sample} samples')
 
         # debug: check demon pairs are same for each task
-        task_to_demon = {}
+        task_to_demon_input_ids = {}
+        task_to_demon_start_idxs = {}
         for d in self.data:
             assert d['demon_attention_mask'].numel() == d['demon_attention_mask'].sum()
-            task, ids = d['task'], d['demon_input_ids']
-            if task not in task_to_demon:
-                task_to_demon[task] = ids
-            assert torch.equal(ids, task_to_demon[task])
-        del task_to_demon
+            task, ids, idxs = d['task'], d['demon_input_ids'], d['demon_start_idxs']
+            if task not in task_to_demon_input_ids:
+                assert task not in task_to_demon_start_idxs
+                task_to_demon_input_ids[task] = ids
+                task_to_demon_start_idxs[task] = idxs
+            assert torch.equal(ids, task_to_demon_input_ids[task])
+            assert idxs == task_to_demon_start_idxs[task]
+        del task_to_demon_input_ids
+        del task_to_demon_start_idxs
 
 
     def format_and_filter(self, demonstrations: List[Dict], test_pair: Dict, test_idx: int, correct_option: str) -> Optional[Dict]:
@@ -528,7 +538,7 @@ class EvalDataset:
         )
         if out == None:
             return None
-        input_ids, attention_mask, label_ids, gen_input_ids, gen_attention_mask, gen_label_ids, demon_input_ids, demon_attention_mask = out
+        input_ids, attention_mask, label_ids, gen_input_ids, gen_attention_mask, gen_label_ids, demon_input_ids, demon_attention_mask, demon_start_idxs = out
 
         return {
             "task": task,
@@ -545,6 +555,7 @@ class EvalDataset:
             "gen_label_ids": gen_label_ids,
             "gen_attention_mask": gen_attention_mask,
             "demonstrations_pairs": demonstrations,
+            "demon_start_idxs": demon_start_idxs,
         }
 
     def __len__(self):
@@ -578,6 +589,7 @@ def collate_fn_eval(batch: List[Dict], dataset: EvalDataset) -> Dict:
     gen_input_ids = [x['gen_input_ids'] for x in batch]
     gen_attention_mask = [x['gen_attention_mask'] for x in batch]
     gen_label_ids = [x['gen_label_ids'] for x in batch]
+    demon_start_idxs = [x['demon_start_idxs'] for x in batch]
 
     # collate
     assert isinstance(dataset.tokenizer.pad_token_id, int)
@@ -618,6 +630,7 @@ def collate_fn_eval(batch: List[Dict], dataset: EvalDataset) -> Dict:
         "gen_input_ids": gen_input_ids,
         "gen_attention_mask": gen_attention_mask,
         "gen_label_ids": gen_label_ids,
+        "demon_start_idxs": demon_start_idxs,
     }
 
 
@@ -630,10 +643,12 @@ def collate_fn_eval_dummy(batch: List[int], dataset: EvalDataset) -> Dict:
     input_ids_lens = [dataset.max_seq_len] * batch_size
 
     # for gs (no ntoken)
-    demon_input_ids = torch.randint(0, 30, (batch_size, dataset.max_seq_len - dataset.max_pair_len), dtype=torch.int64, device='cpu')
+    demon_len = dataset.max_seq_len - dataset.max_pair_len
+    demon_input_ids = torch.randint(0, 30, (batch_size, demon_len), dtype=torch.int64, device='cpu')
     demon_attention_mask = torch.full(demon_input_ids.shape, 1, dtype=torch.int64, device='cpu')
     gen_input_ids = torch.randint(0, 30, (batch_size, dataset.max_pair_len), dtype=torch.int64, device='cpu')
     gen_attention_mask = torch.full(gen_input_ids.shape, 1, dtype=torch.int64, device='cpu')
+    demon_start_idxs = [x * (demon_len // 16) for x in range(16)]
 
     return {
         "task": ["dummy"] * batch_size,
@@ -650,6 +665,7 @@ def collate_fn_eval_dummy(batch: List[int], dataset: EvalDataset) -> Dict:
         "gen_input_ids": gen_input_ids,
         "gen_attention_mask": gen_attention_mask,
         "gen_label_ids": gen_input_ids,
+        "demon_start_idxs": demon_start_idxs,
     }
 
 ########################################
@@ -856,7 +872,7 @@ class TTTDataset(Dataset):
 
         if out == None:
             return None
-        input_ids, attention_mask, label_ids, _, _, _, _, _ = out
+        input_ids, attention_mask, label_ids, _, _, _, _, _, _ = out
 
         return {
             "input_ids": input_ids,

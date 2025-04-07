@@ -1,6 +1,6 @@
+import numpy as np
 import gc
 import time
-import gc
 from transformers.tokenization_utils_fast import PreTrainedTokenizerFast
 from datetime import timedelta
 from typing import Union, Callable, List, Tuple, Dict
@@ -84,6 +84,116 @@ NBIT_TO_DTYPE = {
 }
 
 
+def generate_unique_permute_masks(tensor, start_idxs, M):
+    # ensure first perm is identity
+    boundaries = start_idxs + [tensor.size(0)]
+    chunk_indices = [torch.arange(start, end) for start, end in zip(boundaries[:-1], boundaries[1:])]
+    num_chunks = len(chunk_indices)
+
+    unique_masks = []
+    seen_orders = set()
+
+    while len(unique_masks) < M:
+        # Generate a random permutation order for the chunks.
+        if len(unique_masks) == 0:
+            order = list(range(num_chunks))
+        else:
+            order = torch.randperm(num_chunks).tolist()
+        order_tuple = tuple(order)
+
+        # Check if this permutation has already been generated.
+        if order_tuple in seen_orders:
+            continue
+
+        seen_orders.add(order_tuple)
+
+        # Build the mask by concatenating the indices in the new order.
+        mask = torch.cat([chunk_indices[i] for i in order])
+        unique_masks.append(mask)
+
+    return unique_masks
+
+
+@torch.no_grad()
+def initialize_kv(
+    model: nn.Module,
+    demon_input_ids: torch.Tensor,
+    demon_start_idxs: List[int],
+    accelerator: Accelerator,
+    gs_iters: int,
+    gs_random_kv: bool,
+    gs_num_permute: int,
+    gs_permute_batch_size: int,
+    gs_permute_back: bool,
+) -> Tuple[Tuple[torch.Tensor, torch.Tensor]]:
+
+    # initialize kv
+    if gs_iters > 0 and gs_random_kv:
+        # random kv initialization
+        past_key_values = tuple(
+            (
+                torch.randn((1, model.config.n_head, demon_input_ids.shape[1], model.config.n_embd // model.config.n_head), device=accelerator.device, dtype=torch.float32),
+                torch.randn((1, model.config.n_head, demon_input_ids.shape[1], model.config.n_embd // model.config.n_head), device=accelerator.device, dtype=torch.float32),
+            ) for _ in range(model.config.n_layer)
+        )
+
+    elif gs_iters == 0 or gs_num_permute == 1:
+        # only one kv is needed
+        with accelerator.autocast():
+            past_key_values = model(input_ids=demon_input_ids, output_hidden_states=True).past_key_values
+
+    else:
+        # generate batches of permutations of them and average all
+        permute_masks = generate_unique_permute_masks(demon_input_ids[0], demon_start_idxs, gs_num_permute)
+        assert len(permute_masks) == gs_num_permute
+
+        past_key_values = tuple(
+            (
+                torch.zeros((1, model.config.n_head, demon_input_ids.shape[1], model.config.n_embd // model.config.n_head), device=accelerator.device, dtype=torch.float32),
+                torch.zeros((1, model.config.n_head, demon_input_ids.shape[1], model.config.n_embd // model.config.n_head), device=accelerator.device, dtype=torch.float32),
+            ) for _ in range(model.config.n_layer)
+        )
+        for batch_permute_masks in chunks(permute_masks, gs_permute_batch_size):
+            # get batch of permuted demon input ids
+            batch_demon_input_ids = []
+            for permute_mask in batch_permute_masks:
+                batch_demon_input_ids.append(demon_input_ids.squeeze(0)[permute_mask])
+            batch_demon_input_ids = torch.stack(batch_demon_input_ids)
+
+            # get kv of each
+            with accelerator.autocast():
+                batch_past_key_values = model(input_ids=batch_demon_input_ids, output_hidden_states=True).past_key_values
+            assert len(batch_permute_masks) == batch_past_key_values[0][0].shape[0]
+
+            # optionally permute kv back
+            inverse_mask = None
+            if gs_permute_back:
+                for batch_i, permute_mask in enumerate(batch_permute_masks):
+                    inverse_mask = torch.empty_like(permute_mask)
+                    inverse_mask[permute_mask] = torch.arange(len(permute_mask))
+                    for layer_i in range(len(batch_past_key_values)):
+                        for kv_i in range(2):
+                            batch_past_key_values[layer_i][kv_i][batch_i] = batch_past_key_values[layer_i][kv_i][batch_i, :, inverse_mask, :]
+                    # debug: make sure inverse mask is correct
+                    assert torch.equal(batch_demon_input_ids[batch_i, inverse_mask], demon_input_ids.squeeze(0))
+
+            # add batch sum to a total sum of past_key_values
+            assert batch_past_key_values[0][0].shape[0] == len(batch_permute_masks)
+            for layer_i in range(len(batch_past_key_values)):
+                for kv_i in range(2):
+                    past_key_values[layer_i][kv_i].add_(batch_past_key_values[layer_i][kv_i].sum(dim=0, keepdim=True))
+
+            del batch_demon_input_ids, batch_past_key_values, inverse_mask
+
+        # average the past key values
+        for layer_i in range(len(past_key_values)):
+            for kv_i in range(2):
+                past_key_values[layer_i][kv_i].div_(gs_num_permute)
+
+    return past_key_values # type: ignore
+
+
+
 @torch.no_grad()
 def test_time_evaluate(
     model: Union[nn.Module, DistributedDataParallel],
@@ -112,6 +222,11 @@ def test_time_evaluate(
     gs_lora_lr: float,
     gs_lora_beta1: float,
     gs_lora_beta2: float,
+    gs_random_kv: bool,
+    gs_num_permute: int,
+    gs_permute_batch_size: int,
+    gs_permute_back: bool,
+    gs_permute_in_training: bool,
     ttt_iters: int,
     ttt_batch_size: int,
     ttt_grad_accum_steps: int,
@@ -124,7 +239,7 @@ def test_time_evaluate(
     ttt_lora_alpha: int,
     ttt_permute_n: int,
     output_dir: str,
-) -> Tuple[float, float, float, float, float, float, float, List]:
+) -> Tuple[float, float, float, float, float, float, float, float, List]:
 
     # get modules in case of DDP
     model = model.module if isinstance(model, DistributedDataParallel) else model
@@ -136,6 +251,7 @@ def test_time_evaluate(
     ttt_num_data_list, gs_num_data_list = [], []
     ttt_num_params_list, gs_num_params_list = [], []
     ttt_time_list, gs_time_list = [], []
+    init_kv_time_list = []
     output_list = []
 
     assert set(len(v) for v in dataset.task_to_demonstrations.values()) == {16}
@@ -151,16 +267,21 @@ def test_time_evaluate(
         assert isinstance(process_tasks, list)
 
         for task in tqdm(process_tasks, desc='Task'):
-            # data: get demonstration ids, hacky
+            # data: get demonstration ids and indices, hacky
             if dataset.debug_max_len:
-                demon_input_ids = torch.randint(0, 30, (1, dataset.max_seq_len - dataset.max_pair_len), dtype=torch.int64, device=accelerator.device)
+                demon_len = dataset.max_seq_len - dataset.max_pair_len
+                demon_input_ids = torch.randint(0, 30, (1, demon_len), dtype=torch.int64, device=accelerator.device)
+                demon_start_idxs = [x * (demon_len // 16) for x in range(16)]
             else:
                 demon_input_ids = None
+                demon_start_idxs = None
                 for data in dataset.data:
                     if data['task'] == task:
                         demon_input_ids = data["demon_input_ids"].unsqueeze(0).to(accelerator.device)
+                        demon_start_idxs = data["demon_start_idxs"]
                         break
-            assert demon_input_ids is not None
+            assert demon_input_ids is not None and demon_start_idxs is not None
+            assert demon_input_ids.shape[1] <= dataset.max_seq_len
 
             # model: load cached for fresh model
             del model
@@ -197,10 +318,22 @@ def test_time_evaluate(
                     torch.cuda.empty_cache()
                     gc.collect()
 
-            # compute kv with model (ttt or not)
-            with accelerator.autocast():
-                assert demon_input_ids.shape[1] <= dataset.max_seq_len
-                past_key_values = model(input_ids=demon_input_ids, output_hidden_states=True).past_key_values
+            # initialize kv
+            start_time = time.time()
+            past_key_values = initialize_kv(
+                model=model,
+                demon_input_ids=demon_input_ids,
+                demon_start_idxs=demon_start_idxs,
+                accelerator=accelerator,
+                gs_iters=gs_iters,
+                gs_random_kv=gs_random_kv,
+                gs_num_permute=gs_num_permute,
+                gs_permute_batch_size=gs_permute_batch_size,
+                gs_permute_back=gs_permute_back,
+            )
+            init_kv_time = time.time() - start_time
+            torch.cuda.empty_cache()
+            gc.collect()
 
             # use gs to refine kv
             if gs_iters > 0:
@@ -255,6 +388,7 @@ def test_time_evaluate(
             gs_num_params_list.append(gs_num_params)
             ttt_time_list.append(ttt_time)
             gs_time_list.append(gs_time)
+            init_kv_time_list.append(init_kv_time)
 
             # STAGE 2: apply model and kv to all tests
             process_data_idxs = [i for i, d in enumerate(dataset.data) if d['task'] == task]
@@ -356,6 +490,9 @@ def test_time_evaluate(
                 if (eval_step + 1) % log_every == 0:
                     progress_bar.update(log_every)
 
+                torch.cuda.empty_cache()
+                gc.collect()
+
     distributed_state.wait_for_everyone()
     # results
     ttt_num_data_list = gather_object(ttt_num_data_list)
@@ -364,6 +501,7 @@ def test_time_evaluate(
     gs_num_params_list = gather_object(gs_num_params_list)
     ttt_time_list = gather_object(ttt_time_list)
     gs_time_list = gather_object(gs_time_list)
+    init_kv_time_list = gather_object(init_kv_time_list)
     output_list = gather_object(output_list)
     assert len(ttt_num_data_list) == len(dataset.tasks), (len(ttt_num_data_list), len(dataset.tasks))
     assert len(gs_num_data_list) == len(dataset.tasks), (len(gs_num_data_list), len(dataset.tasks))
@@ -371,6 +509,7 @@ def test_time_evaluate(
     assert len(gs_num_params_list) == len(dataset.tasks), (len(gs_num_params_list), len(dataset.tasks))
     assert len(ttt_time_list) == len(dataset.tasks), (len(ttt_time_list), len(dataset.tasks))
     assert len(gs_time_list) == len(dataset.tasks), (len(gs_time_list), len(dataset.tasks))
+    assert len(init_kv_time_list) == len(dataset.tasks), (len(init_kv_time_list), len(dataset.tasks))
     assert len(output_list) == len(dataset), (len(output_list), len(dataset)) # dataset length, not num task
 
     # determine which tasks are classification (for macro-f1)
@@ -421,12 +560,13 @@ def test_time_evaluate(
     gs_num_params = sum(gs_num_params_list) / len(gs_num_params_list)
     ttt_time = sum(ttt_time_list) / len(ttt_time_list)
     gs_time = sum(gs_time_list) / len(gs_time_list)
+    init_kv_time = sum(init_kv_time_list) / len(init_kv_time_list)
 
     # remove cache model
     if accelerator.is_main_process:
         os.system(f"rm -rf {cached_model_path}")
 
-    return score, ttt_num_data, gs_num_data, ttt_num_params, gs_num_params, ttt_time, gs_time, output_list
+    return score, ttt_num_data, gs_num_data, ttt_num_params, gs_num_params, ttt_time, gs_time, init_kv_time, output_list
 
 
 @torch.enable_grad()
@@ -843,6 +983,15 @@ def main():
     parser.add_argument("--gs_no_key", action='store_true')
     parser.add_argument("--gs_no_value", action='store_true')
 
+    # gradient search model initialization
+    parser.add_argument("--gs_random_kv", action='store_true')
+    parser.add_argument("--gs_num_permute", type=int, default=1) # 1024
+    parser.add_argument("--gs_permute_batch_size", type=int, default=16)
+    parser.add_argument("--gs_permute_back", action='store_true')
+
+    # gradient search training permutation
+    parser.add_argument("--gs_permute_in_training", action='store_true')
+
     # gradient search with lora (NOT COMPATIBLE WITH TTT)
     parser.add_argument("--gs_lora", action='store_true')
     parser.add_argument("--gs_lora_rank", type=int, default=64)
@@ -975,10 +1124,11 @@ def main():
     ttt_num_data_list, gs_num_data_list = [], []
     ttt_num_params_list, gs_num_params_list = [], []
     ttt_time_list, gs_time_list = [], []
+    init_kv_time_list = []
     output_list = None
 
     for dataset in datasets:
-        score, ttt_num_data, gs_num_data, ttt_num_params, gs_num_params, ttt_time, gs_time, output_list = test_time_evaluate(
+        score, ttt_num_data, gs_num_data, ttt_num_params, gs_num_params, ttt_time, gs_time, init_kv_time, output_list = test_time_evaluate(
             model=model,
             dataset=dataset,
             accelerator=accelerator,
@@ -1005,6 +1155,11 @@ def main():
             gs_lora_lr=args.gs_lora_lr,
             gs_lora_beta1=args.gs_lora_beta1,
             gs_lora_beta2=args.gs_lora_beta2,
+            gs_random_kv=args.gs_random_kv,
+            gs_num_permute=args.gs_num_permute,
+            gs_permute_batch_size=args.gs_permute_batch_size,
+            gs_permute_back=args.gs_permute_back,
+            gs_permute_in_training=args.gs_permute_in_training,
             ttt_iters=args.ttt_iters,
             ttt_lr=args.ttt_lr,
             ttt_weight_decay=args.ttt_weight_decay,
@@ -1026,6 +1181,7 @@ def main():
         gs_num_params_list.append(gs_num_params)
         ttt_time_list.append(ttt_time)
         gs_time_list.append(gs_time)
+        init_kv_time_list.append(init_kv_time)
 
     score = sum(score_list) / len(score_list)
     ttt_num_data = sum(ttt_num_data_list) / len(ttt_num_data_list)
@@ -1034,6 +1190,7 @@ def main():
     gs_num_params = sum(gs_num_params_list) / len(gs_num_params_list)
     ttt_time = sum(ttt_time_list) / len(ttt_time_list)
     gs_time = sum(gs_time_list) / len(gs_time_list)
+    init_kv_time = sum(init_kv_time_list) / len(init_kv_time_list)
 
     if accelerator.is_main_process:
         # log metrics
@@ -1045,6 +1202,7 @@ def main():
             "eval/gs_num_params": gs_num_params,
             "eval/ttt_time": ttt_time,
             "eval/gs_time": gs_time,
+            "eval/init_kv_time": init_kv_time,
         }
         logger.info(f'Evaluation results:\n{pprint.pformat(metric_dict, indent=4)}')
 
