@@ -199,13 +199,14 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 infere
 # Submitted batch job 59046983 # 0.429
 
 # lr1e-5
-# Submitted batch job 59075603
-# Submitted batch job 59075604
-# Submitted batch job 59075605
-# Submitted batch job 59075606
-
+# Submitted batch job 59075603 # 0.440
+# Submitted batch job 59075604 # 0.437
+# Submitted batch job 59075605 # 0.441
+# Submitted batch job 59075606 # 0.439
 
 # compared to beta0.999, this gets the same performance not better
 # interesting, beta0.9 is good for pretrained but not finetuned,
 # reason maybe finetuned does not need that much further optimization, and beta0.9 is just
 # for speeding up optimization
+
+# so far 0.442

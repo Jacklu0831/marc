@@ -186,7 +186,9 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 infere
 # Submitted batch job 59034421 # 0.443
 
 # lr1e-5
-# Submitted batch job 59075593
-# Submitted batch job 59075594
-# Submitted batch job 59075595
-# Submitted batch job 59075596
+# Submitted batch job 59075593 # 0.440
+# Submitted batch job 59075594 # 0.438
+# Submitted batch job 59075595 # 0.439
+# Submitted batch job 59075596 # 0.440
+
+# so far best is 0.443

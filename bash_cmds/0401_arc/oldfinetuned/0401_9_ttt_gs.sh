@@ -170,24 +170,24 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 infere
 
 
 
-# ttt permuten1000 iters250 gets 0.4
+# ttt permuten1000 iters250 gets 0.3
 # we tune gs on top of it gslr1e-3 and 1e-4 and 1e-5
-# result, goes up to
+# result, goes up to 0.3125
 
 # gslr1e-3
-# Submitted batch job 59078792
-# Submitted batch job 59078793
-# Submitted batch job 59078794
-# Submitted batch job 59078795
+# Submitted batch job 59078792 # 0.3
+# Submitted batch job 59078793 # 0.3
+# Submitted batch job 59078794 # 0.3
+# Submitted batch job 59078795 # 0.3
 
 # gslr1e-4
-# Submitted batch job 59078796
-# Submitted batch job 59078797
-# Submitted batch job 59078798
-# Submitted batch job 59078799
+# Submitted batch job 59078796 # 0.3
+# Submitted batch job 59078797 # 0.3
+# Submitted batch job 59078798 # 0.3
+# Submitted batch job 59078799 # 0.3125
 
 # gslr1e-5
-# Submitted batch job 59078802
-# Submitted batch job 59078803
-# Submitted batch job 59078804
-# Submitted batch job 59078805
+# Submitted batch job 59078802 # 0.3
+# Submitted batch job 59078803 # 0.3
+# Submitted batch job 59078804 # 0.3
+# Submitted batch job 59078805 # 0.3
