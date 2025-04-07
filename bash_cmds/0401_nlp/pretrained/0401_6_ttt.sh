@@ -157,7 +157,7 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 infere
 
 
 
-# numparams 47185920, times 9, 35, 134, 333sec
+# numparams 47185920, times 9, 35, 134, 333, 656sec
 
 # permuten40
 # Submitted batch job 59029831 # 0.396

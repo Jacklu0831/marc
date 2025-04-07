@@ -135,20 +135,77 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 infere
 
 
 
+
+
+
+# ft nlp gs5 lr1e-5 beta0.9
+accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_nlp/test_time_evaluate.py \
+    --tag ft_gs5_lr1e-5_beta0.9 \
+    --weight_dir 0401_nlp_gpt2_notruncate \
+    --weight_epoch 5 \
+    --gs_iters 5 \
+    --gs_lr 1e-5 \
+    --gs_beta2 0.9 \
+    --eval_seeds 100
+
+# ft nlp gs25 lr1e-5 beta0.9
+accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_nlp/test_time_evaluate.py \
+    --tag ft_gs25_lr1e-5_beta0.9 \
+    --weight_dir 0401_nlp_gpt2_notruncate \
+    --weight_epoch 5 \
+    --gs_iters 25 \
+    --gs_lr 1e-5 \
+    --gs_beta2 0.9 \
+    --eval_seeds 100
+
+# ft nlp gs100 lr1e-5 beta0.9
+accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_nlp/test_time_evaluate.py \
+    --tag ft_gs100_lr1e-5_beta0.9 \
+    --weight_dir 0401_nlp_gpt2_notruncate \
+    --weight_epoch 5 \
+    --gs_iters 100 \
+    --gs_lr 1e-5 \
+    --gs_beta2 0.9 \
+    --eval_seeds 100
+
+# ft nlp gs250 lr1e-5 beta0.9
+accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_nlp/test_time_evaluate.py \
+    --tag ft_gs250_lr1e-5_beta0.9 \
+    --weight_dir 0401_nlp_gpt2_notruncate \
+    --weight_epoch 5 \
+    --gs_iters 250 \
+    --gs_lr 1e-5 \
+    --gs_beta2 0.9 \
+    --eval_seeds 100
+
+
+
 # lr1e-2
-# Submitted batch job 59046972
-# Submitted batch job 59046973
-# Submitted batch job 59046974
-# Submitted batch job 59046975
+# Submitted batch job 59046972 # 0.388
+# Submitted batch job 59046973 # 0.378
+# Submitted batch job 59046974 # 0.378
+# Submitted batch job 59046975 # 0.379
 
 # lr1e-3
-# Submitted batch job 59046976
-# Submitted batch job 59046977
-# Submitted batch job 59046978
-# Submitted batch job 59046979
+# Submitted batch job 59046976 # 0.432
+# Submitted batch job 59046977 # 0.426
+# Submitted batch job 59046978 # 0.418
+# Submitted batch job 59046979 # 0.422
 
 # lr1e-4
-# Submitted batch job 59046980
-# Submitted batch job 59046981
-# Submitted batch job 59046982
-# Submitted batch job 59046983
+# Submitted batch job 59046980 # 0.440
+# Submitted batch job 59046981 # 0.442
+# Submitted batch job 59046982 # 0.439
+# Submitted batch job 59046983 # 0.429
+
+# lr1e-5
+# Submitted batch job 59075603
+# Submitted batch job 59075604
+# Submitted batch job 59075605
+# Submitted batch job 59075606
+
+
+# compared to beta0.999, this gets the same performance not better
+# interesting, beta0.9 is good for pretrained but not finetuned,
+# reason maybe finetuned does not need that much further optimization, and beta0.9 is just
+# for speeding up optimization

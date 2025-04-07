@@ -122,16 +122,21 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 infere
     --eval_seeds 100
 
 
+# numparam 41103360, 3.3, 16.2, 66.2, 163.4
+
+# lr1e-2
 # Submitted batch job 59022384 # 0.400
 # Submitted batch job 59022385 # 0.394
 # Submitted batch job 59022386 # 0.390
 # Submitted batch job 59022387 # 0.388
 
+# lr1e-3
 # Submitted batch job 59022388 # 0.371
 # Submitted batch job 59034229 # 0.396
 # Submitted batch job 59034230 # 0.401
 # Submitted batch job 59034231 # 0.404
 
+# lr1e-4
 # Submitted batch job 59034232 # 0.361
 # Submitted batch job 59034233 # 0.363
 # Submitted batch job 59034234 # 0.374

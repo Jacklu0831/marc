@@ -43,7 +43,7 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 infere
     --gs_iters 250 \
     --gs_lr 1e-3
 
-# Submitted batch job 59047847
-# Submitted batch job 59047848
-# Submitted batch job 59047849
-# Submitted batch job 59047850
+# Submitted batch job 59047847 # 0.15
+# Submitted batch job 59047848 # 0.17
+# Submitted batch job 59047849 # 0.195
+# Submitted batch job 59047850 # 0.195

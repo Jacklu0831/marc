@@ -132,15 +132,22 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 infere
     --gs_weight_decay 0.01 \
     --eval_seeds 100
 
-# Submitted batch job 59047764
-# Submitted batch job 59047765
-# Submitted batch job 59047766
-# Submitted batch job 59047767
-# Submitted batch job 59047768
-# Submitted batch job 59047769
-# Submitted batch job 59047770
-# Submitted batch job 59047771
-# Submitted batch job 59047772
-# Submitted batch job 59047773
-# Submitted batch job 59047774
-# Submitted batch job 59047775
+# weightdecay0.01
+
+# lr1e-2
+# Submitted batch job 59047764 # 0.389
+# Submitted batch job 59047765 # 0.375
+# Submitted batch job 59047766 # 0.382
+# Submitted batch job 59047767 # 0.387
+
+# lr1e-3
+# Submitted batch job 59047768 # 0.432
+# Submitted batch job 59047769 # 0.429
+# Submitted batch job 59047770 # 0.418
+# Submitted batch job 59047771 # 0.422
+
+# lr1e-4
+# Submitted batch job 59047772 # 0.441
+# Submitted batch job 59047773 # 0.444
+# Submitted batch job 59047774 # 0.438
+# Submitted batch job 59047775 # 0.443

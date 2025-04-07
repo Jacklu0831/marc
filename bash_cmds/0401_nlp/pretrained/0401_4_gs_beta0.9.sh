@@ -133,16 +133,20 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 infere
     --gs_beta2 0.9 \
     --eval_seeds 100
 
+
+# lr1e-2
 # Submitted batch job 59032992 # 0.399
 # Submitted batch job 59032993 # 0.391
 # Submitted batch job 59032994 # 0.378
 # Submitted batch job 59032995 # 0.377
 
+# lr1e-3
 # Submitted batch job 59032996 # 0.371
 # Submitted batch job 59032997 # 0.393
 # Submitted batch job 59032998 # 0.408
 # Submitted batch job 59032999 # 0.416
 
+# lr1e-4
 # Submitted batch job 59033000 # 0.363
 # Submitted batch job 59033001 # 0.363
 # Submitted batch job 59033002 # 0.373

@@ -93,12 +93,14 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 infere
     --gs_iters 250 \
     --gs_lr 1e-4
 
-# Submitted batch job 59048010
-# Submitted batch job 59048011
-# Submitted batch job 59048012
-# Submitted batch job 59048013
+# lr1e-3
+# Submitted batch job 59048010 # 0.225
+# Submitted batch job 59048011 # 0.275
+# Submitted batch job 59048012 # 0.2625
+# Submitted batch job 59048013 # 0.2625
 
-# Submitted batch job 59048014
-# Submitted batch job 59048015
-# Submitted batch job 59048016
-# Submitted batch job 59048017
+# lr1e-4
+# Submitted batch job 59048014 # 0.1875
+# Submitted batch job 59048015 # 0.2125
+# Submitted batch job 59048016 # 0.2125
+# Submitted batch job 59048017 # 0.2625
