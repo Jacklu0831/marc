@@ -237,6 +237,7 @@ def test_time_evaluate(
     ttt_lr_scheduler: str,
     ttt_lora_rank: int,
     ttt_lora_alpha: int,
+    ttt_loss_type: str,
     ttt_permute_n: int,
     output_dir: str,
 ) -> Tuple[float, float, float, float, float, float, float, float, List]:
@@ -312,6 +313,7 @@ def test_time_evaluate(
                         lr_scheduler=ttt_lr_scheduler,
                         lora_rank=ttt_lora_rank,
                         lora_alpha=ttt_lora_alpha,
+                        loss_type=ttt_loss_type,
                         permute_n=ttt_permute_n,
                     )
                     ttt_time = time.time() - start_time
@@ -586,6 +588,7 @@ def run_ttt(
     lr_scheduler: str,
     lora_rank: int,
     lora_alpha: int,
+    loss_type: str,
     permute_n: int,
 ) -> Tuple[nn.Module, int, int]:
 
@@ -619,6 +622,7 @@ def run_ttt(
         delimiter=eval_dataset.delimiter,
         permute_n=permute_n,
         seed=eval_dataset.seed,
+        loss_type=loss_type,
     )
     if len(ttt_dataset) == 0:
         return model, 0, num_params
@@ -968,6 +972,7 @@ def main():
     parser.add_argument("--ttt_permute_n", type=int, default=40)
     parser.add_argument("--ttt_lora_rank", type=int, default=64)
     parser.add_argument("--ttt_lora_alpha", type=int, default=64)
+    parser.add_argument("--ttt_loss_type", type=str, choices=['only_last', 'all', 'exclude_first'], default='only_last')
 
     # gradient search
     parser.add_argument("--gs_iters", type=int, default=0)
@@ -1166,6 +1171,7 @@ def main():
             ttt_max_grad_norm=args.ttt_max_grad_norm,
             ttt_lora_rank=args.ttt_lora_rank,
             ttt_lora_alpha=args.ttt_lora_alpha,
+            ttt_loss_type=args.ttt_loss_type,
             ttt_permute_n=args.ttt_permute_n,
             output_dir=args.output_dir,
         )

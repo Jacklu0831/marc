@@ -808,6 +808,7 @@ class TTTDataset(Dataset):
         delimiter: str,
         permute_n: int,
         seed: int,
+        loss_type: str,
     ):
         self.demonstration_pairs = demonstration_pairs
         self.tokenizer = tokenizer
@@ -820,6 +821,7 @@ class TTTDataset(Dataset):
         self.delimiter = delimiter
         self.permute_n = permute_n
         self.seed = seed
+        self.loss_type = loss_type
 
         # separate input and output by newline
         self.delimiter_token_id = tokenize(delimiter, tokenizer)
@@ -865,7 +867,7 @@ class TTTDataset(Dataset):
             max_pair_len=self.max_pair_len,
             max_seq_len=self.max_seq_len,
             delimiter_token_id=self.delimiter_token_id,
-            loss_type="only_last",
+            loss_type=self.loss_type,
             allow_truncate=self.allow_truncate,
             is_train=True,
         )
