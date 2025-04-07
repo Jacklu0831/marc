@@ -93,6 +93,8 @@ def generate_unique_permute_masks(tensor, start_idxs, M):
     unique_masks = []
     seen_orders = set()
 
+    M = min(M, math.factorial(num_chunks))
+
     while len(unique_masks) < M:
         # Generate a random permutation order for the chunks.
         if len(unique_masks) == 0:
@@ -145,7 +147,6 @@ def initialize_kv(
     else:
         # generate batches of permutations of them and average all
         permute_masks = generate_unique_permute_masks(demon_input_ids[0], demon_start_idxs, gs_num_permute)
-        assert len(permute_masks) == gs_num_permute
 
         past_key_values = tuple(
             (
@@ -188,7 +189,7 @@ def initialize_kv(
         # average the past key values
         for layer_i in range(len(past_key_values)):
             for kv_i in range(2):
-                past_key_values[layer_i][kv_i].div_(gs_num_permute)
+                past_key_values[layer_i][kv_i].div_(len(permute_masks))
 
     return past_key_values # type: ignore
 
@@ -226,7 +227,6 @@ def test_time_evaluate(
     gs_num_permute: int,
     gs_permute_batch_size: int,
     gs_permute_back: bool,
-    gs_permute_in_training: bool,
     ttt_iters: int,
     ttt_batch_size: int,
     ttt_grad_accum_steps: int,
@@ -989,9 +989,6 @@ def main():
     parser.add_argument("--gs_permute_batch_size", type=int, default=16)
     parser.add_argument("--gs_permute_back", action='store_true')
 
-    # gradient search training permutation
-    parser.add_argument("--gs_permute_in_training", action='store_true')
-
     # gradient search with lora (NOT COMPATIBLE WITH TTT)
     parser.add_argument("--gs_lora", action='store_true')
     parser.add_argument("--gs_lora_rank", type=int, default=64)
@@ -1159,7 +1156,6 @@ def main():
             gs_num_permute=args.gs_num_permute,
             gs_permute_batch_size=args.gs_permute_batch_size,
             gs_permute_back=args.gs_permute_back,
-            gs_permute_in_training=args.gs_permute_in_training,
             ttt_iters=args.ttt_iters,
             ttt_lr=args.ttt_lr,
             ttt_weight_decay=args.ttt_weight_decay,

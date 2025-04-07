@@ -831,6 +831,7 @@ class EvalDataset:
         pair_idx_to_label_ids = []
         all_input_ids = [] # all demonstration pairs and the last input grid
         gen_output_ids = None
+        demon_start_idxs = [0]
 
         for pair_i in range(num_pair):
             example = (task.train_examples + [task.test_example])[pair_i]
@@ -856,6 +857,10 @@ class EvalDataset:
             pair_idx_to_input_ids.append(input_ids)
             pair_idx_to_attention_mask.append(attention_mask)
             pair_idx_to_label_ids.append(label_ids)
+
+            # dont need genpair, dont need last demon pair
+            if pair_i < num_pair - 2:
+                demon_start_idxs.append(demon_start_idxs[-1] + len(input_ids))
 
         input_ids = torch.cat(pair_idx_to_input_ids)
         attention_mask = torch.cat(pair_idx_to_attention_mask)
@@ -895,6 +900,7 @@ class EvalDataset:
             "demon_attention_mask": demon_attention_mask,
             "gen_input_ids": gen_input_ids,
             "gen_attention_mask": gen_attention_mask,
+            "demon_start_idxs": demon_start_idxs,
         }
 
     def __len__(self):
@@ -943,6 +949,7 @@ def collate_fn_eval(batch: List[Dict], dataset: EvalDataset) -> Dict:
     demon_attention_mask = [x["demon_attention_mask"] for x in batch]
     gen_input_ids = [x["gen_input_ids"] for x in batch]
     gen_attention_mask = [x["gen_attention_mask"] for x in batch]
+    demon_start_idxs = [x['demon_start_idxs'] for x in batch]
 
     demon_input_ids = pad_sequence_with_side(demon_input_ids, padding_value=dataset.tokenizer.pad_token_id, side=dataset.pad_side)
     demon_attention_mask = pad_sequence_with_side(demon_attention_mask, padding_value=0, side=dataset.pad_side)
@@ -980,6 +987,7 @@ def collate_fn_eval(batch: List[Dict], dataset: EvalDataset) -> Dict:
         "demon_attention_mask": demon_attention_mask,
         "gen_input_ids": gen_input_ids,
         "gen_attention_mask": gen_attention_mask,
+        "demon_start_idxs": demon_start_idxs,
     }
     return batch_dict
 
@@ -1001,10 +1009,12 @@ def collate_fn_eval_dummy(batch: List[Dict], dataset: EvalDataset) -> Dict:
     label_texts = ['1\n1\n1'] * batch_size
 
     # for gs (no ntoken)
-    demon_input_ids = torch.randint(0, 30, (batch_size, dataset.max_seq_len * 7 // 8), dtype=torch.int64, device='cpu')
-    demon_attention_mask = torch.full((batch_size, dataset.max_seq_len * 7 // 8), 1, dtype=torch.int64, device='cpu')
+    demon_len = dataset.max_seq_len * 7 // 8
+    demon_input_ids = torch.randint(0, 30, (batch_size, demon_len), dtype=torch.int64, device='cpu')
+    demon_attention_mask = torch.full((batch_size, demon_len), 1, dtype=torch.int64, device='cpu')
     gen_input_ids = torch.randint(0, 30, (batch_size, dataset.max_seq_len // 8), dtype=torch.int64, device='cpu')
     gen_attention_mask = torch.full((batch_size, dataset.max_seq_len // 8), 1, dtype=torch.int64, device='cpu')
+    demon_start_idxs = [x * (demon_len // 8) for x in range(8)]
 
     batch_dict = {
         "task_ids": task_ids,
@@ -1023,6 +1033,7 @@ def collate_fn_eval_dummy(batch: List[Dict], dataset: EvalDataset) -> Dict:
         "demon_attention_mask": demon_attention_mask,
         "gen_input_ids": gen_input_ids,
         "gen_attention_mask": gen_attention_mask,
+        "demon_start_idxs": demon_start_idxs,
     }
     return batch_dict
 
