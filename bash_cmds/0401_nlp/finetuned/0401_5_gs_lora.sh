@@ -143,6 +143,8 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 infere
 
 
 
+# use gs250 lr1e-4 config, which got 0.443
+
 # lora1e-4
 # Submitted batch job 59075581 # 0.436
 # Submitted batch job 59075582 # 0.4
@@ -161,4 +163,5 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 infere
 # Submitted batch job 59075591 # 0.436
 # Submitted batch job 59075592 # 0.444
 
-# so far 0.444
+# lora did not help here, unlike in pretrained
+# ft modifies model params for ICL and achieve eval acc on par with training! so additional weight tuning doesnt help

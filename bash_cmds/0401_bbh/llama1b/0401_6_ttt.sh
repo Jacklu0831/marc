@@ -2,16 +2,18 @@
 
 # bbh llama1b ttt onlylast
 accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_bbh/test_time_evaluate.py \
+    --flash_attn \
     --tag bbh_llama1b_ttt_onlylast \
     --model_name llama1b \
     --ttt_iters 40
 
 # bbh llama1b ttt allloss
 accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_bbh/test_time_evaluate.py \
+    --flash_attn \
     --tag bbh_llama1b_ttt_allloss \
     --model_name llama1b \
     --ttt_iters 40 \
     --ttt_loss_type all
 
-# Submitted batch job 59111717
-# Submitted batch job 59111709
+# Submitted batch job 59111717 # 37.31
+# Submitted batch job 59111709 # 38.26

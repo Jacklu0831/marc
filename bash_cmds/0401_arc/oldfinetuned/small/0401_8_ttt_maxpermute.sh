@@ -1,4 +1,4 @@
-# python make_sbatch.py --ngpu 1 --time 6 --bash_files bash_cmds/0401_arc/oldfinetuned/0401_8_ttt_maxpermute.sh
+# python make_sbatch.py --ngpu 1 --time 6 --bash_files bash_cmds/0401_arc/oldfinetuned/small/0401_8_ttt_maxpermute.sh
 
 
 

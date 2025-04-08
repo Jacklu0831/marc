@@ -2,6 +2,7 @@
 
 # bbh llama8b ttt onlylast
 accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_bbh/test_time_evaluate.py \
+    --flash_attn \
     --tag bbh_llama8b_ttt_onlylast \
     --model_name llama8b \
     --ttt_iters 40 \
@@ -9,11 +10,14 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 infere
 
 # bbh llama8b ttt allloss
 accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_bbh/test_time_evaluate.py \
+    --flash_attn \
     --tag bbh_llama8b_ttt_allloss \
     --model_name llama8b \
     --ttt_iters 40 \
     --ttt_loss_type all \
     --ttt_gradient_checkpointing
 
-# Submitted batch job 59111719
-# Submitted batch job 59111710
+# Submitted batch job 59111719 # 51.11
+# Submitted batch job 59111710 # 35.06
+
+# debug this

@@ -1,4 +1,7 @@
-# python make_sbatch.py --ngpu 1 --time 6 --bash_files bash_cmds/0401_arc/oldfinetuned/0401_9_ttt_gs.sh
+# python make_sbatch.py --ngpu 1 --time 6 --bash_files bash_cmds/0401_arc/oldfinetuned/small/0401_9_ttt_gs.sh
+
+
+
 
 # arc ttt250 permuten1000 gs5 lr1e-3
 accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_arc/test_time_evaluate.py \

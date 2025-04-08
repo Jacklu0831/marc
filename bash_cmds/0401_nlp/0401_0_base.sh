@@ -28,3 +28,5 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 infere
 # Submitted batch job 59006197 # middle
 # Submitted batch job 59006198 # best
 # Submitted batch job 59006199 # worst
+
+# for the best run without truncate, worth noting that 0.440 train and 0.435 eval, not huge difference

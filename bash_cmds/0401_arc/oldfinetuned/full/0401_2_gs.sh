@@ -1,7 +1,8 @@
-# python make_sbatch.py --ngpu 1 --time 8 --bash_files bash_cmds/0401_arc/oldfinetuned/0401_2_gs_full.sh
+# python make_sbatch.py --ngpu 1 --time 8 --bash_files bash_cmds/0401_arc/oldfinetuned/full/0401_2_gs.sh
 # should give similar performance to the semi-successful experiments from before
 # if not, compare model loss with original encoder_decoder_noprogram/evaluate.py
 # for a 1:1 reproduction, gs_take_best and gs_max_grad_norm=1e8
+
 
 # arc gs5 lr1e-3 full
 accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_arc/test_time_evaluate.py \
@@ -46,6 +47,6 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 infere
 # Submitted batch job 59047847 # 0.15
 # Submitted batch job 59047848 # 0.17
 # Submitted batch job 59047849 # 0.195
-# Submitted batch job 59047850 # 0.195
+# Submitted batch job 59047850 # 0.195 # 5 hours
 
 # so far 0.195

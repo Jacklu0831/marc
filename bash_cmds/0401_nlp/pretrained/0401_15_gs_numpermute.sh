@@ -151,4 +151,6 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 infere
 # Submitted batch job 59084473 # 0.353
 # Submitted batch job 59084474 # 0.374
 
-# so far 0.418
+# so far 0.418, higher than normal gs
+# benefit may be from obscuring memory to mitigate the retrieval issue,
+# leading to higher generalization

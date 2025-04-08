@@ -1,4 +1,4 @@
-# python make_sbatch.py --ngpu 1 --time 24 --bash_files bash_cmds/0401_arc/oldfinetuned/0401_8_ttt_maxpermute_full.sh
+# python make_sbatch.py --ngpu 1 --time 24 --bash_files bash_cmds/0401_arc/oldfinetuned/full/0401_8_ttt_maxpermute.sh
 
 
 
@@ -56,7 +56,7 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 infere
 # Submitted batch job 59047912 # 0.14
 # Submitted batch job 59047913 # 0.1925
 # Submitted batch job 59047914 # 0.245
-# Submitted batch job 59047915 # 0.2475
+# Submitted batch job 59047915 # 0.2475 # 8-9hours
 # Submitted batch job 59047916 # 0.2375
 
 # so far 0.2475
