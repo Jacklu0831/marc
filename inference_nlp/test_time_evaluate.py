@@ -1,4 +1,3 @@
-import numpy as np
 import gc
 import time
 from transformers.tokenization_utils_fast import PreTrainedTokenizerFast
@@ -216,6 +215,7 @@ def test_time_evaluate(
     gs_max_grad_norm: float,
     gs_no_key: bool,
     gs_no_value: bool,
+    gs_loss_on_input: bool,
     gs_lr_scheduler: str,
     gs_lora: bool,
     gs_lora_rank: int,
@@ -241,6 +241,8 @@ def test_time_evaluate(
     ttt_permute_n: int,
     output_dir: str,
 ) -> Tuple[float, float, float, float, float, float, float, float, List]:
+
+    model.eval()
 
     # get modules in case of DDP
     model = model.module if isinstance(model, DistributedDataParallel) else model
@@ -371,6 +373,7 @@ def test_time_evaluate(
                         max_grad_norm=gs_max_grad_norm,
                         no_key=gs_no_key,
                         no_value=gs_no_value,
+                        loss_on_input=gs_loss_on_input,
                         lr_scheduler=gs_lr_scheduler,
                         lora=gs_lora,
                         lora_rank=gs_lora_rank,
@@ -728,6 +731,7 @@ def run_gs(
     max_grad_norm: float,
     no_key: bool,
     no_value: bool,
+    loss_on_input: bool,
     lr_scheduler: str,
     lora: bool,
     lora_rank: int,
@@ -786,6 +790,7 @@ def run_gs(
         max_pair_len=eval_dataset.max_pair_len,
         allow_truncate=eval_dataset.allow_truncate,
         delimiter=eval_dataset.delimiter,
+        loss_on_input=loss_on_input,
     )
     if len(gs_dataset) == 0:
         if lora:
@@ -987,6 +992,7 @@ def main():
     parser.add_argument("--gs_max_grad_norm", default=1.0, type=float, help="Max gradient norm.")
     parser.add_argument("--gs_no_key", action='store_true')
     parser.add_argument("--gs_no_value", action='store_true')
+    parser.add_argument("--gs_loss_on_input", action='store_true')
 
     # gradient search model initialization
     parser.add_argument("--gs_random_kv", action='store_true')
@@ -1007,6 +1013,9 @@ def main():
 
     args.tag = f"eval_{args.tag}_{args.weight_dir}"
     args.output_dir = os.path.join(args.output_dir, args.tag)
+
+    args.gs_iters *= args.gs_grad_accum_steps
+    args.ttt_iters *= args.ttt_grad_accum_steps
 
     # Setup accelerator
     project_config = ProjectConfiguration(project_dir=args.output_dir)
@@ -1150,6 +1159,7 @@ def main():
             gs_max_grad_norm=args.gs_max_grad_norm,
             gs_no_key=args.gs_no_key,
             gs_no_value=args.gs_no_value,
+            gs_loss_on_input=args.gs_loss_on_input,
             gs_lr_scheduler=args.gs_lr_scheduler,
             gs_lora=args.gs_lora,
             gs_lora_rank=args.gs_lora_rank,

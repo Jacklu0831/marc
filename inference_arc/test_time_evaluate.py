@@ -200,6 +200,7 @@ def test_time_evaluate(
     gs_max_grad_norm: float,
     gs_no_key: bool,
     gs_no_value: bool,
+    gs_loss_on_input: bool,
     gs_lr_scheduler: str,
     gs_lora: bool,
     gs_lora_rank: int,
@@ -274,7 +275,7 @@ def test_time_evaluate(
             demon_input_ids = data['demon_input_ids'].unsqueeze(0).to(accelerator.device)
             demon_start_idxs = data["demon_start_idxs"]
             if dataset.debug_max_len:
-                demon_len = dataset.max_seq_len * 7 // 8
+                demon_len = dataset.max_seq_len * 6 // 8
                 demon_input_ids = torch.randint(0, 30, (1, demon_len), dtype=torch.int64, device=accelerator.device)
                 demon_start_idxs = [x * (demon_len // 8) for x in range(8)]
             # dataset.tokenizer.decode(demon_input_ids[0, demon_start_idxs[0]: demon_start_idxs[1]], False)
@@ -365,6 +366,7 @@ def test_time_evaluate(
                         max_grad_norm=gs_max_grad_norm,
                         no_key=gs_no_key,
                         no_value=gs_no_value,
+                        loss_on_input=gs_loss_on_input,
                         lr_scheduler=gs_lr_scheduler,
                         lora=gs_lora,
                         lora_rank=gs_lora_rank,
@@ -396,7 +398,6 @@ def test_time_evaluate(
                 # second step to generate
                 # add past key values portion to input_ids and attention mask
                 # the padding of input_ids is ignored
-                past_key_values[0][0].shape[2]
                 gen_input_ids = torch.cat([
                     torch.zeros((1, past_key_values[0][0].shape[2]), device=accelerator.device, dtype=torch.int64),
                     gen_input_ids,
@@ -720,6 +721,7 @@ def run_gs(
     max_grad_norm: float,
     no_key: bool,
     no_value: bool,
+    loss_on_input: bool,
     lr_scheduler: str,
     lora: bool,
     lora_rank: int,
@@ -776,6 +778,7 @@ def run_gs(
         no_separate_color_tokens=eval_dataset.no_separate_color_tokens,
         no_bos=eval_dataset.no_bos,
         max_seq_len=eval_dataset.max_seq_len,
+        loss_on_input=loss_on_input,
     )
     if len(gs_dataset) == 0:
         if lora:
@@ -874,11 +877,10 @@ def run_gs(
                 }
 
                 # get ce loss
-                # print('gs', pair_attention_mask.shape)
                 loss = model(**model_kwargs).loss
 
                 # print(loss.item())
-                # breakpoint() # test without position ids
+                # breakpoint()
 
             accelerator.backward(loss)
 
@@ -979,6 +981,7 @@ def main():
     parser.add_argument("--gs_max_grad_norm", default=1.0, type=float, help="Max gradient norm.")
     parser.add_argument("--gs_no_key", action='store_true')
     parser.add_argument("--gs_no_value", action='store_true')
+    parser.add_argument("--gs_loss_on_input", action='store_true')
 
     # gradient search model initialization
     parser.add_argument("--gs_random_kv", action='store_true')
@@ -998,6 +1001,9 @@ def main():
 
     args.tag = f"eval_{args.tag}_{args.weight_dir}"
     args.output_dir = os.path.join(args.output_dir, args.tag)
+
+    args.gs_iters *= args.gs_grad_accum_steps
+    args.ttt_iters *= args.ttt_grad_accum_steps
 
     # Setup accelerator
     project_config = ProjectConfiguration(project_dir=args.output_dir)
@@ -1189,6 +1195,7 @@ def main():
         gs_max_grad_norm=args.gs_max_grad_norm,
         gs_no_key=args.gs_no_key,
         gs_no_value=args.gs_no_value,
+        gs_loss_on_input=args.gs_loss_on_input,
         gs_lr_scheduler=args.gs_lr_scheduler,
         gs_lora=args.gs_lora,
         gs_lora_rank=args.gs_lora_rank,

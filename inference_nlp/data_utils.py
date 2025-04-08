@@ -684,6 +684,7 @@ class GSDataset(Dataset):
         max_pair_len: int,
         allow_truncate: bool,
         delimiter: str,
+        loss_on_input: bool,
     ):
         self.demonstration_pairs = demonstration_pairs
         self.tokenizer = tokenizer
@@ -695,6 +696,7 @@ class GSDataset(Dataset):
         self.max_pair_len = max_pair_len
         self.allow_truncate = allow_truncate
         self.delimiter = delimiter
+        self.loss_on_input = loss_on_input
 
         # separate input and output by newline
         self.delimiter_token_id = tokenize(delimiter, tokenizer)
@@ -727,8 +729,12 @@ class GSDataset(Dataset):
         # create input_ids and label_ids
         input_ids = torch.cat([input_input_ids, output_input_ids])
         attention_mask = torch.full(input_ids.shape, 1, dtype=torch.int64)
-        label_ids = torch.full(input_input_ids.shape, -100, dtype=input_ids.dtype)
-        label_ids = torch.cat([label_ids, output_input_ids])
+
+        if self.loss_on_input:
+            label_ids = input_ids
+        else:
+            label_ids = torch.full(input_input_ids.shape, -100, dtype=input_ids.dtype)
+            label_ids = torch.cat([label_ids, output_input_ids])
 
         # GS dataset can overflow too because it is taking from eval dataset before filtering
         overflow = len(input_ids) - (self.max_seq_len - self.past_kv_len)

@@ -1005,11 +1005,11 @@ def collate_fn_eval_dummy(batch: List[Dict], dataset: EvalDataset) -> Dict:
     all_input_ids_lens = [dataset.max_seq_len * 9 // 10 + 1] * batch_size
 
     task_ids = [str(x) for x in range(100000, 100000 + batch_size)]
-    out_token_length = [dataset.max_seq_len // 10 + 1] * batch_size
+    out_token_length = [dataset.max_seq_len // 8] * batch_size
     label_texts = ['1\n1\n1'] * batch_size
 
     # for gs (no ntoken)
-    demon_len = dataset.max_seq_len * 7 // 8
+    demon_len = dataset.max_seq_len * 6 // 8
     demon_input_ids = torch.randint(0, 30, (batch_size, demon_len), dtype=torch.int64, device='cpu')
     demon_attention_mask = torch.full((batch_size, demon_len), 1, dtype=torch.int64, device='cpu')
     gen_input_ids = torch.randint(0, 30, (batch_size, dataset.max_seq_len // 8), dtype=torch.int64, device='cpu')
@@ -1052,6 +1052,7 @@ class GSDataset(Dataset):
         no_separate_color_tokens: bool,
         no_bos: bool,
         max_seq_len: int,
+        loss_on_input: bool,
     ):
         self.task = task
         self.tokenizer = tokenizer
@@ -1061,6 +1062,7 @@ class GSDataset(Dataset):
         self.no_separate_color_tokens = no_separate_color_tokens
         self.no_bos = no_bos
         self.max_seq_len = max_seq_len
+        self.loss_on_input = loss_on_input
 
         # format data (only use demonstration pairs)
         self.parsed_examples = [self.format(example) for example in task.train_examples]
@@ -1082,8 +1084,12 @@ class GSDataset(Dataset):
         )
         input_ids = torch.cat([input_grid_ids, output_grid_ids])
         attention_mask = torch.full(input_ids.shape, 1, dtype=torch.int64)
-        label_ids = torch.full(input_grid_ids.shape, -100, dtype=torch.int64)
-        label_ids = torch.cat([label_ids, output_grid_ids])
+
+        if self.loss_on_input:
+            label_ids = input_ids
+        else:
+            label_ids = torch.full(input_grid_ids.shape, -100, dtype=torch.int64)
+            label_ids = torch.cat([label_ids, output_grid_ids])
 
         return {
             "input_ids": input_ids,
