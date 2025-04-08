@@ -171,8 +171,6 @@ def generate_unique_permute_masks(tensor, start_idxs, M):
     unique_masks = []
     seen_orders = set()
 
-    M = min(M, math.factorial(num_chunks))
-
     while len(unique_masks) < M:
         # Generate a random permutation order for the chunks.
         if len(unique_masks) == 0:
@@ -225,6 +223,9 @@ def initialize_kv(
     else:
         # generate batches of permutations of them and average all
         permute_masks = generate_unique_permute_masks(demon_input_ids[0], demon_start_idxs, gs_num_permute)
+
+        # add mask for instruction
+        permute_masks = [torch.cat([torch.arange(0, demon_start_idxs[0]), m]) for m in permute_masks]
 
         past_key_values = tuple(
             (
