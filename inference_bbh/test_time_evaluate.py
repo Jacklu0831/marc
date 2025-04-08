@@ -680,7 +680,7 @@ def run_ttt(
 
     # lr scheduler
     if lr_scheduler == "cosine":
-        scheduler = get_cosine_schedule_with_warmup(optim, num_warmup_steps=0, num_training_steps=iters)
+        scheduler = get_cosine_schedule_with_warmup(optim, num_warmup_steps=0, num_training_steps=iters // grad_accum_steps)
     else:
         scheduler = get_constant_schedule(optim)
 
@@ -854,7 +854,7 @@ def run_gs(
 
     # lr scheduler
     if lr_scheduler == "cosine":
-        scheduler = get_cosine_schedule_with_warmup(optim, num_warmup_steps=0, num_training_steps=iters)
+        scheduler = get_cosine_schedule_with_warmup(optim, num_warmup_steps=0, num_training_steps=iters // grad_accum_steps)
     else:
         scheduler = get_constant_schedule(optim)
 

@@ -1,45 +1,194 @@
 # python make_sbatch.py --ngpu 1 --time 6 --bash_files bash_cmds/0401_bbh/llama8b/0401_4_gs_beta0.9.sh
 
-# bbh llama8b gs5 lr1e-2 beta0.9
+# # bbh llama8b gs5 lr1e-2 beta0.9
+# accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_bbh/test_time_evaluate.py \
+#     --flash_attn \
+#     --tag bbh_llama8b_gs5_lr1e-2_beta0.9 \
+#     --model_name llama8b \
+#     --gs_iters 5 \
+#     --gs_lr 1e-2 \
+#     --gs_beta2 0.9 \
+#     --gs_batch_size 2 \
+#     --gs_grad_accum_steps 5
+
+# # bbh llama8b gs25 lr1e-2 beta0.9
+# accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_bbh/test_time_evaluate.py \
+#     --flash_attn \
+#     --tag bbh_llama8b_gs25_lr1e-2_beta0.9 \
+#     --model_name llama8b \
+#     --gs_iters 25 \
+#     --gs_lr 1e-2 \
+#     --gs_beta2 0.9 \
+#     --gs_batch_size 2 \
+#     --gs_grad_accum_steps 5
+
+# # bbh llama8b gs100 lr1e-2 beta0.9
+# accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_bbh/test_time_evaluate.py \
+#     --flash_attn \
+#     --tag bbh_llama8b_gs100_lr1e-2_beta0.9 \
+#     --model_name llama8b \
+#     --gs_iters 100 \
+#     --gs_lr 1e-2 \
+#     --gs_beta2 0.9 \
+#     --gs_batch_size 2 \
+#     --gs_grad_accum_steps 5
+
+# # bbh llama8b gs250 lr1e-2 beta0.9
+# accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_bbh/test_time_evaluate.py \
+#     --flash_attn \
+#     --tag bbh_llama8b_gs250_lr1e-2_beta0.9 \
+#     --model_name llama8b \
+#     --gs_iters 250 \
+#     --gs_lr 1e-2 \
+#     --gs_beta2 0.9 \
+#     --gs_batch_size 2 \
+#     --gs_grad_accum_steps 5
+
+
+
+
+
+
+# # bbh llama8b gs5 lr1e-3 beta0.9
+# accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_bbh/test_time_evaluate.py \
+#     --flash_attn \
+#     --tag bbh_llama8b_gs5_lr1e-3_beta0.9 \
+#     --model_name llama8b \
+#     --gs_iters 5 \
+#     --gs_lr 1e-3 \
+#     --gs_beta2 0.9 \
+#     --gs_batch_size 2 \
+#     --gs_grad_accum_steps 5
+
+# # bbh llama8b gs25 lr1e-3 beta0.9
+# accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_bbh/test_time_evaluate.py \
+#     --flash_attn \
+#     --tag bbh_llama8b_gs25_lr1e-3_beta0.9 \
+#     --model_name llama8b \
+#     --gs_iters 25 \
+#     --gs_lr 1e-3 \
+#     --gs_beta2 0.9 \
+#     --gs_batch_size 2 \
+#     --gs_grad_accum_steps 5
+
+# # bbh llama8b gs100 lr1e-3 beta0.9
+# accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_bbh/test_time_evaluate.py \
+#     --flash_attn \
+#     --tag bbh_llama8b_gs100_lr1e-3_beta0.9 \
+#     --model_name llama8b \
+#     --gs_iters 100 \
+#     --gs_lr 1e-3 \
+#     --gs_beta2 0.9 \
+#     --gs_batch_size 2 \
+#     --gs_grad_accum_steps 5
+
+# # bbh llama8b gs250 lr1e-3 beta0.9
+# accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_bbh/test_time_evaluate.py \
+#     --flash_attn \
+#     --tag bbh_llama8b_gs250_lr1e-3_beta0.9 \
+#     --model_name llama8b \
+#     --gs_iters 250 \
+#     --gs_lr 1e-3 \
+#     --gs_beta2 0.9 \
+#     --gs_batch_size 2 \
+#     --gs_grad_accum_steps 5
+
+
+
+
+
+
+
+# # bbh llama8b gs5 lr1e-4 beta0.9
+# accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_bbh/test_time_evaluate.py \
+#     --flash_attn \
+#     --tag bbh_llama8b_gs5_lr1e-4_beta0.9 \
+#     --model_name llama8b \
+#     --gs_iters 5 \
+#     --gs_lr 1e-4 \
+#     --gs_beta2 0.9 \
+#     --gs_batch_size 2 \
+#     --gs_grad_accum_steps 5
+
+# # bbh llama8b gs25 lr1e-4 beta0.9
+# accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_bbh/test_time_evaluate.py \
+#     --flash_attn \
+#     --tag bbh_llama8b_gs25_lr1e-4_beta0.9 \
+#     --model_name llama8b \
+#     --gs_iters 25 \
+#     --gs_lr 1e-4 \
+#     --gs_beta2 0.9 \
+#     --gs_batch_size 2 \
+#     --gs_grad_accum_steps 5
+
+# # bbh llama8b gs100 lr1e-4 beta0.9
+# accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_bbh/test_time_evaluate.py \
+#     --flash_attn \
+#     --tag bbh_llama8b_gs100_lr1e-4_beta0.9 \
+#     --model_name llama8b \
+#     --gs_iters 100 \
+#     --gs_lr 1e-4 \
+#     --gs_beta2 0.9 \
+#     --gs_batch_size 2 \
+#     --gs_grad_accum_steps 5
+
+# # bbh llama8b gs250 lr1e-4 beta0.9
+# accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_bbh/test_time_evaluate.py \
+#     --flash_attn \
+#     --tag bbh_llama8b_gs250_lr1e-4_beta0.9 \
+#     --model_name llama8b \
+#     --gs_iters 250 \
+#     --gs_lr 1e-4 \
+#     --gs_beta2 0.9 \
+#     --gs_batch_size 2 \
+#     --gs_grad_accum_steps 5
+
+
+
+
+
+
+
+# bbh llama8b gs5 lr1e-5 beta0.9
 accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_bbh/test_time_evaluate.py \
     --flash_attn \
-    --tag bbh_llama8b_gs5_lr1e-2_beta0.9 \
+    --tag bbh_llama8b_gs5_lr1e-5_beta0.9 \
     --model_name llama8b \
     --gs_iters 5 \
-    --gs_lr 1e-2 \
+    --gs_lr 1e-5 \
     --gs_beta2 0.9 \
     --gs_batch_size 2 \
     --gs_grad_accum_steps 5
 
-# bbh llama8b gs25 lr1e-2 beta0.9
+# bbh llama8b gs25 lr1e-5 beta0.9
 accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_bbh/test_time_evaluate.py \
     --flash_attn \
-    --tag bbh_llama8b_gs25_lr1e-2_beta0.9 \
+    --tag bbh_llama8b_gs25_lr1e-5_beta0.9 \
     --model_name llama8b \
     --gs_iters 25 \
-    --gs_lr 1e-2 \
+    --gs_lr 1e-5 \
     --gs_beta2 0.9 \
     --gs_batch_size 2 \
     --gs_grad_accum_steps 5
 
-# bbh llama8b gs100 lr1e-2 beta0.9
+# bbh llama8b gs100 lr1e-5 beta0.9
 accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_bbh/test_time_evaluate.py \
     --flash_attn \
-    --tag bbh_llama8b_gs100_lr1e-2_beta0.9 \
+    --tag bbh_llama8b_gs100_lr1e-5_beta0.9 \
     --model_name llama8b \
     --gs_iters 100 \
-    --gs_lr 1e-2 \
+    --gs_lr 1e-5 \
     --gs_beta2 0.9 \
     --gs_batch_size 2 \
     --gs_grad_accum_steps 5
 
-# bbh llama8b gs250 lr1e-2 beta0.9
+# bbh llama8b gs250 lr1e-5 beta0.9
 accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_bbh/test_time_evaluate.py \
     --flash_attn \
-    --tag bbh_llama8b_gs250_lr1e-2_beta0.9 \
+    --tag bbh_llama8b_gs250_lr1e-5_beta0.9 \
     --model_name llama8b \
     --gs_iters 250 \
-    --gs_lr 1e-2 \
+    --gs_lr 1e-5 \
     --gs_beta2 0.9 \
     --gs_batch_size 2 \
     --gs_grad_accum_steps 5
@@ -49,96 +198,47 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 infere
 
 
 
-# bbh llama8b gs5 lr1e-3 beta0.9
+
+# bbh llama8b gs5 lr1e-6 beta0.9
 accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_bbh/test_time_evaluate.py \
     --flash_attn \
-    --tag bbh_llama8b_gs5_lr1e-3_beta0.9 \
+    --tag bbh_llama8b_gs5_lr1e-6_beta0.9 \
     --model_name llama8b \
     --gs_iters 5 \
-    --gs_lr 1e-3 \
+    --gs_lr 1e-6 \
     --gs_beta2 0.9 \
     --gs_batch_size 2 \
     --gs_grad_accum_steps 5
 
-# bbh llama8b gs25 lr1e-3 beta0.9
+# bbh llama8b gs25 lr1e-6 beta0.9
 accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_bbh/test_time_evaluate.py \
     --flash_attn \
-    --tag bbh_llama8b_gs25_lr1e-3_beta0.9 \
+    --tag bbh_llama8b_gs25_lr1e-6_beta0.9 \
     --model_name llama8b \
     --gs_iters 25 \
-    --gs_lr 1e-3 \
+    --gs_lr 1e-6 \
     --gs_beta2 0.9 \
     --gs_batch_size 2 \
     --gs_grad_accum_steps 5
 
-# bbh llama8b gs100 lr1e-3 beta0.9
+# bbh llama8b gs100 lr1e-6 beta0.9
 accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_bbh/test_time_evaluate.py \
     --flash_attn \
-    --tag bbh_llama8b_gs100_lr1e-3_beta0.9 \
+    --tag bbh_llama8b_gs100_lr1e-6_beta0.9 \
     --model_name llama8b \
     --gs_iters 100 \
-    --gs_lr 1e-3 \
+    --gs_lr 1e-6 \
     --gs_beta2 0.9 \
     --gs_batch_size 2 \
     --gs_grad_accum_steps 5
 
-# bbh llama8b gs250 lr1e-3 beta0.9
+# bbh llama8b gs250 lr1e-6 beta0.9
 accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_bbh/test_time_evaluate.py \
     --flash_attn \
-    --tag bbh_llama8b_gs250_lr1e-3_beta0.9 \
+    --tag bbh_llama8b_gs250_lr1e-6_beta0.9 \
     --model_name llama8b \
     --gs_iters 250 \
-    --gs_lr 1e-3 \
-    --gs_beta2 0.9 \
-    --gs_batch_size 2 \
-    --gs_grad_accum_steps 5
-
-
-
-
-
-
-
-# bbh llama8b gs5 lr1e-4 beta0.9
-accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_bbh/test_time_evaluate.py \
-    --flash_attn \
-    --tag bbh_llama8b_gs5_lr1e-4_beta0.9 \
-    --model_name llama8b \
-    --gs_iters 5 \
-    --gs_lr 1e-4 \
-    --gs_beta2 0.9 \
-    --gs_batch_size 2 \
-    --gs_grad_accum_steps 5
-
-# bbh llama8b gs25 lr1e-4 beta0.9
-accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_bbh/test_time_evaluate.py \
-    --flash_attn \
-    --tag bbh_llama8b_gs25_lr1e-4_beta0.9 \
-    --model_name llama8b \
-    --gs_iters 25 \
-    --gs_lr 1e-4 \
-    --gs_beta2 0.9 \
-    --gs_batch_size 2 \
-    --gs_grad_accum_steps 5
-
-# bbh llama8b gs100 lr1e-4 beta0.9
-accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_bbh/test_time_evaluate.py \
-    --flash_attn \
-    --tag bbh_llama8b_gs100_lr1e-4_beta0.9 \
-    --model_name llama8b \
-    --gs_iters 100 \
-    --gs_lr 1e-4 \
-    --gs_beta2 0.9 \
-    --gs_batch_size 2 \
-    --gs_grad_accum_steps 5
-
-# bbh llama8b gs250 lr1e-4 beta0.9
-accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_bbh/test_time_evaluate.py \
-    --flash_attn \
-    --tag bbh_llama8b_gs250_lr1e-4_beta0.9 \
-    --model_name llama8b \
-    --gs_iters 250 \
-    --gs_lr 1e-4 \
+    --gs_lr 1e-6 \
     --gs_beta2 0.9 \
     --gs_batch_size 2 \
     --gs_grad_accum_steps 5
@@ -161,3 +261,33 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 infere
 # Submitted batch job 59111926 # 49.23
 
 # so far 49.32
+
+
+
+
+
+# ABOVE HAS THE WRONG LR SCHEDULE
+
+# lr1e-3
+# Submitted batch job 59130906
+# Submitted batch job 59130907
+# Submitted batch job 59130908
+# Submitted batch job 59130909
+
+# lr1e-4
+# Submitted batch job 59130910
+# Submitted batch job 59130911
+# Submitted batch job 59130912
+# Submitted batch job 59130913
+
+# lr1e-5
+# Submitted batch job 59131261
+# Submitted batch job 59131262
+# Submitted batch job 59131263
+# Submitted batch job 59131264
+
+# lr1e-6
+# Submitted batch job 59131265
+# Submitted batch job 59131266
+# Submitted batch job 59131267
+# Submitted batch job 59131268

@@ -143,6 +143,106 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 infere
     --gs_grad_accum_steps 5 \
     --gs_loss_on_input
 
+
+
+
+# bbh llama8b gs5 lr1e-5 lossoninput
+accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_bbh/test_time_evaluate.py \
+    --flash_attn \
+    --tag bbh_llama8b_gs5_lr1e-5_lossoninput \
+    --model_name llama8b \
+    --gs_iters 5 \
+    --gs_lr 1e-5 \
+    --gs_batch_size 2 \
+    --gs_grad_accum_steps 5 \
+    --gs_loss_on_input
+
+# bbh llama8b gs25 lr1e-5 lossoninput
+accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_bbh/test_time_evaluate.py \
+    --flash_attn \
+    --tag bbh_llama8b_gs25_lr1e-5_lossoninput \
+    --model_name llama8b \
+    --gs_iters 25 \
+    --gs_lr 1e-5 \
+    --gs_batch_size 2 \
+    --gs_grad_accum_steps 5 \
+    --gs_loss_on_input
+
+# bbh llama8b gs100 lr1e-5 lossoninput
+accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_bbh/test_time_evaluate.py \
+    --flash_attn \
+    --tag bbh_llama8b_gs100_lr1e-5_lossoninput \
+    --model_name llama8b \
+    --gs_iters 100 \
+    --gs_lr 1e-5 \
+    --gs_batch_size 2 \
+    --gs_grad_accum_steps 5 \
+    --gs_loss_on_input
+
+# bbh llama8b gs250 lr1e-5 lossoninput
+accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_bbh/test_time_evaluate.py \
+    --flash_attn \
+    --tag bbh_llama8b_gs250_lr1e-5_lossoninput \
+    --model_name llama8b \
+    --gs_iters 250 \
+    --gs_lr 1e-5 \
+    --gs_batch_size 2 \
+    --gs_grad_accum_steps 5 \
+    --gs_loss_on_input
+
+
+
+
+
+
+# bbh llama8b gs5 lr1e-6 lossoninput
+accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_bbh/test_time_evaluate.py \
+    --flash_attn \
+    --tag bbh_llama8b_gs5_lr1e-6_lossoninput \
+    --model_name llama8b \
+    --gs_iters 5 \
+    --gs_lr 1e-6 \
+    --gs_batch_size 2 \
+    --gs_grad_accum_steps 5 \
+    --gs_loss_on_input
+
+# bbh llama8b gs25 lr1e-6 lossoninput
+accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_bbh/test_time_evaluate.py \
+    --flash_attn \
+    --tag bbh_llama8b_gs25_lr1e-6_lossoninput \
+    --model_name llama8b \
+    --gs_iters 25 \
+    --gs_lr 1e-6 \
+    --gs_batch_size 2 \
+    --gs_grad_accum_steps 5 \
+    --gs_loss_on_input
+
+# bbh llama8b gs100 lr1e-6 lossoninput
+accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_bbh/test_time_evaluate.py \
+    --flash_attn \
+    --tag bbh_llama8b_gs100_lr1e-6_lossoninput \
+    --model_name llama8b \
+    --gs_iters 100 \
+    --gs_lr 1e-6 \
+    --gs_batch_size 2 \
+    --gs_grad_accum_steps 5 \
+    --gs_loss_on_input
+
+# bbh llama8b gs250 lr1e-6 lossoninput
+accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_bbh/test_time_evaluate.py \
+    --flash_attn \
+    --tag bbh_llama8b_gs250_lr1e-6_lossoninput \
+    --model_name llama8b \
+    --gs_iters 250 \
+    --gs_lr 1e-6 \
+    --gs_batch_size 2 \
+    --gs_grad_accum_steps 5 \
+    --gs_loss_on_input
+
+
+
+
+
 # Submitted batch job 59112549 # 33.28
 # Submitted batch job 59112550 # 28.49
 # Submitted batch job 59112551 # 28.65
@@ -159,3 +259,33 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 infere
 # Submitted batch job 59112560 # 48.83
 
 # so far 49.15
+
+
+
+
+
+# ABOVE HAS THE WRONG LR SCHEDULE
+
+# lr1e-3
+# Submitted batch job 59130918
+# Submitted batch job 59130919
+# Submitted batch job 59130920
+# Submitted batch job 59130921
+
+# lr1e-4
+# Submitted batch job 59130922
+# Submitted batch job 59130923
+# Submitted batch job 59130924
+# Submitted batch job 59130925
+
+# lr1e-5
+# Submitted batch job 59131345
+# Submitted batch job 59131346
+# Submitted batch job 59131347
+# Submitted batch job 59131348
+
+# lr1e-6
+# Submitted batch job 59131349
+# Submitted batch job 59131350
+# Submitted batch job 59131351
+# Submitted batch job 59131352
