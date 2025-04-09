@@ -206,52 +206,6 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 infere
 
 
 
-
-# arc gs5 lr1e-4 permuten1024
-accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_arc/test_time_evaluate.py \
-    --select_tasks_path task_info_selected.csv \
-    --no_bos \
-    --tag arc_gs5_lr1e-4_permuten1024 \
-    --weight_dir 0317_noprogram_base \
-    --weight_epoch 24 \
-    --gs_iters 5 \
-    --gs_lr 1e-4 \
-    --gs_num_permute 1024
-
-# arc gs25 lr1e-4 permuten1024
-accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_arc/test_time_evaluate.py \
-    --select_tasks_path task_info_selected.csv \
-    --no_bos \
-    --tag arc_gs25_lr1e-4_permuten1024 \
-    --weight_dir 0317_noprogram_base \
-    --weight_epoch 24 \
-    --gs_iters 25 \
-    --gs_lr 1e-4 \
-    --gs_num_permute 1024
-
-# arc gs100 lr1e-4 permuten1024
-accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_arc/test_time_evaluate.py \
-    --select_tasks_path task_info_selected.csv \
-    --no_bos \
-    --tag arc_gs100_lr1e-4_permuten1024 \
-    --weight_dir 0317_noprogram_base \
-    --weight_epoch 24 \
-    --gs_iters 100 \
-    --gs_lr 1e-4 \
-    --gs_num_permute 1024
-
-# arc gs250 lr1e-4 permuten1024
-accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_arc/test_time_evaluate.py \
-    --select_tasks_path task_info_selected.csv \
-    --no_bos \
-    --tag arc_gs250_lr1e-4_permuten1024 \
-    --weight_dir 0317_noprogram_base \
-    --weight_epoch 24 \
-    --gs_iters 250 \
-    --gs_lr 1e-4 \
-    --gs_num_permute 1024
-
-
 # lr3e-2
 # Submitted batch job 59129953
 # Submitted batch job 59129954
@@ -283,3 +237,36 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 infere
 # Submitted batch job 59085680 # 0.1375
 
 # accuracy seems increasing? espeically when cosine makes lr so low at the end but still improving for 1e-3
+
+
+
+
+
+
+
+
+# AFTER PRECISION FIX
+
+# lr3e-2
+# Submitted batch job 59139709
+# Submitted batch job 59139710
+# Submitted batch job 59139711
+# Submitted batch job 59139712
+
+# lr1e-2
+# Submitted batch job 59139713
+# Submitted batch job 59139714
+# Submitted batch job 59139715
+# Submitted batch job 59139716
+
+# lr3e-3
+# Submitted batch job 59139717
+# Submitted batch job 59139718
+# Submitted batch job 59139719
+# Submitted batch job 59139720
+
+# lr1e-3
+# Submitted batch job 59139721
+# Submitted batch job 59139722
+# Submitted batch job 59139723
+# Submitted batch job 59139724

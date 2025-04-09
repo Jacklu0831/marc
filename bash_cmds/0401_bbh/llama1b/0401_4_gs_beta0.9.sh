@@ -125,3 +125,27 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 infere
 # Submitted batch job 59111907 # 32.44
 
 # so far 32.68
+
+
+
+
+
+# AFTER PRECISION FIX
+
+# lr1e-2
+# Submitted batch job 59139775
+# Submitted batch job 59139776
+# Submitted batch job 59139777
+# Submitted batch job 59139778
+
+# lr1e-3
+# Submitted batch job 59139779
+# Submitted batch job 59139780
+# Submitted batch job 59139781
+# Submitted batch job 59139782
+
+# lr1e-4
+# Submitted batch job 59139783
+# Submitted batch job 59139784
+# Submitted batch job 59139785
+# Submitted batch job 59139786

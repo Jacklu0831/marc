@@ -182,3 +182,30 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 infere
 # Submitted batch job 59078803 # 0.3
 # Submitted batch job 59078804 # 0.3
 # Submitted batch job 59078805 # 0.3
+
+
+
+
+
+
+
+
+# AFTER PRECISION FIX
+
+# gslr1e-3
+# Submitted batch job 59139692
+# Submitted batch job 59139693
+# Submitted batch job 59139694
+# Submitted batch job 59139695
+
+# gslr1e-4
+# Submitted batch job 59139696
+# Submitted batch job 59139697
+# Submitted batch job 59139698
+# Submitted batch job 59139699
+
+# gslr1e-5
+# Submitted batch job 59139700
+# Submitted batch job 59139701
+# Submitted batch job 59139702
+# Submitted batch job 59139703

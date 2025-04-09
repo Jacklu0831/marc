@@ -4,41 +4,85 @@
 # for a 1:1 reproduction, gs_take_best and gs_max_grad_norm=1e8
 
 
-# arc gs5 lr1e-3 full
+# # arc gs5 lr1e-3 full
+# accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_arc/test_time_evaluate.py \
+#     --no_bos \
+#     --tag arc_gs5_lr1e-3_full \
+#     --weight_dir 0317_noprogram_base \
+#     --weight_epoch 24 \
+#     --gs_iters 5 \
+#     --gs_lr 1e-3
+
+# # arc gs25 lr1e-3 full
+# accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_arc/test_time_evaluate.py \
+#     --no_bos \
+#     --tag arc_gs25_lr1e-3_full \
+#     --weight_dir 0317_noprogram_base \
+#     --weight_epoch 24 \
+#     --gs_iters 25 \
+#     --gs_lr 1e-3
+
+# # arc gs100 lr1e-3 full
+# accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_arc/test_time_evaluate.py \
+#     --no_bos \
+#     --tag arc_gs100_lr1e-3_full \
+#     --weight_dir 0317_noprogram_base \
+#     --weight_epoch 24 \
+#     --gs_iters 100 \
+#     --gs_lr 1e-3
+
+# # arc gs250 lr1e-3 full
+# accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_arc/test_time_evaluate.py \
+#     --no_bos \
+#     --tag arc_gs250_lr1e-3_full \
+#     --weight_dir 0317_noprogram_base \
+#     --weight_epoch 24 \
+#     --gs_iters 250 \
+#     --gs_lr 1e-3
+
+
+
+
+
+
+# arc gs5 lr1e-4 full
 accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_arc/test_time_evaluate.py \
     --no_bos \
-    --tag arc_gs5_lr1e-3_full \
+    --tag arc_gs5_lr1e-4_full \
     --weight_dir 0317_noprogram_base \
     --weight_epoch 24 \
     --gs_iters 5 \
-    --gs_lr 1e-3
+    --gs_lr 1e-4
 
-# arc gs25 lr1e-3 full
+# arc gs25 lr1e-4 full
 accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_arc/test_time_evaluate.py \
     --no_bos \
-    --tag arc_gs25_lr1e-3_full \
+    --tag arc_gs25_lr1e-4_full \
     --weight_dir 0317_noprogram_base \
     --weight_epoch 24 \
     --gs_iters 25 \
-    --gs_lr 1e-3
+    --gs_lr 1e-4
 
-# arc gs100 lr1e-3 full
+# arc gs100 lr1e-4 full
 accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_arc/test_time_evaluate.py \
     --no_bos \
-    --tag arc_gs100_lr1e-3_full \
+    --tag arc_gs100_lr1e-4_full \
     --weight_dir 0317_noprogram_base \
     --weight_epoch 24 \
     --gs_iters 100 \
-    --gs_lr 1e-3
+    --gs_lr 1e-4
 
-# arc gs250 lr1e-3 full
+# arc gs250 lr1e-4 full
 accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_arc/test_time_evaluate.py \
     --no_bos \
-    --tag arc_gs250_lr1e-3_full \
+    --tag arc_gs250_lr1e-4_full \
     --weight_dir 0317_noprogram_base \
     --weight_epoch 24 \
     --gs_iters 250 \
-    --gs_lr 1e-3
+    --gs_lr 1e-4
+
+
+
 
 # Submitted batch job 59047847 # 0.15
 # Submitted batch job 59047848 # 0.17
@@ -46,3 +90,18 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 infere
 # Submitted batch job 59047850 # 0.195 # 5 hours
 
 # so far 0.195
+
+
+# AFTER PRECISION FIX
+
+# lr1e-3
+# Submitted batch job 59139572
+# Submitted batch job 59139573
+# Submitted batch job 59139574
+# Submitted batch job 59139575
+
+# lr1e-4
+# Submitted batch job 59139580
+# Submitted batch job 59139581
+# Submitted batch job 59139582
+# Submitted batch job 59139583

@@ -124,3 +124,24 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 infere
 # Submitted batch job 59112482 # 38.83
 
 # so far 40.41, but why? debug this
+
+
+
+
+# lr1e-2
+# Submitted batch job 59139790
+# Submitted batch job 59139791
+# Submitted batch job 59139792
+# Submitted batch job 59139793
+
+# lr1e-3
+# Submitted batch job 59139794
+# Submitted batch job 59139795
+# Submitted batch job 59139796
+# Submitted batch job 59139797
+
+# lr1e-4
+# Submitted batch job 59139798
+# Submitted batch job 59139799
+# Submitted batch job 59139800
+# Submitted batch job 59139801

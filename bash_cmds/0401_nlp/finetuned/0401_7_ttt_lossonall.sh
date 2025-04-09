@@ -50,8 +50,12 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 infere
     --ttt_loss_type all \
     --eval_seeds 100
 
-# Submitted batch job 59123442
-# Submitted batch job 59123443
-# Submitted batch job 59123444
-# Submitted batch job 59123445
-# Submitted batch job 59123446
+
+
+# AFTER PRECISION FIX
+
+# Submitted batch job 59139535
+# Submitted batch job 59139536
+# Submitted batch job 59139537
+# Submitted batch job 59139538
+# Submitted batch job 59139539

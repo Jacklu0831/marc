@@ -231,28 +231,28 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 infere
 
 
 
-# ABOVE HAS THE WRONG LR SCHEDULE
+# AFTER PRECISION FIX and SCHEDULER FIX
 
 # lr1e-3
-# Submitted batch job 59130891
-# Submitted batch job 59130892
-# Submitted batch job 59130893
-# Submitted batch job 59130894
+# Submitted batch job 59139837
+# Submitted batch job 59139838
+# Submitted batch job 59139839
+# Submitted batch job 59139840
 
 # lr1e-4
-# Submitted batch job 59130895
-# Submitted batch job 59130896
-# Submitted batch job 59130897
-# Submitted batch job 59130898
+# Submitted batch job 59139841
+# Submitted batch job 59139842
+# Submitted batch job 59139843
+# Submitted batch job 59139844
 
 # lr1e-5
-# Submitted batch job 59131227
-# Submitted batch job 59131228
-# Submitted batch job 59131229
-# Submitted batch job 59131230
+# Submitted batch job 59139845
+# Submitted batch job 59139846
+# Submitted batch job 59139847
+# Submitted batch job 59139848
 
 # lr1e-6
-# Submitted batch job 59131231
-# Submitted batch job 59131232
-# Submitted batch job 59131233
-# Submitted batch job 59131234
+# Submitted batch job 59139849
+# Submitted batch job 59139850
+# Submitted batch job 59139851
+# Submitted batch job 59139852

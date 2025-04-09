@@ -4,91 +4,89 @@
 # python make_sbatch.py --ngpu 1 --time 7 --rtx8000 --bash_files bash_cmds/0401_nlp/finetuned/0401_15_gs_numpermute.sh
 
 
-# nlp ft gs5 lr1e-2 permuten1024
-accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_nlp/test_time_evaluate.py \
-    --tag ft_gs5_lr1e-2_permuten1024 \
-    --weight_dir 0401_nlp_gpt2_notruncate \
-    --weight_epoch 5 \
-    --gs_iters 5 \
-    --gs_lr 1e-2 \
-    --gs_num_permute 1024 \
-    --eval_seeds 100
+# # nlp ft gs5 lr1e-2 permuten1024
+# accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_nlp/test_time_evaluate.py \
+#     --tag ft_gs5_lr1e-2_permuten1024 \
+#     --weight_dir 0401_nlp_gpt2_notruncate \
+#     --weight_epoch 5 \
+#     --gs_iters 5 \
+#     --gs_lr 1e-2 \
+#     --gs_num_permute 1024 \
+#     --eval_seeds 100
 
-# nlp ft gs25 lr1e-2 permuten1024
-accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_nlp/test_time_evaluate.py \
-    --tag ft_gs25_lr1e-2_permuten1024 \
-    --weight_dir 0401_nlp_gpt2_notruncate \
-    --weight_epoch 5 \
-    --gs_iters 25 \
-    --gs_lr 1e-2 \
-    --gs_num_permute 1024 \
-    --eval_seeds 100
+# # nlp ft gs25 lr1e-2 permuten1024
+# accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_nlp/test_time_evaluate.py \
+#     --tag ft_gs25_lr1e-2_permuten1024 \
+#     --weight_dir 0401_nlp_gpt2_notruncate \
+#     --weight_epoch 5 \
+#     --gs_iters 25 \
+#     --gs_lr 1e-2 \
+#     --gs_num_permute 1024 \
+#     --eval_seeds 100
 
-# nlp ft gs100 lr1e-2 permuten1024
-accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_nlp/test_time_evaluate.py \
-    --tag ft_gs100_lr1e-2_permuten1024 \
-    --weight_dir 0401_nlp_gpt2_notruncate \
-    --weight_epoch 5 \
-    --gs_iters 100 \
-    --gs_lr 1e-2 \
-    --gs_num_permute 1024 \
-    --eval_seeds 100
+# # nlp ft gs100 lr1e-2 permuten1024
+# accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_nlp/test_time_evaluate.py \
+#     --tag ft_gs100_lr1e-2_permuten1024 \
+#     --weight_dir 0401_nlp_gpt2_notruncate \
+#     --weight_epoch 5 \
+#     --gs_iters 100 \
+#     --gs_lr 1e-2 \
+#     --gs_num_permute 1024 \
+#     --eval_seeds 100
 
-# nlp ft gs250 lr1e-2 permuten1024
-accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_nlp/test_time_evaluate.py \
-    --tag ft_gs250_lr1e-2_permuten1024 \
-    --weight_dir 0401_nlp_gpt2_notruncate \
-    --weight_epoch 5 \
-    --gs_iters 250 \
-    --gs_lr 1e-2 \
-    --gs_num_permute 1024 \
-    --eval_seeds 100
-
-
+# # nlp ft gs250 lr1e-2 permuten1024
+# accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_nlp/test_time_evaluate.py \
+#     --tag ft_gs250_lr1e-2_permuten1024 \
+#     --weight_dir 0401_nlp_gpt2_notruncate \
+#     --weight_epoch 5 \
+#     --gs_iters 250 \
+#     --gs_lr 1e-2 \
+#     --gs_num_permute 1024 \
+#     --eval_seeds 100
 
 
 
-# nlp ft gs5 lr1e-3 permuten1024
-accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_nlp/test_time_evaluate.py \
-    --tag ft_gs5_lr1e-3_permuten1024 \
-    --weight_dir 0401_nlp_gpt2_notruncate \
-    --weight_epoch 5 \
-    --gs_iters 5 \
-    --gs_lr 1e-3 \
-    --gs_num_permute 1024 \
-    --eval_seeds 100
-
-# nlp ft gs25 lr1e-3 permuten1024
-accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_nlp/test_time_evaluate.py \
-    --tag ft_gs25_lr1e-3_permuten1024 \
-    --weight_dir 0401_nlp_gpt2_notruncate \
-    --weight_epoch 5 \
-    --gs_iters 25 \
-    --gs_lr 1e-3 \
-    --gs_num_permute 1024 \
-    --eval_seeds 100
-
-# nlp ft gs100 lr1e-3 permuten1024
-accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_nlp/test_time_evaluate.py \
-    --tag ft_gs100_lr1e-3_permuten1024 \
-    --weight_dir 0401_nlp_gpt2_notruncate \
-    --weight_epoch 5 \
-    --gs_iters 100 \
-    --gs_lr 1e-3 \
-    --gs_num_permute 1024 \
-    --eval_seeds 100
-
-# nlp ft gs250 lr1e-3 permuten1024
-accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_nlp/test_time_evaluate.py \
-    --tag ft_gs250_lr1e-3_permuten1024 \
-    --weight_dir 0401_nlp_gpt2_notruncate \
-    --weight_epoch 5 \
-    --gs_iters 250 \
-    --gs_lr 1e-3 \
-    --gs_num_permute 1024 \
-    --eval_seeds 100
 
 
+# # nlp ft gs5 lr1e-3 permuten1024
+# accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_nlp/test_time_evaluate.py \
+#     --tag ft_gs5_lr1e-3_permuten1024 \
+#     --weight_dir 0401_nlp_gpt2_notruncate \
+#     --weight_epoch 5 \
+#     --gs_iters 5 \
+#     --gs_lr 1e-3 \
+#     --gs_num_permute 1024 \
+#     --eval_seeds 100
+
+# # nlp ft gs25 lr1e-3 permuten1024
+# accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_nlp/test_time_evaluate.py \
+#     --tag ft_gs25_lr1e-3_permuten1024 \
+#     --weight_dir 0401_nlp_gpt2_notruncate \
+#     --weight_epoch 5 \
+#     --gs_iters 25 \
+#     --gs_lr 1e-3 \
+#     --gs_num_permute 1024 \
+#     --eval_seeds 100
+
+# # nlp ft gs100 lr1e-3 permuten1024
+# accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_nlp/test_time_evaluate.py \
+#     --tag ft_gs100_lr1e-3_permuten1024 \
+#     --weight_dir 0401_nlp_gpt2_notruncate \
+#     --weight_epoch 5 \
+#     --gs_iters 100 \
+#     --gs_lr 1e-3 \
+#     --gs_num_permute 1024 \
+#     --eval_seeds 100
+
+# # nlp ft gs250 lr1e-3 permuten1024
+# accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_nlp/test_time_evaluate.py \
+#     --tag ft_gs250_lr1e-3_permuten1024 \
+#     --weight_dir 0401_nlp_gpt2_notruncate \
+#     --weight_epoch 5 \
+#     --gs_iters 250 \
+#     --gs_lr 1e-3 \
+#     --gs_num_permute 1024 \
+#     --eval_seeds 100
 
 
 
@@ -97,45 +95,47 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 infere
 
 
 
-# nlp ft gs5 lr1e-4 permuten1024
-accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_nlp/test_time_evaluate.py \
-    --tag ft_gs5_lr1e-4_permuten1024 \
-    --weight_dir 0401_nlp_gpt2_notruncate \
-    --weight_epoch 5 \
-    --gs_iters 5 \
-    --gs_lr 1e-4 \
-    --gs_num_permute 1024 \
-    --eval_seeds 100
 
-# nlp ft gs25 lr1e-4 permuten1024
-accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_nlp/test_time_evaluate.py \
-    --tag ft_gs25_lr1e-4_permuten1024 \
-    --weight_dir 0401_nlp_gpt2_notruncate \
-    --weight_epoch 5 \
-    --gs_iters 25 \
-    --gs_lr 1e-4 \
-    --gs_num_permute 1024 \
-    --eval_seeds 100
 
-# nlp ft gs100 lr1e-4 permuten1024
-accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_nlp/test_time_evaluate.py \
-    --tag ft_gs100_lr1e-4_permuten1024 \
-    --weight_dir 0401_nlp_gpt2_notruncate \
-    --weight_epoch 5 \
-    --gs_iters 100 \
-    --gs_lr 1e-4 \
-    --gs_num_permute 1024 \
-    --eval_seeds 100
+# # nlp ft gs5 lr1e-4 permuten1024
+# accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_nlp/test_time_evaluate.py \
+#     --tag ft_gs5_lr1e-4_permuten1024 \
+#     --weight_dir 0401_nlp_gpt2_notruncate \
+#     --weight_epoch 5 \
+#     --gs_iters 5 \
+#     --gs_lr 1e-4 \
+#     --gs_num_permute 1024 \
+#     --eval_seeds 100
 
-# nlp ft gs250 lr1e-4 permuten1024
-accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_nlp/test_time_evaluate.py \
-    --tag ft_gs250_lr1e-4_permuten1024 \
-    --weight_dir 0401_nlp_gpt2_notruncate \
-    --weight_epoch 5 \
-    --gs_iters 250 \
-    --gs_lr 1e-4 \
-    --gs_num_permute 1024 \
-    --eval_seeds 100
+# # nlp ft gs25 lr1e-4 permuten1024
+# accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_nlp/test_time_evaluate.py \
+#     --tag ft_gs25_lr1e-4_permuten1024 \
+#     --weight_dir 0401_nlp_gpt2_notruncate \
+#     --weight_epoch 5 \
+#     --gs_iters 25 \
+#     --gs_lr 1e-4 \
+#     --gs_num_permute 1024 \
+#     --eval_seeds 100
+
+# # nlp ft gs100 lr1e-4 permuten1024
+# accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_nlp/test_time_evaluate.py \
+#     --tag ft_gs100_lr1e-4_permuten1024 \
+#     --weight_dir 0401_nlp_gpt2_notruncate \
+#     --weight_epoch 5 \
+#     --gs_iters 100 \
+#     --gs_lr 1e-4 \
+#     --gs_num_permute 1024 \
+#     --eval_seeds 100
+
+# # nlp ft gs250 lr1e-4 permuten1024
+# accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_nlp/test_time_evaluate.py \
+#     --tag ft_gs250_lr1e-4_permuten1024 \
+#     --weight_dir 0401_nlp_gpt2_notruncate \
+#     --weight_epoch 5 \
+#     --gs_iters 250 \
+#     --gs_lr 1e-4 \
+#     --gs_num_permute 1024 \
+#     --eval_seeds 100
 
 # nlp ft gs300 lr1e-4 permuten1024
 accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_nlp/test_time_evaluate.py \
@@ -174,45 +174,45 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 infere
 
 
 
-# nlp ft gs5 lr3e-3 permuten1024
-accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_nlp/test_time_evaluate.py \
-    --tag ft_gs5_lr3e-3_permuten1024 \
-    --weight_dir 0401_nlp_gpt2_notruncate \
-    --weight_epoch 5 \
-    --gs_iters 5 \
-    --gs_lr 3e-3 \
-    --gs_num_permute 1024 \
-    --eval_seeds 100
+# # nlp ft gs5 lr3e-3 permuten1024
+# accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_nlp/test_time_evaluate.py \
+#     --tag ft_gs5_lr3e-3_permuten1024 \
+#     --weight_dir 0401_nlp_gpt2_notruncate \
+#     --weight_epoch 5 \
+#     --gs_iters 5 \
+#     --gs_lr 3e-3 \
+#     --gs_num_permute 1024 \
+#     --eval_seeds 100
 
-# nlp ft gs25 lr3e-3 permuten1024
-accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_nlp/test_time_evaluate.py \
-    --tag ft_gs25_lr3e-3_permuten1024 \
-    --weight_dir 0401_nlp_gpt2_notruncate \
-    --weight_epoch 5 \
-    --gs_iters 25 \
-    --gs_lr 3e-3 \
-    --gs_num_permute 1024 \
-    --eval_seeds 100
+# # nlp ft gs25 lr3e-3 permuten1024
+# accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_nlp/test_time_evaluate.py \
+#     --tag ft_gs25_lr3e-3_permuten1024 \
+#     --weight_dir 0401_nlp_gpt2_notruncate \
+#     --weight_epoch 5 \
+#     --gs_iters 25 \
+#     --gs_lr 3e-3 \
+#     --gs_num_permute 1024 \
+#     --eval_seeds 100
 
-# nlp ft gs100 lr3e-3 permuten1024
-accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_nlp/test_time_evaluate.py \
-    --tag ft_gs100_lr3e-3_permuten1024 \
-    --weight_dir 0401_nlp_gpt2_notruncate \
-    --weight_epoch 5 \
-    --gs_iters 100 \
-    --gs_lr 3e-3 \
-    --gs_num_permute 1024 \
-    --eval_seeds 100
+# # nlp ft gs100 lr3e-3 permuten1024
+# accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_nlp/test_time_evaluate.py \
+#     --tag ft_gs100_lr3e-3_permuten1024 \
+#     --weight_dir 0401_nlp_gpt2_notruncate \
+#     --weight_epoch 5 \
+#     --gs_iters 100 \
+#     --gs_lr 3e-3 \
+#     --gs_num_permute 1024 \
+#     --eval_seeds 100
 
-# nlp ft gs250 lr3e-3 permuten1024
-accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_nlp/test_time_evaluate.py \
-    --tag ft_gs250_lr3e-3_permuten1024 \
-    --weight_dir 0401_nlp_gpt2_notruncate \
-    --weight_epoch 5 \
-    --gs_iters 250 \
-    --gs_lr 3e-3 \
-    --gs_num_permute 1024 \
-    --eval_seeds 100
+# # nlp ft gs250 lr3e-3 permuten1024
+# accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_nlp/test_time_evaluate.py \
+#     --tag ft_gs250_lr3e-3_permuten1024 \
+#     --weight_dir 0401_nlp_gpt2_notruncate \
+#     --weight_epoch 5 \
+#     --gs_iters 250 \
+#     --gs_lr 3e-3 \
+#     --gs_num_permute 1024 \
+#     --eval_seeds 100
 
 
 
@@ -253,3 +253,35 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 infere
 # overall numpermute has a bit of potential for higher if trained for the proper amount,
 # and it just misses the "mark" with lr1e-3,
 # lets try to justify using it for all NLP tasks (ARC kinda has no hope)
+
+
+
+
+# AFTER PRECISION FIX
+
+# lr1e-2
+# Submitted batch job 59139552
+# Submitted batch job 59139553
+# Submitted batch job 59139554
+# Submitted batch job 59139555
+
+# lr1e-3
+# Submitted batch job 59139556
+# Submitted batch job 59139557
+# Submitted batch job 59139558
+# Submitted batch job 59139559
+
+# lr1e-4
+# Submitted batch job 59139560
+# Submitted batch job 59139561
+# Submitted batch job 59139562
+# Submitted batch job 59139563
+# Submitted batch job 59139569
+# Submitted batch job 59139570
+# Submitted batch job 59139571
+
+# lr1e-5
+# Submitted batch job 59139564
+# Submitted batch job 59139565
+# Submitted batch job 59139566
+# Submitted batch job 59139567

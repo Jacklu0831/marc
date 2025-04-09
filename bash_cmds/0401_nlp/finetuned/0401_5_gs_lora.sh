@@ -1,5 +1,7 @@
 # python make_sbatch.py --ngpu 1 --time 2 --rtx8000 --bash_files bash_cmds/0401_nlp/finetuned/0401_5_gs_lora.sh
 
+
+
 # ft nlp gs5 lr1e-4 lora1e-4
 accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_nlp/test_time_evaluate.py \
     --tag ft_gs5_lr1e-4_lora1e-4 \
@@ -165,3 +167,27 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 infere
 
 # lora did not help here, unlike in pretrained
 # ft modifies model params for ICL and achieve eval acc on par with training! so additional weight tuning doesnt help
+
+
+
+
+
+# AFTER PRECISION FIX
+
+# lr1e-4
+# Submitted batch job 59139523
+# Submitted batch job 59139524
+# Submitted batch job 59139525
+# Submitted batch job 59139526
+
+# lr1e-5
+# Submitted batch job 59139527
+# Submitted batch job 59139528
+# Submitted batch job 59139529
+# Submitted batch job 59139530
+
+# lr1e-6
+# Submitted batch job 59139531
+# Submitted batch job 59139532
+# Submitted batch job 59139533
+# Submitted batch job 59139534
