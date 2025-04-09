@@ -1,4 +1,4 @@
-# python make_sbatch.py --ngpu 1 --time 8 --rtx8000 --bash_files bash_cmds/0401_nlp/finetuned/0401_5_gs_lora.sh
+# python make_sbatch.py --ngpu 1 --time 2 --rtx8000 --bash_files bash_cmds/0401_nlp/finetuned/0401_5_gs_lora.sh
 
 # ft nlp gs5 lr1e-4 lora1e-4
 accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_nlp/test_time_evaluate.py \

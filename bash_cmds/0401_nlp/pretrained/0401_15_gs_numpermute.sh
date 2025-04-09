@@ -1,4 +1,4 @@
-# python make_sbatch.py --ngpu 1 --time 5 --rtx8000 --bash_files bash_cmds/0401_nlp/pretrained/0401_15_gs_numpermute.sh
+# python make_sbatch.py --ngpu 1 --time 4 --rtx8000 --bash_files bash_cmds/0401_nlp/pretrained/0401_15_gs_numpermute.sh
 
 # nlp gs5 lr1e-2 permuten1024
 accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_nlp/test_time_evaluate.py \

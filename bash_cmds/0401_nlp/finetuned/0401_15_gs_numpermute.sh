@@ -1,7 +1,7 @@
-# python make_sbatch.py --ngpu 1 --time 5 --rtx8000 --bash_files bash_cmds/0401_nlp/finetuned/0401_15_gs_numpermute.sh
+# python make_sbatch.py --ngpu 1 --time 4 --rtx8000 --bash_files bash_cmds/0401_nlp/finetuned/0401_15_gs_numpermute.sh
 
 # for the special 1e-4 long runs with iters 300 350 400
-# python make_sbatch.py --ngpu 1 --time 8 --rtx8000 --bash_files bash_cmds/0401_nlp/finetuned/0401_15_gs_numpermute.sh
+# python make_sbatch.py --ngpu 1 --time 7 --rtx8000 --bash_files bash_cmds/0401_nlp/finetuned/0401_15_gs_numpermute.sh
 
 
 # nlp ft gs5 lr1e-2 permuten1024

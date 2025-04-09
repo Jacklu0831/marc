@@ -1,3 +1,4 @@
+import copy
 import gc
 import time
 from transformers.tokenization_utils_fast import PreTrainedTokenizerFast
@@ -261,9 +262,7 @@ def test_time_evaluate(
     assert len(dataset.tasks) >= accelerator.num_processes # avoid padding issue
 
     # we need to cache model in case of ttt or gs with trainable lora
-    cached_model_path = os.path.join(output_dir, 'eval_cached_model')
-    if accelerator.is_main_process:
-        accelerator.unwrap_model(model).save_pretrained(cached_model_path)
+    cached_model = copy.deepcopy(model).cpu()
 
     distributed_state = PartialState()
     with distributed_state.split_between_processes(dataset.tasks) as process_tasks:
@@ -287,8 +286,7 @@ def test_time_evaluate(
             assert demon_input_ids.shape[1] <= dataset.max_seq_len
 
             # model: load cached for fresh model
-            del model
-            model = AutoModelForCausalLM.from_pretrained(cached_model_path).to(accelerator.device)
+            model = copy.deepcopy(cached_model).to(accelerator.device)
             model.eval()
 
             # logging
@@ -317,6 +315,7 @@ def test_time_evaluate(
                         lora_alpha=ttt_lora_alpha,
                         loss_type=ttt_loss_type,
                         permute_n=ttt_permute_n,
+                        trainable_nbit=trainable_nbit,
                     )
                     ttt_time = time.time() - start_time
                     torch.cuda.empty_cache()
@@ -344,14 +343,6 @@ def test_time_evaluate(
                 with accelerator.no_sync(model):
                     assert past_key_values is not None
                     assert past_key_values[0][0].shape[0] == 1
-                    if not no_flash_attn:
-                        past_key_values = tuple(
-                            (
-                                layer_k.to(NBIT_TO_DTYPE[trainable_nbit]),
-                                layer_v.to(NBIT_TO_DTYPE[trainable_nbit]),
-                            )
-                            for layer_k, layer_v in past_key_values
-                        )
 
                     start_time = time.time()
                     model, past_key_values, gs_num_data, gs_num_params = run_gs(
@@ -430,7 +421,7 @@ def test_time_evaluate(
                 batch_past_key_values = [
                     (
                         layer_k.detach().clone().expand(bs, *layer_k.shape[1:]),
-                        layer_v.detach().clone().expand(bs, *layer_v.shape[1:])
+                        layer_v.detach().clone().expand(bs, *layer_v.shape[1:]),
                     )
                     for layer_k, layer_v in past_key_values
                 ]
@@ -440,7 +431,8 @@ def test_time_evaluate(
                     dtype=torch.int64
                 )
 
-                # cast if necessary
+                # i truly dont know why this is necessary, but this is necessary
+                assert batch_past_key_values[0][0].dtype == torch.float32
                 if not no_flash_attn:
                     batch_past_key_values = tuple(
                         (
@@ -567,10 +559,6 @@ def test_time_evaluate(
     gs_time = sum(gs_time_list) / len(gs_time_list)
     init_kv_time = sum(init_kv_time_list) / len(init_kv_time_list)
 
-    # remove cache model
-    if accelerator.is_main_process:
-        os.system(f"rm -rf {cached_model_path}")
-
     return score, ttt_num_data, gs_num_data, ttt_num_params, gs_num_params, ttt_time, gs_time, init_kv_time, output_list
 
 
@@ -593,6 +581,7 @@ def run_ttt(
     lora_alpha: int,
     loss_type: str,
     permute_n: int,
+    trainable_nbit: int,
 ) -> Tuple[nn.Module, int, int]:
 
     peft_config = LoraConfig(
@@ -603,6 +592,14 @@ def run_ttt(
     )
     model = get_peft_model(model, peft_config) # type: ignore
     # model.print_trainable_parameters()
+
+    # convert model weights to float16 (as in ttt paper)
+    for name, param in model.named_parameters():
+        assert param.requires_grad == ('lora' in name)
+        if param.requires_grad:
+            param.data = param.data.to(NBIT_TO_DTYPE[trainable_nbit])
+        else:
+            assert param.data.dtype == NBIT_TO_DTYPE[trainable_nbit]
 
     # get program parameters
     lora_params = []

@@ -1,4 +1,4 @@
-# python make_sbatch.py --ngpu 1 --time 8 --rtx8000 --bash_files bash_cmds/0401_nlp/pretrained/0401_7_ttt_lossonall.sh
+# python make_sbatch.py --ngpu 1 --time 6 --rtx8000 --bash_files bash_cmds/0401_nlp/pretrained/0401_7_ttt_lossonall.sh
 
 # nlp ttt5 permuten1000 allloss
 accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_nlp/test_time_evaluate.py \

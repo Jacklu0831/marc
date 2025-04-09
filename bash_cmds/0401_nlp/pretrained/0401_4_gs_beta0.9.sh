@@ -1,4 +1,4 @@
-# python make_sbatch.py --ngpu 1 --time 4 --rtx8000 --bash_files bash_cmds/0401_nlp/pretrained/0401_4_gs_beta0.9.sh
+# python make_sbatch.py --ngpu 1 --time 2 --rtx8000 --bash_files bash_cmds/0401_nlp/pretrained/0401_4_gs_beta0.9.sh
 # full batch gs, search iter and lr
 
 # nlp gs5 lr1e-2 beta0.9

@@ -387,6 +387,7 @@ def test_time_evaluate(
                         eval_dataset=dataset,
                         accelerator=accelerator,
                         model=model,
+                        trainable_nbit=trainable_nbit,
                         iters=ttt_iters,
                         batch_size=ttt_batch_size,
                         grad_accum_steps=ttt_grad_accum_steps,
@@ -426,14 +427,6 @@ def test_time_evaluate(
                 with accelerator.no_sync(model):
                     assert past_key_values is not None
                     assert past_key_values[0][0].shape[0] == 1
-                    if not no_flash_attn:
-                        past_key_values = tuple(
-                            (
-                                layer_k.to(NBIT_TO_DTYPE[trainable_nbit]),
-                                layer_v.to(NBIT_TO_DTYPE[trainable_nbit]),
-                            )
-                            for layer_k, layer_v in past_key_values
-                        )
 
                     start_time = time.time()
                     model, past_key_values, gs_num_data, gs_num_params = run_gs(
@@ -516,7 +509,7 @@ def test_time_evaluate(
                     batch_past_key_values = [
                         (
                             layer_k.detach().clone().expand(bs, *layer_k.shape[1:]),
-                            layer_v.detach().clone().expand(bs, *layer_v.shape[1:])
+                            layer_v.detach().clone().expand(bs, *layer_v.shape[1:]),
                         )
                         for layer_k, layer_v in past_key_values
                     ]
@@ -531,6 +524,17 @@ def test_time_evaluate(
                         gen_input_ids,
                     ], dim=1)
                     gen_attention_mask = torch.cat([batch_past_key_values_attention_mask, gen_attention_mask], dim=1)
+
+                    # i truly dont know why this is necessary, but this is necessary
+                    assert batch_past_key_values[0][0].dtype == torch.float32
+                    if not no_flash_attn:
+                        batch_past_key_values = tuple(
+                            (
+                                layer_k.to(NBIT_TO_DTYPE[trainable_nbit]),
+                                layer_v.to(NBIT_TO_DTYPE[trainable_nbit]),
+                            )
+                            for layer_k, layer_v in batch_past_key_values
+                        )
 
                     gen_tokens = model.generate(
                         input_ids=gen_input_ids,
@@ -623,6 +627,7 @@ def run_ttt(
     lora_alpha: int,
     loss_type: str,
     permute_n: int,
+    trainable_nbit: int,
 ) -> Tuple[nn.Module, int, int]:
 
     peft_config = LoraConfig(
@@ -633,6 +638,14 @@ def run_ttt(
     )
     model = get_peft_model(model, peft_config) # type: ignore
     # model.print_trainable_parameters()
+
+    # convert model weights to float16 (as in ttt paper)
+    for name, param in model.named_parameters():
+        assert param.requires_grad == ('lora' in name)
+        if param.requires_grad:
+            param.data = param.data.to(NBIT_TO_DTYPE[trainable_nbit])
+        else:
+            assert param.data.dtype == NBIT_TO_DTYPE[trainable_nbit]
 
     # get program parameters
     lora_params = []
