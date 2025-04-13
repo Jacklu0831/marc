@@ -50,3 +50,12 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 infere
     --gs_batch_size 2 \
     --gs_grad_accum_steps 5 \
     --gs_leave_one_out
+
+
+# 52.34
+# 52.62
+# 52.69
+# 52.39
+# 52.61
+
+# so far 52.61

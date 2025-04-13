@@ -166,3 +166,6 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 infere
 # Submitted batch job 59219144 # 40.35
 # Submitted batch job 59219145 # 41.33
 # Submitted batch job 59219146 # 42.31
+
+# so far 51.03, oh no its not transferring
+# it likely works for llama1b because other runs overfit, but here its not probably due to sensitivity to hyperparam?

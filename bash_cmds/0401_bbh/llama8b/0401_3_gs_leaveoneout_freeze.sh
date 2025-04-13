@@ -55,3 +55,13 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 infere
     --gs_grad_accum_steps 5 \
     --gs_leave_one_out \
     --gs_freeze_instruct
+
+
+
+# 49.26
+# 49.40
+# 49.54
+# 49.38
+# 49.34
+
+# so far 49.54

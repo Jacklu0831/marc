@@ -45,3 +45,12 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 infere
     --ttt_gradient_checkpointing \
     --ttt_permute_n 60 \
     --ttt_max_grad_norm 1e8
+
+
+# 52.10
+# 52.69
+# 53.28
+# 53.72
+# 54.15
+
+# so far 54.15

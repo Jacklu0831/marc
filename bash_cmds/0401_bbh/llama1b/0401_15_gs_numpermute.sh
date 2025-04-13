@@ -127,3 +127,4 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 infere
 # Submitted batch job 59218844 # 38.95
 
 # repro for why the fuck is this so high
+# I FINALLY KNOW, ITS PROBABLY JUST BECAUSE OTHER RUNS OVERFIT SO EARILY

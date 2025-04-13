@@ -72,6 +72,7 @@ logger = get_logger(__name__, log_level="INFO")
 MODEL_NAME_TO_PATH = {
     "llama1b": "meta-llama/Llama-3.2-1B-Instruct",
     "llama3b": "meta-llama/Llama-3.2-3B-Instruct",
+    "llama7b": "meta-llama/Llama-2-7b-hf",
     "llama8b": "meta-llama/Meta-Llama-3-8B-Instruct",
     "llama3b_uncensored": "chuanli11/Llama-3.2-3B-Instruct-uncensored",
 }
@@ -996,15 +997,6 @@ def run_gs(
     module = model.module if isinstance(model, DistributedDataParallel) else model
     embed_tokens = module.model.embed_tokens if not lora else module.model.model.embed_tokens
 
-    # expand to match predicted program with batch size
-    past_key_values = tuple(
-        (
-            layer_k.expand(batch_size, *layer_k.shape[1:]),
-            layer_v.expand(batch_size, *layer_v.shape[1:]),
-        )
-        for layer_k, layer_v in past_key_values
-    ) # type: ignore
-
     # train!
     curr_iter = 0
     while curr_iter < iters:
@@ -1021,8 +1013,8 @@ def run_gs(
             if freeze_instruct:
                 full_past_key_values = tuple(
                     (
-                        torch.cat([instruct_layer_k, layer_k[0:1]], dim=2).expand(bs, -1, -1, -1),
-                        torch.cat([instruct_layer_v, layer_v[0:1]], dim=2).expand(bs, -1, -1, -1),
+                        torch.cat([instruct_layer_k, layer_k], dim=2),
+                        torch.cat([instruct_layer_v, layer_v], dim=2),
                     )
                     for (instruct_layer_k, instruct_layer_v), (layer_k, layer_v) in zip(instruct_past_key_values, past_key_values)
                 )
@@ -1032,37 +1024,37 @@ def run_gs(
                 # TODO: optimize this if it works well, stack kv tensors across layers, or maybe do it in collate?
                 # get length of each test pair
                 remove_intervals = []
-                for batch_i, idx in enumerate(pair_example_idx):
+                for idx in pair_example_idx:
                     start = demon_start_idxs[idx]
-                    end = demon_start_idxs[idx + 1] if idx < len(demon_start_idxs) - 1 else full_past_key_values[0][0].shape[2]
+                    end = demon_start_idxs[idx + 1] if idx < len(demon_start_idxs) - 1 else original_kv_len
                     remove_intervals.append((start, end))
                 interval_lens = [end - start for start, end in remove_intervals]
-                max_kv_len = full_past_key_values[0][0].shape[2] - min(interval_lens) # we will pad kv to this
+                max_kv_len = original_kv_len - min(interval_lens) # we will pad kv to this
 
                 # first remove test i/o from each kv in batch
                 batch_past_key_values = [[[], []] for _ in range(len(full_past_key_values))]
                 batch_past_key_values_attention_mask = []
 
-                for batch_i, (start, end) in enumerate(remove_intervals):
-                    pad_len = max_kv_len - (full_past_key_values[0][0].shape[2] - (end - start))
+                for start, end in remove_intervals:
+                    pad_len = max_kv_len - (original_kv_len - (end - start))
                     # shorten past kv and pad
                     for layer_i, (layer_k, layer_v) in enumerate(full_past_key_values):
-                        layer_k_leave_one_out = torch.cat([layer_k[batch_i, :, :start, :], layer_k[batch_i, :, end:, :]], dim=1)
-                        layer_v_leave_one_out = torch.cat([layer_v[batch_i, :, :start, :], layer_v[batch_i, :, end:, :]], dim=1)
+                        layer_k_leave_one_out = torch.cat([layer_k[:, :, :start, :], layer_k[:, :, end:, :]], dim=2)
+                        layer_v_leave_one_out = torch.cat([layer_v[:, :, :start, :], layer_v[:, :, end:, :]], dim=2)
                         # pad
                         if pad_len > 0:
-                            pads = torch.zeros((layer_k_leave_one_out.shape[0], pad_len, layer_k_leave_one_out.shape[2]), device=accelerator.device, dtype=layer_k_leave_one_out.dtype)
+                            pads = torch.zeros((1, layer_k_leave_one_out.shape[1], pad_len, layer_k_leave_one_out.shape[3]), device=accelerator.device, dtype=layer_k_leave_one_out.dtype)
                             if eval_dataset.pad_side == 'left':
-                                layer_k_leave_one_out = torch.cat([pads, layer_k_leave_one_out], dim=1)
-                                layer_v_leave_one_out = torch.cat([pads, layer_v_leave_one_out], dim=1)
+                                layer_k_leave_one_out = torch.cat([pads, layer_k_leave_one_out], dim=2)
+                                layer_v_leave_one_out = torch.cat([pads, layer_v_leave_one_out], dim=2)
                             else:
-                                layer_k_leave_one_out = torch.cat([layer_k_leave_one_out, pads], dim=1)
-                                layer_v_leave_one_out = torch.cat([layer_v_leave_one_out, pads], dim=1)
+                                layer_k_leave_one_out = torch.cat([layer_k_leave_one_out, pads], dim=2)
+                                layer_v_leave_one_out = torch.cat([layer_v_leave_one_out, pads], dim=2)
                         batch_past_key_values[layer_i][0].append(layer_k_leave_one_out)
                         batch_past_key_values[layer_i][1].append(layer_v_leave_one_out)
 
                     # make mask
-                    mask = torch.ones((full_past_key_values[0][0].shape[2] - (end - start),), device=accelerator.device, dtype=torch.int64)
+                    mask = torch.ones((original_kv_len - (end - start),), device=accelerator.device, dtype=torch.int64)
                     if eval_dataset.pad_side == 'left':
                         mask = torch.cat([torch.zeros((pad_len,), device=accelerator.device, dtype=torch.int64), mask])
                     else:
@@ -1071,13 +1063,19 @@ def run_gs(
 
                 # format
                 batch_past_key_values = tuple(
-                    (torch.stack(layer_k), torch.stack(layer_v))
+                    (torch.cat(layer_k), torch.cat(layer_v))
                     for layer_k, layer_v in batch_past_key_values
                 )
                 batch_past_key_values_attention_mask = torch.stack(batch_past_key_values_attention_mask)
 
             else:
-                batch_past_key_values = full_past_key_values
+                batch_past_key_values = [
+                    (
+                        layer_k.expand(bs, -1, -1, -1),
+                        layer_v.expand(bs, -1, -1, -1),
+                    )
+                    for layer_k, layer_v in full_past_key_values
+                ]
                 batch_past_key_values_attention_mask = torch.ones((batch_size, batch_past_key_values[0][0].shape[2]), device=accelerator.device, dtype=torch.int64)
 
             # tune the prefix only
@@ -1141,11 +1139,8 @@ def run_gs(
     if lora:
         model = merge_lora(model)
 
-    # shrink to bs1
-    if batch_size > 1:
-        assert torch.equal(past_key_values[0][0][0], past_key_values[0][0][1])
     past_key_values = tuple(
-        (layer_k[:1].detach().clone(), layer_v[:1].detach().clone())
+        (layer_k.detach().clone(), layer_v.detach().clone())
         for layer_k, layer_v in past_key_values
     ) # type: ignore
 
