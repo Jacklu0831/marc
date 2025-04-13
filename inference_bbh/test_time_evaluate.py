@@ -1188,6 +1188,7 @@ def main():
     parser.add_argument("--seed", type=int, default=0)
 
     # debug
+    parser.add_argument("--debug", action='store_true')
     parser.add_argument("--debug_max_len", action='store_true')
 
     # Model
@@ -1264,6 +1265,10 @@ def main():
     parser.add_argument("--dt_lr", type=float, default=1e-2) # eta in the paper
 
     args = parser.parse_args()
+
+    if args.debug:
+        args.tag = 'test'
+        args.eval_ratio = 0.01
 
     args.tag = f"eval_{args.tag}"
     args.output_dir = os.path.join(args.output_dir, args.tag)

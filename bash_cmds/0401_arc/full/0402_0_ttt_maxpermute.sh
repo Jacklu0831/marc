@@ -46,8 +46,6 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 infere
     --ttt_permute_n 2000
 
 
-# AFTER PRECISION FIX
-
 # Submitted batch job 59219502 # 0.1425
 # Submitted batch job 59219503 # 0.1925
 # Submitted batch job 59219504 # 0.2425

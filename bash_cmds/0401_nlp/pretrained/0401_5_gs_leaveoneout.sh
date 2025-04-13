@@ -1,4 +1,4 @@
-# python make_sbatch.py --ngpu 1 --time 4 --rtx8000 --bash_files bash_cmds/0401_nlp/pretrained/0401_10_gs_leaveoneout.sh
+# python make_sbatch.py --ngpu 1 --time 4 --rtx8000 --bash_files bash_cmds/0401_nlp/pretrained/0401_5_gs_leaveoneout.sh
 
 # nlp gs5 lr1e-2 leaveoneout
 accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_nlp/test_time_evaluate.py \
@@ -135,21 +135,19 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 infere
 
 
 # lr1e-2
-# Submitted batch job 59161879 # 0.417
-# Submitted batch job 59161880 # 0.424
-# Submitted batch job 59161881 # 0.405
-# Submitted batch job 59161882 # 0.411
+# Submitted batch job 59237620
+# Submitted batch job 59237621
+# Submitted batch job 59237622
+# Submitted batch job 59237623
 
 # lr1e-3
-# Submitted batch job 59161883 # 0.381
-# Submitted batch job 59161884 # 0.411
-# Submitted batch job 59161885 # 0.442
-# Submitted batch job 59161886 # 0.435
+# Submitted batch job 59237624
+# Submitted batch job 59237625
+# Submitted batch job 59237626
+# Submitted batch job 59237627
 
 # lr1e-4
-# Submitted batch job 59161887 # 0.362
-# Submitted batch job 59161888 # 0.363
-# Submitted batch job 59161889 # 0.395
-# Submitted batch job 59161890 # 0.414
-
-# so far 0.442
+# Submitted batch job 59237628
+# Submitted batch job 59237629
+# Submitted batch job 59237630
+# Submitted batch job 59237631

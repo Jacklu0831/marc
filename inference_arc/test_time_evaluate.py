@@ -1118,6 +1118,7 @@ def main():
     parser.add_argument("--seed", type=int, default=0)
 
     # Debug
+    parser.add_argument("--debug", action='store_true')
     parser.add_argument("--debug_max_len", action='store_true')
     parser.add_argument("--debug_random_pad", action="store_true")
     parser.add_argument("--debug_pad_len", type=int, default=-1)
@@ -1202,6 +1203,9 @@ def main():
     parser.add_argument("--dt_lr", type=float, default=1e-2) # eta in the paper
 
     args = parser.parse_args()
+
+    if args.debug:
+        args.tag = 'test'
 
     args.tag = f"eval_{args.tag}_{args.weight_dir}"
     args.output_dir = os.path.join(args.output_dir, args.tag)

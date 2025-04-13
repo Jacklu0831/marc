@@ -1,4 +1,4 @@
-# python make_sbatch.py --ngpu 1 --time 8 --bash_files bash_cmds/0401_arc/full/0401_5_gs_lora.sh
+# python make_sbatch.py --ngpu 1 --time 8 --bash_files bash_cmds/0401_arc/full/0401_3_gs_lora.sh
 
 
 
