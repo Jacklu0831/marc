@@ -204,69 +204,28 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 infere
     --gs_num_permute 1024
 
 
-
-
 # lr3e-2
-# Submitted batch job 59129953
-# Submitted batch job 59129954
-# Submitted batch job 59129955
-# Submitted batch job 59129956
+# Submitted batch job 59173825 # 0.15
+# Submitted batch job 59173826 # 0.1
+# Submitted batch job 59173827 # 0.125
+# Submitted batch job 59173828 # 0.1375
 
 # lr1e-2
-# Submitted batch job 59129957
-# Submitted batch job 59129958
-# Submitted batch job 59129959
-# Submitted batch job 59129960
+# Submitted batch job 59173829 # 0.15
+# Submitted batch job 59173830 # 0.2
+# Submitted batch job 59173831 # 0.2
+# Submitted batch job 59173832 # 0.1875
 
 # lr3e-3
-# Submitted batch job 59129961
-# Submitted batch job 59129962
-# Submitted batch job 59129963
-# Submitted batch job 59129964
+# Submitted batch job 59173833 # 0.1375
+# Submitted batch job 59173834 # 0.1875
+# Submitted batch job 59173835 # 0.25
+# Submitted batch job 59173836 # 0.25
 
 # lr1e-3
-# Submitted batch job 59085673 # 0.1125
-# Submitted batch job 59085674 # 0.1625
-# Submitted batch job 59085675 # 0.1875
-# Submitted batch job 59085676 # 0.2
+# Submitted batch job 59173837 # 0.125
+# Submitted batch job 59173838 # 0.1625
+# Submitted batch job 59173839 # 0.2
+# Submitted batch job 59173840 # 0.2125
 
-# lr1e-4
-# Submitted batch job 59085677 # 0.1
-# Submitted batch job 59085678 # 0.1
-# Submitted batch job 59085679 # 0.1125
-# Submitted batch job 59085680 # 0.1375
-
-# accuracy seems increasing? espeically when cosine makes lr so low at the end but still improving for 1e-3
-
-
-
-
-
-
-
-
-# AFTER PRECISION FIX
-
-# lr3e-2
-# Submitted batch job 59139709
-# Submitted batch job 59139710
-# Submitted batch job 59139711
-# Submitted batch job 59139712
-
-# lr1e-2
-# Submitted batch job 59139713
-# Submitted batch job 59139714
-# Submitted batch job 59139715
-# Submitted batch job 59139716
-
-# lr3e-3
-# Submitted batch job 59139717
-# Submitted batch job 59139718
-# Submitted batch job 59139719
-# Submitted batch job 59139720
-
-# lr1e-3
-# Submitted batch job 59139721
-# Submitted batch job 59139722
-# Submitted batch job 59139723
-# Submitted batch job 59139724
+# sadly, nah doesnt improve, at most equal to normal gs

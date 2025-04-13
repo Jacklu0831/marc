@@ -296,7 +296,7 @@ class GSDataset(Dataset):
         self.loss_on_input = loss_on_input
 
         # format data (only use demonstration pairs)
-        self.parsed_examples = [self.format(example) for example in demonstration_pairs]
+        self.parsed_examples = [self.format(i, example) for i, example in enumerate(demonstration_pairs)]
 
     def __len__(self):
         return len(self.parsed_examples)
@@ -304,7 +304,7 @@ class GSDataset(Dataset):
     def __getitem__(self, idx):
         return self.parsed_examples[idx]
 
-    def format(self, pair: Dict) -> Dict:
+    def format(self, example_idx: int, pair: Dict) -> Dict:
         # tokenize
         input_input_ids = tokenize('\n\nQ: ' + pair['input'] + '\nA: ', self.tokenizer)
         output_input_ids = tokenize(pair['target'], self.tokenizer)
@@ -320,6 +320,7 @@ class GSDataset(Dataset):
             label_ids = torch.cat([label_ids, output_input_ids])
 
         return {
+            "example_idx": example_idx,
             "input_ids": input_ids,
             "attention_mask": attention_mask,
             "label_ids": label_ids,
@@ -348,6 +349,7 @@ def collate_fn_gs(batch: List[Dict], dataset: GSDataset) -> Dict:
         "input_ids": input_ids,
         "attention_mask": attention_mask,
         "label_ids": label_ids,
+        "example_idx": [x['example_idx'] for x in batch],
     }
     return batch_dict
 
@@ -363,6 +365,7 @@ def collate_fn_gs_dummy(batch: List[Dict], dataset: GSDataset) -> Dict:
         "input_ids": input_ids,
         "attention_mask": attention_mask,
         "label_ids": input_ids,
+        "example_idx": [0] * batch_size,
     }
     return batch_dict
 
@@ -406,7 +409,7 @@ class TTTDataset(Dataset):
         seen = set()
         all_data = []
 
-        for _ in range(1000):
+        for _ in range(100000):
             perm = tuple(rng.permutation(len(self.demonstration_pairs)))
             if perm in seen:
                 continue

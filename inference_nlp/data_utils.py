@@ -388,6 +388,7 @@ class EvalDataset:
         split: str,
         allow_truncate: bool,
         delimiter: str,
+        num_demonstrations: int,
     ):
         self.tokenizer = tokenizer
         self.debug_random_pad = debug_random_pad
@@ -399,6 +400,7 @@ class EvalDataset:
         self.delimiter = delimiter
         self.debug_max_len = debug_max_len
         self.seed = seed
+        self.num_demonstrations = num_demonstrations
 
         # needed in evaluate
         self.split = split
@@ -426,6 +428,9 @@ class EvalDataset:
                 example = json.loads(l)
                 task_to_demonstrations[task].append(example)
             assert len(task_to_demonstrations[task]) == 16
+
+            # subset demonstrations if needed
+            task_to_demonstrations[task] = task_to_demonstrations[task][:num_demonstrations]
 
             # subset test pairs
             with_empty_options = False
@@ -702,7 +707,7 @@ class GSDataset(Dataset):
         self.delimiter_token_id = tokenize(delimiter, tokenizer)
 
         # format data (only use demonstration pairs)
-        parsed_examples = [self.format(example) for example in demonstration_pairs]
+        parsed_examples = [self.format(i, example) for i, example in enumerate(demonstration_pairs)]
         self.parsed_examples = [e for e in parsed_examples if e is not None]
 
     def __len__(self):
@@ -711,7 +716,7 @@ class GSDataset(Dataset):
     def __getitem__(self, idx):
         return self.parsed_examples[idx]
 
-    def format(self, pair: Dict) -> Optional[Dict]:
+    def format(self, example_idx: int, pair: Dict) -> Optional[Dict]:
         # tokenize
         input_input_ids = tokenize(pair['input'], self.tokenizer)
         output_input_ids = tokenize(pair['output'], self.tokenizer)
@@ -750,6 +755,7 @@ class GSDataset(Dataset):
                 return None
 
         return {
+            "example_idx": example_idx,
             "input_ids": input_ids,
             "attention_mask": attention_mask,
             "label_ids": label_ids,
@@ -778,6 +784,7 @@ def collate_fn_gs(batch: List[Dict], dataset: GSDataset) -> Dict:
         "input_ids": input_ids,
         "attention_mask": attention_mask,
         "label_ids": label_ids,
+        "example_idx": [x['example_idx'] for x in batch],
     }
     return batch_dict
 
@@ -793,6 +800,7 @@ def collate_fn_gs_dummy(batch: List[Dict], dataset: GSDataset) -> Dict:
         "input_ids": input_ids,
         "attention_mask": attention_mask,
         "label_ids": input_ids,
+        "example_idx": [0] * batch_size,
     }
     return batch_dict
 
@@ -843,7 +851,7 @@ class TTTDataset(Dataset):
         seen = set()
         all_data = []
 
-        for _ in range(1000):
+        for _ in range(100000):
             perm = tuple(rng.permutation(len(self.demonstration_pairs)))
             if perm in seen:
                 continue

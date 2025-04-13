@@ -1,79 +1,86 @@
-# python make_sbatch.py --ngpu 1 --time 2 --rtx8000 --bash_files bash_cmds/0401_nlp/pretrained/0401_2_gs.sh
-# full batch gs, search iter and lr
+# python make_sbatch.py --ngpu 1 --time 4 --rtx8000 --bash_files bash_cmds/0401_nlp/pretrained/0401_15_gs_numpermute.sh
 
-# nlp gs5 lr1e-2
+# nlp gs5 lr1e-2 permuten1024
 accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_nlp/test_time_evaluate.py \
-    --tag gs5_lr1e-2 \
+    --tag gs5_lr1e-2_permuten1024 \
     --weight_dir nlp_pretrained \
     --weight_epoch 0 \
     --gs_iters 5 \
     --gs_lr 1e-2 \
+    --gs_num_permute 1024 \
     --eval_seeds 100
 
-# nlp gs25 lr1e-2
+# nlp gs25 lr1e-2 permuten1024
 accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_nlp/test_time_evaluate.py \
-    --tag gs25_lr1e-2 \
+    --tag gs25_lr1e-2_permuten1024 \
     --weight_dir nlp_pretrained \
     --weight_epoch 0 \
     --gs_iters 25 \
     --gs_lr 1e-2 \
+    --gs_num_permute 1024 \
     --eval_seeds 100
 
-# nlp gs100 lr1e-2
+# nlp gs100 lr1e-2 permuten1024
 accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_nlp/test_time_evaluate.py \
-    --tag gs100_lr1e-2 \
+    --tag gs100_lr1e-2_permuten1024 \
     --weight_dir nlp_pretrained \
     --weight_epoch 0 \
     --gs_iters 100 \
     --gs_lr 1e-2 \
+    --gs_num_permute 1024 \
     --eval_seeds 100
 
-# nlp gs250 lr1e-2
+# nlp gs250 lr1e-2 permuten1024
 accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_nlp/test_time_evaluate.py \
-    --tag gs250_lr1e-2 \
+    --tag gs250_lr1e-2_permuten1024 \
     --weight_dir nlp_pretrained \
     --weight_epoch 0 \
     --gs_iters 250 \
     --gs_lr 1e-2 \
+    --gs_num_permute 1024 \
     --eval_seeds 100
 
 
 
 
-# nlp gs5 lr1e-3
+# nlp gs5 lr1e-3 permuten1024
 accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_nlp/test_time_evaluate.py \
-    --tag gs5_lr1e-3 \
+    --tag gs5_lr1e-3_permuten1024 \
     --weight_dir nlp_pretrained \
     --weight_epoch 0 \
     --gs_iters 5 \
     --gs_lr 1e-3 \
+    --gs_num_permute 1024 \
     --eval_seeds 100
 
-# nlp gs25 lr1e-3
+# nlp gs25 lr1e-3 permuten1024
 accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_nlp/test_time_evaluate.py \
-    --tag gs25_lr1e-3 \
+    --tag gs25_lr1e-3_permuten1024 \
     --weight_dir nlp_pretrained \
     --weight_epoch 0 \
     --gs_iters 25 \
     --gs_lr 1e-3 \
+    --gs_num_permute 1024 \
     --eval_seeds 100
 
-# nlp gs100 lr1e-3
+# nlp gs100 lr1e-3 permuten1024
 accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_nlp/test_time_evaluate.py \
-    --tag gs100_lr1e-3 \
+    --tag gs100_lr1e-3_permuten1024 \
     --weight_dir nlp_pretrained \
     --weight_epoch 0 \
     --gs_iters 100 \
     --gs_lr 1e-3 \
+    --gs_num_permute 1024 \
     --eval_seeds 100
 
-# nlp gs250 lr1e-3
+# nlp gs250 lr1e-3 permuten1024
 accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_nlp/test_time_evaluate.py \
-    --tag gs250_lr1e-3 \
+    --tag gs250_lr1e-3_permuten1024 \
     --weight_dir nlp_pretrained \
     --weight_epoch 0 \
     --gs_iters 250 \
     --gs_lr 1e-3 \
+    --gs_num_permute 1024 \
     --eval_seeds 100
 
 
@@ -85,85 +92,86 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 infere
 
 
 
-# nlp gs5 lr1e-4
+# nlp gs5 lr1e-4 permuten1024
 accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_nlp/test_time_evaluate.py \
-    --tag gs5_lr1e-4 \
+    --tag gs5_lr1e-4_permuten1024 \
     --weight_dir nlp_pretrained \
     --weight_epoch 0 \
     --gs_iters 5 \
     --gs_lr 1e-4 \
+    --gs_num_permute 1024 \
     --eval_seeds 100
 
-# nlp gs25 lr1e-4
+# nlp gs25 lr1e-4 permuten1024
 accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_nlp/test_time_evaluate.py \
-    --tag gs25_lr1e-4 \
+    --tag gs25_lr1e-4_permuten1024 \
     --weight_dir nlp_pretrained \
     --weight_epoch 0 \
     --gs_iters 25 \
     --gs_lr 1e-4 \
+    --gs_num_permute 1024 \
     --eval_seeds 100
 
-# nlp gs100 lr1e-4
+# nlp gs100 lr1e-4 permuten1024
 accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_nlp/test_time_evaluate.py \
-    --tag gs100_lr1e-4 \
+    --tag gs100_lr1e-4_permuten1024 \
     --weight_dir nlp_pretrained \
     --weight_epoch 0 \
     --gs_iters 100 \
     --gs_lr 1e-4 \
+    --gs_num_permute 1024 \
     --eval_seeds 100
 
-# nlp gs250 lr1e-4
+# nlp gs250 lr1e-4 permuten1024
 accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_nlp/test_time_evaluate.py \
-    --tag gs250_lr1e-4 \
+    --tag gs250_lr1e-4_permuten1024 \
     --weight_dir nlp_pretrained \
     --weight_epoch 0 \
     --gs_iters 250 \
     --gs_lr 1e-4 \
+    --gs_num_permute 1024 \
     --eval_seeds 100
 
-
-# numparam 41103360, 3.3, 16.2, 66.2, 163.4
 
 # lr1e-2
-# Submitted batch job 59022384 # 0.400
-# Submitted batch job 59022385 # 0.394
-# Submitted batch job 59022386 # 0.390
-# Submitted batch job 59022387 # 0.388
+# Submitted batch job 59084463 # 0.369
+# Submitted batch job 59084464 # 0.399
+# Submitted batch job 59084465 # 0.401
+# Submitted batch job 59084466 # 0.406
 
 # lr1e-3
-# Submitted batch job 59022388 # 0.371
-# Submitted batch job 59034229 # 0.396
-# Submitted batch job 59034230 # 0.401
-# Submitted batch job 59034231 # 0.404
+# Submitted batch job 59084467 # 0.345
+# Submitted batch job 59084468 # 0.363
+# Submitted batch job 59084469 # 0.412
+# Submitted batch job 59084470 # 0.418
 
 # lr1e-4
-# Submitted batch job 59034232 # 0.361
-# Submitted batch job 59034233 # 0.363
-# Submitted batch job 59034234 # 0.374
-# Submitted batch job 59034235 # 0.370
+# Submitted batch job 59084471 # 0.345
+# Submitted batch job 59084472 # 0.346
+# Submitted batch job 59084473 # 0.353
+# Submitted batch job 59084474 # 0.374
 
-# so far 0.404
+# so far 0.418, higher than normal gs
+# benefit may be from obscuring memory to mitigate the retrieval issue,
+# leading to higher generalization
 
 
 
 # AFTER PRECISION FIX
 
-# lr1e-2
-# Submitted batch job 59139349 # 0.405
-# Submitted batch job 59139350 # 0.384
-# Submitted batch job 59139351 # 0.376
-# Submitted batch job 59139352 # 0.375
+# Submitted batch job 59139479 # 0.369
+# Submitted batch job 59139480 # 0.398
+# Submitted batch job 59139481 # 0.409
+# Submitted batch job 59139482 # 0.402
 
-# lr1e-3
-# Submitted batch job 59139353 # 0.379
-# Submitted batch job 59139354 # 0.393
-# Submitted batch job 59139355 # 0.412
-# Submitted batch job 59139356 # 0.413
+# Submitted batch job 59139483 # 0.345
+# Submitted batch job 59139484 # 0.356
+# Submitted batch job 59139485 # 0.407
+# Submitted batch job 59139486 # 0.417
 
-# lr1e-4
-# Submitted batch job 59139357 # 0.363
-# Submitted batch job 59139358 # 0.377
-# Submitted batch job 59139359 # 0.391
-# Submitted batch job 59139360 # 0.403
+# Submitted batch job 59139487 # 0.345
+# Submitted batch job 59139488 # 0.348
+# Submitted batch job 59139489 # 0.353
+# Submitted batch job 59139490 # 0.373
 
-# so far 0.413
+# so far 0.417

@@ -1065,7 +1065,7 @@ class GSDataset(Dataset):
         self.loss_on_input = loss_on_input
 
         # format data (only use demonstration pairs)
-        self.parsed_examples = [self.format(example) for example in task.train_examples]
+        self.parsed_examples = [self.format(i, example) for i, example in enumerate(task.train_examples)]
 
     def __len__(self):
         return len(self.parsed_examples)
@@ -1073,7 +1073,7 @@ class GSDataset(Dataset):
     def __getitem__(self, idx):
         return self.parsed_examples[idx]
 
-    def format(self, example: Example) -> Optional[Dict]:
+    def format(self, example_idx: int, example: Example) -> Optional[Dict]:
         # tasks are filtered by EvalDataset already, shouldn't have grids too big
         assert max(example.input.shape) <= 30 and max(example.output.shape) <= 30
 
@@ -1092,6 +1092,7 @@ class GSDataset(Dataset):
             label_ids = torch.cat([label_ids, output_grid_ids])
 
         return {
+            "example_idx": example_idx,
             "input_ids": input_ids,
             "attention_mask": attention_mask,
             "label_ids": label_ids,
@@ -1119,6 +1120,7 @@ def collate_fn_gs(batch: List[Dict], dataset: GSDataset) -> Dict:
         "input_ids": input_ids,
         "attention_mask": attention_mask,
         "label_ids": label_ids,
+        "example_idx": [x['example_idx'] for x in batch],
     }
     return batch_dict
 
@@ -1134,6 +1136,7 @@ def collate_fn_gs_dummy(batch: List[Dict], dataset: GSDataset) -> Dict:
         "input_ids": input_ids,
         "attention_mask": attention_mask,
         "label_ids": input_ids,
+        "example_idx": [0] * batch_size,
     }
     return batch_dict
 

@@ -23,10 +23,10 @@ from accelerate.logging import get_logger
 from transformers import (
     AutoTokenizer,
     BitsAndBytesConfig,
-    AutoModelForCausalLM,
     get_constant_schedule,
     get_cosine_schedule_with_warmup,
 )
+from custom_llama import MyLlamaForCausalLM
 from transformers.tokenization_utils_fast import PreTrainedTokenizerFast
 from peft import LoraConfig, TaskType, PeftModel, get_peft_model, prepare_model_for_kbit_training # type: ignore
 
@@ -113,13 +113,65 @@ def initialize_kv(
     accelerator: Accelerator,
     gs_iters: int,
     gs_random_kv: bool,
+    gs_separate_kv: bool,
     gs_num_permute: int,
     gs_permute_batch_size: int,
     gs_permute_back: bool,
+    dt_iters: int,
+    dt_lr: int,
 ) -> Tuple[Tuple[torch.Tensor, torch.Tensor]]:
 
-    # initialize kv
-    if gs_iters > 0 and gs_random_kv:
+    if gs_separate_kv:
+        assert demon_start_idxs[0] == 0
+        boundaries = demon_start_idxs + [demon_input_ids.shape[1]]
+        chunk_indices = [torch.arange(start, end) for start, end in zip(boundaries[:-1], boundaries[1:])]
+
+        past_key_values = [[[], []] for _ in range(model.config.num_hidden_layers)]
+        for indices in chunk_indices:
+            with accelerator.autocast():
+                chunk_past_key_values = model(
+                    input_ids=demon_input_ids[:, indices],
+                    output_hidden_states=True,
+                    position_ids=indices[None, ...].to(accelerator.device),
+                ).past_key_values
+            # add to past key values
+            for layer_i, (layer_k, layer_v) in enumerate(chunk_past_key_values):
+                past_key_values[layer_i][0].append(layer_k)
+                past_key_values[layer_i][1].append(layer_v)
+
+        past_key_values = tuple(
+            (torch.cat(layer_k, dim=2), torch.cat(layer_v, dim=2))
+            for layer_k, layer_v in past_key_values
+        )
+        assert past_key_values[0][0].shape[2] == demon_input_ids.shape[1]
+
+    elif dt_iters > 0:
+        # first initialize KV, no shinanigans
+        with accelerator.autocast():
+            past_key_values = model(input_ids=demon_input_ids, output_hidden_states=True).past_key_values
+
+        # now the iterative part
+        demonstration_len = past_key_values[0][0].shape[2]
+        for _ in range(dt_iters):
+            with accelerator.autocast():
+                past_key_values = model(
+                    input_ids=demon_input_ids,
+                    past_key_values=past_key_values,
+                    position_ids=torch.arange(demon_input_ids.shape[1], device=accelerator.device)[None, ...],
+                    output_hidden_states=True,
+                ).past_key_values # first demonstration_len are old unmodified kv, then demonstration_len for new kv
+            assert past_key_values[0][0].shape[2] == demonstration_len * 2
+            # some kind of learning
+            past_key_values = tuple(
+                (
+                    layer_k[:, :, :demonstration_len, :] * (1.0 - dt_lr) + layer_k[:, :, demonstration_len:, :] * dt_lr,
+                    layer_v[:, :, :demonstration_len, :] * (1.0 - dt_lr) + layer_v[:, :, demonstration_len:, :] * dt_lr,
+                )
+                for (layer_k, layer_v) in past_key_values
+            )
+        assert past_key_values[0][0].shape[2] == demonstration_len
+
+    elif gs_iters > 0 and gs_random_kv:
         # random kv initialization
         past_key_values = tuple(
             (
@@ -190,6 +242,7 @@ def test_time_evaluate(
     accelerator: Accelerator,
     trainable_nbit: int,
     no_flash_attn: bool,
+    # gs
     gs_iters: int,
     gs_batch_size: int,
     gs_grad_accum_steps: int,
@@ -201,18 +254,26 @@ def test_time_evaluate(
     gs_max_grad_norm: float,
     gs_no_key: bool,
     gs_no_value: bool,
+    gs_num_layer: int,
     gs_loss_on_input: bool,
+    gs_leave_one_out: bool,
     gs_lr_scheduler: str,
+    # gs lora
     gs_lora: bool,
     gs_lora_rank: int,
     gs_lora_alpha: int,
     gs_lora_lr: float,
     gs_lora_beta1: float,
     gs_lora_beta2: float,
+    # gs prefix
+    gs_ntokens: int,
+    # gs init
     gs_random_kv: bool,
+    gs_separate_kv: bool,
     gs_num_permute: int,
     gs_permute_batch_size: int,
     gs_permute_back: bool,
+    # ttt
     ttt_iters: int,
     ttt_batch_size: int,
     ttt_grad_accum_steps: int,
@@ -224,6 +285,9 @@ def test_time_evaluate(
     ttt_lora_rank: int,
     ttt_lora_alpha: int,
     ttt_permute_n: int,
+    # dt
+    dt_iters: int,
+    dt_lr: int,
 ):
     model.eval()
 
@@ -322,9 +386,12 @@ def test_time_evaluate(
                 accelerator=accelerator,
                 gs_iters=gs_iters,
                 gs_random_kv=gs_random_kv,
+                gs_separate_kv=gs_separate_kv,
                 gs_num_permute=gs_num_permute,
                 gs_permute_batch_size=gs_permute_batch_size,
                 gs_permute_back=gs_permute_back,
+                dt_iters=dt_iters,
+                dt_lr=dt_lr,
             )
             init_kv_time = time.time() - start_time
             torch.cuda.empty_cache()
@@ -351,6 +418,7 @@ def test_time_evaluate(
                         accelerator=accelerator,
                         model=model,
                         # inputs
+                        demon_start_idxs=demon_start_idxs,
                         past_key_values=past_key_values, # type: ignore
                         # config
                         iters=gs_iters,
@@ -364,7 +432,9 @@ def test_time_evaluate(
                         max_grad_norm=gs_max_grad_norm,
                         no_key=gs_no_key,
                         no_value=gs_no_value,
+                        num_layer=gs_num_layer,
                         loss_on_input=gs_loss_on_input,
+                        leave_one_out=gs_leave_one_out,
                         lr_scheduler=gs_lr_scheduler,
                         lora=gs_lora,
                         lora_rank=gs_lora_rank,
@@ -372,6 +442,7 @@ def test_time_evaluate(
                         lora_lr=gs_lora_lr,
                         lora_beta1=gs_lora_beta1,
                         lora_beta2=gs_lora_beta2,
+                        ntokens=gs_ntokens,
                     )
                     gs_time = time.time() - start_time
                     torch.cuda.empty_cache()
@@ -418,6 +489,7 @@ def test_time_evaluate(
                 else:
                     casted_past_key_values = past_key_values
 
+                model.subtract_position_ids_by = max(gs_ntokens, 0) # HACK for prefix # type: ignore
                 gen_tokens = model.generate(
                     input_ids=gen_input_ids,
                     attention_mask=gen_attention_mask,
@@ -429,6 +501,7 @@ def test_time_evaluate(
                     do_sample=False,
                     eos_token_id=[dataset.tokenizer.eos_token_id],
                 )
+                model.subtract_position_ids_by = 0 # HACK for prefix # type: ignore
                 assert gen_tokens.shape[0] == 1
                 gen_tokens = gen_tokens[0, gen_input_ids.shape[1]:]
 
@@ -723,6 +796,7 @@ def run_gs(
     accelerator: Accelerator,
     model: Union[nn.Module, DistributedDataParallel],
     # inputs
+    demon_start_idxs: List[int],
     past_key_values: Tuple[Tuple[torch.Tensor, torch.Tensor]],
     # config
     iters: int,
@@ -736,7 +810,9 @@ def run_gs(
     max_grad_norm: float,
     no_key: bool,
     no_value: bool,
+    num_layer: int,
     loss_on_input: bool,
+    leave_one_out: bool,
     lr_scheduler: str,
     lora: bool,
     lora_rank: int,
@@ -744,6 +820,7 @@ def run_gs(
     lora_lr: float,
     lora_beta1: float,
     lora_beta2: float,
+    ntokens: int,
 ) -> Tuple[nn.Module, Tuple[Tuple[torch.Tensor, torch.Tensor]], int, int]:
 
     # optional lora
@@ -766,11 +843,37 @@ def run_gs(
 
     # get program parameters
     program_params = []
-    for layer_k, layer_v in past_key_values:
-        if not no_key:
+    if ntokens != -1:
+        # additional prefix tuning
+        prefix_past_key_values = tuple(
+            (
+                past_key_values[layer_i][0].mean(dim=2, keepdim=True).repeat(1, 1, ntokens, 1),
+                past_key_values[layer_i][1].mean(dim=2, keepdim=True).repeat(1, 1, ntokens, 1),
+            )
+            for layer_i in range(model.config.num_hidden_layers) # type: ignore
+        )
+        # add some noise so not all tokens end up optimized to the same
+        prefix_past_key_values = tuple(
+            (
+                layer_k + 0.02 * torch.randn_like(layer_k, device=accelerator.device),
+                layer_v + 0.02 * torch.randn_like(layer_v, device=accelerator.device),
+            )
+            for layer_k, layer_v in prefix_past_key_values
+        )
+        # add these to optimized params
+        assert not no_key and not no_value
+        for layer_k, layer_v in prefix_past_key_values:
             program_params.append(layer_k)
-        if not no_value:
             program_params.append(layer_v)
+    else:
+        # full tuning of initialized KV
+        prefix_past_key_values = None # no prefix tuning
+        num_layer = model.config.num_hidden_layers if num_layer == -1 else num_layer # type: ignore
+        for layer_k, layer_v in past_key_values[-num_layer:]:
+            if not no_key:
+                program_params.append(layer_k)
+            if not no_value:
+                program_params.append(layer_v)
     num_params = sum(p.numel() for p in program_params)
 
     # get lora parameters
@@ -798,6 +901,7 @@ def run_gs(
     if len(gs_dataset) == 0:
         if lora:
             model = merge_lora(model)
+        # prefix tuning or not, just return the unmodified past_key_values
         return model, past_key_values, 0, num_params
 
     batch_size = min(batch_size, len(gs_dataset))
@@ -853,7 +957,6 @@ def run_gs(
         )
         for layer_k, layer_v in past_key_values
     ) # type: ignore
-    past_kv_len = past_key_values[0][0].shape[2]
 
     # train!
     curr_iter = 0
@@ -862,40 +965,106 @@ def run_gs(
             pair_input_ids = batch["input_ids"].to(accelerator.device)
             pair_attention_mask = batch["attention_mask"].to(accelerator.device)
             pair_label_ids = batch["label_ids"].to(accelerator.device)
+            pair_example_idx = batch["example_idx"]
             device, dtype = pair_input_ids.device, pair_input_ids.dtype
+            bs = pair_input_ids.shape[0]
+
+            if leave_one_out:
+                # TODO: optimize this if it works well, stack kv tensors across layers, or maybe do it in collate?
+                # get length of each test pair
+                remove_intervals = []
+                for batch_i, idx in enumerate(pair_example_idx):
+                    start = demon_start_idxs[idx]
+                    end = demon_start_idxs[idx + 1] if idx < len(demon_start_idxs) - 1 else past_key_values[0][0].shape[2]
+                    remove_intervals.append((start, end))
+                interval_lens = [end - start for start, end in remove_intervals]
+                max_kv_len = past_key_values[0][0].shape[2] - min(interval_lens) # we will pad kv to this
+
+                # first remove test i/o from each kv in batch
+                batch_past_key_values = [[[], []] for _ in range(len(past_key_values))]
+                batch_past_key_values_attention_mask = []
+
+                for batch_i, (start, end) in enumerate(remove_intervals):
+                    pad_len = max_kv_len - (past_key_values[0][0].shape[2] - (end - start))
+                    # shorten past kv and pad
+                    for layer_i, (layer_k, layer_v) in enumerate(past_key_values):
+                        layer_k_leave_one_out = torch.cat([layer_k[batch_i, :, :start, :], layer_k[batch_i, :, end:, :]], dim=1)
+                        layer_v_leave_one_out = torch.cat([layer_v[batch_i, :, :start, :], layer_v[batch_i, :, end:, :]], dim=1)
+                        # pad
+                        if pad_len > 0:
+                            pads = torch.zeros((layer_k_leave_one_out.shape[0], pad_len, layer_k_leave_one_out.shape[2]), device=accelerator.device, dtype=layer_k_leave_one_out.dtype)
+                            if eval_dataset.pad_side == 'left':
+                                layer_k_leave_one_out = torch.cat([pads, layer_k_leave_one_out], dim=1)
+                                layer_v_leave_one_out = torch.cat([pads, layer_v_leave_one_out], dim=1)
+                            else:
+                                layer_k_leave_one_out = torch.cat([layer_k_leave_one_out, pads], dim=1)
+                                layer_v_leave_one_out = torch.cat([layer_v_leave_one_out, pads], dim=1)
+                        batch_past_key_values[layer_i][0].append(layer_k_leave_one_out)
+                        batch_past_key_values[layer_i][1].append(layer_v_leave_one_out)
+
+                    # make mask
+                    mask = torch.ones((past_key_values[0][0].shape[2] - (end - start),), device=accelerator.device, dtype=torch.int64)
+                    if eval_dataset.pad_side == 'left':
+                        mask = torch.cat([torch.zeros((pad_len,), device=accelerator.device, dtype=torch.int64), mask])
+                    else:
+                        mask = torch.cat([mask, torch.zeros((pad_len,), device=accelerator.device, dtype=torch.int64)])
+                    batch_past_key_values_attention_mask.append(mask)
+
+                # format
+                batch_past_key_values = tuple(
+                    (torch.stack(layer_k), torch.stack(layer_v))
+                    for layer_k, layer_v in batch_past_key_values
+                )
+                batch_past_key_values_attention_mask = torch.stack(batch_past_key_values_attention_mask)
+
+            else:
+                batch_past_key_values = past_key_values
+                batch_past_key_values_attention_mask = torch.ones((batch_size, batch_past_key_values[0][0].shape[2]), device=accelerator.device, dtype=torch.int64)
+
+            # tune the prefix only
+            if prefix_past_key_values is not None:
+                batch_past_key_values = tuple(
+                    (
+                        torch.cat([prefix_layer_k.expand(batch_size, *prefix_layer_k.shape[1:]), layer_k], dim=2),
+                        torch.cat([prefix_layer_v.expand(batch_size, *prefix_layer_v.shape[1:]), layer_v], dim=2),
+                    )
+                    for (prefix_layer_k, prefix_layer_v), (layer_k, layer_v) in zip(prefix_past_key_values, batch_past_key_values)
+                )
+                batch_past_key_values_attention_mask = torch.cat([
+                    torch.ones((bs, prefix_past_key_values[0][0].shape[2]), device=accelerator.device, dtype=torch.int64),
+                    batch_past_key_values_attention_mask,
+                ], dim=1)
 
             with accelerator.autocast():
                 # build position ids
                 position_ids = torch.zeros((batch_size, pair_input_ids.shape[1]), device=device, dtype=torch.int64)
-                mask_lens = pair_attention_mask.sum(dim=1)
-                for task_position_ids, mask_len in zip(position_ids, mask_lens):
-                    assert mask_len > 0
-                    new_positions = torch.tensor(range(past_kv_len, past_kv_len + mask_len), device=device, dtype=dtype)
+                past_lens = [past_key_values[0][0].shape[2]] * bs # no matter leave_one_out or use prefix, never change position ids
+                new_lens = pair_attention_mask.sum(dim=1)
+                for task_position_ids, past_len, new_len in zip(position_ids, past_lens, new_lens):
+                    new_positions = torch.tensor(range(past_len, past_len + new_len), device=device, dtype=dtype)
                     if gs_dataset.pad_side == "right":
-                        task_position_ids[:mask_len] = new_positions
+                        task_position_ids[:new_len] = new_positions
                     else:
-                        task_position_ids[-mask_len:] = new_positions
+                        task_position_ids[-new_len:] = new_positions
 
                 pair_inputs_embeds = embed_tokens(pair_input_ids)
-                pair_attention_mask = torch.cat([
-                    torch.ones((batch_size, past_kv_len), device=accelerator.device, dtype=torch.int64),
-                    pair_attention_mask
-                ], dim=1)
+                pair_attention_mask = torch.cat([batch_past_key_values_attention_mask, pair_attention_mask], dim=1)
 
                 model_kwargs = {
                     "inputs_embeds": pair_inputs_embeds,
                     "attention_mask": pair_attention_mask,
                     "labels": pair_label_ids,
                     "use_cache": True,
-                    "past_key_values": past_key_values,
+                    "past_key_values": batch_past_key_values,
                     "position_ids": position_ids,
                 }
 
                 # get ce loss
                 loss = model(**model_kwargs).loss
 
-                # print(loss.item())
-                # breakpoint()
+                # if pair_attention_mask.sum() < pair_attention_mask.numel():
+                #     print(loss.item())
+                #     breakpoint()
 
             accelerator.backward(loss)
 
@@ -920,6 +1089,16 @@ def run_gs(
         (layer_k[:1].detach().clone(), layer_v[:1].detach().clone())
         for layer_k, layer_v in past_key_values
     ) # type: ignore
+
+    # add prefix
+    if prefix_past_key_values is not None:
+        past_key_values = tuple(
+            (
+                torch.cat([prefix_layer_k.detach().clone(), layer_k], dim=2),
+                torch.cat([prefix_layer_v.detach().clone(), layer_v], dim=2),
+            )
+            for (prefix_layer_k, prefix_layer_v), (layer_k, layer_v) in zip(prefix_past_key_values, past_key_values)
+        ) # type: ignore
 
     return model, past_key_values, len(gs_dataset), num_params
 
@@ -989,28 +1168,38 @@ def main():
     parser.add_argument("--gs_beta1", type=float, default=0.9)
     parser.add_argument("--gs_beta2", type=float, default=0.999)
     parser.add_argument("--gs_weight_decay", type=float, default=0.0)
-    parser.add_argument("--gs_batch_size", type=int, default=100000)
+    parser.add_argument("--gs_batch_size", type=int, default=100000) # full batch for arc
     parser.add_argument("--gs_grad_accum_steps", type=int, default=1)
     parser.add_argument("--gs_optimizer", type=str, choices=["adamw", "sgd"], default="adamw")
     parser.add_argument("--gs_lr_scheduler", type=str, choices=["cosine", "constant"], default="cosine")
     parser.add_argument("--gs_max_grad_norm", default=1.0, type=float, help="Max gradient norm.")
     parser.add_argument("--gs_no_key", action='store_true')
     parser.add_argument("--gs_no_value", action='store_true')
+    parser.add_argument("--gs_num_layer", type=int, default=-1) # tune top layers only
     parser.add_argument("--gs_loss_on_input", action='store_true')
+    parser.add_argument("--gs_leave_one_out", action='store_true')
 
     # gradient search model initialization
     parser.add_argument("--gs_random_kv", action='store_true')
+    parser.add_argument("--gs_separate_kv", action='store_true')
     parser.add_argument("--gs_num_permute", type=int, default=1) # 1024
     parser.add_argument("--gs_permute_batch_size", type=int, default=16)
     parser.add_argument("--gs_permute_back", action='store_true')
 
-    # gradient search with lora (NOT COMPATIBLE WITH TTT)
+    # gradient search with lora
     parser.add_argument("--gs_lora", action='store_true')
     parser.add_argument("--gs_lora_rank", type=int, default=128)
     parser.add_argument("--gs_lora_alpha", type=int, default=16)
     parser.add_argument("--gs_lora_lr", type=float, default=1e-4)
     parser.add_argument("--gs_lora_beta1", type=float, default=0.9)
     parser.add_argument("--gs_lora_beta2", type=float, default=0.999)
+
+    # gradient search prefix tuning
+    parser.add_argument("--gs_ntokens", type=int, default=-1)
+
+    # deeeeeeeeeeep thinking
+    parser.add_argument("--dt_iters", type=int, default=0)
+    parser.add_argument("--dt_lr", type=float, default=1e-2) # eta in the paper
 
     args = parser.parse_args()
 
@@ -1077,10 +1266,11 @@ def main():
     else:
         raise ValueError(f"unrecognized untrainable_nbit {args.untrainable_nbit}")
 
-    base_model = AutoModelForCausalLM.from_pretrained(
+    base_model = MyLlamaForCausalLM.from_pretrained(
         pretrained_model_name_or_path=MODEL_NAME_TO_PATH[args.model_name],
         **from_pretrained_kwargs,
     )
+    base_model.subtract_position_ids_by = 0 # HACK for prefix # type: ignore
     if args.untrainable_nbit in [4, 8]:
         base_model = prepare_model_for_kbit_training(
             base_model,
@@ -1199,6 +1389,7 @@ def main():
         accelerator=accelerator,
         trainable_nbit=args.trainable_nbit,
         no_flash_attn=not args.flash_attn,
+        # gs
         gs_iters=args.gs_iters,
         gs_lr=args.gs_lr,
         gs_beta1=args.gs_beta1,
@@ -1210,18 +1401,26 @@ def main():
         gs_max_grad_norm=args.gs_max_grad_norm,
         gs_no_key=args.gs_no_key,
         gs_no_value=args.gs_no_value,
+        gs_num_layer=args.gs_num_layer,
         gs_loss_on_input=args.gs_loss_on_input,
+        gs_leave_one_out=args.gs_leave_one_out,
         gs_lr_scheduler=args.gs_lr_scheduler,
+        # gs lora
         gs_lora=args.gs_lora,
         gs_lora_rank=args.gs_lora_rank,
         gs_lora_alpha=args.gs_lora_alpha,
         gs_lora_lr=args.gs_lora_lr,
         gs_lora_beta1=args.gs_lora_beta1,
         gs_lora_beta2=args.gs_lora_beta2,
+        # gs prefix
+        gs_ntokens=args.gs_ntokens,
+        # gs init
         gs_random_kv=args.gs_random_kv,
+        gs_separate_kv=args.gs_separate_kv,
         gs_num_permute=args.gs_num_permute,
         gs_permute_batch_size=args.gs_permute_batch_size,
         gs_permute_back=args.gs_permute_back,
+        # ttt
         ttt_iters=args.ttt_iters,
         ttt_lr=args.ttt_lr,
         ttt_weight_decay=args.ttt_weight_decay,
@@ -1233,6 +1432,9 @@ def main():
         ttt_lora_rank=args.ttt_lora_rank,
         ttt_lora_alpha=args.ttt_lora_alpha,
         ttt_permute_n=args.ttt_permute_n,
+        # dt
+        dt_iters=args.dt_iters,
+        dt_lr=args.dt_lr,
     )
 
     if accelerator.is_main_process:
