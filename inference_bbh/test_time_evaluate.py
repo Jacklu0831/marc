@@ -1,3 +1,6 @@
+import matplotlib.pyplot as plt
+import random
+import itertools
 import copy
 import datasets
 import logging
@@ -5,7 +8,7 @@ from tasks import TASKS
 import gc
 import time
 from datetime import timedelta
-from typing import Union, Callable, List, Tuple, Dict, Any, Iterator
+from typing import Union, Callable, List, Tuple, Dict, Any, Iterator, Optional
 import pprint
 import math
 import json
@@ -23,6 +26,7 @@ from transformers import (
     BitsAndBytesConfig,
     get_constant_schedule,
     get_cosine_schedule_with_warmup,
+    LlamaConfig,
 )
 from custom_llama import MyLlamaForCausalLM
 from transformers.tokenization_utils_fast import PreTrainedTokenizerFast
@@ -199,17 +203,19 @@ def initialize_kv(
     demon_input_ids: torch.Tensor,
     demon_start_idxs: List[int],
     accelerator: Accelerator,
-    gs_iters: int,
-    gs_random_kv: bool,
-    gs_separate_kv: bool,
-    gs_num_permute: int,
-    gs_permute_batch_size: int,
-    gs_permute_back: bool,
+    # init
+    random_kv: bool,
+    separate_kv: bool,
+    num_permute: int,
+    permute_batch_size: int,
+    permute_back: bool,
+    permute_concat: bool,
+    # dt
     dt_iters: int,
     dt_lr: int,
 ) -> Tuple[Tuple[torch.Tensor, torch.Tensor]]:
 
-    if gs_separate_kv:
+    if separate_kv:
         # too lazy to figure out how positional ids should work with instructions, lets see if work on arc/nlp first
         raise NotImplementedError('havent figured out how to do separate kv with instruction')
 
@@ -228,8 +234,9 @@ def initialize_kv(
                     position_ids=torch.arange(demon_input_ids.shape[1], device=accelerator.device)[None, ...],
                     output_hidden_states=True,
                 ).past_key_values # first demonstration_len are old unmodified kv, then demonstration_len for new kv
-            assert past_key_values[0][0].shape[2] == demonstration_len * 2
+
             # some kind of learning
+            assert past_key_values[0][0].shape[2] == demonstration_len * 2
             past_key_values = tuple(
                 (
                     layer_k[:, :, :demonstration_len, :] * (1.0 - dt_lr) + layer_k[:, :, demonstration_len:, :] * dt_lr,
@@ -239,7 +246,7 @@ def initialize_kv(
             )
         assert past_key_values[0][0].shape[2] == demonstration_len
 
-    elif gs_iters > 0 and gs_random_kv:
+    elif random_kv:
         # random kv initialization
         past_key_values = tuple(
             (
@@ -248,17 +255,15 @@ def initialize_kv(
             ) for _ in range(model.config.num_hidden_layers)
         )
 
-    elif gs_iters == 0 or gs_num_permute == 1:
+    elif num_permute == 1:
         # only one kv is needed
         with accelerator.autocast():
             past_key_values = model(input_ids=demon_input_ids, output_hidden_states=True).past_key_values
 
-    else:
+    elif not permute_concat:
         # generate batches of permutations of them and average all
-        permute_masks = generate_unique_permute_masks(demon_input_ids[0], demon_start_idxs, gs_num_permute)
-
-        # add mask for instruction
-        permute_masks = [torch.cat([torch.arange(0, demon_start_idxs[0]), m]) for m in permute_masks]
+        permute_masks = generate_unique_permute_masks(demon_input_ids[0], demon_start_idxs, num_permute)
+        permute_masks = [torch.cat([torch.arange(0, demon_start_idxs[0]), m]) for m in permute_masks] # add instruction
 
         past_key_values = tuple(
             (
@@ -266,7 +271,7 @@ def initialize_kv(
                 torch.zeros((1, model.config.num_key_value_heads, demon_input_ids.shape[1], model.config.head_dim), device=accelerator.device, dtype=torch.float32),
             ) for _ in range(model.config.num_hidden_layers)
         )
-        for batch_permute_masks in chunks(permute_masks, gs_permute_batch_size):
+        for batch_permute_masks in chunks(permute_masks, permute_batch_size):
             # get batch of permuted demon input ids
             batch_demon_input_ids = []
             for permute_mask in batch_permute_masks:
@@ -280,7 +285,7 @@ def initialize_kv(
 
             # optionally permute kv back
             inverse_mask = None
-            if gs_permute_back:
+            if permute_back:
                 for batch_i, permute_mask in enumerate(batch_permute_masks):
                     inverse_mask = torch.empty_like(permute_mask)
                     inverse_mask[permute_mask] = torch.arange(len(permute_mask))
@@ -303,7 +308,69 @@ def initialize_kv(
             for kv_i in range(2):
                 past_key_values[layer_i][kv_i].div_(len(permute_masks))
 
+    else:
+        # generate batches of permutations of them and average all
+        permute_masks = generate_unique_permute_masks(demon_input_ids[0], demon_start_idxs, num_permute)
+        permute_masks = [torch.cat([torch.arange(0, demon_start_idxs[0]), m]) for m in permute_masks] # add instruction
+
+        past_key_values = [[[], []] for _ in range(model.config.num_hidden_layers)]
+        for batch_permute_masks in chunks(permute_masks, permute_batch_size):
+            # get batch of permuted demon input ids
+            batch_demon_input_ids = []
+            for permute_mask in batch_permute_masks:
+                batch_demon_input_ids.append(demon_input_ids.squeeze(0)[permute_mask])
+            batch_demon_input_ids = torch.stack(batch_demon_input_ids)
+
+            # get kv of each
+            with accelerator.autocast():
+                batch_past_key_values = model(input_ids=batch_demon_input_ids, output_hidden_states=True).past_key_values
+            assert len(batch_permute_masks) == batch_past_key_values[0][0].shape[0]
+
+            # add batch sum to a total sum of past_key_values
+            assert batch_past_key_values[0][0].shape[0] == len(batch_permute_masks)
+            for layer_i in range(len(batch_past_key_values)):
+                for kv_i in range(2):
+                    for kv in batch_past_key_values[layer_i][kv_i]:
+                        past_key_values[layer_i][kv_i].append(kv)
+        # concat
+        past_key_values = tuple(
+            (
+                torch.cat(layer_k, dim=1).unsqueeze(0),
+                torch.cat(layer_v, dim=1).unsqueeze(0),
+            )
+            for layer_k, layer_v in past_key_values
+        )
+
     return past_key_values # type: ignore
+
+
+def l2_compress(
+    past_key_values: Tuple[Tuple[torch.Tensor, torch.Tensor]],
+    keep_ratio: float,
+    skip_layers: List[int],
+) -> Tuple[Tuple[torch.Tensor, torch.Tensor]]:
+    # assert all kv are same size
+    assert len(set(tuple(x[0].shape for x in past_key_values)).union(set(tuple(x[0].shape for x in past_key_values)))) == 1
+    assert skip_layers == []
+
+    past_key_values = list(past_key_values) # type: ignore
+    tokens_to_keep = math.ceil(keep_ratio * past_key_values[0][0].size(2))
+
+    for layer_i, (layer_k, layer_v) in enumerate(past_key_values):
+        if layer_i in skip_layers:
+            continue
+
+        key_norms = torch.norm(layer_k, p=2, dim=-1)
+        sorted_indices = key_norms.squeeze(-1).argsort(dim=-1)
+        sorted_indices_expanded = sorted_indices.unsqueeze(-1).expand(-1, -1, -1, layer_k.shape[-1])
+
+        # apply sort
+        sorted_layer_k = torch.gather(layer_k, dim=2, index=sorted_indices_expanded)
+        sorted_values = torch.gather(layer_v, dim=2, index=sorted_indices_expanded)
+
+        past_key_values[layer_i] = (sorted_layer_k[:, :, :tokens_to_keep, :], sorted_values[:, :, :tokens_to_keep, :]) # type: ignore
+
+    return tuple(past_key_values) # type: ignore
 
 
 @torch.no_grad()
@@ -316,23 +383,28 @@ def test_time_evaluate(
     trainable_nbit: int,
     no_flash_attn: bool,
     log_every: int,
+    output_dir: str,
+    # compression
+    compression_ratio: float,
     # gs
-    gs_iters: int,
+    gs_epochs: int,
     gs_batch_size: int,
-    gs_grad_accum_steps: int,
     gs_lr: float,
     gs_beta1: float,
     gs_beta2: float,
     gs_weight_decay: float,
     gs_optimizer: str,
+    gs_lr_scheduler: str,
     gs_max_grad_norm: float,
     gs_no_key: bool,
     gs_no_value: bool,
     gs_num_layer: int,
     gs_loss_on_input: bool,
-    gs_leave_one_out: bool,
+    gs_dropout: str,
+    gs_detach: bool,
     gs_freeze_instruct: bool,
-    gs_lr_scheduler: str,
+    gs_ntokens: int,
+    gs_log_attention: bool,
     # gs lora
     gs_lora: bool,
     gs_lora_rank: int,
@@ -340,14 +412,26 @@ def test_time_evaluate(
     gs_lora_lr: float,
     gs_lora_beta1: float,
     gs_lora_beta2: float,
-    # gs prefix
-    gs_ntokens: int,
     # gs init
-    gs_random_kv: bool,
-    gs_separate_kv: bool,
-    gs_num_permute: int,
-    gs_permute_batch_size: int,
-    gs_permute_back: bool,
+    random_kv: bool,
+    separate_kv: bool,
+    num_permute: int,
+    permute_batch_size: int,
+    permute_back: bool,
+    permute_concat: bool,
+    # gs curriculum
+    gs_curriculum_epochs: int,
+    gs_curriculum_lr: float,
+    gs_curriculum_beta1: float,
+    gs_curriculum_beta2: float,
+    gs_curriculum_weight_decay: float,
+    gs_curriculum_batch_size: int,
+    gs_curriculum_optimizer: str,
+    gs_curriculum_max_grad_norm: float,
+    gs_curriculum_no_key: bool,
+    gs_curriculum_no_value: bool,
+    gs_curriculum_num_layer: int,
+    gs_curriculum_loss_on_input: bool,
     # ttt
     ttt_iters: int,
     ttt_batch_size: int,
@@ -399,9 +483,9 @@ def test_time_evaluate(
         for task in tqdm(process_tasks, desc='Task'):
             # data: get demonstration ids and indices, hacky
             if dataset.debug_max_len:
-                demon_len = dataset.max_seq_len * 8 // 10
+                demon_len = dataset.max_seq_len * 8 // dataset.num_demonstrations
                 demon_input_ids = torch.randint(0, 30, (1, demon_len), dtype=torch.int64, device=accelerator.device)
-                demon_start_idxs = [x * (demon_len // 10) for x in range(10)]
+                demon_start_idxs = [x * (demon_len // dataset.num_demonstrations) for x in range(dataset.num_demonstrations)]
             else:
                 demon_input_ids = None
                 demon_start_idxs = None
@@ -455,32 +539,76 @@ def test_time_evaluate(
 
             # initialize kv
             start_time = time.time()
-            past_key_values = initialize_kv(
-                model=model,
-                demon_input_ids=demon_input_ids,
-                demon_start_idxs=demon_start_idxs,
-                accelerator=accelerator,
-                gs_iters=gs_iters,
-                gs_random_kv=gs_random_kv,
-                gs_separate_kv=gs_separate_kv,
-                gs_num_permute=gs_num_permute,
-                gs_permute_batch_size=gs_permute_batch_size,
-                gs_permute_back=gs_permute_back,
-                dt_iters=dt_iters,
-                dt_lr=dt_lr,
-            )
+
+            if gs_curriculum_epochs > 0:
+                past_key_values = run_gs_curriculum(
+                    demonstration_pairs=dataset.task_to_demonstrations[task],
+                    eval_dataset=dataset,
+                    accelerator=accelerator,
+                    model=model,
+                    # inputs
+                    demon_input_ids=demon_input_ids,
+                    demon_start_idxs=demon_start_idxs,
+                    # config
+                    epochs=gs_curriculum_epochs,
+                    lr=gs_curriculum_lr,
+                    beta1=gs_curriculum_beta1,
+                    beta2=gs_curriculum_beta2,
+                    weight_decay=gs_curriculum_weight_decay,
+                    batch_size=gs_curriculum_batch_size,
+                    optimizer=gs_curriculum_optimizer,
+                    max_grad_norm=gs_curriculum_max_grad_norm,
+                    no_key=gs_curriculum_no_key,
+                    no_value=gs_curriculum_no_value,
+                    num_layer=gs_curriculum_num_layer,
+                    loss_on_input=gs_curriculum_loss_on_input,
+                    freeze_instruct=gs_freeze_instruct,
+                )
+
+            else:
+                past_key_values = initialize_kv(
+                    model=model,
+                    demon_input_ids=demon_input_ids,
+                    demon_start_idxs=demon_start_idxs,
+                    accelerator=accelerator,
+                    # init
+                    random_kv=random_kv,
+                    separate_kv=separate_kv,
+                    num_permute=num_permute,
+                    permute_batch_size=permute_batch_size,
+                    permute_back=permute_back,
+                    permute_concat=permute_concat,
+                    # dt
+                    dt_iters=dt_iters,
+                    dt_lr=dt_lr,
+                )
+
+            if not permute_concat:
+                assert past_key_values[0][0].shape[2] == demon_input_ids.shape[1]
+            else:
+                assert past_key_values[0][0].shape[2] % num_permute == 0
+                assert past_key_values[0][0].shape[2] // num_permute == demon_input_ids.shape[1]
+
             init_kv_time = time.time() - start_time
             torch.cuda.empty_cache()
             gc.collect()
 
+            # compression
+            if compression_ratio < 1.0:
+                past_key_values = l2_compress(
+                    past_key_values=past_key_values,
+                    keep_ratio=compression_ratio,
+                    skip_layers=[],
+                )
+
             # use gs to refine kv
-            if gs_iters > 0:
+            if gs_epochs > 0:
                 with accelerator.no_sync(model):
                     assert past_key_values is not None
                     assert past_key_values[0][0].shape[0] == 1
 
                     start_time = time.time()
-                    model, past_key_values, gs_num_data, gs_num_params = run_gs(
+                    model, past_key_values, gs_num_data, gs_num_params, attn_logger = run_gs(
                         demonstration_pairs=dataset.task_to_demonstrations[task],
                         eval_dataset=dataset,
                         accelerator=accelerator,
@@ -488,22 +616,24 @@ def test_time_evaluate(
                         # inputs
                         demon_start_idxs=demon_start_idxs,
                         past_key_values=past_key_values, # type: ignore
+                        demon_input_ids_len=demon_input_ids.shape[1],
                         # config
-                        iters=gs_iters,
+                        epochs=gs_epochs,
                         lr=gs_lr,
                         beta1=gs_beta1,
                         beta2=gs_beta2,
                         weight_decay=gs_weight_decay,
                         batch_size=gs_batch_size,
-                        grad_accum_steps=gs_grad_accum_steps,
                         optimizer=gs_optimizer,
                         max_grad_norm=gs_max_grad_norm,
                         no_key=gs_no_key,
                         no_value=gs_no_value,
                         num_layer=gs_num_layer,
                         loss_on_input=gs_loss_on_input,
-                        leave_one_out=gs_leave_one_out,
+                        dropout=gs_dropout,
+                        detach=gs_detach,
                         freeze_instruct=gs_freeze_instruct,
+                        log_attention=gs_log_attention,
                         lr_scheduler=gs_lr_scheduler,
                         lora=gs_lora,
                         lora_rank=gs_lora_rank,
@@ -516,6 +646,22 @@ def test_time_evaluate(
                     gs_time = time.time() - start_time
                     torch.cuda.empty_cache()
                     gc.collect()
+
+                    if attn_logger is not None:
+                        os.makedirs(os.path.join(output_dir, 'attn'), exist_ok=True)
+                        save_path = os.path.join(output_dir, 'attn', task) + '.jpg'
+                        iters = range(len(attn_logger.instruct_attn))
+
+                        plt.figure()
+                        plt.plot(iters, attn_logger.instruct_attn, label='instruct')
+                        plt.plot(iters, attn_logger.self_attn, label='self')
+                        plt.plot(iters, attn_logger.other_demon_attn, label='other demon')
+                        plt.plot(iters, attn_logger.self_demon_attn, label='self demon')
+                        plt.legend()
+                        plt.savefig(save_path)
+                        plt.close()
+
+                        logger.info(f'saved attention scores to {save_path}')
 
             # logging
             ttt_num_data_list.append(ttt_num_data)
@@ -592,7 +738,7 @@ def test_time_evaluate(
                             for layer_k, layer_v in batch_past_key_values
                         )
 
-                    model.subtract_position_ids_by = max(gs_ntokens, 0) # HACK for prefix # type: ignore
+                    model.subtract_position_ids_by = past_key_values[0][0].shape[2] - demon_input_ids.shape[1] # HACK for prefix # type: ignore
                     gen_tokens = model.generate(
                         input_ids=gen_input_ids,
                         attention_mask=gen_attention_mask,
@@ -813,6 +959,51 @@ def run_ttt(
     return model, len(ttt_dataset), num_params
 
 
+class AttentionLogger:
+    def __init__(self, demon_input_ids_len: int, demon_start_idxs: List[int]):
+        self.demon_input_ids_len = demon_input_ids_len
+        self.demon_start_idxs = demon_start_idxs
+
+        self.instruct_attn = []
+        self.self_attn = []
+        self.self_demon_attn = []
+        self.other_demon_attn = []
+
+    def update(
+        self,
+        attentions: Tuple[torch.Tensor],
+        pair_attention_mask: torch.Tensor,
+        pair_example_idx: List[int],
+    ) -> None:
+
+        # attention formatted in tuple of layers, each (bs, nhead, pair_len, pair_len + past_kv_len)
+        # assume batchsize1, averaged across heads and layers -> (pair_len, pair_len + past_kv_len)
+        assert len(pair_example_idx) == 1
+        attns = torch.stack([attn.detach().squeeze(0).mean(dim=0) for attn in attentions]).mean(dim=0)
+        assert attns.shape[0] == pair_attention_mask.shape[1] - self.demon_input_ids_len and attns.shape[1] == pair_attention_mask.shape[1]
+        attns = attns.mean(dim=0) # (pair_len + past_kv_len,)
+
+        # compute average attention of query to each demonstration pair
+        instruct_attn = attns[:self.demon_start_idxs[0]].mean().item()
+        self_attn = attns[self.demon_input_ids_len:].mean().item()
+        self_demon_attn = None
+        other_demon_attns = []
+        for idx in range(len(self.demon_start_idxs)):
+            start = self.demon_start_idxs[idx]
+            end = self.demon_start_idxs[idx + 1] if idx < len(self.demon_start_idxs) - 1 else self.demon_input_ids_len
+            if idx == pair_example_idx[0]:
+                self_demon_attn = attns[start: end].mean().item()
+            else:
+                other_demon_attns.append(attns[start: end].mean().item())
+        other_demon_attn = sum(other_demon_attns) / len(other_demon_attns)
+
+        # update
+        self.instruct_attn.append(instruct_attn)
+        self.self_attn.append(self_attn)
+        self.self_demon_attn.append(self_demon_attn)
+        self.other_demon_attn.append(other_demon_attn)
+
+
 @torch.enable_grad()
 def run_gs(
     demonstration_pairs: List[Dict],
@@ -822,22 +1013,24 @@ def run_gs(
     # inputs
     demon_start_idxs: List[int],
     past_key_values: Tuple[Tuple[torch.Tensor, torch.Tensor]],
+    demon_input_ids_len: int,
     # config
-    iters: int,
+    epochs: int,
     lr: float,
     beta1: float,
     beta2: float,
     weight_decay: float,
     batch_size: int,
-    grad_accum_steps: int,
     optimizer: str,
     max_grad_norm: float,
     no_key: bool,
     no_value: bool,
     num_layer: int,
     loss_on_input: bool,
-    leave_one_out: bool,
+    dropout: str,
+    detach: bool,
     freeze_instruct: bool,
+    log_attention: bool,
     lr_scheduler: str,
     lora: bool,
     lora_rank: int,
@@ -846,7 +1039,7 @@ def run_gs(
     lora_beta1: float,
     lora_beta2: float,
     ntokens: int,
-) -> Tuple[nn.Module, Tuple[Tuple[torch.Tensor, torch.Tensor]], int, int]:
+) -> Tuple[nn.Module, Tuple[Tuple[torch.Tensor, torch.Tensor]], int, int, Optional[AttentionLogger]]:
 
     # optional lora
     if lora:
@@ -860,25 +1053,12 @@ def run_gs(
         # model.print_trainable_parameters()
 
     # this copying is necessary because torch is dumb as hell
-    original_kv_len = past_key_values[0][0].shape[2]
+    assert demon_start_idxs[0] > 0
     assert past_key_values[0][0].shape[0] == 1
     past_key_values = tuple(
         (layer_k.detach().clone(), layer_v.detach().clone())
         for layer_k, layer_v in past_key_values
     ) # type: ignore
-
-    # if freeze instruction, take it out
-    assert demon_start_idxs[0] > 0
-    instruct_len = demon_start_idxs[0]
-    instruct_past_key_values = tuple(
-        (layer_k[:, :, :instruct_len, :], layer_v[:, :, :instruct_len, :])
-        for layer_k, layer_v in past_key_values
-    )
-    if freeze_instruct:
-        past_key_values = tuple(
-            (layer_k[:, :, instruct_len:, :], layer_v[:, :, instruct_len:, :])
-            for layer_k, layer_v in past_key_values
-        ) # type: ignore
 
     # get program parameters
     program_params = []
@@ -886,8 +1066,8 @@ def run_gs(
         # additional prefix tuning
         prefix_past_key_values = tuple(
             (
-                instruct_past_key_values[layer_i][0].mean(dim=2, keepdim=True).repeat(1, 1, ntokens, 1),
-                instruct_past_key_values[layer_i][1].mean(dim=2, keepdim=True).repeat(1, 1, ntokens, 1),
+                past_key_values[layer_i][0].mean(dim=2, keepdim=True).repeat(1, 1, ntokens, 1),
+                past_key_values[layer_i][1].mean(dim=2, keepdim=True).repeat(1, 1, ntokens, 1),
             )
             for layer_i in range(model.config.num_hidden_layers) # type: ignore
         )
@@ -925,9 +1105,9 @@ def run_gs(
                 lora_params.append(p)
         num_params += sum(p.numel() for p in lora_params)
 
-    # dataset and dataloader
+    # dataset
     gs_dataset = GSDataset(
-        demonstration_pairs=demonstration_pairs,
+        demonstration_pairs={i: p for i, p in enumerate(demonstration_pairs)},
         tokenizer=eval_dataset.tokenizer,
         debug_random_pad=eval_dataset.debug_random_pad,
         debug_pad_len=eval_dataset.debug_pad_len,
@@ -935,23 +1115,9 @@ def run_gs(
         max_seq_len=eval_dataset.max_seq_len,
         loss_on_input=loss_on_input,
     )
-    if len(gs_dataset) == 0:
-        if lora:
-            model = merge_lora(model)
+    assert len(gs_dataset) > 0
 
-        # add instruction back if needed
-        if freeze_instruct:
-            past_key_values = tuple(
-                (
-                    torch.cat([instruct_layer_k, layer_k], dim=2),
-                    torch.cat([instruct_layer_v, layer_v], dim=2),
-                )
-                for (instruct_layer_k, instruct_layer_v), (layer_k, layer_v) in zip(instruct_past_key_values, past_key_values)
-            ) # type: ignore
-
-        # prefix tuning or not, just return the unmodified past_key_values
-        return model, past_key_values, 0, num_params
-
+    # dataloader
     batch_size = min(batch_size, len(gs_dataset))
     gs_collate_fn = partial(collate_fn_gs, dataset=gs_dataset)
     if eval_dataset.debug_max_len:
@@ -961,7 +1127,7 @@ def run_gs(
         batch_size=batch_size,
         shuffle=True,
         collate_fn=gs_collate_fn,
-        drop_last=True,
+        drop_last=False, # no drop last to ensure we get loss for every sample at least once
         num_workers=0,
     )
 
@@ -984,7 +1150,7 @@ def run_gs(
 
     # lr scheduler
     if lr_scheduler == "cosine":
-        scheduler = get_cosine_schedule_with_warmup(optim, num_warmup_steps=0, num_training_steps=iters // grad_accum_steps)
+        scheduler = get_cosine_schedule_with_warmup(optim, num_warmup_steps=0, num_training_steps=epochs)
     else:
         scheduler = get_constant_schedule(optim)
 
@@ -997,9 +1163,18 @@ def run_gs(
     module = model.module if isinstance(model, DistributedDataParallel) else model
     embed_tokens = module.model.embed_tokens if not lora else module.model.model.embed_tokens
 
+    attn_logger = None
+    if log_attention:
+        attn_logger = AttentionLogger(
+            demon_input_ids_len=demon_input_ids_len,
+            demon_start_idxs=demon_start_idxs,
+        )
+
+    # debug: save for assertions
+    kv_len_before_dropout = past_key_values[0][0].shape[2]
+
     # train!
-    curr_iter = 0
-    while curr_iter < iters:
+    for _ in range(epochs):
         for batch in gs_loader:
             pair_input_ids = batch["input_ids"].to(accelerator.device)
             pair_attention_mask = batch["attention_mask"].to(accelerator.device)
@@ -1008,75 +1183,101 @@ def run_gs(
             device, dtype = pair_input_ids.device, pair_input_ids.dtype
             bs = pair_input_ids.shape[0]
 
-            # freezing instruction is truly annoying
-            full_past_key_values = past_key_values
-            if freeze_instruct:
-                full_past_key_values = tuple(
-                    (
-                        torch.cat([instruct_layer_k, layer_k], dim=2),
-                        torch.cat([instruct_layer_v, layer_v], dim=2),
-                    )
-                    for (instruct_layer_k, instruct_layer_v), (layer_k, layer_v) in zip(instruct_past_key_values, past_key_values)
-                )
-            assert full_past_key_values[0][0].shape[2] == original_kv_len
+            # construct full attention mask for past key values first
+            batch_past_key_values_attention_mask = torch.ones((batch_size, past_key_values[0][0].shape[2]), device=accelerator.device, dtype=torch.int64)
 
-            if leave_one_out:
-                # TODO: optimize this if it works well, stack kv tensors across layers, or maybe do it in collate?
-                # get length of each test pair
-                remove_intervals = []
-                for idx in pair_example_idx:
-                    start = demon_start_idxs[idx]
-                    end = demon_start_idxs[idx + 1] if idx < len(demon_start_idxs) - 1 else original_kv_len
-                    remove_intervals.append((start, end))
-                interval_lens = [end - start for start, end in remove_intervals]
-                max_kv_len = original_kv_len - min(interval_lens) # we will pad kv to this
-
-                # first remove test i/o from each kv in batch
-                batch_past_key_values = [[[], []] for _ in range(len(full_past_key_values))]
-                batch_past_key_values_attention_mask = []
-
-                for start, end in remove_intervals:
-                    pad_len = max_kv_len - (original_kv_len - (end - start))
-                    # shorten past kv and pad
-                    for layer_i, (layer_k, layer_v) in enumerate(full_past_key_values):
-                        layer_k_leave_one_out = torch.cat([layer_k[:, :, :start, :], layer_k[:, :, end:, :]], dim=2)
-                        layer_v_leave_one_out = torch.cat([layer_v[:, :, :start, :], layer_v[:, :, end:, :]], dim=2)
-                        # pad
-                        if pad_len > 0:
-                            pads = torch.zeros((1, layer_k_leave_one_out.shape[1], pad_len, layer_k_leave_one_out.shape[3]), device=accelerator.device, dtype=layer_k_leave_one_out.dtype)
-                            if eval_dataset.pad_side == 'left':
-                                layer_k_leave_one_out = torch.cat([pads, layer_k_leave_one_out], dim=2)
-                                layer_v_leave_one_out = torch.cat([pads, layer_v_leave_one_out], dim=2)
-                            else:
-                                layer_k_leave_one_out = torch.cat([layer_k_leave_one_out, pads], dim=2)
-                                layer_v_leave_one_out = torch.cat([layer_v_leave_one_out, pads], dim=2)
-                        batch_past_key_values[layer_i][0].append(layer_k_leave_one_out)
-                        batch_past_key_values[layer_i][1].append(layer_v_leave_one_out)
-
-                    # make mask
-                    mask = torch.ones((original_kv_len - (end - start),), device=accelerator.device, dtype=torch.int64)
-                    if eval_dataset.pad_side == 'left':
-                        mask = torch.cat([torch.zeros((pad_len,), device=accelerator.device, dtype=torch.int64), mask])
-                    else:
-                        mask = torch.cat([mask, torch.zeros((pad_len,), device=accelerator.device, dtype=torch.int64)])
-                    batch_past_key_values_attention_mask.append(mask)
-
-                # format
+            if detach:
+                # use the same past key values and attention mask, but detach untrained parts
                 batch_past_key_values = tuple(
-                    (torch.cat(layer_k), torch.cat(layer_v))
-                    for layer_k, layer_v in batch_past_key_values
+                    (layer_k.repeat(bs, 1, 1, 1), layer_v.repeat(bs, 1, 1, 1)) # repeat here
+                    for layer_k, layer_v in past_key_values
                 )
-                batch_past_key_values_attention_mask = torch.stack(batch_past_key_values_attention_mask)
+
+                # only drop training kv
+                if dropout == 'train':
+                    assert past_key_values[0][0].shape[2] == demon_input_ids_len # make sure demon_start_idxs are correct
+                    for batch_i, idx in enumerate(pair_example_idx):
+                        start = demon_start_idxs[idx]
+                        end = demon_start_idxs[idx + 1] if idx < len(demon_start_idxs) - 1 else demon_input_ids_len
+                        for layer_i, (layer_k, layer_v) in enumerate(batch_past_key_values):
+                            batch_past_key_values[layer_i][0][batch_i] = torch.cat([layer_k[batch_i, :, :start], layer_k[batch_i, :, start: end].detach().clone(), layer_k[batch_i, :, end:]], dim=1)
+                            batch_past_key_values[layer_i][1][batch_i] = torch.cat([layer_v[batch_i, :, :start], layer_v[batch_i, :, start: end].detach().clone(), layer_v[batch_i, :, end:]], dim=1)
+
+                # drop training kv and drop suffix
+                elif dropout == 'suffix':
+                    assert past_key_values[0][0].shape[2] == demon_input_ids_len # make sure demon_start_idxs are correct
+                    for batch_i, idx in enumerate(pair_example_idx):
+                        start = demon_start_idxs[idx]
+                        for layer_i, (layer_k, layer_v) in enumerate(batch_past_key_values):
+                            batch_past_key_values[layer_i][0][batch_i] = torch.cat([layer_k[batch_i, :, :start], layer_k[batch_i, :, start:].detach().clone()], dim=1)
+                            batch_past_key_values[layer_i][1][batch_i] = torch.cat([layer_v[batch_i, :, :start], layer_v[batch_i, :, start:].detach().clone()], dim=1)
+
+                # drop training kv and only keep power set
+                elif dropout == 'power':
+                    assert past_key_values[0][0].shape[2] == demon_input_ids_len # make sure demon_start_idxs are correct
+                    for batch_i, idx in enumerate(pair_example_idx):
+                        # figure out a non-empty set of kv to keep
+                        choices = set(range(len(demon_start_idxs))) - {idx}
+                        power_set = set(itertools.chain.from_iterable(itertools.combinations(choices, r) for r in range(len(choices) + 1))) - {()}
+                        to_keep = random.choice(list(power_set))
+                        assert len(to_keep) > 0
+                        # remove
+                        to_remove = [idx for idx in range(len(demon_start_idxs)) if idx not in to_keep]
+                        to_keep, to_remove = set(to_keep), set(to_remove)
+
+                        for layer_i, (layer_k, layer_v) in enumerate(batch_past_key_values):
+                            new_layer_k = [layer_k[batch_i, :, :demon_start_idxs[0]]] # instruction
+                            new_layer_v = [layer_v[batch_i, :, :demon_start_idxs[0]]] # instruction
+                            for idx in range(len(demon_start_idxs)):
+                                start = demon_start_idxs[idx]
+                                end = demon_start_idxs[idx + 1] if idx < len(demon_start_idxs) - 1 else demon_input_ids_len
+                                new_layer_k.append(layer_k[batch_i, :, start: end].detach().clone() if (idx in to_remove) else layer_k[batch_i, :, start: end])
+                                new_layer_v.append(layer_v[batch_i, :, start: end].detach().clone() if (idx in to_remove) else layer_v[batch_i, :, start: end])
+                            batch_past_key_values[layer_i][0][batch_i] = torch.cat(new_layer_k, dim=1)
+                            batch_past_key_values[layer_i][1][batch_i] = torch.cat(new_layer_v, dim=1)
 
             else:
-                batch_past_key_values = [
-                    (
-                        layer_k.expand(bs, -1, -1, -1),
-                        layer_v.expand(bs, -1, -1, -1),
-                    )
-                    for layer_k, layer_v in full_past_key_values
-                ]
-                batch_past_key_values_attention_mask = torch.ones((batch_size, batch_past_key_values[0][0].shape[2]), device=accelerator.device, dtype=torch.int64)
+                # use the same past key values across batch, but adjust attention mask for dropping
+                batch_past_key_values = tuple(
+                    (layer_k.expand(bs, -1, -1, -1), layer_v.expand(bs, -1, -1, -1)) # expand here because no modifications
+                    for layer_k, layer_v in past_key_values
+                )
+
+                # only drop training kv
+                if dropout == 'train':
+                    assert past_key_values[0][0].shape[2] == demon_input_ids_len # make sure demon_start_idxs are correct
+                    for batch_i, idx in enumerate(pair_example_idx):
+                        start = demon_start_idxs[idx]
+                        end = demon_start_idxs[idx + 1] if idx < len(demon_start_idxs) - 1 else demon_input_ids_len
+                        batch_past_key_values_attention_mask[batch_i, start:end] = 0
+
+                # drop training kv and drop suffix
+                elif dropout == 'suffix':
+                    assert past_key_values[0][0].shape[2] == demon_input_ids_len # make sure demon_start_idxs are correct
+                    for batch_i, idx in enumerate(pair_example_idx):
+                        start = demon_start_idxs[idx]
+                        batch_past_key_values_attention_mask[batch_i, start:] = 0
+
+                # drop training kv and only keep power set
+                elif dropout == 'power':
+                    assert past_key_values[0][0].shape[2] == demon_input_ids_len # make sure demon_start_idxs are correct
+                    for batch_i, idx in enumerate(pair_example_idx):
+                        # figure out a non-empty set of kv to keep
+                        choices = set(range(len(demon_start_idxs))) - {idx}
+                        power_set = set(itertools.chain.from_iterable(itertools.combinations(choices, r) for r in range(len(choices) + 1))) - {()}
+                        to_keep = random.choice(list(power_set))
+                        assert len(to_keep) > 0
+                        # remove
+                        to_remove = [idx for idx in range(len(demon_start_idxs)) if idx not in to_keep]
+                        for idx in to_remove:
+                            start = demon_start_idxs[idx]
+                            end = demon_start_idxs[idx + 1] if idx < len(demon_start_idxs) - 1 else demon_input_ids_len
+                            batch_past_key_values_attention_mask[batch_i, start:end] = 0
+
+            # debug: check lengths are correct
+            for layer_k, layer_v in batch_past_key_values:
+                assert (layer_k.shape[0], layer_k.shape[2]) == (layer_v.shape[0], layer_v.shape[2]) == (bs, kv_len_before_dropout)
+            assert tuple(batch_past_key_values_attention_mask.shape) == (bs, kv_len_before_dropout)
 
             # tune the prefix only
             if prefix_past_key_values is not None:
@@ -1088,17 +1289,16 @@ def run_gs(
                     for (prefix_layer_k, prefix_layer_v), (layer_k, layer_v) in zip(prefix_past_key_values, batch_past_key_values)
                 )
                 batch_past_key_values_attention_mask = torch.cat([
-                    torch.ones((bs, prefix_past_key_values[0][0].shape[2]), device=accelerator.device, dtype=torch.int64),
+                    torch.ones((bs, ntokens), device=accelerator.device, dtype=torch.int64),
                     batch_past_key_values_attention_mask,
                 ], dim=1)
 
             with accelerator.autocast():
                 # build position ids
                 position_ids = torch.zeros((batch_size, pair_input_ids.shape[1]), device=device, dtype=torch.int64)
-                past_lens = [past_key_values[0][0].shape[2]] * bs # no matter leave_one_out or use prefix, never change position ids
                 new_lens = pair_attention_mask.sum(dim=1)
-                for task_position_ids, past_len, new_len in zip(position_ids, past_lens, new_lens):
-                    new_positions = torch.tensor(range(past_len, past_len + new_len), device=device, dtype=dtype)
+                for task_position_ids, new_len in zip(position_ids, new_lens):
+                    new_positions = torch.tensor(range(demon_input_ids_len, demon_input_ids_len + new_len), device=device, dtype=dtype)
                     if gs_dataset.pad_side == "right":
                         task_position_ids[:new_len] = new_positions
                     else:
@@ -1114,26 +1314,38 @@ def run_gs(
                     "use_cache": True,
                     "past_key_values": batch_past_key_values,
                     "position_ids": position_ids,
+                    "output_attentions": log_attention,
                 }
 
                 # get ce loss
-                loss = model(**model_kwargs).loss
+                model_out = model(**model_kwargs)
+                loss = model_out.loss
+
+                if attn_logger is not None:
+                    attn_logger.update(
+                        attentions=model_out.attentions,
+                        pair_attention_mask=pair_attention_mask,
+                        pair_example_idx=pair_example_idx,
+                    )
 
                 # if pair_attention_mask.sum() < pair_attention_mask.numel():
                 #     print(loss.item())
                 #     breakpoint()
 
-            accelerator.backward(loss)
+            accelerator.backward(loss * bs / batch_size) # not doing droplast, so scale by relative batchsize
 
-            if (curr_iter + 1) % grad_accum_steps == 0 or curr_iter == iters - 1:
-                accelerator.clip_grad_norm_(all_params, max_grad_norm)
-                optim.step()
-                scheduler.step()
-                optim.zero_grad()
+        # only at the end of epoch do we backprop
+        accelerator.clip_grad_norm_(all_params, max_grad_norm)
 
-            curr_iter += 1
-            if curr_iter >= iters:
-                break
+        # ignore instruction
+        if freeze_instruct:
+            for layer_k, layer_v in past_key_values:
+                layer_k.grad[:, :, :demon_start_idxs[0]] = 0.0 # type: ignore
+                layer_v.grad[:, :, :demon_start_idxs[0]] = 0.0 # type: ignore
+
+        optim.step()
+        scheduler.step()
+        optim.zero_grad()
 
     model.eval()
     if lora:
@@ -1145,15 +1357,7 @@ def run_gs(
     ) # type: ignore
 
     # add back instruction
-    if freeze_instruct:
-        past_key_values = tuple(
-            (
-                torch.cat([instruct_layer_k, layer_k], dim=2),
-                torch.cat([instruct_layer_v, layer_v], dim=2),
-            )
-            for (instruct_layer_k, instruct_layer_v), (layer_k, layer_v) in zip(instruct_past_key_values, past_key_values)
-        ) # type: ignore
-    assert past_key_values[0][0].shape[2] == original_kv_len
+    assert past_key_values[0][0].shape[2] == kv_len_before_dropout
 
     # add prefix
     if prefix_past_key_values is not None:
@@ -1165,7 +1369,228 @@ def run_gs(
             for (prefix_layer_k, prefix_layer_v), (layer_k, layer_v) in zip(prefix_past_key_values, past_key_values)
         ) # type: ignore
 
-    return model, past_key_values, len(gs_dataset), num_params
+    return model, past_key_values, len(gs_dataset), num_params, attn_logger
+
+
+def get_individual_loss(lm_logits: torch.Tensor, label_ids: torch.Tensor) -> List[float]:
+    # move labels to correct device to enable model parallelism
+    labels = label_ids.to(lm_logits.device)
+    # Shift so that tokens < n predict n
+    assert lm_logits.shape[0] == labels.shape[0]
+    losses = []
+    for logs, labs in zip(lm_logits, labels):
+        shift_logits = logs[:-1, :].contiguous()
+        shift_labels = labs[1:].contiguous()
+        # Flatten the tokens
+        loss_fct = nn.CrossEntropyLoss(reduction='none')
+        loss = loss_fct(shift_logits.view(-1, shift_logits.size(-1)), shift_labels.view(-1))
+
+        assert loss.shape == labs[1:].shape
+        loss = loss[labs[1:] != -100].mean()
+        losses.append(loss)
+
+    # debugging, should match crossentropy reduction (currently just match to 4 decimals)
+    # ns = [(l != -100).sum() for l in labels]
+    # ns = [n / sum(ns) for n in ns]
+    # m = 0
+    # for loss, n in zip(losses, ns):
+    #     m += loss * n
+    # print(m.item())
+
+    return torch.stack(losses).tolist()
+
+
+@torch.enable_grad()
+def run_gs_curriculum(
+    demonstration_pairs: List[Dict],
+    eval_dataset: EvalDataset,
+    accelerator: Accelerator,
+    model: Union[nn.Module, DistributedDataParallel],
+    # inputs
+    demon_input_ids: torch.Tensor,
+    demon_start_idxs: List[int],
+    # config
+    epochs: int,
+    lr: float,
+    beta1: float,
+    beta2: float,
+    weight_decay: float,
+    batch_size: int,
+    optimizer: str,
+    max_grad_norm: float,
+    no_key: bool,
+    no_value: bool,
+    num_layer: int,
+    loss_on_input: bool,
+    freeze_instruct: bool,
+) -> Tuple[Tuple[torch.Tensor, torch.Tensor]]:
+
+    # this copying is necessary because torch is dumb as hell
+    assert demon_start_idxs[0] > 0
+
+    # prepare some stuff
+    module = model.module if isinstance(model, DistributedDataParallel) else model
+    embed_tokens = module.model.embed_tokens
+
+    demon_input_ids_len = demon_input_ids.shape[1]
+    past_key_values = None
+    pair_i_candidates = set(range(-1, len(demon_start_idxs)))
+    curr_pair_i = -1 # always start with the instruction
+
+    while True:
+        # update kv with new pair
+        model.eval()
+        start = demon_start_idxs[curr_pair_i] if curr_pair_i >= 0 else 0
+        end = demon_start_idxs[curr_pair_i + 1] if curr_pair_i < len(demon_start_idxs) - 1 else demon_input_ids.shape[1]
+        pair_input_ids = demon_input_ids[:, start: end]
+        past_key_values = model(
+            inputs_embeds=embed_tokens(pair_input_ids),
+            past_key_values=past_key_values,
+            use_cache=True,
+        ).past_key_values
+
+        # no optimization for the last pair
+        pair_i_candidates.remove(curr_pair_i)
+        if len(pair_i_candidates) == 0:
+            break
+
+        # get program parameters
+        # full tuning of initialized KV
+        program_params = []
+        num_layer = model.config.num_hidden_layers if num_layer == -1 else num_layer # type: ignore
+        for layer_k, layer_v in past_key_values[-num_layer:]:
+            if not no_key:
+                program_params.append(layer_k)
+            if not no_value:
+                program_params.append(layer_v)
+
+        # set requires grad
+        assert all(not p.requires_grad for p in program_params)
+        for p in program_params:
+            p.requires_grad = True
+
+        # optimizer
+        optimizer_grouped_params = [
+            {"params": program_params, "lr": lr, 'betas': (beta1, beta2)},
+        ]
+        if optimizer == 'adamw':
+            optim = torch.optim.AdamW(optimizer_grouped_params, weight_decay=weight_decay) # type: ignore
+        else:
+            optim = torch.optim.SGD(optimizer_grouped_params, lr=lr) # type: ignore
+        optim.zero_grad()
+
+        # dataset
+        gs_dataset = GSDataset(
+            demonstration_pairs={i: demonstration_pairs[i] for i in pair_i_candidates},
+            tokenizer=eval_dataset.tokenizer,
+            debug_random_pad=eval_dataset.debug_random_pad,
+            debug_pad_len=eval_dataset.debug_pad_len,
+            pad_side=eval_dataset.pad_side,
+            max_seq_len=eval_dataset.max_seq_len,
+            loss_on_input=loss_on_input,
+        )
+        assert len(gs_dataset) > 0
+
+        # dataloader
+        batch_size = min(batch_size, len(gs_dataset))
+        gs_collate_fn = partial(collate_fn_gs, dataset=gs_dataset)
+        if eval_dataset.debug_max_len:
+            gs_collate_fn = partial(collate_fn_gs_dummy, dataset=gs_dataset)
+        gs_loader = DataLoader(
+            gs_dataset,
+            batch_size=batch_size,
+            shuffle=True,
+            collate_fn=gs_collate_fn,
+            drop_last=False, # no drop last to ensure we get loss for every sample at least once
+            num_workers=0,
+        )
+
+        # lr scheduler
+        scheduler = get_constant_schedule(optim)
+
+        model.train()
+
+        # train!
+        example_idx_to_losses = {pair_i: float('inf') for pair_i in pair_i_candidates}
+        for _ in range(epochs):
+            for batch in gs_loader:
+                pair_input_ids = batch["input_ids"].to(accelerator.device)
+                pair_attention_mask = batch["attention_mask"].to(accelerator.device)
+                pair_label_ids = batch["label_ids"].to(accelerator.device)
+                pair_example_idx = batch["example_idx"]
+                device, dtype = pair_input_ids.device, pair_input_ids.dtype
+                bs = pair_input_ids.shape[0]
+
+                # construct full attention mask for past key values first
+                batch_past_key_values_attention_mask = torch.ones((bs, past_key_values[0][0].shape[2]), device=accelerator.device, dtype=torch.int64)
+                batch_past_key_values = tuple(
+                    (layer_k.expand(bs, -1, -1, -1), layer_v.expand(bs, -1, -1, -1)) # expand here because no modifications
+                    for layer_k, layer_v in past_key_values
+                )
+
+                with accelerator.autocast():
+                    # build position ids
+                    position_ids = torch.zeros((bs, pair_input_ids.shape[1]), device=device, dtype=torch.int64)
+                    new_lens = pair_attention_mask.sum(dim=1)
+                    for task_position_ids, new_len in zip(position_ids, new_lens):
+                        new_positions = torch.tensor(range(demon_input_ids_len, demon_input_ids_len + new_len), device=device, dtype=dtype)
+                        if gs_dataset.pad_side == "right":
+                            task_position_ids[:new_len] = new_positions
+                        else:
+                            task_position_ids[-new_len:] = new_positions
+
+                    pair_inputs_embeds = embed_tokens(pair_input_ids)
+                    pair_attention_mask = torch.cat([batch_past_key_values_attention_mask, pair_attention_mask], dim=1)
+
+                    model_kwargs = {
+                        "inputs_embeds": pair_inputs_embeds,
+                        "attention_mask": pair_attention_mask,
+                        "labels": pair_label_ids,
+                        "use_cache": True,
+                        "past_key_values": batch_past_key_values,
+                        "position_ids": position_ids,
+                    }
+
+                    # get ce loss
+                    model_out = model(**model_kwargs)
+
+                    # update losses
+                    detached_losses = get_individual_loss(lm_logits=model_out.logits.detach(), label_ids=pair_label_ids)
+                    assert len(detached_losses) == len(pair_example_idx)
+                    for i, l in zip(pair_example_idx, detached_losses):
+                        assert i in example_idx_to_losses
+                        example_idx_to_losses[i] = l
+
+                    # if pair_attention_mask.sum() < pair_attention_mask.numel():
+                    #     print(model_out.loss.item())
+                    #     breakpoint()
+
+                accelerator.backward(model_out.loss * bs / batch_size) # not doing droplast, so scale by relative batchsize
+
+            # only at the end of epoch do we backprop
+            accelerator.clip_grad_norm_(program_params, max_grad_norm)
+
+            # ignore instruction
+            if freeze_instruct:
+                for layer_k, layer_v in past_key_values:
+                    layer_k.grad[:, :, :demon_start_idxs[0]] = 0.0 # type: ignore
+                    layer_v.grad[:, :, :demon_start_idxs[0]] = 0.0 # type: ignore
+
+            optim.step()
+            scheduler.step()
+            optim.zero_grad()
+
+        # after one pair of optimization, select easiest pair i
+        assert max(example_idx_to_losses.values()) < float('inf')
+        curr_pair_i = min(example_idx_to_losses, key=example_idx_to_losses.get) # type: ignore
+
+        past_key_values = tuple(
+            (layer_k.detach().clone(), layer_v.detach().clone())
+            for layer_k, layer_v in past_key_values
+        ) # type: ignore
+
+    assert past_key_values[0][0].shape[2] == demon_input_ids.shape[1] # type: ignore
+    return past_key_values # type: ignore
 
 
 def merge_lora(model: nn.Module) -> nn.Module:
@@ -1203,6 +1628,9 @@ def main():
     # limit eval
     parser.add_argument('--eval_ratio', type=float, default=1.0)
 
+    # compress
+    parser.add_argument("--compression_ratio", type=float, default=1.0)
+
     # ttt
     parser.add_argument("--ttt_iters", type=int, default=0)
     parser.add_argument("--ttt_lr", type=float, default=1e-4)
@@ -1220,13 +1648,12 @@ def main():
     parser.add_argument("--ttt_gradient_checkpointing", action='store_true')
 
     # gradient search
-    parser.add_argument("--gs_iters", type=int, default=0)
+    parser.add_argument("--gs_epochs", type=int, default=0)
     parser.add_argument("--gs_lr", type=float, default=1e-3)
     parser.add_argument("--gs_beta1", type=float, default=0.9)
     parser.add_argument("--gs_beta2", type=float, default=0.999)
     parser.add_argument("--gs_weight_decay", type=float, default=0.0)
     parser.add_argument("--gs_batch_size", type=int, default=10)
-    parser.add_argument("--gs_grad_accum_steps", type=int, default=1)
     parser.add_argument("--gs_optimizer", type=str, choices=["adamw", "sgd"], default="adamw")
     parser.add_argument("--gs_lr_scheduler", type=str, choices=["cosine", "constant"], default="cosine")
     parser.add_argument("--gs_max_grad_norm", default=1.0, type=float, help="Max gradient norm.")
@@ -1234,15 +1661,19 @@ def main():
     parser.add_argument("--gs_no_value", action='store_true')
     parser.add_argument("--gs_num_layer", type=int, default=-1) # tune top layers only
     parser.add_argument("--gs_loss_on_input", action='store_true')
-    parser.add_argument("--gs_leave_one_out", action='store_true')
+    parser.add_argument("--gs_dropout", choices=['none', 'train', 'suffix', 'power'], type=str, default='none')
+    parser.add_argument("--gs_detach", action='store_true')
     parser.add_argument("--gs_freeze_instruct", action='store_true')
+    parser.add_argument("--gs_ntokens", type=int, default=-1)
+    parser.add_argument("--gs_log_attention", action='store_true')
 
     # gradient search model initialization
-    parser.add_argument("--gs_random_kv", action='store_true')
-    parser.add_argument("--gs_separate_kv", action='store_true')
-    parser.add_argument("--gs_num_permute", type=int, default=1) # 1024
-    parser.add_argument("--gs_permute_batch_size", type=int, default=16)
-    parser.add_argument("--gs_permute_back", action='store_true')
+    parser.add_argument("--random_kv", action='store_true')
+    parser.add_argument("--separate_kv", action='store_true')
+    parser.add_argument("--num_permute", type=int, default=1) # 1024
+    parser.add_argument("--permute_batch_size", type=int, default=16)
+    parser.add_argument("--permute_back", action='store_true')
+    parser.add_argument("--permute_concat", action='store_true')
 
     # gradient search with lora
     parser.add_argument("--gs_lora", action='store_true')
@@ -1252,8 +1683,19 @@ def main():
     parser.add_argument("--gs_lora_beta1", type=float, default=0.9)
     parser.add_argument("--gs_lora_beta2", type=float, default=0.999)
 
-    # gradient search prefix tuning
-    parser.add_argument("--gs_ntokens", type=int, default=-1)
+    # gradient search
+    parser.add_argument("--gs_curriculum_epochs", type=int, default=0)
+    parser.add_argument("--gs_curriculum_lr", type=float, default=1e-3)
+    parser.add_argument("--gs_curriculum_beta1", type=float, default=0.9)
+    parser.add_argument("--gs_curriculum_beta2", type=float, default=0.999)
+    parser.add_argument("--gs_curriculum_weight_decay", type=float, default=0.0)
+    parser.add_argument("--gs_curriculum_batch_size", type=int, default=10)
+    parser.add_argument("--gs_curriculum_optimizer", type=str, choices=["adamw", "sgd"], default="adamw")
+    parser.add_argument("--gs_curriculum_max_grad_norm", default=1.0, type=float, help="Max gradient norm.")
+    parser.add_argument("--gs_curriculum_no_key", action='store_true')
+    parser.add_argument("--gs_curriculum_no_value", action='store_true')
+    parser.add_argument("--gs_curriculum_num_layer", type=int, default=-1) # tune top layers only
+    parser.add_argument("--gs_curriculum_loss_on_input", action='store_true')
 
     # deeeeeeeeeeep thinking
     parser.add_argument("--dt_iters", type=int, default=0)
@@ -1268,7 +1710,6 @@ def main():
     args.tag = f"eval_{args.tag}"
     args.output_dir = os.path.join(args.output_dir, args.tag)
 
-    args.gs_iters *= args.gs_grad_accum_steps
     args.ttt_iters *= args.ttt_grad_accum_steps
 
     # Setup accelerator
@@ -1329,9 +1770,16 @@ def main():
     else:
         raise ValueError(f"unrecognized untrainable_nbit {args.untrainable_nbit}")
 
-    # load model (no dropout when model.train() for ttt or gs)
+    # load config in case using naive attention for attention map
+    config = LlamaConfig.from_pretrained(MODEL_NAME_TO_PATH[args.model_name])
+    if args.gs_log_attention:
+        config._attn_implementation_autoset = False
+        config._attn_implementation = 'eager'
+
+    # load model
     model = MyLlamaForCausalLM.from_pretrained(
         pretrained_model_name_or_path=MODEL_NAME_TO_PATH[args.model_name],
+        config=config,
         **from_pretrained_kwargs,
     )
     model.subtract_position_ids_by = 0 # HACK for prefix # type: ignore
@@ -1394,23 +1842,28 @@ def main():
         trainable_nbit=args.trainable_nbit,
         no_flash_attn=not args.flash_attn,
         log_every=args.log_every,
+        output_dir=args.output_dir,
+        # eval
+        compression_ratio=args.compression_ratio,
         # gs
-        gs_iters=args.gs_iters,
+        gs_epochs=args.gs_epochs,
         gs_lr=args.gs_lr,
         gs_beta1=args.gs_beta1,
         gs_beta2=args.gs_beta2,
         gs_weight_decay=args.gs_weight_decay,
         gs_batch_size=args.gs_batch_size,
-        gs_grad_accum_steps=args.gs_grad_accum_steps,
         gs_optimizer=args.gs_optimizer,
+        gs_lr_scheduler=args.gs_lr_scheduler,
         gs_max_grad_norm=args.gs_max_grad_norm,
         gs_no_key=args.gs_no_key,
         gs_no_value=args.gs_no_value,
         gs_num_layer=args.gs_num_layer,
         gs_loss_on_input=args.gs_loss_on_input,
-        gs_leave_one_out=args.gs_leave_one_out,
+        gs_dropout=args.gs_dropout,
+        gs_detach=args.gs_detach,
         gs_freeze_instruct=args.gs_freeze_instruct,
-        gs_lr_scheduler=args.gs_lr_scheduler,
+        gs_ntokens=args.gs_ntokens,
+        gs_log_attention=args.gs_log_attention,
         # gs lora
         gs_lora=args.gs_lora,
         gs_lora_rank=args.gs_lora_rank,
@@ -1418,14 +1871,26 @@ def main():
         gs_lora_lr=args.gs_lora_lr,
         gs_lora_beta1=args.gs_lora_beta1,
         gs_lora_beta2=args.gs_lora_beta2,
-        # gs prefix
-        gs_ntokens=args.gs_ntokens,
         # gs init
-        gs_random_kv=args.gs_random_kv,
-        gs_separate_kv=args.gs_separate_kv,
-        gs_num_permute=args.gs_num_permute,
-        gs_permute_batch_size=args.gs_permute_batch_size,
-        gs_permute_back=args.gs_permute_back,
+        random_kv=args.random_kv,
+        separate_kv=args.separate_kv,
+        num_permute=args.num_permute,
+        permute_batch_size=args.permute_batch_size,
+        permute_back=args.permute_back,
+        permute_concat=args.permute_concat,
+        # gs curriculum
+        gs_curriculum_epochs=args.gs_curriculum_epochs,
+        gs_curriculum_lr=args.gs_curriculum_lr,
+        gs_curriculum_beta1=args.gs_curriculum_beta1,
+        gs_curriculum_beta2=args.gs_curriculum_beta2,
+        gs_curriculum_weight_decay=args.gs_curriculum_weight_decay,
+        gs_curriculum_batch_size=args.gs_curriculum_batch_size,
+        gs_curriculum_optimizer=args.gs_curriculum_optimizer,
+        gs_curriculum_max_grad_norm=args.gs_curriculum_max_grad_norm,
+        gs_curriculum_no_key=args.gs_curriculum_no_key,
+        gs_curriculum_no_value=args.gs_curriculum_no_value,
+        gs_curriculum_num_layer=args.gs_curriculum_num_layer,
+        gs_curriculum_loss_on_input=args.gs_curriculum_loss_on_input,
         # ttt
         ttt_iters=args.ttt_iters,
         ttt_lr=args.ttt_lr,

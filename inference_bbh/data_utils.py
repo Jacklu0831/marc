@@ -279,7 +279,7 @@ def collate_fn_eval_dummy(batch: List[int], dataset: EvalDataset) -> Dict:
 class GSDataset(Dataset):
     def __init__(
         self,
-        demonstration_pairs: List[Dict],
+        demonstration_pairs: Dict[int, Dict],
         tokenizer: PreTrainedTokenizerFast,
         debug_random_pad: bool,
         debug_pad_len: int,
@@ -296,7 +296,7 @@ class GSDataset(Dataset):
         self.loss_on_input = loss_on_input
 
         # format data (only use demonstration pairs)
-        self.parsed_examples = [self.format(i, example) for i, example in enumerate(demonstration_pairs)]
+        self.parsed_examples = [self.format(i, example) for i, example in demonstration_pairs.items()]
 
     def __len__(self):
         return len(self.parsed_examples)
