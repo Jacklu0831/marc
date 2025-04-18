@@ -115,3 +115,5 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 infere
     --gs_batch_size 2 \
     --num_permute 128 \
     --permute_batch_size 4
+
+# Submitted batch job 59408905

@@ -114,3 +114,5 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 infere
     --gs_batch_size 2 \
     --gs_dropout power \
     --gs_detach
+
+# Submitted batch job 59408787

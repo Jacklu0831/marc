@@ -68,3 +68,5 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 infere
     --gs_curriculum_epochs 8 \
     --gs_curriculum_lr 1e-3 \
     --gs_curriculum_batch_size 2
+
+# Submitted batch job 59408993

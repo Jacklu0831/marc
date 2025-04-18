@@ -26,3 +26,5 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 infere
     --tag bbh_llama8b_compression0.25 \
     --model_name llama8b \
     --compression_ratio 0.25
+
+# Submitted batch job 59408827

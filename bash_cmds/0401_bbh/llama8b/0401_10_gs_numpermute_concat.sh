@@ -36,3 +36,5 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 infere
 
 # runs baseline on top
 # check that batchsize4 and batchsize2 is the same
+
+# Submitted batch job 59408955

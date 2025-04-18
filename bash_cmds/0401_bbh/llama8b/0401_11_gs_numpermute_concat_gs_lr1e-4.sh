@@ -57,3 +57,5 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 infere
     --gs_epochs 50 \
     --gs_lr 1e-4 \
     --gs_batch_size 2
+
+# Submitted batch job 59408958
