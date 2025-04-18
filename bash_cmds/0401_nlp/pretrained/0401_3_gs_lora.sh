@@ -147,36 +147,6 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 infere
     --eval_seeds 100
 
 
-
-
-
-# gslr1e-3
-# numparams 88289280, same time gs without lora and almost no memory overhead
-
-# gslora1e-3
-# Submitted batch job 59034248 # 0.381
-# Submitted batch job 59034249 # 0.416
-# Submitted batch job 59034250 # 0.425
-# Submitted batch job 59034251 # 0.417
-
-# gslora1e-4
-# Submitted batch job 59034252 # 0.393
-# Submitted batch job 59034253 # 0.408
-# Submitted batch job 59034254 # 0.412
-# Submitted batch job 59034255 # 0.421
-
-# gslora1e-5
-# Submitted batch job 59034256 # 0.372
-# Submitted batch job 59034257 # 0.398
-# Submitted batch job 59034258 # 0.409
-# Submitted batch job 59034259 # 0.406
-
-# so far 0.425
-
-
-
-# AFTER PRECISION FIX
-
 # gslora1e-3
 # Submitted batch job 59139441 # 0.389
 # Submitted batch job 59139442 # 0.383

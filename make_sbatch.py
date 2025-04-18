@@ -38,6 +38,7 @@ parser.add_argument('--sbatch_dir', type=str, help='bash file of commands', defa
 parser.add_argument('--burst', action='store_true')
 parser.add_argument('--multi_node', action='store_true')
 parser.add_argument('--rtx8000', action='store_true')
+parser.add_argument('--single', action='store_true')
 
 args = parser.parse_args()
 
@@ -87,53 +88,55 @@ template = template.replace('$GPULINE', gpu_line)
 # get job clusters from bash files
 model_dirs_dict = {}
 for bash_file in args.bash_files:
-    # filter lines
-    orig_lines = open(bash_file, 'r').readlines()
-    orig_lines = [l.strip() for l in orig_lines if l.strip()]
-    orig_lines = [l for l in orig_lines if 'Submitted batch job' not in l]
-    # collapse "\\"
-    lines = []
-    add_to_previous_line = False
-    for l in orig_lines:
-        if l.startswith('#'):
-            lines.append(l)
-            add_to_previous_line = False
-        elif l.endswith('\\'):
-            l = l[:-1]
-            if add_to_previous_line:
-                lines[-1] += l
-            else:
+    if args.single:
+        model_dirs_dict[bash_file.replace('/', '_')] = [bash_file]
+    else:
+        # filter lines
+        orig_lines = open(bash_file, 'r').readlines()
+        orig_lines = [l.strip() for l in orig_lines if l.strip()]
+        orig_lines = [l for l in orig_lines if 'Submitted batch job' not in l]
+        # collapse "\\"
+        lines = []
+        add_to_previous_line = False
+        for l in orig_lines:
+            if l.startswith('#'):
                 lines.append(l)
-            add_to_previous_line = True
-        else:
-            if add_to_previous_line:
-                lines[-1] += l
+                add_to_previous_line = False
+            elif l.endswith('\\'):
+                l = l[:-1]
+                if add_to_previous_line:
+                    lines[-1] += l
+                else:
+                    lines.append(l)
+                add_to_previous_line = True
             else:
-                lines.append(l)
-            add_to_previous_line = False
-    # just for assertions
-    job_lines = [l for l in lines if not l.startswith('#')]
-    assert len(job_lines) == len(set(job_lines)), 'duplicate jobs'
-    if '--tag' in job_lines[0]:
-        tags = [l.split()[l.split().index('--tag') + 1] for l in job_lines]
-        assert len(tags) == len(set(tags)), f'duplicate tags {tags}'
-    # collect clusters
-    job_cluster_names = []
-    job_clusters = []
-    for i, l in enumerate(lines):
-        if l.startswith('#'):
-            name = l[1:].strip()
-            job_cluster_names.append(name)
-            job_clusters.append([])
-        else:
-            job_clusters[-1].append(l)
-        i += 1
-    assert len(job_cluster_names) == len(job_clusters)
-    # filter out empty clusters (random comments)
-    for cluster_name, job_cluster in zip(job_cluster_names, job_clusters):
-        if len(job_cluster) >= 1:
-            model_dirs_dict[cluster_name] = job_cluster
-
+                if add_to_previous_line:
+                    lines[-1] += l
+                else:
+                    lines.append(l)
+                add_to_previous_line = False
+        # just for assertions
+        job_lines = [l for l in lines if not l.startswith('#')]
+        assert len(job_lines) == len(set(job_lines)), 'duplicate jobs'
+        if '--tag' in job_lines[0]:
+            tags = [l.split()[l.split().index('--tag') + 1] for l in job_lines]
+            assert len(tags) == len(set(tags)), f'duplicate tags {tags}'
+        # collect clusters
+        job_cluster_names = []
+        job_clusters = []
+        for i, l in enumerate(lines):
+            if l.startswith('#'):
+                name = l[1:].strip()
+                job_cluster_names.append(name)
+                job_clusters.append([])
+            else:
+                job_clusters[-1].append(l)
+            i += 1
+        assert len(job_cluster_names) == len(job_clusters)
+        # filter out empty clusters (random comments)
+        for cluster_name, job_cluster in zip(job_cluster_names, job_clusters):
+            if len(job_cluster) >= 1:
+                model_dirs_dict[cluster_name] = job_cluster
 
 sbatch_paths = []
 for cluster_name, job_cluster in model_dirs_dict.items():

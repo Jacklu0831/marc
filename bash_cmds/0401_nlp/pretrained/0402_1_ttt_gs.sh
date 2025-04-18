@@ -1,86 +1,49 @@
-# python make_sbatch.py --ngpu 1 --time 4 --rtx8000 --bash_files bash_cmds/0401_nlp/pretrained/0401_5_gs_leaveoneout.sh
+# python make_sbatch.py --ngpu 1 --time 8 --rtx8000 --bash_files bash_cmds/0401_nlp/pretrained/0402_1_ttt_gs.sh
 
-# nlp gs5 lr1e-2 leaveoneout
+
+
+# nlp ttt500 maxpermute gs5 lr1e-3
 accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_nlp/test_time_evaluate.py \
-    --tag gs5_lr1e-2_leaveoneout \
+    --tag nlp_ttt500_maxpermute_gs5_lr1e-3 \
     --weight_dir nlp_pretrained \
     --weight_epoch 0 \
-    --gs_iters 5 \
-    --gs_lr 1e-2 \
-    --gs_leave_one_out \
-    --eval_seeds 100
-
-# nlp gs25 lr1e-2 leaveoneout
-accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_nlp/test_time_evaluate.py \
-    --tag gs25_lr1e-2_leaveoneout \
-    --weight_dir nlp_pretrained \
-    --weight_epoch 0 \
-    --gs_iters 25 \
-    --gs_lr 1e-2 \
-    --gs_leave_one_out \
-    --eval_seeds 100
-
-# nlp gs100 lr1e-2 leaveoneout
-accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_nlp/test_time_evaluate.py \
-    --tag gs100_lr1e-2_leaveoneout \
-    --weight_dir nlp_pretrained \
-    --weight_epoch 0 \
-    --gs_iters 100 \
-    --gs_lr 1e-2 \
-    --gs_leave_one_out \
-    --eval_seeds 100
-
-# nlp gs250 lr1e-2 leaveoneout
-accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_nlp/test_time_evaluate.py \
-    --tag gs250_lr1e-2_leaveoneout \
-    --weight_dir nlp_pretrained \
-    --weight_epoch 0 \
-    --gs_iters 250 \
-    --gs_lr 1e-2 \
-    --gs_leave_one_out \
-    --eval_seeds 100
-
-
-
-
-# nlp gs5 lr1e-3 leaveoneout
-accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_nlp/test_time_evaluate.py \
-    --tag gs5_lr1e-3_leaveoneout \
-    --weight_dir nlp_pretrained \
-    --weight_epoch 0 \
+    --ttt_iters 500 \
+    --ttt_permute_n 2000 \
     --gs_iters 5 \
     --gs_lr 1e-3 \
-    --gs_leave_one_out \
     --eval_seeds 100
 
-# nlp gs25 lr1e-3 leaveoneout
+# nlp ttt500 maxpermute gs25 lr1e-3
 accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_nlp/test_time_evaluate.py \
-    --tag gs25_lr1e-3_leaveoneout \
+    --tag nlp_ttt500_maxpermute_gs25_lr1e-3 \
     --weight_dir nlp_pretrained \
     --weight_epoch 0 \
+    --ttt_iters 500 \
+    --ttt_permute_n 2000 \
     --gs_iters 25 \
     --gs_lr 1e-3 \
-    --gs_leave_one_out \
     --eval_seeds 100
 
-# nlp gs100 lr1e-3 leaveoneout
+# nlp ttt500 maxpermute gs100 lr1e-3
 accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_nlp/test_time_evaluate.py \
-    --tag gs100_lr1e-3_leaveoneout \
+    --tag nlp_ttt500_maxpermute_gs100_lr1e-3 \
     --weight_dir nlp_pretrained \
     --weight_epoch 0 \
+    --ttt_iters 500 \
+    --ttt_permute_n 2000 \
     --gs_iters 100 \
     --gs_lr 1e-3 \
-    --gs_leave_one_out \
     --eval_seeds 100
 
-# nlp gs250 lr1e-3 leaveoneout
+# nlp ttt500 maxpermute gs250 lr1e-3
 accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_nlp/test_time_evaluate.py \
-    --tag gs250_lr1e-3_leaveoneout \
+    --tag nlp_ttt500_maxpermute_gs250_lr1e-3 \
     --weight_dir nlp_pretrained \
     --weight_epoch 0 \
+    --ttt_iters 500 \
+    --ttt_permute_n 2000 \
     --gs_iters 250 \
     --gs_lr 1e-3 \
-    --gs_leave_one_out \
     --eval_seeds 100
 
 
@@ -92,64 +55,112 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 infere
 
 
 
-# nlp gs5 lr1e-4 leaveoneout
+# nlp ttt500 maxpermute gs5 lr1e-4
 accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_nlp/test_time_evaluate.py \
-    --tag gs5_lr1e-4_leaveoneout \
+    --tag nlp_ttt500_maxpermute_gs5_lr1e-4 \
     --weight_dir nlp_pretrained \
     --weight_epoch 0 \
+    --ttt_iters 500 \
+    --ttt_permute_n 2000 \
     --gs_iters 5 \
     --gs_lr 1e-4 \
-    --gs_leave_one_out \
     --eval_seeds 100
 
-# nlp gs25 lr1e-4 leaveoneout
+# nlp ttt500 maxpermute gs25 lr1e-4
 accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_nlp/test_time_evaluate.py \
-    --tag gs25_lr1e-4_leaveoneout \
+    --tag nlp_ttt500_maxpermute_gs25_lr1e-4 \
     --weight_dir nlp_pretrained \
     --weight_epoch 0 \
+    --ttt_iters 500 \
+    --ttt_permute_n 2000 \
     --gs_iters 25 \
     --gs_lr 1e-4 \
-    --gs_leave_one_out \
     --eval_seeds 100
 
-# nlp gs100 lr1e-4 leaveoneout
+# nlp ttt500 maxpermute gs100 lr1e-4
 accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_nlp/test_time_evaluate.py \
-    --tag gs100_lr1e-4_leaveoneout \
+    --tag nlp_ttt500_maxpermute_gs100_lr1e-4 \
     --weight_dir nlp_pretrained \
     --weight_epoch 0 \
+    --ttt_iters 500 \
+    --ttt_permute_n 2000 \
     --gs_iters 100 \
     --gs_lr 1e-4 \
-    --gs_leave_one_out \
     --eval_seeds 100
 
-# nlp gs250 lr1e-4 leaveoneout
+# nlp ttt500 maxpermute gs250 lr1e-4
 accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_nlp/test_time_evaluate.py \
-    --tag gs250_lr1e-4_leaveoneout \
+    --tag nlp_ttt500_maxpermute_gs250_lr1e-4 \
     --weight_dir nlp_pretrained \
     --weight_epoch 0 \
+    --ttt_iters 500 \
+    --ttt_permute_n 2000 \
     --gs_iters 250 \
     --gs_lr 1e-4 \
-    --gs_leave_one_out \
     --eval_seeds 100
 
 
 
-# lr1e-2
-# Submitted batch job 59237620 # 0.413
-# Submitted batch job 59237621 # 0.424
-# Submitted batch job 59237622 # 0.409
-# Submitted batch job 59237623 # 0.406
 
-# lr1e-3
-# Submitted batch job 59237624 # 0.383
-# Submitted batch job 59237625 # 0.409
-# Submitted batch job 59237626 # 0.439
-# Submitted batch job 59237627 # 0.437
 
-# lr1e-4
-# Submitted batch job 59237628 # 0.361
-# Submitted batch job 59237629 # 0.362
-# Submitted batch job 59237630 # 0.396
-# Submitted batch job 59237631 # 0.414
+# nlp ttt500 maxpermute gs5 lr1e-5
+accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_nlp/test_time_evaluate.py \
+    --tag nlp_ttt500_maxpermute_gs5_lr1e-5 \
+    --weight_dir nlp_pretrained \
+    --weight_epoch 0 \
+    --ttt_iters 500 \
+    --ttt_permute_n 2000 \
+    --gs_iters 5 \
+    --gs_lr 1e-5 \
+    --eval_seeds 100
 
-# so far 0.439
+# nlp ttt500 maxpermute gs25 lr1e-5
+accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_nlp/test_time_evaluate.py \
+    --tag nlp_ttt500_maxpermute_gs25_lr1e-5 \
+    --weight_dir nlp_pretrained \
+    --weight_epoch 0 \
+    --ttt_iters 500 \
+    --ttt_permute_n 2000 \
+    --gs_iters 25 \
+    --gs_lr 1e-5 \
+    --eval_seeds 100
+
+# nlp ttt500 maxpermute gs100 lr1e-5
+accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_nlp/test_time_evaluate.py \
+    --tag nlp_ttt500_maxpermute_gs100_lr1e-5 \
+    --weight_dir nlp_pretrained \
+    --weight_epoch 0 \
+    --ttt_iters 500 \
+    --ttt_permute_n 2000 \
+    --gs_iters 100 \
+    --gs_lr 1e-5 \
+    --eval_seeds 100
+
+# nlp ttt500 maxpermute gs250 lr1e-5
+accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_nlp/test_time_evaluate.py \
+    --tag nlp_ttt500_maxpermute_gs250_lr1e-5 \
+    --weight_dir nlp_pretrained \
+    --weight_epoch 0 \
+    --ttt_iters 500 \
+    --ttt_permute_n 2000 \
+    --gs_iters 250 \
+    --gs_lr 1e-5 \
+    --eval_seeds 100
+
+
+
+
+# Submitted batch job 59346141
+# Submitted batch job 59346142
+# Submitted batch job 59346143
+# Submitted batch job 59346144
+
+# Submitted batch job 59346145
+# Submitted batch job 59346146
+# Submitted batch job 59346147
+# Submitted batch job 59346148
+
+# Submitted batch job 59346149
+# Submitted batch job 59346150
+# Submitted batch job 59346151
+# Submitted batch job 59346152

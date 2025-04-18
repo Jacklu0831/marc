@@ -153,19 +153,22 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 infere
 
 
 # lr1e-1
-# Submitted batch job 59237650
-# Submitted batch job 59237651
-# Submitted batch job 59237652
-# Submitted batch job 59237653
+# Submitted batch job 59237650 # 0.392
+# Submitted batch job 59237651 # 0.415
+# Submitted batch job 59237652 # 0.433
+# Submitted batch job 59237653 # 0.439
 
 # lr1e-2
-# Submitted batch job 59237654
-# Submitted batch job 59237655
-# Submitted batch job 59237656
-# Submitted batch job 59237657
+# Submitted batch job 59237654 # 0.362
+# Submitted batch job 59237655 # 0.369
+# Submitted batch job 59237656 # 0.418
+# Submitted batch job 59237657 # 0.425
 
 # lr1e-3
-# Submitted batch job 59237658
-# Submitted batch job 59237659
-# Submitted batch job 59237660
-# Submitted batch job 59237661
+# Submitted batch job 59237658 # 0.364
+# Submitted batch job 59237659 # 0.362
+# Submitted batch job 59237660 # 0.364
+# Submitted batch job 59237661 # 0.373
+
+# so far 0.439
+# a bit more push and it should be >0.440

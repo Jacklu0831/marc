@@ -1,4 +1,4 @@
-# python make_sbatch.py --ngpu 1 --time 6 --bash_files bash_cmds/0401_arc/small/0402_0_ttt_maxpermute.sh
+# python make_sbatch.py --ngpu 1 --time 6 --bash_files bash_cmds/0401_arc/small/0402_0_ttt.sh
 
 # arc ttt5 maxpermute
 accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_arc/test_time_evaluate.py \
@@ -50,22 +50,9 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 infere
     --ttt_iters 500 \
     --ttt_permute_n 2000
 
-# Submitted batch job 59035193 # 0.2125
-# Submitted batch job 59035194 # 0.2625
-# Submitted batch job 59035195 # 0.3
-# Submitted batch job 59035196 # 0.3
-# Submitted batch job 59035197 # 0.3
-
-# so far 0.3
-
-
-
-
-
-# AFTER PRECISION FIX
-
 # Submitted batch job 59173479 # 0.2
 # Submitted batch job 59173480 # 0.2625
 # Submitted batch job 59173481 # 0.2875
 # Submitted batch job 59173482 # 0.3
 # Submitted batch job 59173483 # 0.3
+# so far 0.2875

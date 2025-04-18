@@ -44,3 +44,11 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 infere
     --ttt_iters 500 \
     --ttt_permute_n 2000 \
     --eval_seeds 100
+
+# Submitted batch job 59257389 # 0.405
+# Submitted batch job 59257390 # 0.417
+# Submitted batch job 59257391 # 0.454
+# Submitted batch job 59257392 # 0.461
+# Submitted batch job 59257393 # 0.462
+
+# so far 0.462

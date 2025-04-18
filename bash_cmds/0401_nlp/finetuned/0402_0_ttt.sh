@@ -44,3 +44,12 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 infere
     --ttt_iters 500 \
     --ttt_permute_n 2000 \
     --eval_seeds 100
+
+# Submitted batch job 59257394 # 0.433
+# Submitted batch job 59257395 # 0.461
+# Submitted batch job 59257396 # 0.468
+# Submitted batch job 59257397 # 0.465
+# Submitted batch job 59257398 # 0.465
+
+# numbers just for my sake, no need to include in paper
+# the paper would just say KV-opt works on top of metaicl

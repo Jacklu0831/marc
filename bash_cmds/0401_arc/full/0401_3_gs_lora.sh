@@ -2,6 +2,7 @@
 
 
 
+
 # arc gs5 lr1e-3 lora1e-3 full
 accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_arc/test_time_evaluate.py \
     --no_bos \
@@ -206,12 +207,27 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 infere
     --gs_lora_lr 1e-5
 
 
-# AFTER PRECISION FIX
 
-# lr1e-3
+# loralr1e-3
+# Submitted batch job 59298843 # 0.2
+# Submitted batch job 59298844 # 0.18
+# Submitted batch job 59298845 # 0.1625
+# Submitted batch job 59298846 # 0.1525
 
-# lr1e-4
+# loralr1e-4
+# Submitted batch job 59298847 # 0.15
+# Submitted batch job 59298849 # 0.185
+# Submitted batch job 59298850 # 0.195
+# Submitted batch job 59298851 # 0.2025
 
-# lr3e-5
+# loralr3e-5
+# Submitted batch job 59298852 # 0.1475
+# Submitted batch job 59298853 # 0.1875
+# Submitted batch job 59298854 # 0.2
+# Submitted batch job 59298855 # 0.2025
 
-# lr1e-5
+# loralr1e-5
+# Submitted batch job 59298856 # 0.1475
+# Submitted batch job 59298857 # 0.1875
+# Submitted batch job 59298858 # 0.1975
+# Submitted batch job 59298859 # 0.1975

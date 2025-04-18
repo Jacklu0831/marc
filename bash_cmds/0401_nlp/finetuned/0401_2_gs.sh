@@ -127,40 +127,6 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 infere
     --eval_seeds 100
 
 
-
-
-
-
-# lr1e-2
-# Submitted batch job 59034410 # 0.389
-# Submitted batch job 59034411 # 0.375
-# Submitted batch job 59034412 # 0.382
-# Submitted batch job 59034413 # 0.387
-
-# lr1e-3
-# Submitted batch job 59034414 # 0.432
-# Submitted batch job 59034415 # 0.429
-# Submitted batch job 59046952 # 0.418
-# Submitted batch job 59034417 # 0.422
-
-# lr1e-4
-# Submitted batch job 59034418 # 0.441
-# Submitted batch job 59034419 # 0.444
-# Submitted batch job 59034420 # 0.438
-# Submitted batch job 59034421 # 0.443
-
-# lr1e-5
-# Submitted batch job 59075593 # 0.440
-# Submitted batch job 59075594 # 0.438
-# Submitted batch job 59075595 # 0.439
-# Submitted batch job 59075596 # 0.440
-
-# so far best is 0.443
-
-
-
-# AFTER PRECISION FIX
-
 # lr1e-3
 # Submitted batch job 59139495 # 0.427
 # Submitted batch job 59139496 # 0.409

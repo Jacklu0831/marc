@@ -34,6 +34,12 @@ get_conda5(){
     conda activate ./penv
 }
 
+get_conda6(){
+    source /ext3/env.sh
+    cd /scratch/yl11330/Fewshot-TTT
+    conda activate ./penv
+}
+
 function displaynode() {
     scontrol show node $1
 }
