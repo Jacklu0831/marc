@@ -1952,6 +1952,7 @@ def main():
 
     # limit eval
     parser.add_argument('--eval_ratio', type=float, default=1.0)
+    parser.add_argument('--eval_on_demonstrations', action='store_true')
 
     # compress
     parser.add_argument("--compression_ratio", type=float, default=1.0)
@@ -2161,6 +2162,7 @@ def main():
         max_seq_len=args.max_seq_len,
         num_demonstrations=args.num_demonstrations,
         eval_ratio=args.eval_ratio,
+        eval_on_demonstrations=args.eval_on_demonstrations,
     )
     collate_fn = partial(collate_fn_eval, dataset=dataset)
     if args.debug_max_len:

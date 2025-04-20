@@ -78,6 +78,7 @@ class EvalDataset:
         max_seq_len: int,
         num_demonstrations: int,
         eval_ratio: float,
+        eval_on_demonstrations: bool,
     ):
         self.data_dir = data_dir
         self.tokenizer = tokenizer
@@ -89,6 +90,7 @@ class EvalDataset:
         self.seed = seed
         self.num_demonstrations = num_demonstrations
         self.eval_ratio = eval_ratio
+        self.eval_on_demonstrations = eval_on_demonstrations
 
         # data stuff
         self.task_to_demonstrations = {}
@@ -110,7 +112,10 @@ class EvalDataset:
             # subset test pairs
             test_pairs = all_examples[num_demonstrations:]
             test_pairs = test_pairs[:math.ceil(len(test_pairs) * eval_ratio)]
-            task_to_test_pairs[task_name] = test_pairs
+            if eval_on_demonstrations:
+                task_to_test_pairs[task_name] = all_examples[:num_demonstrations]
+            else:
+                task_to_test_pairs[task_name] = test_pairs
 
         # parse and filter data
         self.data = []
