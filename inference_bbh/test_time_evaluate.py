@@ -47,6 +47,8 @@ from data_utils import (
     collate_fn_ttt_dummy,
 )
 
+from transformers.models.llama.modeling_llama import apply_rotary_pos_emb
+
 from datetime import timedelta
 import pprint
 import json
@@ -62,6 +64,7 @@ from data_utils import EvalDataset, collate_fn_eval
 
 
 import os
+os.system('nvidia-smi')
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 os.environ["NCCL_TIMEOUT"] = "28800" # 4hr for evaluation time variance across gpus
 os.environ["NCCL_TIMEOUT_MS"] = "28800000"
@@ -203,12 +206,15 @@ def initialize_kv(
     demon_input_ids: torch.Tensor,
     demon_start_idxs: List[int],
     accelerator: Accelerator,
+    trainable_nbit: int,
     # init
-    random_kv: bool,
+    random_kv: str,
+    random_kv_ntokens: int,
     separate_kv: bool,
     num_permute: int,
     permute_batch_size: int,
     permute_back: bool,
+    permute_back_strip_position: bool,
     permute_concat: bool,
     # dt
     dt_iters: int,
@@ -246,14 +252,22 @@ def initialize_kv(
             )
         assert past_key_values[0][0].shape[2] == demonstration_len
 
-    elif random_kv:
+    elif random_kv != 'none':
         # random kv initialization
-        past_key_values = tuple(
-            (
-                torch.randn((1, model.config.num_key_value_heads, demon_input_ids.shape[1], model.config.head_dim), device=accelerator.device, dtype=torch.float32),
-                torch.randn((1, model.config.num_key_value_heads, demon_input_ids.shape[1], model.config.head_dim), device=accelerator.device, dtype=torch.float32),
-            ) for _ in range(model.config.num_hidden_layers)
-        )
+        random_kv_ntokens = random_kv_ntokens if random_kv_ntokens != -1 else demon_input_ids.shape[1]
+        if random_kv == 'normal':
+            # initialize from normal distribution
+            past_key_values = tuple(
+                (
+                    0.02 * torch.randn((1, model.config.num_key_value_heads, random_kv_ntokens, model.config.head_dim), device=accelerator.device, dtype=torch.float32),
+                    0.02 * torch.randn((1, model.config.num_key_value_heads, random_kv_ntokens, model.config.head_dim), device=accelerator.device, dtype=torch.float32),
+                ) for _ in range(model.config.num_hidden_layers)
+            )
+        else:
+            # initialize from first 1000 tokens distribution
+            dummy_input_ids = torch.arange(0, random_kv_ntokens)[None, ...].to(accelerator.device)
+            with accelerator.autocast():
+                past_key_values = model(input_ids=dummy_input_ids, output_hidden_states=True).past_key_values
 
     elif num_permute == 1:
         # only one kv is needed
@@ -280,8 +294,33 @@ def initialize_kv(
 
             # get kv of each
             with accelerator.autocast():
-                batch_past_key_values = model(input_ids=batch_demon_input_ids, output_hidden_states=True).past_key_values
+                model_out = model(
+                    input_ids=batch_demon_input_ids,
+                    output_hidden_states=True,
+                    return_key_states_no_pos=permute_back_strip_position,
+                )
+                batch_past_key_values = model_out.past_key_values
             assert len(batch_permute_masks) == batch_past_key_values[0][0].shape[0]
+
+            # strip position for aggregation
+            if permute_back_strip_position:
+                # debug: sanity check that nopos is correct
+                # position_ids = torch.arange(0, batch_demon_input_ids.shape[1], device=accelerator.device, dtype=torch.int64).unsqueeze(0)
+                # cos, sin = model.model.rotary_emb(
+                #     x=torch.tensor(0, device=accelerator.device, dtype=NBIT_TO_DTYPE[trainable_nbit]),
+                #     position_ids=position_ids,
+                # )
+                # for layer_i in range(model.config.num_hidden_layers):
+                #     k_no_pos = model_out.key_states_no_pos[layer_i].to(NBIT_TO_DTYPE[trainable_nbit])
+                #     k_pos, k_pos_copy = apply_rotary_pos_emb(k_no_pos, k_no_pos, cos, sin)
+                #     assert torch.equal(k_pos, k_pos_copy)
+                #     assert torch.equal(k_pos, batch_past_key_values[layer_i][0])
+                assert len(model_out.key_states_no_pos) == model.config.num_hidden_layers and not (None in model_out.key_states_no_pos)
+                for layer_i in range(model.config.num_hidden_layers):
+                    k_no_pos = model_out.key_states_no_pos[layer_i].to(NBIT_TO_DTYPE[trainable_nbit])
+                    assert batch_past_key_values[layer_i][0].shape == k_no_pos.shape
+                    batch_past_key_values[layer_i][0].copy_(k_no_pos)
+                del model_out.key_states_no_pos
 
             # optionally permute kv back
             inverse_mask = None
@@ -307,6 +346,18 @@ def initialize_kv(
         for layer_i in range(len(past_key_values)):
             for kv_i in range(2):
                 past_key_values[layer_i][kv_i].div_(len(permute_masks))
+
+        # add back position for aggregation
+        if permute_back_strip_position:
+            position_ids = torch.arange(0, demon_input_ids.shape[1], device=accelerator.device, dtype=torch.int64).unsqueeze(0)
+            cos, sin = model.model.rotary_emb(
+                x=torch.tensor(0, device=accelerator.device, dtype=NBIT_TO_DTYPE[trainable_nbit]),
+                position_ids=position_ids,
+            )
+            assert past_key_values[0][0].shape[-2:] == cos.shape[-2:] == sin.shape[-2:]
+            for layer_i in range(model.config.num_hidden_layers):
+                k_pos, _ = apply_rotary_pos_emb(past_key_values[layer_i][0], past_key_values[layer_i][0], cos, sin)
+                past_key_values[layer_i][0].copy_(k_pos)
 
     else:
         # generate batches of permutations of them and average all
@@ -405,6 +456,7 @@ def test_time_evaluate(
     gs_freeze_instruct: bool,
     gs_ntokens: int,
     gs_log_attention: bool,
+    gs_final_tokens: int,
     # gs lora
     gs_lora: bool,
     gs_lora_rank: int,
@@ -413,11 +465,13 @@ def test_time_evaluate(
     gs_lora_beta1: float,
     gs_lora_beta2: float,
     # gs init
-    random_kv: bool,
+    random_kv: str,
+    random_kv_ntokens: int,
     separate_kv: bool,
     num_permute: int,
     permute_batch_size: int,
     permute_back: bool,
+    permute_back_strip_position: bool,
     permute_concat: bool,
     # gs curriculum
     gs_curriculum_epochs: int,
@@ -432,6 +486,9 @@ def test_time_evaluate(
     gs_curriculum_no_value: bool,
     gs_curriculum_num_layer: int,
     gs_curriculum_loss_on_input: bool,
+    # gs regularization
+    gs_lambda_param_sqr: float,
+    gs_fisher: bool,
     # ttt
     ttt_iters: int,
     ttt_batch_size: int,
@@ -446,6 +503,10 @@ def test_time_evaluate(
     ttt_lora_dropout: float,
     ttt_loss_type: str,
     ttt_permute_n: int,
+    # ttt regularization
+    ttt_lambda_param_sqr: float,
+    ttt_fisher: bool,
+    ttt_fisher_iters: int,
     # dt
     dt_iters: int,
     dt_lr: int,
@@ -532,6 +593,10 @@ def test_time_evaluate(
                         lora_dropout=ttt_lora_dropout,
                         loss_type=ttt_loss_type,
                         permute_n=ttt_permute_n,
+                        # ttt regularization
+                        lambda_param_sqr=ttt_lambda_param_sqr,
+                        fisher=ttt_fisher,
+                        fisher_iters=ttt_fisher_iters,
                     )
                     ttt_time = time.time() - start_time
                     torch.cuda.empty_cache()
@@ -571,19 +636,26 @@ def test_time_evaluate(
                     demon_input_ids=demon_input_ids,
                     demon_start_idxs=demon_start_idxs,
                     accelerator=accelerator,
+                    trainable_nbit=trainable_nbit,
                     # init
                     random_kv=random_kv,
+                    random_kv_ntokens=random_kv_ntokens,
                     separate_kv=separate_kv,
                     num_permute=num_permute,
                     permute_batch_size=permute_batch_size,
                     permute_back=permute_back,
+                    permute_back_strip_position=permute_back_strip_position,
                     permute_concat=permute_concat,
                     # dt
                     dt_iters=dt_iters,
                     dt_lr=dt_lr,
                 )
 
-            if not permute_concat:
+            if random_kv != 'none' and random_kv_ntokens == -1:
+                assert past_key_values[0][0].shape[2] == demon_input_ids.shape[1]
+            elif random_kv != 'none' and random_kv_ntokens > -1:
+                assert past_key_values[0][0].shape[2] == random_kv_ntokens
+            elif not permute_concat:
                 assert past_key_values[0][0].shape[2] == demon_input_ids.shape[1]
             else:
                 assert past_key_values[0][0].shape[2] % num_permute == 0
@@ -616,7 +688,7 @@ def test_time_evaluate(
                         # inputs
                         demon_start_idxs=demon_start_idxs,
                         past_key_values=past_key_values, # type: ignore
-                        demon_input_ids_len=demon_input_ids.shape[1],
+                        demon_input_ids_len=demon_input_ids.shape[1] if (random_kv == 'none' or random_kv_ntokens == -1) else random_kv_ntokens,
                         # config
                         epochs=gs_epochs,
                         lr=gs_lr,
@@ -634,6 +706,7 @@ def test_time_evaluate(
                         detach=gs_detach,
                         freeze_instruct=gs_freeze_instruct,
                         log_attention=gs_log_attention,
+                        final_tokens=gs_final_tokens,
                         lr_scheduler=gs_lr_scheduler,
                         lora=gs_lora,
                         lora_rank=gs_lora_rank,
@@ -642,6 +715,8 @@ def test_time_evaluate(
                         lora_beta1=gs_lora_beta1,
                         lora_beta2=gs_lora_beta2,
                         ntokens=gs_ntokens,
+                        lambda_param_sqr=gs_lambda_param_sqr,
+                        fisher=gs_fisher,
                     )
                     gs_time = time.time() - start_time
                     torch.cuda.empty_cache()
@@ -738,7 +813,10 @@ def test_time_evaluate(
                             for layer_k, layer_v in batch_past_key_values
                         )
 
-                    model.subtract_position_ids_by = past_key_values[0][0].shape[2] - demon_input_ids.shape[1] # HACK for prefix # type: ignore
+                    if random_kv == 'none' or random_kv_ntokens == -1:
+                        model.subtract_position_ids_by = past_key_values[0][0].shape[2] - demon_input_ids.shape[1] # HACK for prefix # type: ignore
+                    else:
+                        model.subtract_position_ids_by = 0 # HACK for prefix # type: ignore
                     gen_tokens = model.generate(
                         input_ids=gen_input_ids,
                         attention_mask=gen_attention_mask,
@@ -833,6 +911,10 @@ def run_ttt(
     loss_type: str,
     permute_n: int,
     trainable_nbit: int,
+    # ttt regularization
+    lambda_param_sqr: float,
+    fisher: bool,
+    fisher_iters: int,
 ) -> Tuple[nn.Module, int, int]:
 
     peft_config = LoraConfig(
@@ -909,6 +991,31 @@ def run_ttt(
     # prepare some stuff
     model.train()
 
+    # regularization
+    saved_params = None
+
+    # get program parameters
+    fisher_vals = {}
+    for n, p in model.named_parameters():
+        assert p.requires_grad == ('lora' in n)
+        if p.requires_grad:
+            fisher_vals[n] = torch.tensor(1.0, device=accelerator.device)
+
+    if lambda_param_sqr > 0:
+        saved_params = {n: p.detach().clone() for n, p in model.named_parameters() if n in fisher_vals}
+        assert all(not p.requires_grad for p in saved_params.values())
+
+        if fisher:
+            fisher_vals = compute_ttt_fisher(
+                accelerator=accelerator,
+                model=model,
+                optim=optim,
+                batch_size=batch_size,
+                fisher_iters=fisher_iters,
+                ttt_dataset=ttt_dataset,
+                ttt_collate_fn=ttt_collate_fn,
+            )
+
     # train!
     curr_iter = 0
     while curr_iter < iters:
@@ -938,10 +1045,18 @@ def run_ttt(
                     position_ids=position_ids,
                 ).loss
 
+                # get regularization loss
+                param_sqr_penalty = torch.tensor(0.0, device=accelerator.device)
+                if saved_params is not None:
+                    for n, p in model.named_parameters():
+                        if n in saved_params:
+                            param_sqr_penalty += (fisher_vals[n] * (p - saved_params[n]).pow(2)).sum()
+                reg_loss = lambda_param_sqr / 2.0 * param_sqr_penalty
+
                 # print(loss.item())
                 # breakpoint()
 
-            accelerator.backward(loss)
+            accelerator.backward(loss + reg_loss)
 
             if (curr_iter + 1) % grad_accum_steps == 0 or curr_iter == iters - 1:
                 accelerator.clip_grad_norm_(lora_params, max_grad_norm)
@@ -1004,6 +1119,161 @@ class AttentionLogger:
         self.other_demon_attn.append(other_demon_attn)
 
 
+def compute_gs_fisher(
+    accelerator: Accelerator,
+    model: Union[nn.Module, DistributedDataParallel],
+    past_key_values: Tuple[Tuple[torch.Tensor, torch.Tensor]],
+    gs_dataset: GSDataset,
+    demon_input_ids_len: int,
+    optim: Any,
+    gs_collate_fn: Any,
+    embed_tokens: nn.Module,
+) -> Tuple[Tuple[torch.Tensor, torch.Tensor]]:
+
+    assert past_key_values[0][0].shape[0] == 1
+    optim.zero_grad()
+
+    # dataloader
+    gs_loader = DataLoader(
+        gs_dataset,
+        batch_size=1, # estimate over each data for fidelity
+        shuffle=True,
+        collate_fn=gs_collate_fn,
+        drop_last=False, # no drop last to ensure we get loss for every sample at least once
+        num_workers=0,
+    )
+
+    # initialize fisher
+    fisher_vals = tuple(
+        (
+            torch.zeros_like(layer_k, device=accelerator.device, dtype=layer_k.dtype),
+            torch.zeros_like(layer_v, device=accelerator.device, dtype=layer_v.dtype),
+        ) for layer_k, layer_v in past_key_values
+    )
+
+    # get fisher
+    for batch in gs_loader:
+        pair_input_ids = batch["input_ids"].to(accelerator.device)
+        pair_attention_mask = batch["attention_mask"].to(accelerator.device)
+        pair_label_ids = batch["label_ids"].to(accelerator.device)
+        device, dtype = pair_input_ids.device, pair_input_ids.dtype
+
+        with accelerator.autocast():
+            # build position ids
+            position_ids = torch.zeros((1, pair_input_ids.shape[1]), device=device, dtype=torch.int64)
+            new_lens = pair_attention_mask.sum(dim=1)
+            for task_position_ids, new_len in zip(position_ids, new_lens):
+                new_positions = torch.tensor(range(demon_input_ids_len, demon_input_ids_len + new_len), device=device, dtype=dtype)
+                if gs_dataset.pad_side == "right":
+                    task_position_ids[:new_len] = new_positions
+                else:
+                    task_position_ids[-new_len:] = new_positions
+
+            pair_inputs_embeds = embed_tokens(pair_input_ids)
+            batch_past_key_values_attention_mask = torch.ones((1, past_key_values[0][0].shape[2]), device=accelerator.device, dtype=torch.int64)
+            pair_attention_mask = torch.cat([batch_past_key_values_attention_mask, pair_attention_mask], dim=1)
+
+            model_kwargs = {
+                "inputs_embeds": pair_inputs_embeds,
+                "attention_mask": pair_attention_mask,
+                "labels": pair_label_ids,
+                "use_cache": True,
+                "past_key_values": past_key_values,
+                "position_ids": position_ids,
+                "output_attentions": False,
+            }
+
+            # get ce loss
+            model_out = model(**model_kwargs)
+
+        accelerator.backward(model_out.loss)
+
+        # update fisher
+        for layer_i, (layer_k, layer_v) in enumerate(past_key_values):
+            fisher_vals[layer_i][0].add_(layer_k.grad.data.pow(2) / len(gs_loader)) # type: ignore
+            fisher_vals[layer_i][1].add_(layer_v.grad.data.pow(2) / len(gs_loader)) # type: ignore
+
+        optim.zero_grad()
+
+    return fisher_vals # type: ignore
+
+
+def compute_ttt_fisher(
+    accelerator: Accelerator,
+    model: Union[nn.Module, DistributedDataParallel],
+    optim: Any,
+    batch_size: int,
+    fisher_iters: int,
+    ttt_dataset: TTTDataset,
+    ttt_collate_fn: Any,
+) -> Dict[str, torch.Tensor]:
+
+    optim.zero_grad()
+
+    # dataloader
+    ttt_loader = DataLoader(
+        ttt_dataset,
+        batch_size=batch_size,
+        shuffle=True,
+        collate_fn=ttt_collate_fn,
+        drop_last=False,
+        num_workers=0,
+    )
+
+    # initialize fisher
+    fisher_vals = {}
+    for n, p in model.named_parameters():
+        assert p.requires_grad == ('lora' in n)
+        if p.requires_grad:
+            fisher_vals[n] = torch.zeros_like(p, device=accelerator.device, dtype=p.dtype)
+
+    # get fisher
+    curr_iter = 0
+
+    fisher_iters = min(fisher_iters, len(ttt_loader))
+    for batch in ttt_loader:
+        if curr_iter >= fisher_iters:
+            break
+        input_ids = batch["input_ids"].to(accelerator.device)
+        attention_mask = batch["attention_mask"].to(accelerator.device)
+        label_ids = batch["label_ids"].to(accelerator.device)
+        device, dtype = input_ids.device, input_ids.dtype
+
+        # necessary
+        with accelerator.autocast():
+            # build position ids
+            position_ids = torch.zeros((batch_size, input_ids.shape[1]), device=device, dtype=torch.int64)
+            mask_lens = attention_mask.sum(dim=1)
+            for task_position_ids, mask_len in zip(position_ids, mask_lens):
+                assert mask_len > 0
+                new_positions = torch.tensor(range(mask_len), device=device, dtype=dtype)
+                if ttt_dataset.pad_side == "right":
+                    task_position_ids[:mask_len] = new_positions
+                else:
+                    task_position_ids[-mask_len:] = new_positions
+
+            loss = model(
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                labels=label_ids,
+                position_ids=position_ids,
+            ).loss
+
+        accelerator.backward(loss)
+
+        # update fisher
+        for n, p in model.named_parameters():
+            assert p.requires_grad == ('lora' in n)
+            if p.requires_grad:
+                fisher_vals[n].add_(p.grad.data.pow(2) / fisher_iters) # type: ignore
+
+        optim.zero_grad()
+
+        curr_iter += 1
+
+    return fisher_vals
+
+
 @torch.enable_grad()
 def run_gs(
     demonstration_pairs: List[Dict],
@@ -1031,6 +1301,7 @@ def run_gs(
     detach: bool,
     freeze_instruct: bool,
     log_attention: bool,
+    final_tokens: int,
     lr_scheduler: str,
     lora: bool,
     lora_rank: int,
@@ -1039,6 +1310,8 @@ def run_gs(
     lora_beta1: float,
     lora_beta2: float,
     ntokens: int,
+    lambda_param_sqr: float,
+    fisher: bool,
 ) -> Tuple[nn.Module, Tuple[Tuple[torch.Tensor, torch.Tensor]], int, int, Optional[AttentionLogger]]:
 
     # optional lora
@@ -1066,16 +1339,16 @@ def run_gs(
         # additional prefix tuning
         prefix_past_key_values = tuple(
             (
-                past_key_values[layer_i][0].mean(dim=2, keepdim=True).repeat(1, 1, ntokens, 1),
-                past_key_values[layer_i][1].mean(dim=2, keepdim=True).repeat(1, 1, ntokens, 1),
+                layer_k[:, :, -1:, :].repeat(1, 1, ntokens, 1),
+                layer_v[:, :, -1:, :].repeat(1, 1, ntokens, 1),
             )
-            for layer_i in range(model.config.num_hidden_layers) # type: ignore
+            for layer_k, layer_v in past_key_values # type: ignore
         )
         # add some noise so not all tokens end up optimized to the same
         prefix_past_key_values = tuple(
             (
-                layer_k + 0.02 * torch.randn_like(layer_k, device=accelerator.device),
-                layer_v + 0.02 * torch.randn_like(layer_v, device=accelerator.device),
+                layer_k + 0.02 * torch.randn_like(layer_k, device=accelerator.device, dtype=layer_k.dtype),
+                layer_v + 0.02 * torch.randn_like(layer_v, device=accelerator.device, dtype=layer_v.dtype),
             )
             for layer_k, layer_v in prefix_past_key_values
         )
@@ -1173,6 +1446,33 @@ def run_gs(
     # debug: save for assertions
     kv_len_before_dropout = past_key_values[0][0].shape[2]
 
+    # regularization
+    saved_past_key_values = None
+    fisher_vals = tuple(
+        (torch.tensor(1.0, device=accelerator.device), torch.tensor(1.0, device=accelerator.device))
+        for _, _ in past_key_values
+    )
+
+    if lambda_param_sqr > 0:
+        assert ntokens <= 0 # assume task A is the original ICL fast weights
+        saved_past_key_values = tuple(
+            (layer_k.detach().clone(), layer_v.detach().clone())
+            for layer_k, layer_v in past_key_values
+        )
+        assert not saved_past_key_values[0][0].requires_grad
+
+        if fisher:
+            fisher_vals = compute_gs_fisher(
+                accelerator=accelerator,
+                model=model,
+                past_key_values=past_key_values,
+                gs_dataset=gs_dataset,
+                demon_input_ids_len=demon_input_ids_len,
+                optim=optim,
+                gs_collate_fn=gs_collate_fn,
+                embed_tokens=embed_tokens,
+            )
+
     # train!
     for _ in range(epochs):
         for batch in gs_loader:
@@ -1213,11 +1513,13 @@ def run_gs(
                             batch_past_key_values[layer_i][1][batch_i] = torch.cat([layer_v[batch_i, :, :start], layer_v[batch_i, :, start:].detach().clone()], dim=1)
 
                 # drop training kv and only keep power set
-                elif dropout == 'power':
+                elif dropout in ['power', 'power_with_train']:
                     assert past_key_values[0][0].shape[2] == demon_input_ids_len # make sure demon_start_idxs are correct
                     for batch_i, idx in enumerate(pair_example_idx):
                         # figure out a non-empty set of kv to keep
-                        choices = set(range(len(demon_start_idxs))) - {idx}
+                        choices = set(range(len(demon_start_idxs)))
+                        if dropout == 'power':
+                            choices -= {idx}
                         power_set = set(itertools.chain.from_iterable(itertools.combinations(choices, r) for r in range(len(choices) + 1))) - {()}
                         to_keep = random.choice(list(power_set))
                         assert len(to_keep) > 0
@@ -1259,11 +1561,13 @@ def run_gs(
                         batch_past_key_values_attention_mask[batch_i, start:] = 0
 
                 # drop training kv and only keep power set
-                elif dropout == 'power':
+                elif dropout in ['power', 'power_with_train']:
                     assert past_key_values[0][0].shape[2] == demon_input_ids_len # make sure demon_start_idxs are correct
                     for batch_i, idx in enumerate(pair_example_idx):
                         # figure out a non-empty set of kv to keep
-                        choices = set(range(len(demon_start_idxs))) - {idx}
+                        choices = set(range(len(demon_start_idxs)))
+                        if dropout == 'power':
+                            choices -= {idx}
                         power_set = set(itertools.chain.from_iterable(itertools.combinations(choices, r) for r in range(len(choices) + 1))) - {()}
                         to_keep = random.choice(list(power_set))
                         assert len(to_keep) > 0
@@ -1278,6 +1582,16 @@ def run_gs(
             for layer_k, layer_v in batch_past_key_values:
                 assert (layer_k.shape[0], layer_k.shape[2]) == (layer_v.shape[0], layer_v.shape[2]) == (bs, kv_len_before_dropout)
             assert tuple(batch_past_key_values_attention_mask.shape) == (bs, kv_len_before_dropout)
+
+            # tune the final few tokens only
+            if final_tokens > -1:
+                batch_past_key_values = tuple(
+                    (
+                        torch.cat([layer_k[:, :, :-final_tokens, :].detach().clone(), layer_k[:, :, -final_tokens:, :]]),
+                        torch.cat([layer_v[:, :, :-final_tokens, :].detach().clone(), layer_v[:, :, -final_tokens:, :]]),
+                    )
+                    for layer_k, layer_v in batch_past_key_values
+                )
 
             # tune the prefix only
             if prefix_past_key_values is not None:
@@ -1319,7 +1633,17 @@ def run_gs(
 
                 # get ce loss
                 model_out = model(**model_kwargs)
-                loss = model_out.loss
+                loss = model_out.loss * bs / batch_size # not doing droplast, so scale by relative batchsize
+
+                # get regularization loss
+                param_sqr_penalty = torch.tensor(0.0, device=accelerator.device)
+                if saved_past_key_values is not None:
+                    assert len(past_key_values) == len(saved_past_key_values) == len(fisher_vals) == model.config.num_hidden_layers # type: ignore
+                    assert past_key_values[0][0].shape[0] == saved_past_key_values[0][0].shape[0] == fisher_vals[0][0].shape[0] == 1
+                    for (saved_layer_k, saved_layer_v), (layer_k, layer_v), (fisher_k, fisher_v) in zip(saved_past_key_values, past_key_values, fisher_vals):
+                        param_sqr_penalty += (fisher_k * (layer_k - saved_layer_k).pow(2)).sum()
+                        param_sqr_penalty += (fisher_v * (layer_v - saved_layer_v).pow(2)).sum()
+                reg_loss = lambda_param_sqr / 2.0 * param_sqr_penalty
 
                 if attn_logger is not None:
                     attn_logger.update(
@@ -1332,7 +1656,8 @@ def run_gs(
                 #     print(loss.item())
                 #     breakpoint()
 
-            accelerator.backward(loss * bs / batch_size) # not doing droplast, so scale by relative batchsize
+            # print(loss.item(), reg_loss.item())
+            accelerator.backward(loss + reg_loss)
 
         # only at the end of epoch do we backprop
         accelerator.clip_grad_norm_(all_params, max_grad_norm)
@@ -1647,6 +1972,11 @@ def main():
     parser.add_argument("--ttt_loss_type", type=str, choices=['only_last', 'all', 'exclude_first'], default='all')
     parser.add_argument("--ttt_gradient_checkpointing", action='store_true')
 
+    # ttt regularization
+    parser.add_argument("--ttt_lambda_param_sqr", type=float, default=0.0)
+    parser.add_argument("--ttt_fisher", action='store_true')
+    parser.add_argument("--ttt_fisher_iters", type=int, default=25)
+
     # gradient search
     parser.add_argument("--gs_epochs", type=int, default=0)
     parser.add_argument("--gs_lr", type=float, default=1e-3)
@@ -1661,18 +1991,21 @@ def main():
     parser.add_argument("--gs_no_value", action='store_true')
     parser.add_argument("--gs_num_layer", type=int, default=-1) # tune top layers only
     parser.add_argument("--gs_loss_on_input", action='store_true')
-    parser.add_argument("--gs_dropout", choices=['none', 'train', 'suffix', 'power'], type=str, default='none')
+    parser.add_argument("--gs_dropout", choices=['none', 'train', 'suffix', 'power', 'power_with_train'], type=str, default='none')
     parser.add_argument("--gs_detach", action='store_true')
     parser.add_argument("--gs_freeze_instruct", action='store_true')
     parser.add_argument("--gs_ntokens", type=int, default=-1)
     parser.add_argument("--gs_log_attention", action='store_true')
+    parser.add_argument("--gs_final_tokens", type=int, default=-1)
 
     # gradient search model initialization
-    parser.add_argument("--random_kv", action='store_true')
+    parser.add_argument("--random_kv", type=str, choices=['none', 'normal', 'token'], default='none')
+    parser.add_argument("--random_kv_ntokens", type=int, default=-1)
     parser.add_argument("--separate_kv", action='store_true')
     parser.add_argument("--num_permute", type=int, default=1) # 1024
     parser.add_argument("--permute_batch_size", type=int, default=16)
     parser.add_argument("--permute_back", action='store_true')
+    parser.add_argument("--permute_back_strip_position", action='store_true')
     parser.add_argument("--permute_concat", action='store_true')
 
     # gradient search with lora
@@ -1683,7 +2016,7 @@ def main():
     parser.add_argument("--gs_lora_beta1", type=float, default=0.9)
     parser.add_argument("--gs_lora_beta2", type=float, default=0.999)
 
-    # gradient search
+    # gradient search curriculum
     parser.add_argument("--gs_curriculum_epochs", type=int, default=0)
     parser.add_argument("--gs_curriculum_lr", type=float, default=1e-3)
     parser.add_argument("--gs_curriculum_beta1", type=float, default=0.9)
@@ -1696,6 +2029,10 @@ def main():
     parser.add_argument("--gs_curriculum_no_value", action='store_true')
     parser.add_argument("--gs_curriculum_num_layer", type=int, default=-1) # tune top layers only
     parser.add_argument("--gs_curriculum_loss_on_input", action='store_true')
+
+    # gradient search regularization
+    parser.add_argument("--gs_lambda_param_sqr", type=float, default=0.0)
+    parser.add_argument("--gs_fisher", action='store_true')
 
     # deeeeeeeeeeep thinking
     parser.add_argument("--dt_iters", type=int, default=0)
@@ -1797,7 +2134,7 @@ def main():
 
     # convert model weights
     for param in model.parameters():
-        param.data = param.data.to(NBIT_TO_DTYPE[args.trainable_nbit])
+        param.data = param.data.to(NBIT_TO_DTYPE[args.untrainable_nbit])
 
     # number of parameters
     print_trainable_parameters(model)
@@ -1864,6 +2201,7 @@ def main():
         gs_freeze_instruct=args.gs_freeze_instruct,
         gs_ntokens=args.gs_ntokens,
         gs_log_attention=args.gs_log_attention,
+        gs_final_tokens=args.gs_final_tokens,
         # gs lora
         gs_lora=args.gs_lora,
         gs_lora_rank=args.gs_lora_rank,
@@ -1873,10 +2211,12 @@ def main():
         gs_lora_beta2=args.gs_lora_beta2,
         # gs init
         random_kv=args.random_kv,
+        random_kv_ntokens=args.random_kv_ntokens,
         separate_kv=args.separate_kv,
         num_permute=args.num_permute,
         permute_batch_size=args.permute_batch_size,
         permute_back=args.permute_back,
+        permute_back_strip_position=args.permute_back_strip_position,
         permute_concat=args.permute_concat,
         # gs curriculum
         gs_curriculum_epochs=args.gs_curriculum_epochs,
@@ -1891,6 +2231,9 @@ def main():
         gs_curriculum_no_value=args.gs_curriculum_no_value,
         gs_curriculum_num_layer=args.gs_curriculum_num_layer,
         gs_curriculum_loss_on_input=args.gs_curriculum_loss_on_input,
+        # gs regularization
+        gs_lambda_param_sqr=args.gs_lambda_param_sqr,
+        gs_fisher=args.gs_fisher,
         # ttt
         ttt_iters=args.ttt_iters,
         ttt_lr=args.ttt_lr,
@@ -1905,6 +2248,10 @@ def main():
         ttt_lora_dropout=args.ttt_lora_dropout,
         ttt_loss_type=args.ttt_loss_type,
         ttt_permute_n=args.ttt_permute_n,
+        # ttt regularization
+        ttt_lambda_param_sqr=args.ttt_lambda_param_sqr,
+        ttt_fisher=args.ttt_fisher,
+        ttt_fisher_iters=args.ttt_fisher_iters,
         # dt
         dt_iters=args.dt_iters,
         dt_lr=args.dt_lr,
