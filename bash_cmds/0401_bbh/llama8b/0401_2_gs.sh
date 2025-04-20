@@ -95,4 +95,21 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 infere
     --gs_lr 1e-4 \
     --gs_batch_size 2
 
-# Submitted batch job 59408784
+# Submitted batch job 59411912
+
+# lr1e-3
+# 48.83875050334006 <-
+# 48.147233783657846
+# 47.67402598201867
+# 47.306721809879
+# 47.467823601505884
+
+# lr1e-4
+# 49.3453326088753 <-
+# 49.02523250354756
+# 49.02160142148512
+# 48.87501516614179
+# 48.72506598370672
+
+# so far 49.3453326088753
+# <3hrs

@@ -105,4 +105,21 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 infere
     --gs_batch_size 2 \
     --gs_dropout suffix
 
-# Submitted batch job 59408826
+# Submitted batch job 59411916
+
+# lr1e-3
+# 50.32620612589041
+# 50.2330222735673
+# 50.51838532022979 <-
+# 50.399375067038754
+# 49.6976684584694
+
+# lr1e-4
+# 49.05181721150481
+# 49.0403590814857
+# 49.09218552455509
+# 49.401568223020526
+# 49.931827093674876 <-
+
+# so far 50.51838532022979
+# <4hrs

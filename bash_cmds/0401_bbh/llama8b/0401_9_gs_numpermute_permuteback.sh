@@ -126,4 +126,21 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 infere
     --permute_batch_size 4 \
     --permute_back
 
-# Submitted batch job 59408904
+# Submitted batch job 59411901
+
+# lr1e-2
+# 36.44299684720091 <-
+# 32.865112774551136
+# 28.378699879198386
+# 26.020459345068847
+# 26.544678134907443
+
+# lr1e-3
+# 49.14610445559266 <-
+# 48.881833335970924
+# 48.69254450053719
+# 48.674167093077024
+# 47.629101232457835
+
+# so far 49.14610445559266
+# <5hrs

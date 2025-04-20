@@ -1,0 +1,70 @@
+# python make_sbatch.py --ngpu 1 --time 8 --single --bash_files bash_cmds/0401_bbh/llama8b/0401_4_gs_droppower_trainlonger.sh
+MASTER_PORT=$(comm -23 <(seq 10000 65000 | sort) <(ss -tan | awk '{print $4}' | cut -d':' -f2 | sort -u) | shuf | head -n 1)
+
+
+
+
+
+
+# bbh llama8b gs10 lr1e-2 droppower
+accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_bbh/test_time_evaluate.py \
+    --tag bbh_llama8b_gs10_lr1e-2_droppower \
+    --model_name llama8b \
+    --gs_epochs 10 \
+    --gs_lr 1e-2 \
+    --gs_batch_size 2 \
+    --gs_dropout power
+
+# bbh llama8b gs20 lr1e-2 droppower
+accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_bbh/test_time_evaluate.py \
+    --tag bbh_llama8b_gs20_lr1e-2_droppower \
+    --model_name llama8b \
+    --gs_epochs 20 \
+    --gs_lr 1e-2 \
+    --gs_batch_size 2 \
+    --gs_dropout power
+
+# bbh llama8b gs30 lr1e-2 droppower
+accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_bbh/test_time_evaluate.py \
+    --tag bbh_llama8b_gs30_lr1e-2_droppower \
+    --model_name llama8b \
+    --gs_epochs 25 \
+    --gs_lr 1e-2 \
+    --gs_batch_size 2 \
+    --gs_dropout power
+
+
+
+
+
+
+
+
+# bbh llama8b gs60 lr1e-3 droppower
+accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_bbh/test_time_evaluate.py \
+    --tag bbh_llama8b_gs60_lr1e-3_droppower \
+    --model_name llama8b \
+    --gs_epochs 60 \
+    --gs_lr 1e-3 \
+    --gs_batch_size 2 \
+    --gs_dropout power
+
+# bbh llama8b gs70 lr1e-3 droppower
+accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_bbh/test_time_evaluate.py \
+    --tag bbh_llama8b_gs70_lr1e-3_droppower \
+    --model_name llama8b \
+    --gs_epochs 70 \
+    --gs_lr 1e-3 \
+    --gs_batch_size 2 \
+    --gs_dropout power
+
+# bbh llama8b gs80 lr1e-3 droppower
+accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_bbh/test_time_evaluate.py \
+    --tag bbh_llama8b_gs80_lr1e-3_droppower \
+    --model_name llama8b \
+    --gs_epochs 80 \
+    --gs_lr 1e-3 \
+    --gs_batch_size 2 \
+    --gs_dropout power
+
+# Submitted batch job 59464211
