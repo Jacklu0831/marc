@@ -645,6 +645,7 @@ class EvalDataset:
         no_separate_color_tokens: bool,
         max_seq_len: int,
         no_bos: bool,
+        eval_on_demonstrations: bool,
     ):
         self.permute_n = permute_n
         self.augment_n = augment_n
@@ -658,6 +659,7 @@ class EvalDataset:
         self.max_seq_len = max_seq_len
         self.no_separate_color_tokens = no_separate_color_tokens
         self.no_bos = no_bos
+        self.eval_on_demonstrations = eval_on_demonstrations
 
         self.augmenters = [Transpose(), Flip(0), Flip(1), Rotate(90), Rotate(180)]
 
@@ -694,13 +696,21 @@ class EvalDataset:
                 task_data = json.load(f)
             # create tasks
             train_examples = [Example(input=np.array(x["input"]), output=np.array(x["output"])) for x in task_data['train']]
-            test_examples = [Example(input=np.array(x["input"]), output=np.array(x["output"])) for x in task_data['test']]
-            for test_i, test_example in enumerate(test_examples):
-                tasks.append(Task(
-                    name=f'{task_id}-{test_i}',
-                    train_examples=train_examples,
-                    test_example=test_example,
-                ))
+            if eval_on_demonstrations:
+                for test_i, train_example in enumerate(train_examples):
+                    tasks.append(Task(
+                        name=f'{task_id}-{test_i}',
+                        train_examples=train_examples,
+                        test_example=train_example,
+                    ))
+            else:
+                test_examples = [Example(input=np.array(x["input"]), output=np.array(x["output"])) for x in task_data['test']]
+                for test_i, test_example in enumerate(test_examples):
+                    tasks.append(Task(
+                        name=f'{task_id}-{test_i}',
+                        train_examples=train_examples,
+                        test_example=test_example,
+                    ))
         tasks.sort(key=lambda d: d.name)
         logger.info(f"found {len(tasks)} tasks")
 
@@ -1155,6 +1165,7 @@ class TTTDataset(Dataset):
         max_seq_len: int,
         permute_n: int,
         seed: int,
+        loss_type: str,
         no_separate_color_tokens: bool,
         no_bos: bool,
     ):
@@ -1166,6 +1177,7 @@ class TTTDataset(Dataset):
         self.max_seq_len = max_seq_len
         self.permute_n = permute_n
         self.seed = seed
+        self.loss_type = loss_type
         self.no_separate_color_tokens = no_separate_color_tokens
         self.no_bos = no_bos
 
@@ -1226,9 +1238,13 @@ class TTTDataset(Dataset):
             input_ids = torch.cat([input_grid_ids, output_grid_ids])
             attention_mask = torch.full(input_ids.shape, 1, dtype=torch.int64)
             # label id for all except first pair
-            # NOTE: loss on all
-            label_ids = torch.full(input_grid_ids.shape, -100, dtype=torch.int64)
-            label_ids = torch.cat([label_ids, output_grid_ids])
+            if (pair_i == 0 and self.loss_type == 'exclude_first') or (pair_i < num_pair and self.loss_type == 'only_last'):
+                label_ids = torch.full(input_ids.shape, -100, dtype=input_ids.dtype)
+            else:
+                label_ids = torch.cat([
+                    torch.full(input_grid_ids.shape, -100, dtype=input_ids.dtype),
+                    output_grid_ids,
+                ])
             # aggregate
             pair_idx_to_input_ids.append(input_ids)
             pair_idx_to_attention_mask.append(attention_mask)
