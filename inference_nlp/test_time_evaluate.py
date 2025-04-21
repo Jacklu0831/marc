@@ -1136,11 +1136,12 @@ def compute_ttt_fisher(
         attention_mask = batch["attention_mask"].to(accelerator.device)
         label_ids = batch["label_ids"].to(accelerator.device)
         device, dtype = input_ids.device, input_ids.dtype
+        bs = input_ids.shape[0]
 
         # necessary
         with accelerator.autocast():
             # build position ids
-            position_ids = torch.zeros((batch_size, input_ids.shape[1]), device=device, dtype=torch.int64)
+            position_ids = torch.zeros((bs, input_ids.shape[1]), device=device, dtype=torch.int64)
             mask_lens = attention_mask.sum(dim=1)
             for task_position_ids, mask_len in zip(position_ids, mask_lens):
                 assert mask_len > 0
