@@ -17,4 +17,4 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 infere
     --weight_epoch 0 \
     --eval_seeds 100
 
-# ran locally, score: 0.36049255515499967
+# ran locally, score: 0.361

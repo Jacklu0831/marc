@@ -1,3 +1,4 @@
+import copy
 import math
 import os
 import json
@@ -389,6 +390,7 @@ class EvalDataset:
         allow_truncate: bool,
         delimiter: str,
         num_demonstrations: int,
+        eval_on_demonstrations: bool,
     ):
         self.tokenizer = tokenizer
         self.debug_random_pad = debug_random_pad
@@ -432,20 +434,27 @@ class EvalDataset:
             # subset demonstrations if needed
             task_to_demonstrations[task] = task_to_demonstrations[task][:num_demonstrations]
 
-            # subset test pairs
             with_empty_options = False
-            test_file = os.path.join(task_data_dir, f"{task}_16_{eval_seed}_test.jsonl")
-            lines = open(test_file, 'r').readlines()
-            rng.shuffle(lines)
-            num_chosen = math.ceil(len(lines) * eval_ratio)
-            for l in lines[:num_chosen]:
-                example = json.loads(l)
-                task_to_test_pairs[task].append(example)
-                with_empty_options = with_empty_options or (len(example['options'])) == 0
+            if eval_on_demonstrations:
+                task_to_test_pairs[task] = copy.deepcopy(task_to_demonstrations[task][:num_demonstrations])
+            else:
+                # subset test pairs
+                test_file = os.path.join(task_data_dir, f"{task}_16_{eval_seed}_test.jsonl")
+                lines = open(test_file, 'r').readlines()
+                rng.shuffle(lines)
+                num_chosen = math.ceil(len(lines) * eval_ratio)
+                for l in lines[:num_chosen]:
+                    example = json.loads(l)
+                    task_to_test_pairs[task].append(example)
+                    with_empty_options = with_empty_options or (len(example['options'])) == 0
 
             # keep track of tasks that have empty options, we filter them out
             if with_empty_options:
                 tasks_to_remove.add(task)
+
+        # debug: check eval on demonstrations is correct
+        if eval_on_demonstrations:
+            assert task_to_test_pairs == task_to_demonstrations
 
         if split == 'train' and not config_file.endswith('toy.json'):
             # remove tasks with 10+ options
@@ -679,7 +688,7 @@ def collate_fn_eval_dummy(batch: List[int], dataset: EvalDataset) -> Dict:
 class GSDataset(Dataset):
     def __init__(
         self,
-        demonstration_pairs: List[Dict],
+        demonstration_pairs: Dict[int, Dict],
         tokenizer: Union[PreTrainedTokenizerFast, GPT2TokenizerFast],
         debug_random_pad: bool,
         debug_pad_len: int,
@@ -707,7 +716,7 @@ class GSDataset(Dataset):
         self.delimiter_token_id = tokenize(delimiter, tokenizer)
 
         # format data (only use demonstration pairs)
-        parsed_examples = [self.format(i, example) for i, example in enumerate(demonstration_pairs)]
+        parsed_examples = [self.format(i, example) for i, example in demonstration_pairs.items()]
         self.parsed_examples = [e for e in parsed_examples if e is not None]
 
     def __len__(self):

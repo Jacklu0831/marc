@@ -179,6 +179,8 @@ def generate_unique_permute_masks(tensor, start_idxs, M):
     unique_masks = []
     seen_orders = set()
 
+    M = min(M, math.factorial(num_chunks))
+
     while len(unique_masks) < M:
         # Generate a random permutation order for the chunks.
         if len(unique_masks) == 0:
@@ -1587,8 +1589,8 @@ def run_gs(
             if final_tokens > -1:
                 batch_past_key_values = tuple(
                     (
-                        torch.cat([layer_k[:, :, :-final_tokens, :].detach().clone(), layer_k[:, :, -final_tokens:, :]]),
-                        torch.cat([layer_v[:, :, :-final_tokens, :].detach().clone(), layer_v[:, :, -final_tokens:, :]]),
+                        torch.cat([layer_k[:, :, :-final_tokens, :].detach().clone(), layer_k[:, :, -final_tokens:, :]], dim=2),
+                        torch.cat([layer_v[:, :, :-final_tokens, :].detach().clone(), layer_v[:, :, -final_tokens:, :]], dim=2),
                     )
                     for layer_k, layer_v in batch_past_key_values
                 )
@@ -1639,7 +1641,7 @@ def run_gs(
                 param_sqr_penalty = torch.tensor(0.0, device=accelerator.device)
                 if saved_past_key_values is not None:
                     assert len(past_key_values) == len(saved_past_key_values) == len(fisher_vals) == model.config.num_hidden_layers # type: ignore
-                    assert past_key_values[0][0].shape[0] == saved_past_key_values[0][0].shape[0] == fisher_vals[0][0].shape[0] == 1
+                    assert past_key_values[0][0].shape[0] == saved_past_key_values[0][0].shape[0] == 1
                     for (saved_layer_k, saved_layer_v), (layer_k, layer_v), (fisher_k, fisher_v) in zip(saved_past_key_values, past_key_values, fisher_vals):
                         param_sqr_penalty += (fisher_k * (layer_k - saved_layer_k).pow(2)).sum()
                         param_sqr_penalty += (fisher_v * (layer_v - saved_layer_v).pow(2)).sum()
