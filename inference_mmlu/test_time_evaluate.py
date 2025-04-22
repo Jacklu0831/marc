@@ -217,6 +217,7 @@ def initialize_kv(
     # dt
     dt_iters: int,
     dt_lr: int,
+    dt_no_pos: bool,
 ) -> Tuple[Tuple[torch.Tensor, torch.Tensor]]:
 
     if separate_kv:
@@ -255,7 +256,7 @@ def initialize_kv(
                 past_key_values = model(
                     input_ids=demon_input_ids,
                     past_key_values=past_key_values,
-                    position_ids=torch.arange(demon_input_ids.shape[1], device=accelerator.device)[None, ...],
+                    position_ids=None if dt_no_pos else torch.arange(demon_input_ids.shape[1], device=accelerator.device)[None, ...],
                     output_hidden_states=True,
                 ).past_key_values # first demonstration_len are old unmodified kv, then demonstration_len for new kv
 
@@ -517,6 +518,7 @@ def test_time_evaluate(
     # dt
     dt_iters: int,
     dt_lr: int,
+    dt_no_pos: bool,
 ) -> Tuple[float, float, float, float, float, float, float, float, List]:
 
     model.eval()
@@ -566,6 +568,10 @@ def test_time_evaluate(
             assert demon_input_ids.shape[1] <= dataset.max_seq_len
 
             # model: load cached for fresh model
+            del model
+            torch.cuda.empty_cache()
+            gc.collect()
+
             model = copy.deepcopy(cached_model).to(accelerator.device)
             model.eval()
 
@@ -627,6 +633,7 @@ def test_time_evaluate(
                 # dt
                 dt_iters=dt_iters,
                 dt_lr=dt_lr,
+                dt_no_pos=dt_no_pos,
             )
 
             if random_kv != 'none' and random_kv_ntokens == -1:
@@ -919,7 +926,7 @@ def run_ttt(
         lora_alpha=lora_alpha,
         lora_dropout=lora_dropout,
         use_rslora=lora_rslora,
-        target_modules=['c_attn', 'c_proj', 'c_fc'],
+        target_modules=['q_proj', 'v_proj', 'o_proj', 'gate_proj', 'up_proj', 'down_proj'],
         task_type=TaskType.CAUSAL_LM,
     )
     model = get_peft_model(model, peft_config) # type: ignore
@@ -1322,7 +1329,7 @@ def run_gs(
             lora_alpha=lora_alpha,
             lora_dropout=lora_dropout,
             use_rslora=lora_rslora,
-            target_modules=['c_attn', 'c_proj', 'c_fc'],
+            target_modules=['q_proj', 'v_proj', 'o_proj', 'gate_proj', 'up_proj', 'down_proj'],
             task_type=TaskType.CAUSAL_LM,
         )
         model = get_peft_model(model, peft_config) # type: ignore
@@ -1735,7 +1742,7 @@ def main():
 
     # limit eval
     parser.add_argument('--eval_test_per_task', type=int, default=10000000)
-    parser.add_argument('--eval_ratio', type=float, default=1.0)
+    parser.add_argument('--eval_ratio', type=float, default=0.1)
     parser.add_argument('--eval_on_demonstrations', action='store_true')
 
     # compress
@@ -1745,7 +1752,7 @@ def main():
     parser.add_argument("--ttt_iters", type=int, default=0)
     parser.add_argument("--ttt_lr", type=float, default=1e-4)
     parser.add_argument("--ttt_weight_decay", type=float, default=0.0)
-    parser.add_argument("--ttt_batch_size", type=int, default=4)
+    parser.add_argument("--ttt_batch_size", type=int, default=5)
     parser.add_argument("--ttt_grad_accum_steps", type=int, default=1)
     parser.add_argument("--ttt_optimizer", type=str, choices=["adamw", "sgd"], default="adamw")
     parser.add_argument("--ttt_lr_scheduler", type=str, choices=["cosine", "constant"], default="cosine")
@@ -1769,7 +1776,7 @@ def main():
     parser.add_argument("--gs_beta1", type=float, default=0.9)
     parser.add_argument("--gs_beta2", type=float, default=0.999)
     parser.add_argument("--gs_weight_decay", type=float, default=0.0)
-    parser.add_argument("--gs_batch_size", type=int, default=5)
+    parser.add_argument("--gs_batch_size", type=int, default=1)
     parser.add_argument("--gs_optimizer", type=str, choices=["adamw", "sgd"], default="adamw")
     parser.add_argument("--gs_lr_scheduler", type=str, choices=["cosine", "constant"], default="cosine")
     parser.add_argument("--gs_max_grad_norm", default=1.0, type=float, help="Max gradient norm.")
@@ -1811,6 +1818,7 @@ def main():
     # deeeeeeeeeeep thinking
     parser.add_argument("--dt_iters", type=int, default=0)
     parser.add_argument("--dt_lr", type=float, default=1e-2) # eta in the paper
+    parser.add_argument("--dt_no_pos", action='store_true')
 
     args = parser.parse_args()
 
@@ -2019,6 +2027,7 @@ def main():
         # dt
         dt_iters=args.dt_iters,
         dt_lr=args.dt_lr,
+        dt_no_pos=args.dt_no_pos,
     )
 
     if accelerator.is_main_process:

@@ -79,7 +79,6 @@ def parse_pairs(
     # compute input_ids, attention_mask, label_ids for each pair
     input_ids_of_each_pair = []
     label_ids_of_each_pair = []
-    final_output_start_idx = -1
 
     # for gs (no ntoken)
     demon_input_ids = []
@@ -96,10 +95,6 @@ def parse_pairs(
         # prepend \n\n for inputs that are not first
         if pair_i != 0:
             input_input_ids = torch.cat([delimiter_token_id, input_input_ids])
-
-        # record the last output's start idx for optional truncation
-        if pair_i == len(pairs) - 1:
-            final_output_start_idx = sum(x.shape[0] for x in input_ids_of_each_pair) + input_input_ids.shape[0]
 
         # create input_ids and label_ids
         input_ids = torch.cat([input_input_ids, output_input_ids])
@@ -129,7 +124,6 @@ def parse_pairs(
     assert input_ids.shape == attention_mask.shape == label_ids.shape
 
     # optionally truncate, also messes up pair start idxs
-    assert final_output_start_idx > -1
     if len(input_ids) > max_seq_len:
         return None
 
