@@ -1,3 +1,7 @@
+from transformers.models.llama.modeling_llama import apply_rotary_pos_emb
+import datasets
+import transformers
+import logging
 import matplotlib.pyplot as plt
 import random
 import itertools
@@ -6,7 +10,7 @@ import gc
 import time
 from transformers.tokenization_utils_fast import PreTrainedTokenizerFast
 from datetime import timedelta
-from typing import Union, Callable, List, Tuple, Dict, Any, Optional
+from typing import Union, Callable, List, Tuple, Dict, Any, Optional, Iterator
 import pprint
 import math
 import json
@@ -19,14 +23,16 @@ from torch.nn.parallel import DistributedDataParallel
 from torch.utils.data import DataLoader
 from transformers import (
     AutoTokenizer,
+    BitsAndBytesConfig,
     get_constant_schedule,
     get_cosine_schedule_with_warmup,
-    GPT2LMHeadModel,
+    LlamaConfig,
 )
+from custom_llama import MyLlamaForCausalLM
 from accelerate import Accelerator, PartialState, InitProcessGroupKwargs
 from accelerate.logging import get_logger
 from accelerate.utils import ProjectConfiguration, set_seed, gather_object
-from peft import LoraConfig, TaskType, get_peft_model # type: ignore
+from peft import LoraConfig, TaskType, get_peft_model, prepare_model_for_kbit_training # type: ignore
 
 from data_utils import (
     EvalDataset,
@@ -53,12 +59,6 @@ from accelerate.logging import get_logger
 from accelerate.utils import ProjectConfiguration, set_seed
 
 from data_utils import EvalDataset, collate_fn_eval
-from train import (
-    set_up_main_process_logger,
-    get_individual_loss,
-    compute_macrof1_or_accuracy,
-    chunks,
-)
 
 
 import os
@@ -74,12 +74,40 @@ logger = get_logger(__name__, log_level="INFO")
 
 
 MODEL_NAME_TO_PATH = {
-    "gpt2": "openai-community/gpt2-large",
+    "llama7b": "meta-llama/Llama-2-7b-hf",
 }
 NBIT_TO_DTYPE = {
     16: torch.bfloat16,
     32: torch.float32,
 }
+
+
+def get_individual_loss(lm_logits: torch.Tensor, label_ids: torch.Tensor) -> torch.Tensor:
+    # move labels to correct device to enable model parallelism
+    labels = label_ids.to(lm_logits.device)
+    # Shift so that tokens < n predict n
+    assert lm_logits.shape[0] == labels.shape[0]
+    losses = []
+    for logs, labs in zip(lm_logits, labels):
+        shift_logits = logs[:-1, :].contiguous()
+        shift_labels = labs[1:].contiguous()
+        # Flatten the tokens
+        loss_fct = nn.CrossEntropyLoss(reduction='none')
+        loss = loss_fct(shift_logits.view(-1, shift_logits.size(-1)), shift_labels.view(-1))
+
+        assert loss.shape == labs[1:].shape
+        loss = loss[labs[1:] != -100].mean()
+        losses.append(loss)
+
+    # debugging, should match crossentropy reduction (currently just match to 4 decimals)
+    # ns = [(l != -100).sum() for l in labels]
+    # ns = [n / sum(ns) for n in ns]
+    # m = 0
+    # for loss, n in zip(losses, ns):
+    #     m += loss * n
+    # print(m.item())
+
+    return torch.stack(losses)
 
 
 def print_trainable_parameters(model):
@@ -104,6 +132,38 @@ def print_trainable_parameters(model):
         logger.info(
             f"trainable params: {trainable_params:,d} || all params: {all_param:,d} || trainable%: {100 * trainable_params / all_param:.4f}"
         )
+
+
+def compute_accuracy(predictions: List[str], targets: List[str]) -> float:
+    """
+    Compare predictions and targets (case-insensitive match).
+    Return accuracy as a percentage (float).
+    """
+    correct = 0
+    for pred, target in zip(predictions, targets):
+        if pred.strip().lower() == target.strip().lower():
+            correct += 1
+    return (correct / len(targets)) * 100 if len(targets) > 0 else 0.0
+
+
+def chunks(lst: List[Any], n: int) -> Iterator[List[Any]]:
+    for i in range(0, len(lst), n):
+        yield lst[i:i + n]
+
+
+def set_up_main_process_logger(accelerator, logger):
+    logging.basicConfig(
+        format="%(asctime)s - %(levelname)s - %(name)s - %(message)s",
+        datefmt="%m/%d/%Y %H:%M:%S",
+        level=logging.INFO,
+    )
+    logger.info(accelerator.state, main_process_only=False)
+    if accelerator.is_local_main_process:
+        datasets.utils.logging.set_verbosity_warning()
+        transformers.utils.logging.set_verbosity_warning()
+    else:
+        datasets.utils.logging.set_verbosity_error()
+        transformers.utils.logging.set_verbosity_error()
 
 
 def generate_unique_permute_masks(tensor, start_idxs, M):
@@ -144,6 +204,7 @@ def initialize_kv(
     demon_input_ids: torch.Tensor,
     demon_start_idxs: List[int],
     accelerator: Accelerator,
+    trainable_nbit: int,
     # init
     random_kv: str,
     random_kv_ntokens: int,
@@ -151,6 +212,7 @@ def initialize_kv(
     num_permute: int,
     permute_batch_size: int,
     permute_back: bool,
+    permute_back_strip_position: bool,
     permute_concat: bool,
     # dt
     dt_iters: int,
@@ -162,7 +224,7 @@ def initialize_kv(
         boundaries = demon_start_idxs + [demon_input_ids.shape[1]]
         chunk_indices = [torch.arange(start, end) for start, end in zip(boundaries[:-1], boundaries[1:])]
 
-        past_key_values = [[[], []] for _ in range(model.config.n_layer)]
+        past_key_values = [[[], []] for _ in range(model.config.num_hidden_layers)]
         for indices in chunk_indices:
             with accelerator.autocast():
                 chunk_past_key_values = model(
@@ -215,9 +277,9 @@ def initialize_kv(
             # initialize from normal distribution
             past_key_values = tuple(
                 (
-                    0.02 * torch.randn((1, model.config.n_head, random_kv_ntokens, model.config.n_embd // model.config.n_head), device=accelerator.device, dtype=torch.float32),
-                    0.02 * torch.randn((1, model.config.n_head, random_kv_ntokens, model.config.n_embd // model.config.n_head), device=accelerator.device, dtype=torch.float32),
-                ) for _ in range(model.config.n_layer)
+                    0.02 * torch.randn((1, model.config.num_key_value_heads, random_kv_ntokens, model.config.head_dim), device=accelerator.device, dtype=torch.float32),
+                    0.02 * torch.randn((1, model.config.num_key_value_heads, random_kv_ntokens, model.config.head_dim), device=accelerator.device, dtype=torch.float32),
+                ) for _ in range(model.config.num_hidden_layers)
             )
         else:
             # initialize from first 1000 tokens distribution
@@ -237,9 +299,9 @@ def initialize_kv(
 
         past_key_values = tuple(
             (
-                torch.zeros((1, model.config.n_head, demon_input_ids.shape[1], model.config.n_embd // model.config.n_head), device=accelerator.device, dtype=torch.float32),
-                torch.zeros((1, model.config.n_head, demon_input_ids.shape[1], model.config.n_embd // model.config.n_head), device=accelerator.device, dtype=torch.float32),
-            ) for _ in range(model.config.n_layer)
+                torch.zeros((1, model.config.num_key_value_heads, demon_input_ids.shape[1], model.config.head_dim), device=accelerator.device, dtype=torch.float32),
+                torch.zeros((1, model.config.num_key_value_heads, demon_input_ids.shape[1], model.config.head_dim), device=accelerator.device, dtype=torch.float32),
+            ) for _ in range(model.config.num_hidden_layers)
         )
         for batch_permute_masks in chunks(permute_masks, permute_batch_size):
             # get batch of permuted demon input ids
@@ -253,9 +315,30 @@ def initialize_kv(
                 model_out = model(
                     input_ids=batch_demon_input_ids,
                     output_hidden_states=True,
+                    return_key_states_no_pos=permute_back_strip_position,
                 )
                 batch_past_key_values = model_out.past_key_values
             assert len(batch_permute_masks) == batch_past_key_values[0][0].shape[0]
+
+            # strip position for aggregation
+            if permute_back_strip_position:
+                # debug: sanity check that nopos is correct
+                # position_ids = torch.arange(0, batch_demon_input_ids.shape[1], device=accelerator.device, dtype=torch.int64).unsqueeze(0)
+                # cos, sin = model.model.rotary_emb(
+                #     x=torch.tensor(0, device=accelerator.device, dtype=NBIT_TO_DTYPE[trainable_nbit]),
+                #     position_ids=position_ids,
+                # )
+                # for layer_i in range(model.config.num_hidden_layers):
+                #     k_no_pos = model_out.key_states_no_pos[layer_i].to(NBIT_TO_DTYPE[trainable_nbit])
+                #     k_pos, k_pos_copy = apply_rotary_pos_emb(k_no_pos, k_no_pos, cos, sin)
+                #     assert torch.equal(k_pos, k_pos_copy)
+                #     assert torch.equal(k_pos, batch_past_key_values[layer_i][0])
+                assert len(model_out.key_states_no_pos) == model.config.num_hidden_layers and not (None in model_out.key_states_no_pos)
+                for layer_i in range(model.config.num_hidden_layers):
+                    k_no_pos = model_out.key_states_no_pos[layer_i].to(NBIT_TO_DTYPE[trainable_nbit])
+                    assert batch_past_key_values[layer_i][0].shape == k_no_pos.shape
+                    batch_past_key_values[layer_i][0].copy_(k_no_pos)
+                del model_out.key_states_no_pos
 
             # optionally permute kv back
             inverse_mask = None
@@ -282,12 +365,24 @@ def initialize_kv(
             for kv_i in range(2):
                 past_key_values[layer_i][kv_i].div_(len(permute_masks))
 
+        # add back position for aggregation
+        if permute_back_strip_position:
+            position_ids = torch.arange(0, demon_input_ids.shape[1], device=accelerator.device, dtype=torch.int64).unsqueeze(0)
+            cos, sin = model.model.rotary_emb(
+                x=torch.tensor(0, device=accelerator.device, dtype=NBIT_TO_DTYPE[trainable_nbit]),
+                position_ids=position_ids,
+            )
+            assert past_key_values[0][0].shape[-2:] == cos.shape[-2:] == sin.shape[-2:]
+            for layer_i in range(model.config.num_hidden_layers):
+                k_pos, _ = apply_rotary_pos_emb(past_key_values[layer_i][0], past_key_values[layer_i][0], cos, sin)
+                past_key_values[layer_i][0].copy_(k_pos)
+
     else:
         # generate batches of permutations of them and average all
         permute_masks = generate_unique_permute_masks(demon_input_ids[0], demon_start_idxs, num_permute)
         permute_masks = [torch.cat([torch.arange(0, demon_start_idxs[0]), m]) for m in permute_masks] # add instruction
 
-        past_key_values = [[[], []] for _ in range(model.config.n_layer)]
+        past_key_values = [[[], []] for _ in range(model.config.num_hidden_layers)]
         for batch_permute_masks in chunks(permute_masks, permute_batch_size):
             # get batch of permuted demon input ids
             batch_demon_input_ids = []
@@ -395,6 +490,7 @@ def test_time_evaluate(
     num_permute: int,
     permute_batch_size: int,
     permute_back: bool,
+    permute_back_strip_position: bool,
     permute_concat: bool,
     # gs regularization
     gs_lambda_param_sqr: float,
@@ -427,7 +523,7 @@ def test_time_evaluate(
 
     # get modules in case of DDP
     model = model.module if isinstance(model, DistributedDataParallel) else model
-    embed_tokens = model.transformer.wte
+    embed_tokens = model.model.embed_tokens
     model.generation_config.pad_token_id = dataset.tokenizer.pad_token_id
 
     # We perform test-time adaptation in 2 stages.
@@ -455,7 +551,7 @@ def test_time_evaluate(
         for task in tqdm(process_tasks, desc='Task'):
             # data: get demonstration ids and indices, hacky
             if dataset.debug_max_len:
-                demon_len = dataset.max_seq_len - dataset.max_pair_len
+                demon_len = dataset.max_seq_len * 4 // 5
                 demon_input_ids = torch.randint(0, 30, (1, demon_len), dtype=torch.int64, device=accelerator.device)
                 demon_start_idxs = [x * (demon_len // 16) for x in range(16)]
             else:
@@ -518,6 +614,7 @@ def test_time_evaluate(
                 demon_input_ids=demon_input_ids,
                 demon_start_idxs=demon_start_idxs,
                 accelerator=accelerator,
+                trainable_nbit=trainable_nbit,
                 # init
                 random_kv=random_kv,
                 random_kv_ntokens=random_kv_ntokens,
@@ -525,6 +622,7 @@ def test_time_evaluate(
                 num_permute=num_permute,
                 permute_batch_size=permute_batch_size,
                 permute_back=permute_back,
+                permute_back_strip_position=permute_back_strip_position,
                 permute_concat=permute_concat,
                 # dt
                 dt_iters=dt_iters,
@@ -742,13 +840,6 @@ def test_time_evaluate(
     assert len(init_kv_time_list) == len(dataset.tasks), (len(init_kv_time_list), len(dataset.tasks))
     assert len(output_list) == len(dataset), (len(output_list), len(dataset)) # dataset length, not num task
 
-    # determine which tasks are classification (for macro-f1)
-    task_to_is_clf = {}
-    for task in dataset.tasks:
-        meta_data_path = os.path.join('MetaICL/config/tasks', f'{task}.json')
-        task_meta_data = json.load(open(meta_data_path, 'r'))
-        task_to_is_clf[task] = task_meta_data['task_type'] == "classification"
-
     # metrics
     task_to_score = {}
     for task in dataset.tasks:
@@ -775,12 +866,12 @@ def test_time_evaluate(
             preds.append(chosen_option)
             gts.append(correct_option)
 
-        task_to_score[task] = compute_macrof1_or_accuracy(preds, gts, task_to_is_clf[task])
+        task_to_score[task] = compute_accuracy(preds, gts)
 
     # average scores
     sorted_tasks = sorted(task_to_score.keys())
     for task in sorted_tasks:
-        logger.info(f"{task} clf {task_to_is_clf[task]} has a score {task_to_score[task]}")
+        logger.info(f"{task} has a score {task_to_score[task]}")
     score = sum(v for v in task_to_score.values()) / len(task_to_score)
 
     # average others
@@ -858,8 +949,6 @@ def run_ttt(
         debug_pad_len=eval_dataset.debug_pad_len,
         pad_side=eval_dataset.pad_side,
         max_seq_len=eval_dataset.max_seq_len,
-        max_pair_len=eval_dataset.max_pair_len,
-        allow_truncate=eval_dataset.allow_truncate,
         delimiter=eval_dataset.delimiter,
         permute_n=permute_n,
         seed=eval_dataset.seed,
@@ -1274,7 +1363,7 @@ def run_gs(
     else:
         # full tuning of initialized KV
         prefix_past_key_values = None # no prefix tuning
-        num_layer = model.config.n_layer if num_layer == -1 else num_layer # type: ignore
+        num_layer = model.config.num_hidden_layers if num_layer == -1 else num_layer # type: ignore
         for layer_k, layer_v in past_key_values[-num_layer:]:
             if not no_key:
                 program_params.append(layer_k)
@@ -1301,8 +1390,6 @@ def run_gs(
         pad_side=eval_dataset.pad_side,
         past_kv_len=demon_input_ids_len,
         max_seq_len=eval_dataset.max_seq_len,
-        max_pair_len=eval_dataset.max_pair_len,
-        allow_truncate=eval_dataset.allow_truncate,
         delimiter=eval_dataset.delimiter,
         loss_on_input=loss_on_input,
     )
@@ -1352,7 +1439,7 @@ def run_gs(
     model.train()
 
     module = model.module if isinstance(model, DistributedDataParallel) else model
-    embed_tokens = module.transformer.wte if not lora else module.model.transformer.wte
+    embed_tokens = module.model.embed_tokens if not lora else module.model.model.embed_tokens
 
     attn_logger = None
     if log_attention:
@@ -1561,7 +1648,7 @@ def run_gs(
                 # get regularization loss
                 param_sqr_penalty = torch.tensor(0.0, device=accelerator.device)
                 if saved_past_key_values is not None:
-                    assert len(past_key_values) == len(saved_past_key_values) == len(fisher_vals) == model.config.n_layer # type: ignore
+                    assert len(past_key_values) == len(saved_past_key_values) == len(fisher_vals) == model.config.num_hidden_layers # type: ignore
                     assert past_key_values[0][0].shape[0] == saved_past_key_values[0][0].shape[0] == 1
                     for (saved_layer_k, saved_layer_v), (layer_k, layer_v), (fisher_k, fisher_v) in zip(saved_past_key_values, past_key_values, fisher_vals):
                         param_sqr_penalty += (fisher_k * (layer_k - saved_layer_k).pow(2)).sum()
@@ -1633,26 +1720,18 @@ def main():
     parser.add_argument("--debug_max_len", action='store_true')
 
     # Model
-    parser.add_argument("--model_name", type=str, default="gpt2")
+    parser.add_argument("--model_name", type=str, default="llama7b")
+    parser.add_argument("--flash_attn", action="store_true")
+    parser.add_argument("--untrainable_nbit", type=float, choices=[3.6, 4, 8, 16, 32], default=16)
     parser.add_argument("--trainable_nbit", type=int, choices=[16, 32], default=16)
     parser.add_argument("--no_tf32", action="store_true")
 
-    # Weights
-    parser.add_argument("--weight_root_dir", type=str, default="./encoder_decoder/outputs")
-    parser.add_argument("--weight_dir", type=str, required=True)
-    parser.add_argument("--weight_epoch", type=int, required=True)
-
     # Evaluation & data
-    parser.add_argument("--config_file", type=str, default="MetaICL/config/hr_to_lr.json")
-    parser.add_argument("--data_dir", type=str, default="MetaICL/data")
-    parser.add_argument("--num_demonstrations", type=int, default=16)
-    parser.add_argument("--batch_size", type=int, default=16)
-    parser.add_argument("--max_seq_len", type=int, default=1024)
-    parser.add_argument("--max_pair_len", type=int, default=256)
-    parser.add_argument('--eval_seeds', type=str, nargs="+", default=['13', '21', '42', '87', '100'])
-    parser.add_argument("--pad_side", type=str, choices=["left", "right"], default="right") # slightly more accurate
-    parser.add_argument("--allow_truncate", action='store_true')
-    parser.add_argument("--delimiter", type=str, choices=['space', 'newline'], default='space')
+    parser.add_argument("--num_demonstrations", type=int, default=5)
+    parser.add_argument("--batch_size", type=int, default=4)
+    parser.add_argument("--max_seq_len", type=int, default=4096)
+    parser.add_argument("--pad_side", type=str, choices=["left", "right"], default="left")
+    parser.add_argument("--delimiter", type=str, choices=['space', 'newline'], default='newline')
 
     # limit eval
     parser.add_argument('--eval_test_per_task', type=int, default=10000000)
@@ -1677,6 +1756,7 @@ def main():
     parser.add_argument("--ttt_lora_dropout", type=float, default=0.05)
     parser.add_argument("--ttt_lora_rslora", action='store_true')
     parser.add_argument("--ttt_loss_type", type=str, choices=['only_last', 'all', 'exclude_first'], default='all')
+    parser.add_argument("--ttt_gradient_checkpointing", action='store_true')
 
     # ttt regularization
     parser.add_argument("--ttt_lambda_param_sqr", type=float, default=0.0)
@@ -1689,7 +1769,7 @@ def main():
     parser.add_argument("--gs_beta1", type=float, default=0.9)
     parser.add_argument("--gs_beta2", type=float, default=0.999)
     parser.add_argument("--gs_weight_decay", type=float, default=0.0)
-    parser.add_argument("--gs_batch_size", type=int, default=16)
+    parser.add_argument("--gs_batch_size", type=int, default=5)
     parser.add_argument("--gs_optimizer", type=str, choices=["adamw", "sgd"], default="adamw")
     parser.add_argument("--gs_lr_scheduler", type=str, choices=["cosine", "constant"], default="cosine")
     parser.add_argument("--gs_max_grad_norm", default=1.0, type=float, help="Max gradient norm.")
@@ -1708,9 +1788,10 @@ def main():
     parser.add_argument("--random_kv", type=str, choices=['none', 'normal', 'token'], default='none')
     parser.add_argument("--random_kv_ntokens", type=int, default=-1)
     parser.add_argument("--separate_kv", action='store_true')
-    parser.add_argument("--num_permute", type=int, default=1) # 1024
+    parser.add_argument("--num_permute", type=int, default=1)
     parser.add_argument("--permute_batch_size", type=int, default=16)
     parser.add_argument("--permute_back", action='store_true')
+    parser.add_argument("--permute_back_strip_position", action='store_true')
     parser.add_argument("--permute_concat", action='store_true')
 
     # gradient search with lora
@@ -1735,12 +1816,11 @@ def main():
 
     if args.debug:
         args.tag = 'test'
-        args.eval_seeds = ['100']
         args.eval_ratio = 0.01
 
     args.delimiter = " " if args.delimiter == 'space' else "\n"
 
-    args.tag = f"eval_{args.tag}_{args.weight_dir}"
+    args.tag = f"eval_{args.tag}"
     args.output_dir = os.path.join(args.output_dir, args.tag)
 
     args.ttt_iters *= args.ttt_grad_accum_steps
@@ -1775,21 +1855,62 @@ def main():
     tokenizer.pad_token = tokenizer.eos_token
     logger.info("Tokenizers loaded and pad tokens handled.")
 
-    # load weights
-    weight_dir = os.path.join(args.weight_root_dir, args.weight_dir)
-    model_weight_path = os.path.join(weight_dir, f"lora_epoch_{args.weight_epoch}")
+    # Build base models
+    from_pretrained_kwargs = {
+        "cache_dir": "./encoder_decoder_cache",
+        "low_cpu_mem_usage": True,
+    }
+    if args.flash_attn:
+        from_pretrained_kwargs["attn_implementation"] = "flash_attention_2"
+    if args.untrainable_nbit in NBIT_TO_DTYPE:
+        from_pretrained_kwargs["torch_dtype"] = NBIT_TO_DTYPE[args.untrainable_nbit]
+    elif args.untrainable_nbit == 4:
+        from_pretrained_kwargs["quantization_config"] = BitsAndBytesConfig(
+            load_in_4bit=True,
+            bnb_4bit_quant_type="nf4",
+            bnb_4bit_compute_dtype=NBIT_TO_DTYPE[args.trainable_nbit],
+        )
+    elif args.untrainable_nbit == 3.6:
+        from_pretrained_kwargs["quantization_config"] = BitsAndBytesConfig(
+            load_in_4bit=True,
+            bnb_4bit_quant_type="nf4",
+            bnb_4bit_use_double_quant=True,
+            bnb_4bit_compute_dtype=NBIT_TO_DTYPE[args.trainable_nbit],
+        )
+    elif args.untrainable_nbit == 8:
+        # wtf why this more memory
+        from_pretrained_kwargs["quantization_config"] = BitsAndBytesConfig(load_in_8bit=True)
+    else:
+        raise ValueError(f"unrecognized untrainable_nbit {args.untrainable_nbit}")
 
-    # load model (no dropout when model.train() for ttt or gs)
-    model = GPT2LMHeadModel.from_pretrained(
-        model_weight_path,
-        attn_pdrop=0.0,
-        embd_pdrop=0.0,
-        resid_pdrop=0.0,
-        summary_first_dropout=0.0,
-        torch_dtype=NBIT_TO_DTYPE[args.trainable_nbit],
-        cache_dir="./encoder_decoder_cache",
-        _attn_implementation='eager' if args.gs_log_attention else 'sdpa',
+    # load config in case using naive attention for attention map
+    config = LlamaConfig.from_pretrained(MODEL_NAME_TO_PATH[args.model_name])
+    if args.gs_log_attention:
+        config._attn_implementation_autoset = False
+        config._attn_implementation = 'eager'
+
+    # load model
+    model = MyLlamaForCausalLM.from_pretrained(
+        pretrained_model_name_or_path=MODEL_NAME_TO_PATH[args.model_name],
+        config=config,
+        **from_pretrained_kwargs,
     )
+    model.subtract_position_ids_by = 0 # HACK for prefix # type: ignore
+    if args.untrainable_nbit in [4, 8]:
+        model = prepare_model_for_kbit_training(
+            model,
+            use_gradient_checkpointing=args.ttt_gradient_checkpointing,
+            gradient_checkpointing_kwargs={"use_reentrant": False},
+        )
+    else:
+        if args.ttt_gradient_checkpointing:
+            model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
+
+    logger.info("Base models loaded.")
+
+    # convert model weights
+    for param in model.parameters():
+        param.data = param.data.to(NBIT_TO_DTYPE[args.untrainable_nbit])
 
     # number of parameters
     print_trainable_parameters(model)
@@ -1805,134 +1926,100 @@ def main():
         p.requires_grad = False
 
     # Build evaluation dataset
-    datasets = [
-        EvalDataset(
-            data_dir=args.data_dir,
-            config_file=args.config_file,
-            seed=args.seed,
-            eval_seed=eval_seed,
-            tokenizer=tokenizer,
-            debug_random_pad=False,
-            debug_pad_len=-1,
-            debug_max_len=args.debug_max_len,
-            pad_side=args.pad_side,
-            max_seq_len=args.max_seq_len,
-            max_pair_len=args.max_pair_len,
-            eval_test_per_task=args.eval_test_per_task,
-            eval_ratio=args.eval_ratio,
-            split='test',
-            allow_truncate=args.allow_truncate,
-            delimiter=args.delimiter,
-            num_demonstrations=args.num_demonstrations,
-            eval_on_demonstrations=args.eval_on_demonstrations,
-        )
-        for eval_seed in args.eval_seeds
-    ]
-    collate_fn = partial(collate_fn_eval, dataset=datasets[0])
+    dataset = EvalDataset(
+        seed=args.seed,
+        tokenizer=tokenizer,
+        debug_random_pad=False,
+        debug_pad_len=-1,
+        debug_max_len=args.debug_max_len,
+        pad_side=args.pad_side,
+        max_seq_len=args.max_seq_len,
+        eval_test_per_task=args.eval_test_per_task,
+        eval_ratio=args.eval_ratio,
+        delimiter=args.delimiter,
+        num_demonstrations=args.num_demonstrations,
+        eval_on_demonstrations=args.eval_on_demonstrations,
+    )
+    collate_fn = partial(collate_fn_eval, dataset=dataset)
     if args.debug_max_len:
-        collate_fn = partial(collate_fn_eval_dummy, dataset=datasets[0])
+        collate_fn = partial(collate_fn_eval_dummy, dataset=dataset)
 
     # Eval Datasets
-    score_list = []
-    ttt_num_data_list, gs_num_data_list = [], []
-    ttt_num_params_list, gs_num_params_list = [], []
-    ttt_time_list, gs_time_list = [], []
-    init_kv_time_list = []
-    output_list = None
-
-    for dataset in datasets:
-        score, ttt_num_data, gs_num_data, ttt_num_params, gs_num_params, ttt_time, gs_time, init_kv_time, output_list = test_time_evaluate(
-            model=model,
-            dataset=dataset,
-            accelerator=accelerator,
-            batch_size=args.batch_size,
-            collate_fn=collate_fn,
-            trainable_nbit=args.trainable_nbit,
-            log_every=args.log_every,
-            output_dir=args.output_dir,
-            # eval
-            compression_ratio=args.compression_ratio,
-            # gs
-            gs_epochs=args.gs_epochs,
-            gs_lr=args.gs_lr,
-            gs_beta1=args.gs_beta1,
-            gs_beta2=args.gs_beta2,
-            gs_weight_decay=args.gs_weight_decay,
-            gs_batch_size=args.gs_batch_size,
-            gs_optimizer=args.gs_optimizer,
-            gs_lr_scheduler=args.gs_lr_scheduler,
-            gs_max_grad_norm=args.gs_max_grad_norm,
-            gs_no_key=args.gs_no_key,
-            gs_no_value=args.gs_no_value,
-            gs_num_layer=args.gs_num_layer,
-            gs_loss_on_input=args.gs_loss_on_input,
-            gs_dropout=args.gs_dropout,
-            gs_token_dropout=args.gs_token_dropout,
-            gs_detach=args.gs_detach,
-            gs_ntokens=args.gs_ntokens,
-            gs_log_attention=args.gs_log_attention,
-            gs_final_tokens=args.gs_final_tokens,
-            # gs lora
-            gs_lora=args.gs_lora,
-            gs_lora_rank=args.gs_lora_rank,
-            gs_lora_alpha=args.gs_lora_alpha,
-            gs_lora_lr=args.gs_lora_lr,
-            gs_lora_beta1=args.gs_lora_beta1,
-            gs_lora_beta2=args.gs_lora_beta2,
-            gs_lora_dropout=args.gs_lora_dropout,
-            gs_lora_rslora=args.gs_lora_rslora,
-            # gs init
-            random_kv=args.random_kv,
-            random_kv_ntokens=args.random_kv_ntokens,
-            separate_kv=args.separate_kv,
-            num_permute=args.num_permute,
-            permute_batch_size=args.permute_batch_size,
-            permute_back=args.permute_back,
-            permute_concat=args.permute_concat,
-            # gs regularization
-            gs_lambda_param_sqr=args.gs_lambda_param_sqr,
-            gs_fisher=args.gs_fisher,
-            # ttt
-            ttt_iters=args.ttt_iters,
-            ttt_lr=args.ttt_lr,
-            ttt_weight_decay=args.ttt_weight_decay,
-            ttt_batch_size=args.ttt_batch_size,
-            ttt_grad_accum_steps=args.ttt_grad_accum_steps,
-            ttt_optimizer=args.ttt_optimizer,
-            ttt_lr_scheduler=args.ttt_lr_scheduler,
-            ttt_max_grad_norm=args.ttt_max_grad_norm,
-            ttt_lora_rank=args.ttt_lora_rank,
-            ttt_lora_alpha=args.ttt_lora_alpha,
-            ttt_lora_dropout=args.ttt_lora_dropout,
-            ttt_lora_rslora=args.ttt_lora_rslora,
-            ttt_loss_type=args.ttt_loss_type,
-            ttt_permute_n=args.ttt_permute_n,
-            # ttt regularization
-            ttt_lambda_param_sqr=args.ttt_lambda_param_sqr,
-            ttt_fisher=args.ttt_fisher,
-            ttt_fisher_iters=args.ttt_fisher_iters,
-            # dt
-            dt_iters=args.dt_iters,
-            dt_lr=args.dt_lr,
-        )
-
-        score_list.append(score)
-        ttt_num_data_list.append(ttt_num_data)
-        gs_num_data_list.append(gs_num_data)
-        ttt_num_params_list.append(ttt_num_params)
-        gs_num_params_list.append(gs_num_params)
-        ttt_time_list.append(ttt_time)
-        gs_time_list.append(gs_time)
-        init_kv_time_list.append(init_kv_time)
-
-    score = sum(score_list) / len(score_list)
-    ttt_num_data = sum(ttt_num_data_list) / len(ttt_num_data_list)
-    gs_num_data = sum(gs_num_data_list) / len(gs_num_data_list)
-    ttt_num_params = sum(ttt_num_params_list) / len(ttt_num_params_list)
-    gs_num_params = sum(gs_num_params_list) / len(gs_num_params_list)
-    ttt_time = sum(ttt_time_list) / len(ttt_time_list)
-    gs_time = sum(gs_time_list) / len(gs_time_list)
-    init_kv_time = sum(init_kv_time_list) / len(init_kv_time_list)
+    score, ttt_num_data, gs_num_data, ttt_num_params, gs_num_params, ttt_time, gs_time, init_kv_time, output_list = test_time_evaluate(
+        model=model,
+        dataset=dataset,
+        accelerator=accelerator,
+        batch_size=args.batch_size,
+        collate_fn=collate_fn,
+        trainable_nbit=args.trainable_nbit,
+        log_every=args.log_every,
+        output_dir=args.output_dir,
+        # eval
+        compression_ratio=args.compression_ratio,
+        # gs
+        gs_epochs=args.gs_epochs,
+        gs_lr=args.gs_lr,
+        gs_beta1=args.gs_beta1,
+        gs_beta2=args.gs_beta2,
+        gs_weight_decay=args.gs_weight_decay,
+        gs_batch_size=args.gs_batch_size,
+        gs_optimizer=args.gs_optimizer,
+        gs_lr_scheduler=args.gs_lr_scheduler,
+        gs_max_grad_norm=args.gs_max_grad_norm,
+        gs_no_key=args.gs_no_key,
+        gs_no_value=args.gs_no_value,
+        gs_num_layer=args.gs_num_layer,
+        gs_loss_on_input=args.gs_loss_on_input,
+        gs_dropout=args.gs_dropout,
+        gs_token_dropout=args.gs_token_dropout,
+        gs_detach=args.gs_detach,
+        gs_ntokens=args.gs_ntokens,
+        gs_log_attention=args.gs_log_attention,
+        gs_final_tokens=args.gs_final_tokens,
+        # gs lora
+        gs_lora=args.gs_lora,
+        gs_lora_rank=args.gs_lora_rank,
+        gs_lora_alpha=args.gs_lora_alpha,
+        gs_lora_lr=args.gs_lora_lr,
+        gs_lora_beta1=args.gs_lora_beta1,
+        gs_lora_beta2=args.gs_lora_beta2,
+        gs_lora_dropout=args.gs_lora_dropout,
+        gs_lora_rslora=args.gs_lora_rslora,
+        # gs init
+        random_kv=args.random_kv,
+        random_kv_ntokens=args.random_kv_ntokens,
+        separate_kv=args.separate_kv,
+        num_permute=args.num_permute,
+        permute_batch_size=args.permute_batch_size,
+        permute_back=args.permute_back,
+        permute_back_strip_position=args.permute_back_strip_position,
+        permute_concat=args.permute_concat,
+        # gs regularization
+        gs_lambda_param_sqr=args.gs_lambda_param_sqr,
+        gs_fisher=args.gs_fisher,
+        # ttt
+        ttt_iters=args.ttt_iters,
+        ttt_lr=args.ttt_lr,
+        ttt_weight_decay=args.ttt_weight_decay,
+        ttt_batch_size=args.ttt_batch_size,
+        ttt_grad_accum_steps=args.ttt_grad_accum_steps,
+        ttt_optimizer=args.ttt_optimizer,
+        ttt_lr_scheduler=args.ttt_lr_scheduler,
+        ttt_max_grad_norm=args.ttt_max_grad_norm,
+        ttt_lora_rank=args.ttt_lora_rank,
+        ttt_lora_alpha=args.ttt_lora_alpha,
+        ttt_lora_dropout=args.ttt_lora_dropout,
+        ttt_lora_rslora=args.ttt_lora_rslora,
+        ttt_loss_type=args.ttt_loss_type,
+        ttt_permute_n=args.ttt_permute_n,
+        # ttt regularization
+        ttt_lambda_param_sqr=args.ttt_lambda_param_sqr,
+        ttt_fisher=args.ttt_fisher,
+        ttt_fisher_iters=args.ttt_fisher_iters,
+        # dt
+        dt_iters=args.dt_iters,
+        dt_lr=args.dt_lr,
+    )
 
     if accelerator.is_main_process:
         # log metrics

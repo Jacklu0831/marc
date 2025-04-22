@@ -4,43 +4,43 @@ MASTER_PORT=$(comm -23 <(seq 10000 65000 | sort) <(ss -tan | awk '{print $4}' | 
 
 
 
-# nlp gs5 lr1e-3 droptrain
+# nlp gs5 lr1e-2 droptrain
 accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_nlp/test_time_evaluate.py \
-    --tag nlp_gs5_lr1e-3_droptrain \
+    --tag nlp_gs5_lr1e-2_droptrain \
     --weight_dir nlp_pretrained \
     --weight_epoch 0 \
     --gs_epochs 5 \
-    --gs_lr 1e-3 \
+    --gs_lr 1e-2 \
     --gs_dropout train \
     --eval_seeds 100
 
-# nlp gs25 lr1e-3 droptrain
+# nlp gs25 lr1e-2 droptrain
 accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_nlp/test_time_evaluate.py \
-    --tag nlp_gs25_lr1e-3_droptrain \
+    --tag nlp_gs25_lr1e-2_droptrain \
     --weight_dir nlp_pretrained \
     --weight_epoch 0 \
     --gs_epochs 25 \
-    --gs_lr 1e-3 \
+    --gs_lr 1e-2 \
     --gs_dropout train \
     --eval_seeds 100
 
-# nlp gs100 lr1e-3 droptrain
+# nlp gs100 lr1e-2 droptrain
 accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_nlp/test_time_evaluate.py \
-    --tag nlp_gs100_lr1e-3_droptrain \
+    --tag nlp_gs100_lr1e-2_droptrain \
     --weight_dir nlp_pretrained \
     --weight_epoch 0 \
     --gs_epochs 100 \
-    --gs_lr 1e-3 \
+    --gs_lr 1e-2 \
     --gs_dropout train \
     --eval_seeds 100
 
-# nlp gs250 lr1e-3 droptrain
+# nlp gs250 lr1e-2 droptrain
 accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_nlp/test_time_evaluate.py \
-    --tag nlp_gs250_lr1e-3_droptrain \
+    --tag nlp_gs250_lr1e-2_droptrain \
     --weight_dir nlp_pretrained \
     --weight_epoch 0 \
     --gs_epochs 250 \
-    --gs_lr 1e-3 \
+    --gs_lr 1e-2 \
     --gs_dropout train \
     --eval_seeds 100
 
@@ -53,44 +53,44 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 infere
 
 
 
-# nlp gs5 lr1e-4 droptrain
+# nlp gs5 lr3e-3 droptrain
 accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_nlp/test_time_evaluate.py \
-    --tag nlp_gs5_lr1e-4_droptrain \
+    --tag nlp_gs5_lr3e-3_droptrain \
     --weight_dir nlp_pretrained \
     --weight_epoch 0 \
     --gs_epochs 5 \
-    --gs_lr 1e-4 \
+    --gs_lr 3e-3 \
     --gs_dropout train \
     --eval_seeds 100
 
-# nlp gs25 lr1e-4 droptrain
+# nlp gs25 lr3e-3 droptrain
 accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_nlp/test_time_evaluate.py \
-    --tag nlp_gs25_lr1e-4_droptrain \
+    --tag nlp_gs25_lr3e-3_droptrain \
     --weight_dir nlp_pretrained \
     --weight_epoch 0 \
     --gs_epochs 25 \
-    --gs_lr 1e-4 \
+    --gs_lr 3e-3 \
     --gs_dropout train \
     --eval_seeds 100
 
-# nlp gs100 lr1e-4 droptrain
+# nlp gs100 lr3e-3 droptrain
 accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_nlp/test_time_evaluate.py \
-    --tag nlp_gs100_lr1e-4_droptrain \
+    --tag nlp_gs100_lr3e-3_droptrain \
     --weight_dir nlp_pretrained \
     --weight_epoch 0 \
     --gs_epochs 100 \
-    --gs_lr 1e-4 \
+    --gs_lr 3e-3 \
     --gs_dropout train \
     --eval_seeds 100
 
-# nlp gs250 lr1e-4 droptrain
+# nlp gs250 lr3e-3 droptrain
 accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_nlp/test_time_evaluate.py \
-    --tag nlp_gs250_lr1e-4_droptrain \
+    --tag nlp_gs250_lr3e-3_droptrain \
     --weight_dir nlp_pretrained \
     --weight_epoch 0 \
     --gs_epochs 250 \
-    --gs_lr 1e-4 \
+    --gs_lr 3e-3 \
     --gs_dropout train \
     --eval_seeds 100
 
-# Submitted batch job 59510058
+# Submitted batch job 59571645

@@ -1,97 +1,53 @@
-# python make_sbatch.py --ngpu 1 --time 2 --rtx8000 --bash_files bash_cmds/0401_nlp/pretrained/0401_5_gs_lora.sh
+# python make_sbatch.py --ngpu 1 --time 9 --rtx8000 --single --bash_files bash_cmds/0401_nlp/pretrained/0401_3_gs_droptrain_lora.sh
+MASTER_PORT=$(comm -23 <(seq 10000 65000 | sort) <(ss -tan | awk '{print $4}' | cut -d':' -f2 | sort -u) | shuf | head -n 1)
 
-# nlp gs5 lr1e-3 lora1e-3
+
+
+
+# nlp gs5 lr1e-2 droptrain gslora1e-4
 accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_nlp/test_time_evaluate.py \
-    --tag gs5_lr1e-3_lora1e-3 \
+    --tag nlp_gs5_lr1e-2_droptrain_gslora1e-4 \
     --weight_dir nlp_pretrained \
     --weight_epoch 0 \
-    --gs_iters 5 \
-    --gs_lr 1e-3 \
-    --gs_lora \
-    --gs_lora_lr 1e-3 \
-    --eval_seeds 100
-
-# nlp gs25 lr1e-3 lora1e-3
-accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_nlp/test_time_evaluate.py \
-    --tag gs25_lr1e-3_lora1e-3 \
-    --weight_dir nlp_pretrained \
-    --weight_epoch 0 \
-    --gs_iters 25 \
-    --gs_lr 1e-3 \
-    --gs_lora \
-    --gs_lora_lr 1e-3 \
-    --eval_seeds 100
-
-# nlp gs100 lr1e-3 lora1e-3
-accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_nlp/test_time_evaluate.py \
-    --tag gs100_lr1e-3_lora1e-3 \
-    --weight_dir nlp_pretrained \
-    --weight_epoch 0 \
-    --gs_iters 100 \
-    --gs_lr 1e-3 \
-    --gs_lora \
-    --gs_lora_lr 1e-3 \
-    --eval_seeds 100
-
-# nlp gs250 lr1e-3 lora1e-3
-accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_nlp/test_time_evaluate.py \
-    --tag gs250_lr1e-3_lora1e-3 \
-    --weight_dir nlp_pretrained \
-    --weight_epoch 0 \
-    --gs_iters 250 \
-    --gs_lr 1e-3 \
-    --gs_lora \
-    --gs_lora_lr 1e-3 \
-    --eval_seeds 100
-
-
-
-
-
-
-
-
-
-# nlp gs5 lr1e-3 lora1e-4
-accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_nlp/test_time_evaluate.py \
-    --tag gs5_lr1e-3_lora1e-4 \
-    --weight_dir nlp_pretrained \
-    --weight_epoch 0 \
-    --gs_iters 5 \
-    --gs_lr 1e-3 \
+    --gs_epochs 5 \
+    --gs_lr 1e-2 \
+    --gs_dropout train \
     --gs_lora \
     --gs_lora_lr 1e-4 \
     --eval_seeds 100
 
-# nlp gs25 lr1e-3 lora1e-4
+# nlp gs25 lr1e-2 droptrain gslora1e-4
 accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_nlp/test_time_evaluate.py \
-    --tag gs25_lr1e-3_lora1e-4 \
+    --tag nlp_gs25_lr1e-2_droptrain_gslora1e-4 \
     --weight_dir nlp_pretrained \
     --weight_epoch 0 \
-    --gs_iters 25 \
-    --gs_lr 1e-3 \
+    --gs_epochs 25 \
+    --gs_lr 1e-2 \
+    --gs_dropout train \
     --gs_lora \
     --gs_lora_lr 1e-4 \
     --eval_seeds 100
 
-# nlp gs100 lr1e-3 lora1e-4
+# nlp gs100 lr1e-2 droptrain gslora1e-4
 accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_nlp/test_time_evaluate.py \
-    --tag gs100_lr1e-3_lora1e-4 \
+    --tag nlp_gs100_lr1e-2_droptrain_gslora1e-4 \
     --weight_dir nlp_pretrained \
     --weight_epoch 0 \
-    --gs_iters 100 \
-    --gs_lr 1e-3 \
+    --gs_epochs 100 \
+    --gs_lr 1e-2 \
+    --gs_dropout train \
     --gs_lora \
     --gs_lora_lr 1e-4 \
     --eval_seeds 100
 
-# nlp gs250 lr1e-3 lora1e-4
+# nlp gs250 lr1e-2 droptrain gslora1e-4
 accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_nlp/test_time_evaluate.py \
-    --tag gs250_lr1e-3_lora1e-4 \
+    --tag nlp_gs250_lr1e-2_droptrain_gslora1e-4 \
     --weight_dir nlp_pretrained \
     --weight_epoch 0 \
-    --gs_iters 250 \
-    --gs_lr 1e-3 \
+    --gs_epochs 250 \
+    --gs_lr 1e-2 \
+    --gs_dropout train \
     --gs_lora \
     --gs_lora_lr 1e-4 \
     --eval_seeds 100
@@ -102,95 +58,111 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 infere
 
 
 
-# nlp gs5 lr1e-3 lora1e-5
+
+
+
+# nlp gs5 lr3e-3 droptrain gslora1e-4
 accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_nlp/test_time_evaluate.py \
-    --tag gs5_lr1e-3_lora1e-5 \
+    --tag nlp_gs5_lr3e-3_droptrain_gslora1e-4 \
     --weight_dir nlp_pretrained \
     --weight_epoch 0 \
-    --gs_iters 5 \
-    --gs_lr 1e-3 \
+    --gs_epochs 5 \
+    --gs_lr 3e-3 \
+    --gs_dropout train \
     --gs_lora \
-    --gs_lora_lr 1e-5 \
+    --gs_lora_lr 1e-4 \
     --eval_seeds 100
 
-# nlp gs25 lr1e-3 lora1e-5
+# nlp gs25 lr3e-3 droptrain gslora1e-4
 accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_nlp/test_time_evaluate.py \
-    --tag gs25_lr1e-3_lora1e-5 \
+    --tag nlp_gs25_lr3e-3_droptrain_gslora1e-4 \
     --weight_dir nlp_pretrained \
     --weight_epoch 0 \
-    --gs_iters 25 \
-    --gs_lr 1e-3 \
+    --gs_epochs 25 \
+    --gs_lr 3e-3 \
+    --gs_dropout train \
     --gs_lora \
-    --gs_lora_lr 1e-5 \
+    --gs_lora_lr 1e-4 \
     --eval_seeds 100
 
-# nlp gs100 lr1e-3 lora1e-5
+# nlp gs100 lr3e-3 droptrain gslora1e-4
 accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_nlp/test_time_evaluate.py \
-    --tag gs100_lr1e-3_lora1e-5 \
+    --tag nlp_gs100_lr3e-3_droptrain_gslora1e-4 \
     --weight_dir nlp_pretrained \
     --weight_epoch 0 \
-    --gs_iters 100 \
-    --gs_lr 1e-3 \
+    --gs_epochs 100 \
+    --gs_lr 3e-3 \
+    --gs_dropout train \
     --gs_lora \
-    --gs_lora_lr 1e-5 \
+    --gs_lora_lr 1e-4 \
     --eval_seeds 100
 
-# nlp gs250 lr1e-3 lora1e-5
+# nlp gs250 lr3e-3 droptrain gslora1e-4
 accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_nlp/test_time_evaluate.py \
-    --tag gs250_lr1e-3_lora1e-5 \
+    --tag nlp_gs250_lr3e-3_droptrain_gslora1e-4 \
     --weight_dir nlp_pretrained \
     --weight_epoch 0 \
-    --gs_iters 250 \
-    --gs_lr 1e-3 \
+    --gs_epochs 250 \
+    --gs_lr 3e-3 \
+    --gs_dropout train \
     --gs_lora \
-    --gs_lora_lr 1e-5 \
+    --gs_lora_lr 1e-4 \
     --eval_seeds 100
 
 
 
 
 
-# gslr1e-3
-# numparams 88289280, same time gs without lora and almost no memory overhead
-
-# gslora1e-3
-# Submitted batch job 59034248 # 0.381
-# Submitted batch job 59034249 # 0.416
-# Submitted batch job 59034250 # 0.425
-# Submitted batch job 59034251 # 0.417
-
-# gslora1e-4
-# Submitted batch job 59034252 # 0.393
-# Submitted batch job 59034253 # 0.408
-# Submitted batch job 59034254 # 0.412
-# Submitted batch job 59034255 # 0.421
-
-# gslora1e-5
-# Submitted batch job 59034256 # 0.372
-# Submitted batch job 59034257 # 0.398
-# Submitted batch job 59034258 # 0.409
-# Submitted batch job 59034259 # 0.406
-
-# so far 0.425
 
 
 
-# AFTER PRECISION FIX
 
-# gslora1e-3
-# Submitted batch job 59139441
-# Submitted batch job 59139442
-# Submitted batch job 59139443
-# Submitted batch job 59139444
+# nlp gs5 lr1e-3 droptrain gslora1e-4
+accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_nlp/test_time_evaluate.py \
+    --tag nlp_gs5_lr1e-3_droptrain_gslora1e-4 \
+    --weight_dir nlp_pretrained \
+    --weight_epoch 0 \
+    --gs_epochs 5 \
+    --gs_lr 1e-3 \
+    --gs_dropout train \
+    --gs_lora \
+    --gs_lora_lr 1e-4 \
+    --eval_seeds 100
 
-# gslora1e-4
-# Submitted batch job 59139445
-# Submitted batch job 59139446
-# Submitted batch job 59139447
-# Submitted batch job 59139448
+# nlp gs25 lr1e-3 droptrain gslora1e-4
+accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_nlp/test_time_evaluate.py \
+    --tag nlp_gs25_lr1e-3_droptrain_gslora1e-4 \
+    --weight_dir nlp_pretrained \
+    --weight_epoch 0 \
+    --gs_epochs 25 \
+    --gs_lr 1e-3 \
+    --gs_dropout train \
+    --gs_lora \
+    --gs_lora_lr 1e-4 \
+    --eval_seeds 100
 
-# gslora1e-5
-# Submitted batch job 59139449
-# Submitted batch job 59139450
-# Submitted batch job 59139451
-# Submitted batch job 59139452
+# nlp gs100 lr1e-3 droptrain gslora1e-4
+accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_nlp/test_time_evaluate.py \
+    --tag nlp_gs100_lr1e-3_droptrain_gslora1e-4 \
+    --weight_dir nlp_pretrained \
+    --weight_epoch 0 \
+    --gs_epochs 100 \
+    --gs_lr 1e-3 \
+    --gs_dropout train \
+    --gs_lora \
+    --gs_lora_lr 1e-4 \
+    --eval_seeds 100
+
+# nlp gs250 lr1e-3 droptrain gslora1e-4
+accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_nlp/test_time_evaluate.py \
+    --tag nlp_gs250_lr1e-3_droptrain_gslora1e-4 \
+    --weight_dir nlp_pretrained \
+    --weight_epoch 0 \
+    --gs_epochs 250 \
+    --gs_lr 1e-3 \
+    --gs_dropout train \
+    --gs_lora \
+    --gs_lora_lr 1e-4 \
+    --eval_seeds 100
+
+# Submitted batch job 59581316

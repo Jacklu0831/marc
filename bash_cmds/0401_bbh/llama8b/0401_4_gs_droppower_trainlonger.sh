@@ -1,4 +1,4 @@
-# python make_sbatch.py --ngpu 1 --time 8 --single --bash_files bash_cmds/0401_bbh/llama8b/0401_4_gs_droppower_trainlonger.sh
+# python make_sbatch.py --ngpu 1 --time 9 --single --bash_files bash_cmds/0401_bbh/llama8b/0401_4_gs_droppower_trainlonger.sh
 MASTER_PORT=$(comm -23 <(seq 10000 65000 | sort) <(ss -tan | awk '{print $4}' | cut -d':' -f2 | sort -u) | shuf | head -n 1)
 
 
@@ -40,6 +40,15 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 infere
 
 
 
+# bbh llama8b gs50 lr1e-3 droppower
+accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_bbh/test_time_evaluate.py \
+    --tag bbh_llama8b_gs50_lr1e-3_droppower_2ndtry \
+    --model_name llama8b \
+    --gs_epochs 50 \
+    --gs_lr 1e-3 \
+    --gs_batch_size 2 \
+    --gs_dropout power
+
 # bbh llama8b gs60 lr1e-3 droppower
 accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_bbh/test_time_evaluate.py \
     --tag bbh_llama8b_gs60_lr1e-3_droppower \
@@ -67,4 +76,4 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 infere
     --gs_batch_size 2 \
     --gs_dropout power
 
-# Submitted batch job 59464211
+# Submitted batch job 59582991

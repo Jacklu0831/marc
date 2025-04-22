@@ -407,6 +407,7 @@ def test_time_evaluate(
     gs_num_layer: int,
     gs_loss_on_input: bool,
     gs_dropout: str,
+    gs_token_dropout: float,
     gs_detach: bool,
     gs_ntokens: int,
     gs_log_attention: bool,
@@ -418,6 +419,8 @@ def test_time_evaluate(
     gs_lora_lr: float,
     gs_lora_beta1: float,
     gs_lora_beta2: float,
+    gs_lora_dropout: float,
+    gs_lora_rslora: bool,
     # gs init
     random_kv: str,
     random_kv_ntokens: int,
@@ -442,6 +445,7 @@ def test_time_evaluate(
     ttt_lora_rank: int,
     ttt_lora_alpha: int,
     ttt_lora_dropout: float,
+    ttt_lora_rslora: bool,
     ttt_loss_type: str,
     ttt_permute_n: int,
     # ttt regularization
@@ -536,6 +540,7 @@ def test_time_evaluate(
                         lora_rank=ttt_lora_rank,
                         lora_alpha=ttt_lora_alpha,
                         lora_dropout=ttt_lora_dropout,
+                        lora_rslora=ttt_lora_rslora,
                         loss_type=ttt_loss_type,
                         permute_n=ttt_permute_n,
                         # ttt regularization
@@ -629,6 +634,7 @@ def test_time_evaluate(
                         num_layer=gs_num_layer,
                         loss_on_input=gs_loss_on_input,
                         dropout=gs_dropout,
+                        token_dropout=gs_token_dropout,
                         detach=gs_detach,
                         log_attention=gs_log_attention,
                         final_tokens=gs_final_tokens,
@@ -639,6 +645,8 @@ def test_time_evaluate(
                         lora_lr=gs_lora_lr,
                         lora_beta1=gs_lora_beta1,
                         lora_beta2=gs_lora_beta2,
+                        lora_dropout=gs_lora_dropout,
+                        lora_rslora=gs_lora_rslora,
                         ntokens=gs_ntokens,
                         lambda_param_sqr=gs_lambda_param_sqr,
                         fisher=gs_fisher,
@@ -881,6 +889,7 @@ def run_ttt(
     lora_rank: int,
     lora_alpha: int,
     lora_dropout: float,
+    lora_rslora: bool,
     loss_type: str,
     permute_n: int,
     trainable_nbit: int,
@@ -894,6 +903,7 @@ def run_ttt(
         r=lora_rank,
         lora_alpha=lora_alpha,
         lora_dropout=lora_dropout,
+        use_rslora=lora_rslora,
         target_modules=['q_proj', 'v_proj', 'o_proj', 'gate_proj', 'up_proj', 'down_proj'],
         task_type=TaskType.CAUSAL_LM,
     )
@@ -1273,6 +1283,7 @@ def run_gs(
     num_layer: int,
     loss_on_input: bool,
     dropout: str,
+    token_dropout: float,
     detach: bool,
     log_attention: bool,
     final_tokens: int,
@@ -1283,6 +1294,8 @@ def run_gs(
     lora_lr: float,
     lora_beta1: float,
     lora_beta2: float,
+    lora_dropout: float,
+    lora_rslora: bool,
     ntokens: int,
     lambda_param_sqr: float,
     fisher: bool,
@@ -1293,6 +1306,8 @@ def run_gs(
         peft_config = LoraConfig(
             r=lora_rank,
             lora_alpha=lora_alpha,
+            lora_dropout=lora_dropout,
+            use_rslora=lora_rslora,
             target_modules=['q_proj', 'v_proj', 'o_proj', 'gate_proj', 'up_proj', 'down_proj'],
             task_type=TaskType.CAUSAL_LM,
         )
@@ -1587,6 +1602,11 @@ def run_gs(
                     batch_past_key_values_attention_mask,
                 ], dim=1)
 
+            # token dropout
+            if token_dropout != 0.0:
+                drop_mask = (torch.rand_like(batch_past_key_values_attention_mask, dtype=torch.float) > token_dropout).float()
+                batch_past_key_values_attention_mask = (batch_past_key_values_attention_mask * drop_mask).long()
+
             with accelerator.autocast():
                 # build position ids
                 position_ids = torch.zeros((batch_size, pair_input_ids.shape[1]), device=device, dtype=torch.int64)
@@ -1737,6 +1757,7 @@ def main():
     parser.add_argument("--ttt_lora_rank", type=int, default=128)
     parser.add_argument("--ttt_lora_alpha", type=int, default=16)
     parser.add_argument("--ttt_lora_dropout", type=float, default=0.05)
+    parser.add_argument("--ttt_lora_rslora", action='store_true')
     parser.add_argument("--ttt_loss_type", type=str, choices=['only_last', 'all', 'exclude_first'], default='all')
 
     # ttt regularization
@@ -1759,6 +1780,7 @@ def main():
     parser.add_argument("--gs_num_layer", type=int, default=-1) # tune top layers only
     parser.add_argument("--gs_loss_on_input", action='store_true')
     parser.add_argument("--gs_dropout", choices=['none', 'train', 'suffix', 'power', 'power_with_train'], type=str, default='none')
+    parser.add_argument("--gs_token_dropout", type=float, default=0.0)
     parser.add_argument("--gs_detach", action='store_true')
     parser.add_argument("--gs_ntokens", type=int, default=-1)
     parser.add_argument("--gs_log_attention", action='store_true')
@@ -1781,6 +1803,8 @@ def main():
     parser.add_argument("--gs_lora_lr", type=float, default=1e-4)
     parser.add_argument("--gs_lora_beta1", type=float, default=0.9)
     parser.add_argument("--gs_lora_beta2", type=float, default=0.999)
+    parser.add_argument("--gs_lora_dropout", type=float, default=0.05)
+    parser.add_argument("--gs_lora_rslora", action='store_true')
 
     # gradient search regularization
     parser.add_argument("--gs_lambda_param_sqr", type=float, default=0.0)
@@ -2013,6 +2037,7 @@ def main():
         gs_num_layer=args.gs_num_layer,
         gs_loss_on_input=args.gs_loss_on_input,
         gs_dropout=args.gs_dropout,
+        gs_token_dropout=args.gs_token_dropout,
         gs_detach=args.gs_detach,
         gs_ntokens=args.gs_ntokens,
         gs_log_attention=args.gs_log_attention,
@@ -2024,6 +2049,8 @@ def main():
         gs_lora_lr=args.gs_lora_lr,
         gs_lora_beta1=args.gs_lora_beta1,
         gs_lora_beta2=args.gs_lora_beta2,
+        gs_lora_dropout=args.gs_lora_dropout,
+        gs_lora_rslora=args.gs_lora_rslora,
         # gs init
         random_kv=args.random_kv,
         random_kv_ntokens=args.random_kv_ntokens,
@@ -2048,6 +2075,7 @@ def main():
         ttt_lora_rank=args.ttt_lora_rank,
         ttt_lora_alpha=args.ttt_lora_alpha,
         ttt_lora_dropout=args.ttt_lora_dropout,
+        ttt_lora_rslora=args.ttt_lora_rslora,
         ttt_loss_type=args.ttt_loss_type,
         ttt_permute_n=args.ttt_permute_n,
         # ttt regularization

@@ -1,0 +1,7 @@
+anything suffix does not work
+ntoken is not trained enough, try high lr because it has efficiency value
+ttt l2 penalty or ewc both did not work, fisher seems too low, but we shouldnt take this long on ttt anyway
+permute concat only lowered performance
+gs wd does not work
+gs droptrain and gs power both didnt end up training enough, increase lr
+regularization: again not trained enough, increase gslr

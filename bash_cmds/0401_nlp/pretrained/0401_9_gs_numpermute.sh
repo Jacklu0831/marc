@@ -93,4 +93,4 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 infere
     --num_permute 128 \
     --eval_seeds 100
 
-# Submitted batch job 59510165
+# Submitted batch job 59571583
