@@ -153,4 +153,4 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 infere
     --gs_token_dropout 0.05 \
     --eval_seeds 100
 
-# Submitted batch job 59581319
+# Submitted batch job 59643731

@@ -1,4 +1,4 @@
-# python make_sbatch.py --ngpu 1 --time 9 --single --bash_files bash_cmds/0401_bbh/llama8b/0401_4_gs_droppower_trainlonger.sh
+# python make_sbatch.py --ngpu 1 --time 12 --single --bash_files bash_cmds/0401_bbh/llama8b/0401_4_gs_droppower_trainlonger.sh
 MASTER_PORT=$(comm -23 <(seq 10000 65000 | sort) <(ss -tan | awk '{print $4}' | cut -d':' -f2 | sort -u) | shuf | head -n 1)
 
 
@@ -76,4 +76,12 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 infere
     --gs_batch_size 2 \
     --gs_dropout power
 
-# Submitted batch job 59582991
+
+# 37.70751238348448
+# 31.361277718871612
+# 33.80445304298743
+
+# 53.95612984679119 # less than before, but still better than droptrain
+# 52.30269069335205
+# 52.11729450097679
+# 52.81379406753287

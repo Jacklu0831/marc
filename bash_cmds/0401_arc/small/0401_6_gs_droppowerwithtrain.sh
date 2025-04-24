@@ -92,11 +92,12 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 infere
     --gs_lr 1e-4 \
     --gs_dropout power_with_train
 
-# Submitted batch job 59519352
-# Submitted batch job 59519353
-# Submitted batch job 59519354
-# Submitted batch job 59519355
-# Submitted batch job 59519356
-# Submitted batch job 59519357
-# Submitted batch job 59519358
-# Submitted batch job 59519359
+# Submitted batch job 59642925 # 0.2
+# Submitted batch job 59642926 # 0.25
+# Submitted batch job 59642927 # 0.275
+# Submitted batch job 59642928 # 0.2875 <----?
+
+# Submitted batch job 59642929 # 0.1875
+# Submitted batch job 59642930 # 0.2
+# Submitted batch job 59642931 # 0.2125
+# Submitted batch job 59642932 # 0.275

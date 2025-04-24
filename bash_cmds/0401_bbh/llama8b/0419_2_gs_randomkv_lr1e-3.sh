@@ -59,7 +59,7 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 infere
     --gs_epochs 25 \
     --gs_lr 1e-3 \
     --gs_batch_size 2 \
-    --random_kv ntoken
+    --random_kv token
 
 # bbh llama8b gs50 lr1e-3 randomkv ntoken
 accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_bbh/test_time_evaluate.py \
@@ -68,7 +68,7 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 infere
     --gs_epochs 50 \
     --gs_lr 1e-3 \
     --gs_batch_size 2 \
-    --random_kv ntoken
+    --random_kv token
 
 # bbh llama8b gs75 lr1e-3 randomkv ntoken
 accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_bbh/test_time_evaluate.py \
@@ -77,7 +77,7 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 infere
     --gs_epochs 75 \
     --gs_lr 1e-3 \
     --gs_batch_size 2 \
-    --random_kv ntoken
+    --random_kv token
 
 # bbh llama8b gs100 lr1e-3 randomkv ntoken
 accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_bbh/test_time_evaluate.py \
@@ -86,6 +86,15 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 infere
     --gs_epochs 100 \
     --gs_lr 1e-3 \
     --gs_batch_size 2 \
-    --random_kv ntoken
+    --random_kv token
 
 # Submitted batch job 59479471
+
+# normal
+# 25.7098633552605
+# 28.042073075306707
+# 27.452782745238704
+# 28.013006834874563
+
+# token
+# Submitted batch job 59645752

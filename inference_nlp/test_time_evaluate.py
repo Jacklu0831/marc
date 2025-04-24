@@ -1,4 +1,6 @@
+import numpy as np
 import matplotlib.pyplot as plt
+from matplotlib.colors import LogNorm
 import random
 import itertools
 import copy
@@ -347,6 +349,74 @@ def l2_compress(
     return tuple(past_key_values) # type: ignore
 
 
+def plot_heatmap(data1: np.ndarray, data2: np.ndarray, task: str, output_path: str):
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 6), constrained_layout=True)
+
+    # Top heatmap: auto‐scaled
+    im1 = ax1.imshow(
+        data1,
+        aspect='auto',
+        interpolation='nearest',
+        cmap='RdBu_r',       # or any colormap you like
+        vmin=data1.min(),
+        vmax=data1.max()
+    )
+    ax1.set_title(f'fisher values for keys of {task}')
+    ax2.set_xlabel('sequence')
+    ax1.set_ylabel('layer')
+    fig.colorbar(im1, ax=ax1, orientation='vertical', label='fisher value')
+
+    # Bottom heatmap: auto‐scaled independently
+    im2 = ax2.imshow(
+        data2,
+        aspect='auto',
+        interpolation='nearest',
+        cmap='RdBu_r',
+        vmin=data2.min(),
+        vmax=data2.max()
+    )
+    ax1.set_title(f'fisher values for values of {task}')
+    ax2.set_xlabel('sequence')
+    ax1.set_ylabel('layer')
+    fig.colorbar(im2, ax=ax2, orientation='vertical', label='fisher value')
+
+    plt.savefig(output_path)
+    plt.close()
+
+
+def plot_log_heatmap(data1: np.ndarray, data2: np.ndarray, task: str, output_path: str):
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 6), constrained_layout=True)
+
+    # Top heatmap: per-plot log scale
+    im1 = ax1.imshow(
+        data1,
+        aspect='auto',
+        interpolation='nearest',
+        norm=LogNorm(vmin=data1.min(), vmax=data1.max()),
+        cmap='viridis'
+    )
+    ax1.set_title(f'fisher values for keys of {task}')
+    ax2.set_xlabel('sequence')
+    ax1.set_ylabel('layer')
+    fig.colorbar(im1, ax=ax1, orientation='vertical', label='fisher key')
+
+    # Bottom heatmap: per-plot log scale
+    im2 = ax2.imshow(
+        data2,
+        aspect='auto',
+        interpolation='nearest',
+        norm=LogNorm(vmin=data2.min(), vmax=data2.max()),
+        cmap='viridis'
+    )
+    ax1.set_title(f'fisher values for values of {task}')
+    ax2.set_xlabel('sequence')
+    ax1.set_ylabel('layer')
+    fig.colorbar(im2, ax=ax2, orientation='vertical', label='fisher value')
+
+    plt.savefig(output_path)
+    plt.close()
+
+
 @torch.no_grad()
 def test_time_evaluate(
     model: Union[nn.Module, DistributedDataParallel],
@@ -399,6 +469,8 @@ def test_time_evaluate(
     # gs regularization
     gs_lambda_param_sqr: float,
     gs_fisher: bool,
+    gs_fisher_avg_dims: List[int],
+    gs_log_fisher: bool,
     # ttt
     ttt_iters: int,
     ttt_batch_size: int,
@@ -560,7 +632,9 @@ def test_time_evaluate(
                     assert past_key_values[0][0].shape[0] == 1
 
                     start_time = time.time()
-                    model, past_key_values, gs_num_data, gs_num_params, attn_logger = run_gs(
+                    saved_gradckpt = model.transformer.gradient_checkpointing
+                    model.transformer.gradient_checkpointing = False
+                    model, past_key_values, gs_num_data, gs_num_params, attn_logger, fisher_vals = run_gs(
                         demonstration_pairs=dataset.task_to_demonstrations[task],
                         eval_dataset=dataset,
                         accelerator=accelerator,
@@ -599,7 +673,10 @@ def test_time_evaluate(
                         ntokens=gs_ntokens,
                         lambda_param_sqr=gs_lambda_param_sqr,
                         fisher=gs_fisher,
+                        fisher_avg_dims=gs_fisher_avg_dims,
+                        log_fisher=gs_log_fisher,
                     )
+                    model.transformer.gradient_checkpointing = saved_gradckpt
                     gs_time = time.time() - start_time
                     torch.cuda.empty_cache()
                     gc.collect()
@@ -619,6 +696,23 @@ def test_time_evaluate(
                         plt.close()
 
                         logger.info(f'saved attention scores to {save_path}')
+
+                    if fisher_vals is not None:
+                        # average over heads and hidden dimension
+                        assert fisher_vals[0][0].dim() == 4
+                        assert demon_start_idxs[0] == 0
+                        heatmap_k = torch.stack([x[0].squeeze(0) for x in fisher_vals]).mean(dim=(1, 3)) # (layer, seq)
+                        heatmap_v = torch.stack([x[1].squeeze(0) for x in fisher_vals]).mean(dim=(1, 3)) # (layer, seq)
+
+                        os.makedirs(os.path.join(output_dir, 'fisher'), exist_ok=True)
+                        save_path = os.path.join(output_dir, 'fisher', task) + '.jpg'
+                        plot_heatmap(heatmap_k.cpu().numpy(), heatmap_v.cpu().numpy(), task, save_path)
+                        logger.info(f'saved fisher to {save_path}')
+
+                        os.makedirs(os.path.join(output_dir, 'log_fisher'), exist_ok=True)
+                        save_path = os.path.join(output_dir, 'log_fisher', task) + '.jpg'
+                        plot_log_heatmap(heatmap_k.cpu().numpy(), heatmap_v.cpu().numpy(), task, save_path)
+                        logger.info(f'saved log fisher to {save_path}')
 
             # logging
             ttt_num_data_list.append(ttt_num_data)
@@ -1037,7 +1131,9 @@ def compute_gs_fisher(
     optim: Any,
     gs_collate_fn: Any,
     embed_tokens: nn.Module,
+    fisher_avg_dims: List[int],
 ) -> Tuple[Tuple[torch.Tensor, torch.Tensor]]:
+    # for each demon pair (1 by 1), compute grad, average over number of pairs
 
     assert past_key_values[0][0].shape[0] == 1
     optim.zero_grad()
@@ -1103,6 +1199,15 @@ def compute_gs_fisher(
             fisher_vals[layer_i][1].add_(layer_v.grad.data.pow(2) / len(gs_loader)) # type: ignore
 
         optim.zero_grad()
+
+    # aggregate
+    fisher_vals = tuple(
+        (
+            layer_k.mean(dim=fisher_avg_dims, keepdim=True),
+            layer_v.mean(dim=fisher_avg_dims, keepdim=True),
+        )
+        for layer_k, layer_v in fisher_vals
+    )
 
     return fisher_vals # type: ignore
 
@@ -1224,7 +1329,9 @@ def run_gs(
     ntokens: int,
     lambda_param_sqr: float,
     fisher: bool,
-) -> Tuple[nn.Module, Tuple[Tuple[torch.Tensor, torch.Tensor]], int, int, Optional[AttentionLogger]]:
+    log_fisher: bool,
+    fisher_avg_dims: List[int],
+) -> Tuple[nn.Module, Tuple[Tuple[torch.Tensor, torch.Tensor]], int, int, Optional[AttentionLogger], Optional[Any]]:
 
     # optional lora
     if lora:
@@ -1389,7 +1496,14 @@ def run_gs(
                 optim=optim,
                 gs_collate_fn=gs_collate_fn,
                 embed_tokens=embed_tokens,
+                fisher_avg_dims=fisher_avg_dims,
             )
+
+            # avg_fisher = 0
+            # for fisher_k, fisher_v in fisher_vals:
+            #     avg_fisher += fisher_k.mean().item() + fisher_v.mean().item()
+            # avg_fisher /= (len(fisher_vals) * 2)
+            # breakpoint()
 
     # train!
     for _ in range(epochs):
@@ -1576,7 +1690,7 @@ def run_gs(
                     )
 
                 # if pair_attention_mask.sum() < pair_attention_mask.numel():
-                #     print(loss.item())
+                #     print(loss.item() + reg_loss.item())
                 #     breakpoint()
 
             # print(loss.item(), reg_loss.item())
@@ -1611,7 +1725,8 @@ def run_gs(
             for (prefix_layer_k, prefix_layer_v), (layer_k, layer_v) in zip(prefix_past_key_values, past_key_values)
         ) # type: ignore
 
-    return model, past_key_values, len(gs_dataset), num_params, attn_logger
+    ret_fisher_vals = fisher_vals if log_fisher else None
+    return model, past_key_values, len(gs_dataset), num_params, attn_logger, ret_fisher_vals
 
 
 def merge_lora(model: nn.Module) -> nn.Module:
@@ -1726,6 +1841,8 @@ def main():
     # gradient search regularization
     parser.add_argument("--gs_lambda_param_sqr", type=float, default=0.0)
     parser.add_argument("--gs_fisher", action='store_true')
+    parser.add_argument('--gs_fisher_avg_dims', type=int, nargs="+", default=[])
+    parser.add_argument("--gs_log_fisher", action='store_true')
 
     # deeeeeeeeeeep thinking
     parser.add_argument("--dt_iters", type=int, default=0)
@@ -1892,6 +2009,8 @@ def main():
             # gs regularization
             gs_lambda_param_sqr=args.gs_lambda_param_sqr,
             gs_fisher=args.gs_fisher,
+            gs_fisher_avg_dims=args.gs_fisher_avg_dims,
+            gs_log_fisher=args.gs_log_fisher,
             # ttt
             ttt_iters=args.ttt_iters,
             ttt_lr=args.ttt_lr,

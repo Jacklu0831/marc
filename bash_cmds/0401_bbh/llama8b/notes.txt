@@ -1,0 +1,10 @@
+normal gs is no good, barely improves icl at all
+detach and suffix and powerwithtrain both give bad results
+ntoken gives surprisingly bad results despite converging
+curriculum did ok but not good
+permute concat doesnt actually improve performance (when not trained with gs)
+permute strip > permute back strip, overall, all permute are mid
+compression only has mild impact on performance
+full precision makes no difference, tested with llama1b
+randomkv is bad, but interestingly training 32 token-initialized prefix achieved ICL performance, wild
+wd very marginally improves, could be coupled with dropkv?

@@ -92,11 +92,14 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 infere
     --gs_lr 1e-4 \
     --gs_final_tokens 32
 
-# Submitted batch job 59519394
-# Submitted batch job 59519395
-# Submitted batch job 59519396
-# Submitted batch job 59519397
-# Submitted batch job 59519398
-# Submitted batch job 59519399
-# Submitted batch job 59519400
-# Submitted batch job 59519401
+# lr1e-3
+# 0.1875
+# 0.2125
+# 0.2375
+# 0.25
+
+# lr1e-4
+# 0.1875
+# 0.1875
+# 0.2
+# 0.2125

@@ -100,11 +100,12 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 infere
     --gs_dropout power_with_train \
     --gs_ntokens 32
 
-# Submitted batch job 59519344
-# Submitted batch job 59519345
-# Submitted batch job 59519346
-# Submitted batch job 59519347
-# Submitted batch job 59519348
-# Submitted batch job 59519349
-# Submitted batch job 59519350
-# Submitted batch job 59519351
+# Submitted batch job 59519344 # 0.175
+# Submitted batch job 59519345 # 0.175
+# Submitted batch job 59519346 # 0.1875
+# Submitted batch job 59519347 # 0.2
+
+# Submitted batch job 59519348 # 0.175
+# Submitted batch job 59519349 # 0.175
+# Submitted batch job 59519350 # 0.175
+# Submitted batch job 59519351 # 0.175

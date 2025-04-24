@@ -22,4 +22,5 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 infere
     --ttt_permute_n 5000 \
     --eval_on_demonstrations
 
-# Submitted batch job 59519231
+# 0.1375
+# Submitted batch job 59604210
