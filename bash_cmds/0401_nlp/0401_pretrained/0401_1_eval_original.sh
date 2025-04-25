@@ -25,3 +25,5 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 infere
     --tag test \
     --weight_dir nlp_pretrained \
     --weight_epoch 0
+
+# 0.3567223353101746

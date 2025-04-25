@@ -183,3 +183,10 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 infere
 
 # so far 53.22709780710778
 # <3hrs
+
+# times
+# 16
+# 18
+# 20
+# 24
+# 27

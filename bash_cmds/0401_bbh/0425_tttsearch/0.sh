@@ -1,5 +1,5 @@
-# python make_sbatch.py --ngpu 1 --time 12 --single --bash_files bash_cmds/0401_bbh/llama8b/0419_1_ttt.sh
-MASTER_PORT=$(comm -23 <(seq 10000 65000 | sort) <(ss -tan | awk '{print $4}' | cut -d':' -f2 | sort -u) | shuf | head -n 1)
+# python make_sbatch.py --ngpu 1 --time 3 --single --bash_files bash_cmds/0401_bbh/0425_tttsearch/0.sh
+MASTER_PORT=$(comm -23 <(seq 10000 6125 | sort) <(ss -tan | awk '{print $4}' | cut -d':' -f2 | sort -u) | shuf | head -n 1)
 
 
 
@@ -15,7 +15,8 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 infere
     --model_name llama8b \
     --ttt_iters 5 \
     --ttt_gradient_checkpointing \
-    --ttt_permute_n 5000
+    --ttt_permute_n 125 \
+    --seed 45
 
 # bbh llama8b ttt iter10
 accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_bbh/test_time_evaluate.py \
@@ -23,7 +24,8 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 infere
     --model_name llama8b \
     --ttt_iters 10 \
     --ttt_gradient_checkpointing \
-    --ttt_permute_n 5000
+    --ttt_permute_n 125 \
+    --seed 45
 
 # bbh llama8b ttt iter15
 accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_bbh/test_time_evaluate.py \
@@ -31,7 +33,8 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 infere
     --model_name llama8b \
     --ttt_iters 15 \
     --ttt_gradient_checkpointing \
-    --ttt_permute_n 5000
+    --ttt_permute_n 125 \
+    --seed 45
 
 # bbh llama8b ttt iter20
 accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_bbh/test_time_evaluate.py \
@@ -39,7 +42,8 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 infere
     --model_name llama8b \
     --ttt_iters 20 \
     --ttt_gradient_checkpointing \
-    --ttt_permute_n 5000
+    --ttt_permute_n 125 \
+    --seed 45
 
 # bbh llama8b ttt iter25
 accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_bbh/test_time_evaluate.py \
@@ -47,14 +51,7 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 infere
     --model_name llama8b \
     --ttt_iters 25 \
     --ttt_gradient_checkpointing \
-    --ttt_permute_n 5000
+    --ttt_permute_n 125 \
+    --seed 45
 
-# Submitted batch job 59478567
-
-# 53.73449536751297
-# 55.29418358680572
-# 51.803370751941706
-# 47.02400514505865
-# 42.63207291705132
-
-# so far 55.29418358680572
+# Submitted batch job 59764135
