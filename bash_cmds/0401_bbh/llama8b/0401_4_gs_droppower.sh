@@ -123,3 +123,5 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 infere
 
 # so far 54.17693128726696
 # <4hrs
+
+# very good performance, and from seed experiments, power>train

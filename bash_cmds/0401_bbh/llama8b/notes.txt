@@ -8,3 +8,6 @@ compression only has mild impact on performance
 full precision makes no difference, tested with llama1b
 randomkv is bad, but interestingly training 32 token-initialized prefix achieved ICL performance, wild
 wd very marginally improves, could be coupled with dropkv?
+
+
+overall, use lr1e-2 for prefix, use 1e-3 for normalgs

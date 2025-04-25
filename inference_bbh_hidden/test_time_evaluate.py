@@ -471,7 +471,7 @@ def test_time_evaluate(
                     start_time = time.time()
                     saved_gradckpt = model.model.gradient_checkpointing
                     model.model.gradient_checkpointing = False
-                    model, past_key_values, gs_num_data, gs_num_params, attn_logger = run_gs(
+                    model, hidden_states, gs_num_data, gs_num_params, attn_logger = run_gs(
                         demonstration_pairs=dataset.task_to_demonstrations[task],
                         eval_dataset=dataset,
                         accelerator=accelerator,

@@ -199,7 +199,3 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 infere
     --gs_epochs 50 \
     --gs_lr 1e-5 \
     --gs_batch_size 2
-
-
-# Submitted batch job 59709021
-# Submitted batch job 59709028

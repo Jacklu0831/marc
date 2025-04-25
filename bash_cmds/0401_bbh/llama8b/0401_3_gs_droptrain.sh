@@ -169,7 +169,7 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 infere
 
 # lr1e-3
 # 52.720192596812744
-# 53.22709780710778 <-
+# 53.22709780710778 <---
 # 53.00635351441268
 # 51.454463769186276
 # 51.38944717874593

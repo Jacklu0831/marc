@@ -233,7 +233,7 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 infere
 # beat 51.62924586030268
 
 # lr1e0
-# 53.39329454317823
+# 53.39329454317823 <-
 # 53.27285779346263
 # 53.02780591206979
 # 52.738624954061976
@@ -241,7 +241,7 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 infere
 
 # lr1e-1
 # 53.622534073265214
-# 53.9199596976267
+# 53.9199596976267 <-----
 # 53.499411377859374
 # 53.1702621412658
 # 53.10612474745077
@@ -249,13 +249,18 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 infere
 # lr1e-2
 # 52.84021172813131
 # 53.053612531013655
-# 53.34783128568439
+# 53.34783128568439 <-
 # 53.12277013755911
 # 53.03567911784926
 
 # lr1e-3
 # 50.927187573083216
-# 51.698486990527535
+# 51.698486990527535 <-
 # 51.16320790714277
 # 50.9285393378946
 # out of time
+
+# so far 53.9199596976267
+
+# this makes sense! lr1e-3 is best with lambda1e-2, lr3e-3 is best with lambda1e-1
+# lr3e-3 + lambda1e-1 is best for performance so far, add tokendropout to it

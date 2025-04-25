@@ -367,7 +367,7 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 infere
 # trying to beat 0.42813997495334793
 
 # lr1e7
-# 0.3868191008960275
+# 0.3868191008960275 <-
 # 0.38503993092859945
 # 0.38122562925982817
 # 0.3798231657075834

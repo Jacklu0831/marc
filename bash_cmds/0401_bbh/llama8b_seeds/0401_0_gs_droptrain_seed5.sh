@@ -55,3 +55,9 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 infere
     --gs_batch_size 2 \
     --gs_dropout train \
     --seed 5
+
+# 52.92505420247195
+# 52.61757056871713
+# 51.86038885108342
+# 51.49429797028667
+# 51.713978435065165

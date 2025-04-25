@@ -1443,8 +1443,8 @@ def run_gs(
         # additional prefix tuning
         prefix_past_key_values = tuple(
             (
-                layer_k[:, :, -1:, :].repeat(1, 1, ntokens, 1),
-                layer_v[:, :, -1:, :].repeat(1, 1, ntokens, 1),
+                layer_k.mean(dim=2, keepdim=True).repeat(1, 1, ntokens, 1),
+                layer_v.mean(dim=2, keepdim=True).repeat(1, 1, ntokens, 1),
             )
             for layer_k, layer_v in past_key_values # type: ignore
         )

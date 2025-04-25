@@ -139,41 +139,22 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 infere
 
 
 
-# nlp gshidden5 lr1e-5
-accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_nlp_hidden/test_time_evaluate.py \
-    --tag nlp_gshidden5_lr1e-5 \
-    --weight_dir nlp_pretrained \
-    --weight_epoch 0 \
-    --gs_epochs 5 \
-    --gs_lr 1e-5 \
-    --eval_seeds 100
-
-# nlp gshidden25 lr1e-5
-accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_nlp_hidden/test_time_evaluate.py \
-    --tag nlp_gshidden25_lr1e-5 \
-    --weight_dir nlp_pretrained \
-    --weight_epoch 0 \
-    --gs_epochs 25 \
-    --gs_lr 1e-5 \
-    --eval_seeds 100
-
-# nlp gshidden100 lr1e-5
-accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_nlp_hidden/test_time_evaluate.py \
-    --tag nlp_gshidden100_lr1e-5 \
-    --weight_dir nlp_pretrained \
-    --weight_epoch 0 \
-    --gs_epochs 100 \
-    --gs_lr 1e-5 \
-    --eval_seeds 100
-
-# nlp gshidden250 lr1e-5
-accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_nlp_hidden/test_time_evaluate.py \
-    --tag nlp_gshidden250_lr1e-5 \
-    --weight_dir nlp_pretrained \
-    --weight_epoch 0 \
-    --gs_epochs 250 \
-    --gs_lr 1e-5 \
-    --eval_seeds 100
-
 # Submitted batch job 59708204
-# Submitted batch job 59708206
+
+# lr1e-2
+# 0.3986199956118492
+# 0.4020011978414865 <-
+# 0.39741026868884044
+# 0.3836488946376056
+
+# lr1e-3
+# 0.3758840100250544
+# 0.3951406738774275
+# 0.3956676293397411
+# 0.3992056091995536 <-
+
+# lr1e-4
+# 0.36308651781228474
+# 0.37503672995278003
+# 0.38109602541762927
+# 0.39498746747572694 <-
