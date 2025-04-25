@@ -878,7 +878,9 @@ def test_time_evaluate(
                     # i truly dont know why this is necessary, but this is necessary
                     assert batch_past_key_values[0][0].dtype == torch.float32
 
-                    if random_kv == 'none' or random_kv_ntokens == -1:
+                    if dt_iters > 0 and dt_no_pos:
+                        position_start = past_key_values[0][0].shape[2] * 2
+                    elif random_kv == 'none' or random_kv_ntokens == -1:
                         position_start = demon_input_ids.shape[1]
                     else:
                         position_start = past_key_values[0][0].shape[2]
@@ -897,7 +899,6 @@ def test_time_evaluate(
                         position_ids.append(sequence_position_ids)
                     position_ids = torch.stack(position_ids)
 
-                    assert position_ids.max() < dataset.max_seq_len
                     model_out = model(
                         inputs_embeds=gen_inputs_embeds,
                         attention_mask=gen_attention_mask,
