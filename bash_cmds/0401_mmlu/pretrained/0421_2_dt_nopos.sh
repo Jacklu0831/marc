@@ -44,10 +44,4 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 infere
     --dt_iters 15 \
     --dt_no_pos
 
-# 2: 41.738183181929905
-# 4: 41.68581099652911
-# 6: 41.01723079214889
-# 8: 41.09594906846935
-# 10: 41.26239176514662
-# 12: 39.88018743064427
-# 15: 37.31371460199354
+# terrible nah
