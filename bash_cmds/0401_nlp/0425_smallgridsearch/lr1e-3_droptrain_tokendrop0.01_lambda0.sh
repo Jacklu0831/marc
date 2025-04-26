@@ -1,4 +1,4 @@
-# python make_sbatch.py --ngpu 1 --time 15 --rtx8000 --single --bash_files bash_cmds/0401_nlp/0425_smallgridsearch/lr1e-3_droptrain_tokendrop0.01_lambda0.sh
+# python make_sbatch.py --ngpu 1 --time 24 --rtx8000 --single --bash_files bash_cmds/0401_nlp/0425_smallgridsearch/lr1e-3_droptrain_tokendrop0.01_lambda0.sh
 MASTER_PORT=$(comm -23 <(seq 10000 65000 | sort) <(ss -tan | awk '{print $4}' | cut -d':' -f2 | sort -u) | shuf | head -n 1)
 
 # nlp gs25 lr1e-3 droptrain tokendrop0.01 lambda0
@@ -46,3 +46,7 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 infere
     --gs_lambda_param_sqr 0.0
 
 # Submitted batch job 59761505
+
+# 0.4055891318851853
+# 0.42309914614774985
+# 0.4400256482721206

@@ -66,4 +66,8 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 infere
     --gs_lambda_param_sqr 1e-1 \
     --seed 45
 
-# running
+# 52.25108844542211
+# 53.6340779249553
+# 54.26928429877915
+# 55.67075229338439
+# 55.74740285316889

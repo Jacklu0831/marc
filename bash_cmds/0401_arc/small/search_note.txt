@@ -17,5 +17,5 @@ TODO: do experiment on lambda magnitudes
 iter: 10, 50, 100, 150, 200, 250
 lr: 1e-3, 1e-4
 dropout: none, train, power
-tokendropout: 0.1, 0.01
+tokendropout: 0, 0.01, 0.1
 lambda: 0, 1e-2 (not sure if 1e-2 is good at all)

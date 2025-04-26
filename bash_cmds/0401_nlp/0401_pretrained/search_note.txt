@@ -3,6 +3,8 @@ by calculation: each iter adds 0.2min and everything else one seed takes 21min
 => iter 25 + 50 + 75 + 100 = 250 => 134min for search over one seed
 => set generously 3hrs for each iter search one seed, 4hs with lora or prefix
 => set generously 15hrs for each iter search five seeds, 20hs with lora or prefix
+=> wtf, idky but 15hrs wasnt enough... set to 20 fuck it, quick remedy to run all 100iter with 4hr each for all seeds
+=> additionally try iters 125 + 150 = 275 => 97mins => 8.08hrs for all seeds
 
 additionally:
 - lora adds 20% iter time
@@ -29,8 +31,15 @@ calculation for ttt
 iter: 25, 50, 75, 100
 lr: 1e-3, 5e-3
 dropout: train, power
-tokendropout: 0.05, 0.01
-lambda: 0, 1e-2
+tokendropout: 0.01, 0.05, 0.1
+lambda: 0, 1e-2, 1e-1
+
+# smallgridsearchmoreiter: small grid search for final performance, all seeds
+iter: 150, 200
+lr: 1e-3, 5e-3
+dropout: train, power
+tokendropout: 0.01, 0.05, 0.1
+lambda: 0, 1e-2, 1e-1
 
 # randomsearchfull: randomkv search
 iter: 100, 200, 300, 400
