@@ -530,6 +530,10 @@ def test_time_evaluate(
     gs_ntokens: int,
     gs_log_attention: bool,
     gs_final_tokens: int,
+    # gs prefix lora
+    gs_prefix_lora: bool,
+    gs_prefix_lora_rank: int,
+    gs_prefix_lora_share_head: bool,
     # gs lora
     gs_lora: bool,
     gs_lora_rank: int,
@@ -789,6 +793,9 @@ def test_time_evaluate(
                         log_attention=gs_log_attention,
                         final_tokens=gs_final_tokens,
                         lr_scheduler=gs_lr_scheduler,
+                        prefix_lora=gs_prefix_lora,
+                        prefix_lora_rank=gs_prefix_lora_rank,
+                        prefix_lora_share_head=gs_prefix_lora_share_head,
                         lora=gs_lora,
                         lora_rank=gs_lora_rank,
                         lora_alpha=gs_lora_alpha,
@@ -1384,6 +1391,90 @@ def compute_ttt_fisher(
     return fisher_vals
 
 
+class KVLora(nn.Module):
+    def __init__(
+        self,
+        num_layer: int,
+        num_head: int,
+        num_token: int,
+        token_dim: int,
+        rank: int,
+        share_head: bool,
+    ):
+        super().__init__()
+
+        self.num_layer = num_layer
+        self.num_head = num_head
+        self.num_token = num_token
+        self.token_dim = token_dim
+        self.rank = rank
+        self.share_head = share_head
+
+        self.key_lora_A, self.key_lora_B = self.init_layers()
+        self.value_lora_A, self.value_lora_B = self.init_layers()
+
+    def init_layers(self):
+        # init layers
+        lora_As = []
+        lora_Bs = []
+        for _ in range(self.num_layer):
+            if self.share_head:
+                # num_token -> num_head * token_dim
+                lora_A = nn.Linear(self.num_token, self.rank, bias=False)
+                lora_B = nn.Linear(self.rank, self.num_head * self.token_dim, bias=False)
+                nn.init.zeros_(lora_B.weight)
+                lora_As.append(lora_A)
+                lora_Bs.append(lora_B)
+            else:
+                lora_As_for_head = []
+                lora_Bs_for_head = []
+                for _ in range(self.num_head):
+                    lora_A = nn.Linear(self.num_token, self.rank, bias=False)
+                    lora_B = nn.Linear(self.rank, self.token_dim, bias=False)
+                    nn.init.zeros_(lora_B.weight)
+                    lora_As_for_head.append(lora_A)
+                    lora_Bs_for_head.append(lora_B)
+                lora_As.append(nn.ModuleList(lora_As_for_head))
+                lora_Bs.append(nn.ModuleList(lora_Bs_for_head))
+
+        lora_As = nn.ModuleList(lora_As)
+        lora_Bs = nn.ModuleList(lora_Bs)
+        assert len(lora_As) == self.num_layer
+        assert len(lora_Bs) == self.num_layer
+        return lora_As, lora_Bs
+
+    def forward(
+        self,
+        past_key_values: Tuple[Tuple[torch.Tensor, torch.Tensor]],
+    ) -> Tuple[Tuple[torch.Tensor, torch.Tensor]]:
+
+        assert tuple(past_key_values[0][0].shape[1:]) == tuple([self.num_head, self.num_token, self.token_dim])
+
+        updated = []
+        for layer_idx, (key, val) in enumerate(past_key_values):
+            # get each updated kv with delta
+            updated_kv = []
+            for key_or_val, (lora_A, lora_B) in zip(
+                [key, val],
+                [[self.key_lora_A, self.key_lora_B], [self.value_lora_A, self.value_lora_B]]
+            ):
+                if self.share_head:
+                    delta_flat = lora_B[layer_idx].weight @ lora_A[layer_idx].weight # (num_head * token_dim, num_token)
+                    delta = delta_flat.view(self.num_head, self.token_dim, self.num_token)
+                    delta = delta.permute(0, 2, 1) # (num_head, num_token, token_dim)
+                else:
+                    head_deltas = []
+                    for h in range(self.num_head):
+                        delta = (lora_B[layer_idx][h].weight @ lora_A[layer_idx][h].weight).t() # (num_token, token_dim)
+                        head_deltas.append(delta)
+                    delta = torch.stack(head_deltas, dim=0) # (num_head, num_token, token_dim)
+                updated_kv.append(key_or_val + delta.unsqueeze(0).expand_as(key_or_val))
+            # accumulate
+            updated.append(tuple(updated_kv))
+
+        return tuple(updated)
+
+
 @torch.enable_grad()
 def run_gs(
     demonstration_pairs: List[Dict],
@@ -1414,6 +1505,9 @@ def run_gs(
     log_attention: bool,
     final_tokens: int,
     lr_scheduler: str,
+    prefix_lora: bool,
+    prefix_lora_rank: int,
+    prefix_lora_share_head: bool,
     lora: bool,
     lora_rank: int,
     lora_alpha: int,
@@ -1451,7 +1545,29 @@ def run_gs(
 
     # get program parameters
     program_params = []
-    if ntokens != -1:
+    prefix_past_key_values = None # no prefix tuning
+    lora_module = None
+
+    if prefix_lora:
+        lora_module = KVLora(
+            num_layer=len(past_key_values),
+            num_head=past_key_values[0][0].shape[1],
+            num_token=past_key_values[0][0].shape[2],
+            token_dim=past_key_values[0][0].shape[3],
+            rank=prefix_lora_rank,
+            share_head=prefix_lora_share_head,
+        ).to(accelerator.device)
+
+        for param in lora_module.parameters():
+            program_params.append(param)
+
+        # key/value and double for loraA/B
+        if prefix_lora_share_head:
+            assert len(program_params) == 2 * 2 * len(past_key_values)
+        else:
+            assert len(program_params) == 2 * 2 * len(past_key_values) * past_key_values[0][0].shape[1]
+
+    elif ntokens != -1:
         # additional prefix tuning
         prefix_past_key_values = tuple(
             (
@@ -1473,9 +1589,9 @@ def run_gs(
         for layer_k, layer_v in prefix_past_key_values:
             program_params.append(layer_k)
             program_params.append(layer_v)
+
     else:
         # full tuning of initialized KV
-        prefix_past_key_values = None # no prefix tuning
         num_layer = model.config.num_hidden_layers if num_layer == -1 else num_layer # type: ignore
         for layer_k, layer_v in past_key_values[-num_layer:]:
             if not no_key:
@@ -1521,9 +1637,12 @@ def run_gs(
     )
 
     # set requires grad
-    assert all(not p.requires_grad for p in program_params)
-    for p in program_params:
-        p.requires_grad = True
+    if prefix_lora:
+        assert all(p.requires_grad for p in program_params)
+    else:
+        assert all(not p.requires_grad for p in program_params)
+        for p in program_params:
+            p.requires_grad = True
 
     # optimizer
     optimizer_grouped_params = [
@@ -1728,6 +1847,12 @@ def run_gs(
                     batch_past_key_values_attention_mask,
                 ], dim=1)
 
+            # apply lora
+            if lora_module is not None:
+                old_shape = batch_past_key_values[0][0].shape
+                batch_past_key_values = lora_module(batch_past_key_values)
+                assert batch_past_key_values[0][0].shape == old_shape
+
             # token dropout
             if token_dropout != 0.0:
                 drop_mask = (torch.rand_like(batch_past_key_values_attention_mask, dtype=torch.float) > token_dropout).float()
@@ -1819,6 +1944,12 @@ def run_gs(
             )
             for (prefix_layer_k, prefix_layer_v), (layer_k, layer_v) in zip(prefix_past_key_values, past_key_values)
         ) # type: ignore
+
+    # apply lora
+    if lora_module is not None:
+        old_shape = past_key_values[0][0].shape
+        past_key_values = lora_module(past_key_values)
+        assert past_key_values[0][0].shape == old_shape
 
     ret_fisher_vals = fisher_vals if log_fisher else None
     return model, past_key_values, len(gs_dataset), num_params, attn_logger, ret_fisher_vals
@@ -2128,6 +2259,11 @@ def main():
     parser.add_argument("--gs_log_attention", action='store_true')
     parser.add_argument("--gs_final_tokens", type=int, default=-1)
 
+    # gradient search prefix lora
+    parser.add_argument("--gs_prefix_lora", action='store_true')
+    parser.add_argument("--gs_prefix_lora_rank", type=int, default=64)
+    parser.add_argument("--gs_prefix_lora_share_head", action='store_true')
+
     # gradient search model initialization
     parser.add_argument("--random_kv", type=str, choices=['none', 'normal', 'token'], default='none')
     parser.add_argument("--random_kv_ntokens", type=int, default=-1)
@@ -2337,6 +2473,10 @@ def main():
         gs_ntokens=args.gs_ntokens,
         gs_log_attention=args.gs_log_attention,
         gs_final_tokens=args.gs_final_tokens,
+        # gs prefix lora
+        gs_prefix_lora=args.gs_prefix_lora,
+        gs_prefix_lora_rank=args.gs_prefix_lora_rank,
+        gs_prefix_lora_share_head=args.gs_prefix_lora_share_head,
         # gs lora
         gs_lora=args.gs_lora,
         gs_lora_rank=args.gs_lora_rank,

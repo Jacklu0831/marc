@@ -52,3 +52,5 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 infere
     --gs_prefix_lora \
     --gs_prefix_lora_rank 16 \
     --eval_seeds 100
+
+# Submitted batch job 59815071

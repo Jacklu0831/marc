@@ -1850,6 +1850,12 @@ def run_gs(
             for (prefix_layer_k, prefix_layer_v), (layer_k, layer_v) in zip(prefix_past_key_values, past_key_values)
         ) # type: ignore
 
+    # apply lora
+    if lora_module is not None:
+        old_shape = past_key_values[0][0].shape
+        past_key_values = lora_module(past_key_values)
+        assert past_key_values[0][0].shape == old_shape
+
     ret_fisher_vals = fisher_vals if log_fisher else None
     return model, past_key_values, len(gs_dataset), num_params, attn_logger, ret_fisher_vals
 
