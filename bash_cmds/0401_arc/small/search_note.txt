@@ -1,0 +1,21 @@
+arc 80/400 iters to time
+5: 10min
+25: 14min
+100: 29min
+250: 58min
+based on past times, each iter adds 0.2min, everything else takes 9min
+=> iter 10 + 50 + 100 + 150 + 200 + 250 = 760 => 206mins
+=> set generously 4hrs for each iter search
+
+
+
+TODO: do experiment on lambda magnitudes
+
+
+
+# smallgridsearch: small grid search for final performance
+iter: 10, 50, 100, 150, 200, 250
+lr: 1e-3, 1e-4
+dropout: none, train, power
+tokendropout: 0.1, 0.01
+lambda: 0, 1e-2 (not sure if 1e-2 is good at all)

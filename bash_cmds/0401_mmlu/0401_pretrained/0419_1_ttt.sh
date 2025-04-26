@@ -44,10 +44,10 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 infere
     --ttt_gradient_checkpointing \
     --ttt_permute_n 5000
 
-# 5: 42.984005275866096
-# 10: 44.611232390075415
+# 5: 42.984005275866096 (another try 43.23168329444195), 16min
+# 10: 44.611232390075415 <-
 # 15: 44.61005736526445
 # 20: 43.42785560347695
-# 25: 42.54093571913059
+# 25: 42.54093571913059 (another try 42.464491886236814), 35min
 
 # so far 44.611232390075415

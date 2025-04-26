@@ -1,0 +1,22 @@
+based on past runs, each iter adds 0.32min and everything else takes 15 mins
+=> iter 5 + 10 + 15 + 20 + 25 = 75 => 99mins
+=> set generously 2hrs for each iter search one seed, 2.5hs with lora or prefix
+
+
+
+calculation for ttt
+- 0.95min per iter, everything else takes 11.5min (why?)
+=> iter 5 + 10 + 15 + 20 + 25 = 75 => 128.75mins (but 11.5 is kinda low so this should be higher)
+
+
+
+# smallgridsearch: small grid search for final performance, all seeds -> 72hrs a100
+iter: 5, 10, 15, 20, 25 (up to 25iter for a time under ttt 8iter but didnt test for mmlu)
+lr: 1e-2, 5e-3, 1e-3
+dropout: train, power
+tokendropout: 0.05, 0.01, 0.0
+lambda: 0, 1e-1, 1e-2
+results:
+- for lr1e-2, only reach 40+ when lambda1e-1, regardless of other hyperparams
+- for 5e-3, reached 43.33642432925549 with tokendrop0.05 and lambda1e-1, strongest reuglarization tried
+- for 1e-3, reached 44.058617599936035 with droptrain tokendrop0.01 lambda0
