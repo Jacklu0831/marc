@@ -9,6 +9,19 @@ based on past times, each iter adds 0.2min, everything else takes 9min
 
 
 
+calculation for randomkv
+=> iter 250 + 500 + 750 + 1000 = 2500 => 536mins
+=> set generously 12hrs for each iter search
+
+
+
+calculation for ttt
+- 0.342min per iter, everything else takes 10min
+- with iters 25 + 50 + 100 + 200 + 300 + 400 + 500 => 609mins
+- set generously 14hrs for each iter search
+
+
+
 TODO: do experiment on lambda magnitudes
 
 
@@ -19,3 +32,15 @@ lr: 1e-3, 1e-4
 dropout: none, train, power
 tokendropout: 0, 0.01, 0.1
 lambda: 0, 1e-2 (not sure if 1e-2 is good at all)
+
+# randomsearchfull: randomkv search
+iter: 250, 500, 750, 1000
+lr: 1e-2, 1e-3
+
+# randomsearchntoken: randomkv search
+iter: 250, 500, 750, 1000
+lr: 1e-2, 1e-3
+
+# tttsearch: ttt: search up to 4 times iter for same sample number, all seeds
+iter: 25, 50, 100, 200, 300, 400, 500
+lr: 1e-4

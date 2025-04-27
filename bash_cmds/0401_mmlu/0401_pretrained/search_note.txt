@@ -8,9 +8,12 @@ calculation for randomkv
 => iter 25 + 50 + 75 + 100 = 250 => 140mins
 => set generously 3hrs for each iter search
 
+
+
 calculation for ttt
-- 0.95min per iter, everything else takes 11.5min (why?)
-=> iter 5 + 10 + 15 + 20 + 25 = 75 => 128.75mins (but 11.5 is kinda low so this should be higher)
+=> 0.95min per iter, everything else takes 11.5min (why?)
+=> iter 10 + 20 + 30 + 40 + 50 => 200mins
+=> set generously 4hrs for each iter search
 
 
 
@@ -36,9 +39,9 @@ lambda: 0, 1e-1, 1e-2
 # probefulleval: get initial performance on the full evaluation, see if its "easier"
 iter: 10, 20
 lr: 1e-3
-dropout: train
-tokendropout: 0.01, 0.05
-lambda: 0
+dropout: train (based on grid search)
+tokendropout: 0.01, 0.05 (based on grid search)
+lambda: 0 (based on grid search)
 
 # randomsearchfull: randomkv search with evalratio0.01
 iter: 25, 50, 75, 100
@@ -47,3 +50,7 @@ lr: 1e-2, 1e-3
 # randomsearchntoken: randomkv search with evalratio0.01
 iter: 25, 50, 75, 100
 lr: 1e-2, 1e-3
+
+# tttsearch: ttt: search up to 4 times iter for same sample number with evalratio0.01
+iter: 10, 20, 30, 40, 50
+lr: 1e-4

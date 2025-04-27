@@ -53,5 +53,3 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 infere
     --ttt_gradient_checkpointing \
     --ttt_permute_n 5000 \
     --ttt_lora_rslora
-
-# Submitted batch job 59583940
