@@ -1,8 +1,12 @@
 based on past runs, each iter adds 0.32min and everything else takes 15 mins
 => iter 5 + 10 + 15 + 20 + 25 = 75 => 99mins
-=> set generously 2hrs for each iter search one seed, 2.5hs with lora or prefix
+=> set generously 2hrs for each iter search, 2.5hs with lora or prefix
+=> for full eval: honestly, just 10 times everything => iter 10 + 20 => 6.6hrs
 
 
+calculation for randomkv
+=> iter 25 + 50 + 75 + 100 = 250 => 140mins
+=> set generously 3hrs for each iter search
 
 calculation for ttt
 - 0.95min per iter, everything else takes 11.5min (why?)
@@ -10,7 +14,7 @@ calculation for ttt
 
 
 
-# smallgridsearch: small grid search for final performance, all seeds -> 72hrs a100
+# smallgridsearch: small grid search for final performance, evalratio 0.01
 iter: 5, 10, 15, 20, 25 (up to 25iter for a time under ttt 8iter but didnt test for mmlu)
 lr: 1e-2, 5e-3, 1e-3
 dropout: train, power
@@ -20,3 +24,26 @@ results:
 - for lr1e-2, only reach 40+ when lambda1e-1, regardless of other hyperparams
 - for 5e-3, reached 43.33642432925549 with tokendrop0.05 and lambda1e-1, strongest reuglarization tried
 - for 1e-3, reached 44.058617599936035 with droptrain tokendrop0.01 lambda0
+- overall, should do a fuller search on 1e-3, sadly power dont work
+
+# tokendropout0.1: just a small expansion to smallgridsearch, no lr1e-2 this time
+iter: 5, 10, 15, 20, 25
+lr: 5e-3, 1e-3
+dropout: train, power
+tokendropout: 0.1
+lambda: 0, 1e-1, 1e-2
+
+# probefulleval: get initial performance on the full evaluation, see if its "easier"
+iter: 10, 20
+lr: 1e-3
+dropout: train
+tokendropout: 0.01, 0.05
+lambda: 0
+
+# randomsearchfull: randomkv search with evalratio0.01
+iter: 25, 50, 75, 100
+lr: 1e-2, 1e-3
+
+# randomsearchntoken: randomkv search with evalratio0.01
+iter: 25, 50, 75, 100
+lr: 1e-2, 1e-3

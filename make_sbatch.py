@@ -89,6 +89,7 @@ template = template.replace('$GPULINE', gpu_line)
 model_dirs_dict = {}
 for bash_file in args.bash_files:
     if args.single:
+        assert os.path.exists(bash_file)
         model_dirs_dict[bash_file.replace('/', '_')] = [bash_file]
     else:
         # filter lines

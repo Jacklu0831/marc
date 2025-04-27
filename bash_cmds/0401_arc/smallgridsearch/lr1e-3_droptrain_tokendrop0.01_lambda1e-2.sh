@@ -79,4 +79,9 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 infere
     --gs_token_dropout 0.01 \
     --gs_lambda_param_sqr 1e-2
 
-# running
+# 0.2
+# 0.2375
+# 0.2375
+# 0.25
+# 0.225
+# 0.2375

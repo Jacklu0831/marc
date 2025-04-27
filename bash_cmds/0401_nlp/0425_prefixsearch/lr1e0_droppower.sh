@@ -49,3 +49,8 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 infere
     --eval_seeds 100
 
 # Submitted batch job 59761680
+
+# 0.32863920794999296
+# 0.3420966192955449
+# 0.37068095400089646
+# 0.3734308710612921

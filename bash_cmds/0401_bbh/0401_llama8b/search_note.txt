@@ -8,6 +8,9 @@ TODO: no compute for lora or prefix atm (need to implement lora too so)
 TODO: use seed45 for now, expand to more seeds if compute allows
 
 
+calculation for randomsearch
+- iter 25 + 50 + 75 + 100 = 250 => 122.75
+- set generously 3hrs for an iter search
 
 calculation for ttt
 - cannot calculate because ran on h100, 3 hours is more than enough
@@ -20,6 +23,14 @@ lr: 1e-2, 5e-3, 1e-3
 dropout: train, power
 tokendropout: 0.05, 0.01
 lambda: 0, 1e-1, 1e-2
+
+# randomsearchfull: randomkv search
+iter: 25, 50, 75, 100
+lr: 1e-2, 1e-3
+
+# randomsearchntoken: randomkv search
+iter: 25, 50, 75, 100
+lr: 1e-2, 1e-3
 
 # tttsearch: ttt on iters and this new seed 45
 iter: 4, 8, 12 (from paper, searching for our own sake but only use 8iter performance)

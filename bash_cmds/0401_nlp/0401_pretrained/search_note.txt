@@ -26,19 +26,22 @@ calculation for ttt
 
 
 
+TODO: try more shit, like tuning only value, its a good small story
+
+
 
 # smallgridsearch: small grid search for final performance, all seeds
 iter: 25, 50, 75, 100
 lr: 1e-3, 5e-3
 dropout: train, power
-tokendropout: 0.01, 0.05, 0.1
+tokendropout: 0.0, 0.01, 0.05, 0.1
 lambda: 0, 1e-2, 1e-1
 
 # smallgridsearchmoreiter: small grid search for final performance, all seeds
 iter: 150, 200
 lr: 1e-3, 5e-3
 dropout: train, power
-tokendropout: 0.01, 0.05, 0.1
+tokendropout: 0.0, 0.01, 0.05, 0.1
 lambda: 0, 1e-2, 1e-1
 
 # randomsearchfull: randomkv search
@@ -58,6 +61,14 @@ iter: 25, 50, 75, 100
 lr: 1e0, 1e-1, 1e-2
 dropout: train, power
 tokendropout: 0
+lambda: 0 (lambda >1 makes no sense for prefixsearch)
+=> lr1e-1 is the way
+
+# prefixsearchallseed: prefix grid search with 5 seeds
+iter: 25, 50, 75, 100
+lr: 5e-1, 1e-1
+dropout: train, power
+tokendropout: 0, 0.01, 0.05, 0.1
 lambda: 0
 
 # lorasearch: lora grid search, only seed100

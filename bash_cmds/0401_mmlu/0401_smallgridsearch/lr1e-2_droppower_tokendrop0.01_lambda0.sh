@@ -1,4 +1,4 @@
-# python make_sbatch.py --ngpu 1 --time 8 --single --bash_files bash_cmds/0401_mmlu/0401_smallgridsearch/lr1e-2_droppower_tokendrop0_lambda0.sh
+# python make_sbatch.py --ngpu 1 --time 8 --single --bash_files bash_cmds/0401_mmlu/0401_smallgridsearch/lr1e-2_droppower_tokendrop0.01_lambda0.sh
 MASTER_PORT=$(comm -23 <(seq 10000 65000 | sort) <(ss -tan | awk '{print $4}' | cut -d':' -f2 | sort -u) | shuf | head -n 1)
 
 
@@ -47,3 +47,5 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 infere
     --gs_dropout power \
     --gs_token_dropout 0 \
     --gs_lambda_param_sqr 0.0
+
+# Submitted batch job 59818041
