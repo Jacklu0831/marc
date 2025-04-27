@@ -23,6 +23,7 @@ calculation for ttt
 - with all iters from50 to 400, sum time is 18hrs
 - split 400 + 50, 300 + 150, 200 + 250, 100 + 350 each 4.5hrs
 - but this is for single seed, 5 seeds is 22.5hours, lets gamble on 24hrs
+- under 16 bits default lora config and 21 tasks each with 91MB => 1.9GB saved ttt ckpts
 
 
 

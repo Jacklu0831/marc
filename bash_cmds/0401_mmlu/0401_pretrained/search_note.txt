@@ -14,6 +14,7 @@ calculation for ttt
 => 0.95min per iter, everything else takes 11.5min (why?)
 => iter 10 + 20 + 30 + 40 + 50 => 200mins
 => set generously 4hrs for each iter search
+=> under 16 bits default lora config and 57 tasks each with 274MB => 16GB saved ttt ckpts
 
 
 

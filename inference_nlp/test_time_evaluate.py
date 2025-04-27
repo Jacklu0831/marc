@@ -427,6 +427,8 @@ def test_time_evaluate(
     trainable_nbit: int,
     log_every: int,
     output_dir: str,
+    ttt_weight_root_dir: str,
+    ttt_weight_dir: Optional[str],
     # compression
     compression_ratio: float,
     # gs
@@ -489,6 +491,7 @@ def test_time_evaluate(
     ttt_lora_dropout: float,
     ttt_lora_rslora: bool,
     ttt_loss_type: str,
+    ttt_save: bool,
     ttt_permute_n: int,
     # ttt regularization
     ttt_lambda_param_sqr: float,
@@ -524,6 +527,14 @@ def test_time_evaluate(
     # we need to cache model in case of ttt or gs with trainable lora
     cached_model = copy.deepcopy(model).cpu()
 
+    # if loading ttt, make sure ckpts actually exist
+    task_to_ttt_paths = {}
+    if ttt_weight_dir is not None:
+        ttt_weight_dir = os.path.join(ttt_weight_root_dir, ttt_weight_dir)
+        for task in dataset.tasks:
+            task_to_ttt_paths[task] = os.path.join(ttt_weight_dir, f'{task}.pt')
+            assert os.path.exists(task_to_ttt_paths[task]), task_to_ttt_paths[task]
+
     distributed_state = PartialState()
     with distributed_state.split_between_processes(dataset.tasks) as process_tasks:
         assert isinstance(process_tasks, list)
@@ -545,9 +556,39 @@ def test_time_evaluate(
             assert demon_input_ids is not None and demon_start_idxs is not None
             assert demon_input_ids.shape[1] <= dataset.max_seq_len
 
-            # model: load cached for fresh model
+            # load cached for fresh model
             model = copy.deepcopy(cached_model).to(accelerator.device)
             model.eval()
+
+            if ttt_weight_dir is not None:
+                # construct lora
+                peft_config = LoraConfig(
+                    r=ttt_lora_rank,
+                    lora_alpha=ttt_lora_alpha,
+                    lora_dropout=ttt_lora_dropout,
+                    use_rslora=ttt_lora_rslora,
+                    target_modules=['c_attn', 'c_proj', 'c_fc'],
+                    task_type=TaskType.CAUSAL_LM,
+                )
+                model = get_peft_model(model, peft_config) # type: ignore
+                for name, param in model.named_parameters():
+                    assert param.requires_grad == ('lora' in name)
+                    if param.requires_grad:
+                        param.data = param.data.to(NBIT_TO_DTYPE[trainable_nbit])
+                    else:
+                        assert param.data.dtype == NBIT_TO_DTYPE[trainable_nbit]
+                # load ttt checkpoint
+                ttt_state_dict = torch.load(
+                    task_to_ttt_paths[task],
+                    weights_only=True,
+                    map_location=accelerator.device,
+                )
+                model.load_state_dict(ttt_state_dict, strict=False)
+                model = merge_lora(model)
+                model.eval()
+                logger.info(f'loaded ttt weights from {task_to_ttt_paths[task]}')
+                # for n, p in model.named_parameters(): print(n, p.dtype, p.requires_grad)
+                # breakpoint()
 
             # logging
             ttt_num_data, gs_num_data = 0, 0
@@ -558,11 +599,13 @@ def test_time_evaluate(
             if ttt_iters > 0:
                 with accelerator.no_sync(model):
                     start_time = time.time()
+                    ttt_save_path = os.path.join(output_dir, f'{task}.pt') if ttt_save else None
                     model, ttt_num_data, ttt_num_params = run_ttt(
                         demonstration_pairs=dataset.task_to_demonstrations[task],
                         eval_dataset=dataset,
                         accelerator=accelerator,
                         model=model,
+                        save_path=ttt_save_path,
                         trainable_nbit=trainable_nbit,
                         iters=ttt_iters,
                         batch_size=ttt_batch_size,
@@ -896,12 +939,22 @@ def test_time_evaluate(
     return score, ttt_num_data, gs_num_data, ttt_num_params, gs_num_params, ttt_time, gs_time, init_kv_time, output_list
 
 
+def save_lora(model: nn.Module, save_path: str) -> None:
+    lora_weights = {}
+    for name, param in model.named_parameters():
+        if "lora" in name:
+            lora_weights[name] = param.data
+    torch.save(lora_weights, save_path)
+    logger.info(f'saved {len(lora_weights)} ttt lora weights to {save_path}')
+
+
 @torch.enable_grad()
 def run_ttt(
     demonstration_pairs: List[Dict],
     eval_dataset: EvalDataset,
     accelerator: Accelerator,
     model: Union[nn.Module, DistributedDataParallel],
+    save_path: Optional[str],
     # config
     iters: int,
     batch_size: int,
@@ -967,6 +1020,10 @@ def run_ttt(
         loss_type=loss_type,
     )
     if len(ttt_dataset) == 0:
+        # save and merge lora
+        if save_path is not None:
+            save_lora(model, save_path)
+        model = merge_lora(model)
         return model, 0, num_params
 
     batch_size = min(batch_size, len(ttt_dataset))
@@ -1079,6 +1136,10 @@ def run_ttt(
                 break
 
     model.eval()
+
+    # save and merge lora
+    if save_path is not None:
+        save_lora(model, save_path)
     model = merge_lora(model)
 
     return model, len(ttt_dataset), num_params
@@ -1370,7 +1431,7 @@ class KVLora(nn.Module):
                 else:
                     head_deltas = []
                     for h in range(self.num_head):
-                        delta = (lora_B[layer_idx][h].weight @ lora_A[layer_idx][h].weight).t() # (num_token, token_dim)
+                        delta = (lora_B[layer_idx][h].weight @ lora_A[layer_idx][h].weight).t() # (num_token, token_dim) # type: ignore
                         head_deltas.append(delta)
                     delta = torch.stack(head_deltas, dim=0) # (num_head, num_token, token_dim)
                 updated_kv.append(key_or_val + delta.unsqueeze(0).expand_as(key_or_val))
@@ -1887,6 +1948,8 @@ def main():
     parser.add_argument("--weight_root_dir", type=str, default="./encoder_decoder/outputs")
     parser.add_argument("--weight_dir", type=str, required=True)
     parser.add_argument("--weight_epoch", type=int, required=True)
+    parser.add_argument("--ttt_weight_root_dir", type=str, default="./encoder_decoder/outputs_eval")
+    parser.add_argument("--ttt_weight_dir", type=str, default=None)
 
     # Evaluation & data
     parser.add_argument("--config_file", type=str, default="MetaICL/config/hr_to_lr.json")
@@ -1923,6 +1986,7 @@ def main():
     parser.add_argument("--ttt_lora_dropout", type=float, default=0.05)
     parser.add_argument("--ttt_lora_rslora", action='store_true')
     parser.add_argument("--ttt_loss_type", type=str, choices=['only_last', 'all', 'exclude_first'], default='all')
+    parser.add_argument("--ttt_save", action='store_true')
 
     # ttt regularization
     parser.add_argument("--ttt_lambda_param_sqr", type=float, default=0.0)
@@ -1997,6 +2061,10 @@ def main():
     args.output_dir = os.path.join(args.output_dir, args.tag)
 
     args.ttt_iters *= args.ttt_grad_accum_steps
+
+    if args.ttt_weight_dir is not None:
+        assert args.ttt_iters == 0
+        assert not args.ttt_save
 
     # Setup accelerator
     project_config = ProjectConfiguration(project_dir=args.output_dir)
@@ -2103,6 +2171,8 @@ def main():
             trainable_nbit=args.trainable_nbit,
             log_every=args.log_every,
             output_dir=args.output_dir,
+            ttt_weight_root_dir=args.ttt_weight_root_dir,
+            ttt_weight_dir=args.ttt_weight_dir,
             # eval
             compression_ratio=args.compression_ratio,
             # gs
@@ -2165,6 +2235,7 @@ def main():
             ttt_lora_dropout=args.ttt_lora_dropout,
             ttt_lora_rslora=args.ttt_lora_rslora,
             ttt_loss_type=args.ttt_loss_type,
+            ttt_save=args.ttt_save,
             ttt_permute_n=args.ttt_permute_n,
             # ttt regularization
             ttt_lambda_param_sqr=args.ttt_lambda_param_sqr,
