@@ -50,3 +50,4 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 infere
 # 0.4244132117629903
 # 0.43549188234762487
 # 0.43844577218717007
+# 0.43681703420424256

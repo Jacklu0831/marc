@@ -48,4 +48,8 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 infere
     --gs_token_dropout 0.1 \
     --gs_lambda_param_sqr 1e-2
 
-# Submitted batch job 59822235
+# 42.117229707271036
+# 41.24852697522638
+# 42.206802476872966
+# 42.707442910378965
+# 42.941671855857365

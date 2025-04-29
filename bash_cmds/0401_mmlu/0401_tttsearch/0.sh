@@ -40,4 +40,8 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 infere
     --ttt_gradient_checkpointing \
     --ttt_permute_n 250
 
-# Submitted batch job 59825095
+# 44.56372777652913
+# 43.548040811381455
+# 42.07776789658206
+# 39.05165340789101
+# 38.18877071527434

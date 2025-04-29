@@ -49,3 +49,8 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 infere
     --gs_ntokens 32
 
 # Submitted batch job 59823507
+
+# 0.40722190830553623
+# 0.40569076208041677
+# 0.39839241062909075
+# 0.39959341291357936

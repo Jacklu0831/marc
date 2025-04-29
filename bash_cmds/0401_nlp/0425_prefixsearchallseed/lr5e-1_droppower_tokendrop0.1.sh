@@ -48,4 +48,4 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 infere
     --gs_token_dropout 0.1 \
     --gs_ntokens 32
 
-# Submitted batch job 59823500
+# Submitted batch job 59882467

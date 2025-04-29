@@ -43,4 +43,7 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 infere
     --random_kv token \
     --seed 45
 
-# Submitted batch job 59824121
+# 51.88433157318169
+# 52.83178462847789
+# 51.94358722773477
+# 52.61670895602434

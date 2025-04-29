@@ -38,7 +38,9 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 infere
     --random_kv token
 
 # Submitted batch job 59760873
+# Submitted batch job 59822352 (1st run)
 
 # 0.4018419385138097
 # 0.3970797499839108
 # 0.39549714142270626
+# 0.396408574305838

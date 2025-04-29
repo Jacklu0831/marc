@@ -54,4 +54,9 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 infere
     --ttt_permute_n 125 \
     --seed 45
 
-# Submitted batch job 59764135
+# 54.832741634004506
+# 55.21301395636723 <-
+# 47.71317221175978
+# 44.03993267112244
+
+# had a lapse of judgement, theres no point of searching ttt when iter8 is best

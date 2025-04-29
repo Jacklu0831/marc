@@ -46,3 +46,8 @@ accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 infere
     --gs_lambda_param_sqr 1e-1
 
 # Submitted batch job 59822508
+
+# 0.3807128770454756
+# 0.3851817795483562
+# 0.38858662725682647
+# 0.3895645284616245
