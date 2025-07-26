@@ -414,9 +414,6 @@ class EvalDataset:
         task_to_demonstrations = defaultdict(list)
         task_to_test_pairs = defaultdict(list)
         for task in self.tasks:
-            if len(included_tasks) > 0 and task not in included_tasks:
-                continue
-
             task_data_dir = os.path.join(data_dir, task)
 
             # train demonstration pairs

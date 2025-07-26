@@ -566,6 +566,7 @@ def test_time_evaluate(
     gs_lora_beta2: float,
     gs_lora_dropout: float,
     gs_lora_rslora: bool,
+    gs_lora_dora: bool,
     # gs init
     random_kv: str,
     random_kv_ntokens: int,
@@ -838,6 +839,7 @@ def test_time_evaluate(
                         lora_beta2=gs_lora_beta2,
                         lora_dropout=gs_lora_dropout,
                         lora_rslora=gs_lora_rslora,
+                        lora_dora=gs_lora_dora,
                         ntokens=gs_ntokens,
                         lambda_param_sqr=gs_lambda_param_sqr,
                         fisher=gs_fisher,
@@ -1580,6 +1582,7 @@ def run_gs(
     lora_beta2: float,
     lora_dropout: float,
     lora_rslora: bool,
+    lora_dora: bool,
     ntokens: int,
     lambda_param_sqr: float,
     fisher: bool,
@@ -1593,6 +1596,7 @@ def run_gs(
             lora_alpha=lora_alpha,
             lora_dropout=lora_dropout,
             use_rslora=lora_rslora,
+            use_dora=lora_dora,
             target_modules=['q_proj', 'v_proj', 'o_proj', 'gate_proj', 'up_proj', 'down_proj'],
             task_type=TaskType.CAUSAL_LM,
         )
@@ -2064,6 +2068,7 @@ def main():
     parser.add_argument("--gs_lora_beta2", type=float, default=0.999)
     parser.add_argument("--gs_lora_dropout", type=float, default=0.05)
     parser.add_argument("--gs_lora_rslora", action='store_true')
+    parser.add_argument("--gs_lora_dora", action='store_true')
 
     # gradient search regularization
     parser.add_argument("--gs_lambda_param_sqr", type=float, default=0.0)
@@ -2260,6 +2265,7 @@ def main():
         gs_lora_beta2=args.gs_lora_beta2,
         gs_lora_dropout=args.gs_lora_dropout,
         gs_lora_rslora=args.gs_lora_rslora,
+        gs_lora_dora=args.gs_lora_dora,
         # gs init
         random_kv=args.random_kv,
         random_kv_ntokens=args.random_kv_ntokens,
