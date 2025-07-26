@@ -201,7 +201,7 @@ def evaluate(
     # determine which tasks are classification (for macro-f1)
     task_to_is_clf = {}
     for task in dataset.tasks:
-        meta_data_path = os.path.join('MetaICL/config/tasks', f'{task}.json')
+        meta_data_path = os.path.join('data/MetaICL/config/tasks', f'{task}.json')
         task_meta_data = json.load(open(meta_data_path, 'r'))
         task_to_is_clf[task] = task_meta_data['task_type'] == "classification"
 
@@ -431,8 +431,8 @@ def main():
     parser.add_argument("--eval_pretrained", action="store_true")
 
     # both data
-    parser.add_argument("--config_file", type=str, default="MetaICL/config/hr_to_lr.json")
-    parser.add_argument("--data_dir", type=str, default="MetaICL/data")
+    parser.add_argument("--config_file", type=str, default="data/MetaICL/config/hr_to_lr.json")
+    parser.add_argument("--data_dir", type=str, default="data/MetaICL/data")
     parser.add_argument("--num_workers", type=int, default=8)
     parser.add_argument("--max_seq_len", type=int, default=1024)
     parser.add_argument("--max_pair_len", type=int, default=256)

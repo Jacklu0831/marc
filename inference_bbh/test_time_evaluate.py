@@ -2294,7 +2294,7 @@ def main():
     parser.add_argument("--ttt_weight_dir", type=str, default=None)
 
     # Evaluation & data
-    parser.add_argument("--data_dir", type=str, default="./BIG-Bench-Hard")
+    parser.add_argument("--data_dir", type=str, default="data/BIG-Bench-Hard")
     parser.add_argument("--num_demonstrations", type=int, default=10)
     parser.add_argument("--batch_size", type=int, default=4)
     parser.add_argument("--max_seq_len", type=int, default=2048)
