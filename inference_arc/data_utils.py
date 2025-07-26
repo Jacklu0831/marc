@@ -1151,6 +1151,126 @@ def collate_fn_gs_dummy(batch: List[Dict], dataset: GSDataset) -> Dict:
     return batch_dict
 
 
+# ########################################
+# # Direct Dataset
+# ########################################
+# class DirectDataset(Dataset):
+#     def __init__(
+#         self,
+#         task: Task,
+#         tokenizer: ARCTokenizer,
+#         debug_random_pad: bool,
+#         debug_pad_len: int,
+#         pad_side: str,
+#         max_seq_len: int,
+#         permute_n: int,
+#         seed: int,
+#         loss_type: str,
+#         no_separate_color_tokens: bool,
+#         no_bos: bool,
+#     ):
+#         self.task = task
+#         self.tokenizer = tokenizer
+#         self.debug_random_pad = debug_random_pad
+#         self.debug_pad_len = debug_pad_len
+#         self.pad_side = pad_side
+#         self.max_seq_len = max_seq_len
+#         self.permute_n = permute_n
+#         self.seed = seed
+#         self.loss_type = loss_type
+#         self.no_separate_color_tokens = no_separate_color_tokens
+#         self.no_bos = no_bos
+
+#         # generate data
+#         self.data = self.unique_permutations(
+#             permute_n=permute_n,
+#             seed=seed,
+#         )
+
+#     def unique_permutations(self, permute_n: int, seed: int):
+#         rng = np.random.RandomState(seed)
+#         seen = set()
+#         all_data = []
+
+#         for _ in range(1000):
+#             perm = tuple(rng.permutation(len(self.task.train_examples)))
+#             if perm in seen:
+#                 continue
+
+#             seen.add(perm)
+#             permuted_examples = [self.task.train_examples[i] for i in perm]
+#             data = self.format_and_filter(
+#                 task=Task(
+#                     name=self.task.name,
+#                     train_examples=permuted_examples[:-1],
+#                     test_example=permuted_examples[-1],
+#                 )
+#             )
+#             if data is not None:
+#                 all_data.append(data)
+
+#             if len(all_data) >= permute_n:
+#                 break
+
+#         return all_data
+
+#     def format_and_filter(self, task: Task) -> Optional[Dict]:
+#         # big grids are filtered out during augmentation already
+#         assert task.max_height() <= 30 and task.max_width() <= 30
+
+#         # Build encoder text
+#         task = copy.deepcopy(task)
+#         num_pair = len(task.train_examples) + 1
+
+#         # we do a lil parsing
+#         pair_idx_to_input_ids = []
+#         pair_idx_to_attention_mask = []
+#         pair_idx_to_label_ids = []
+
+#         for pair_i in range(num_pair):
+#             # get inputids, attention, labelids for batch of pairs at pair_i
+#             example = (task.train_examples + [task.test_example])[pair_i]
+#             input_grid_ids, output_grid_ids = self.tokenizer.get_input_and_output_grid_ids(
+#                 example=example,
+#                 add_bos=(pair_i == 0) if not self.no_bos else False,
+#                 no_separate_color_tokens=self.no_separate_color_tokens,
+#             )
+#             input_ids = torch.cat([input_grid_ids, output_grid_ids])
+#             attention_mask = torch.full(input_ids.shape, 1, dtype=torch.int64)
+#             # label id for all except first pair
+#             if (pair_i == 0 and self.loss_type == 'exclude_first') or (pair_i < num_pair and self.loss_type == 'only_last'):
+#                 label_ids = torch.full(input_ids.shape, -100, dtype=input_ids.dtype)
+#             else:
+#                 label_ids = torch.cat([
+#                     torch.full(input_grid_ids.shape, -100, dtype=input_ids.dtype),
+#                     output_grid_ids,
+#                 ])
+#             # aggregate
+#             pair_idx_to_input_ids.append(input_ids)
+#             pair_idx_to_attention_mask.append(attention_mask)
+#             pair_idx_to_label_ids.append(label_ids)
+
+#         input_ids = torch.cat(pair_idx_to_input_ids)
+#         attention_mask = torch.cat(pair_idx_to_attention_mask)
+#         label_ids = torch.cat(pair_idx_to_label_ids)
+#         assert input_ids.shape == attention_mask.shape == label_ids.shape
+
+#         if len(input_ids) > self.max_seq_len:
+#             return None
+
+#         return {
+#             "input_ids": input_ids,
+#             "attention_mask": attention_mask,
+#             "label_ids": label_ids,
+#         }
+
+#     def __len__(self):
+#         return len(self.data)
+
+#     def __getitem__(self, idx):
+#         return self.data[idx]
+
+
 ########################################
 # Test-Time-Training Dataset
 ########################################

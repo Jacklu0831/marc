@@ -102,7 +102,7 @@ pydantic_core==2.23.4
 pyparsing==3.2.0
 python-dateutil==2.9.0.post0
 python-dotenv==1.0.1
-pytorch-triton==3.1.0+cf34004b8a
+# pytorch-triton==3.1.0+cf34004b8a
 pytz==2024.2
 PyYAML==6.0.2
 pyzmq==26.2.0
@@ -124,8 +124,7 @@ sympy==1.13.1
 tiktoken==0.7.0
 tokenizers==0.21.0
 torch==2.4.0
-torchao==0.7.0.dev20241112+cu121
--e git+https://github.com/Jacklu0831/marc@8e656c2b0e143f03967b93d61aebb7ce29a90ff9#egg=torchtune&subdirectory=third_party/torchtune
+# torchao==0.7.0.dev20241112+cu121
 torchvision==0.19.0
 tqdm==4.67.0
 transformers==4.47.1

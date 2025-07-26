@@ -211,14 +211,13 @@ def initialize_kv(
         assert past_key_values[0][0].shape[2] == demonstration_len
 
     elif random_kv != 'none':
-        # random kv initialization
         random_kv_ntokens = random_kv_ntokens if random_kv_ntokens != -1 else demon_input_ids.shape[1]
-        if random_kv == 'normal':
-            # initialize from normal distribution
+        if random_kv == 'uniform':
+            # initialize from uniform distribution
             past_key_values = tuple(
                 (
-                    0.02 * torch.randn((1, model.config.n_head, random_kv_ntokens, model.config.n_embd // model.config.n_head), device=accelerator.device, dtype=torch.float32),
-                    0.02 * torch.randn((1, model.config.n_head, random_kv_ntokens, model.config.n_embd // model.config.n_head), device=accelerator.device, dtype=torch.float32),
+                    torch.rand((1, model.config.n_head, random_kv_ntokens, model.config.n_embd // model.config.n_head), device=accelerator.device, dtype=torch.float32),
+                    torch.rand((1, model.config.n_head, random_kv_ntokens, model.config.n_embd // model.config.n_head), device=accelerator.device, dtype=torch.float32),
                 ) for _ in range(model.config.n_layer)
             )
         else:
@@ -429,6 +428,7 @@ def test_time_evaluate(
     output_dir: str,
     ttt_weight_root_dir: str,
     ttt_weight_dir: Optional[str],
+    zero_shot: bool,
     # compression
     compression_ratio: float,
     # gs
@@ -451,6 +451,7 @@ def test_time_evaluate(
     gs_ntokens: int,
     gs_log_attention: bool,
     gs_final_tokens: int,
+    gs_float16: bool,
     # gs prefix lora
     gs_prefix_lora: bool,
     gs_prefix_lora_rank: int,
@@ -681,6 +682,11 @@ def test_time_evaluate(
                     start_time = time.time()
                     saved_gradckpt = model.transformer.gradient_checkpointing
                     model.transformer.gradient_checkpointing = False
+                    if gs_float16:
+                        past_key_values = tuple(
+                            (layer_k.to(torch.bfloat16), layer_v.to(torch.bfloat16))
+                            for layer_k, layer_v in past_key_values
+                        )
                     model, past_key_values, gs_num_data, gs_num_params, attn_logger, fisher_vals = run_gs(
                         demonstration_pairs=dataset.task_to_demonstrations[task],
                         eval_dataset=dataset,
@@ -823,7 +829,7 @@ def test_time_evaluate(
                     gen_attention_mask = torch.cat([batch_past_key_values_attention_mask, gen_attention_mask], dim=1)
 
                     # i truly dont know why this is necessary, but this is necessary
-                    assert batch_past_key_values[0][0].dtype == torch.float32
+                    # assert batch_past_key_values[0][0].dtype == torch.float32
 
                     if random_kv == 'none' or random_kv_ntokens == -1:
                         position_start = demon_input_ids.shape[1]
@@ -847,9 +853,9 @@ def test_time_evaluate(
                     assert position_ids.max() < dataset.max_seq_len
                     model_out = model(
                         inputs_embeds=gen_inputs_embeds,
-                        attention_mask=gen_attention_mask,
-                        past_key_values=batch_past_key_values,
-                        position_ids=position_ids,
+                        attention_mask=gen_attention_mask if not zero_shot else attention_mask_after_kv,
+                        past_key_values=batch_past_key_values if not zero_shot else None,
+                        position_ids=position_ids if not zero_shot else None,
                     )
                     losses = get_individual_loss(lm_logits=model_out.logits.half(), label_ids=gen_label_ids)
 
@@ -1696,7 +1702,7 @@ def run_gs(
             bs = pair_input_ids.shape[0]
 
             # construct full attention mask for past key values first
-            batch_past_key_values_attention_mask = torch.ones((batch_size, past_key_values[0][0].shape[2]), device=accelerator.device, dtype=torch.int64)
+            batch_past_key_values_attention_mask = torch.ones((bs, past_key_values[0][0].shape[2]), device=accelerator.device, dtype=torch.int64)
 
             if detach:
                 # use the same past key values and attention mask, but detach untrained parts
@@ -1793,6 +1799,7 @@ def run_gs(
             # debug: check lengths are correct
             for layer_k, layer_v in batch_past_key_values:
                 assert (layer_k.shape[0], layer_k.shape[2]) == (layer_v.shape[0], layer_v.shape[2]) == (bs, kv_len_before_dropout)
+
             assert tuple(batch_past_key_values_attention_mask.shape) == (bs, kv_len_before_dropout)
 
             # tune the final few tokens only
@@ -1809,8 +1816,8 @@ def run_gs(
             if prefix_past_key_values is not None:
                 batch_past_key_values = tuple(
                     (
-                        torch.cat([prefix_layer_k.expand(batch_size, *prefix_layer_k.shape[1:]), layer_k], dim=2),
-                        torch.cat([prefix_layer_v.expand(batch_size, *prefix_layer_v.shape[1:]), layer_v], dim=2),
+                        torch.cat([prefix_layer_k.expand(bs, *prefix_layer_k.shape[1:]), layer_k], dim=2),
+                        torch.cat([prefix_layer_v.expand(bs, *prefix_layer_v.shape[1:]), layer_v], dim=2),
                     )
                     for (prefix_layer_k, prefix_layer_v), (layer_k, layer_v) in zip(prefix_past_key_values, batch_past_key_values)
                 )
@@ -1832,7 +1839,7 @@ def run_gs(
 
             with accelerator.autocast():
                 # build position ids
-                position_ids = torch.zeros((batch_size, pair_input_ids.shape[1]), device=device, dtype=torch.int64)
+                position_ids = torch.zeros((bs, pair_input_ids.shape[1]), device=device, dtype=torch.int64)
                 new_lens = pair_attention_mask.sum(dim=1)
                 for task_position_ids, new_len in zip(position_ids, new_lens):
                     new_positions = torch.tensor(range(demon_input_ids_len, demon_input_ids_len + new_len), device=device, dtype=dtype)
@@ -1967,6 +1974,7 @@ def main():
     parser.add_argument('--eval_test_per_task', type=int, default=10000000)
     parser.add_argument('--eval_ratio', type=float, default=1.0)
     parser.add_argument('--eval_on_demonstrations', action='store_true')
+    parser.add_argument('--zero_shot', action='store_true')
 
     # compress
     parser.add_argument("--compression_ratio", type=float, default=1.0)
@@ -2007,12 +2015,13 @@ def main():
     parser.add_argument("--gs_no_value", action='store_true')
     parser.add_argument("--gs_num_layer", type=int, default=-1) # tune top layers only
     parser.add_argument("--gs_loss_on_input", action='store_true')
-    parser.add_argument("--gs_dropout", choices=['none', 'train', 'suffix', 'power', 'power_with_train'], type=str, default='none')
+    parser.add_argument("--gs_dropout", choices=['none', 'train', 'suffix', 'power', 'power_with_train'], type=str, default='train')
     parser.add_argument("--gs_token_dropout", type=float, default=0.0)
     parser.add_argument("--gs_detach", action='store_true')
     parser.add_argument("--gs_ntokens", type=int, default=-1)
     parser.add_argument("--gs_log_attention", action='store_true')
     parser.add_argument("--gs_final_tokens", type=int, default=-1)
+    parser.add_argument("--gs_float16", action='store_true')
 
     # gradient search prefix lora
     parser.add_argument("--gs_prefix_lora", action='store_true')
@@ -2020,7 +2029,7 @@ def main():
     parser.add_argument("--gs_prefix_lora_share_head", action='store_true')
 
     # gradient search model initialization
-    parser.add_argument("--random_kv", type=str, choices=['none', 'normal', 'token'], default='none')
+    parser.add_argument("--random_kv", type=str, choices=['none', 'uniform', 'token'], default='none')
     parser.add_argument("--random_kv_ntokens", type=int, default=-1)
     parser.add_argument("--separate_kv", action='store_true')
     parser.add_argument("--num_permute", type=int, default=1) # 1024
@@ -2173,6 +2182,7 @@ def main():
             output_dir=args.output_dir,
             ttt_weight_root_dir=args.ttt_weight_root_dir,
             ttt_weight_dir=args.ttt_weight_dir,
+            zero_shot=args.zero_shot,
             # eval
             compression_ratio=args.compression_ratio,
             # gs
@@ -2195,6 +2205,7 @@ def main():
             gs_ntokens=args.gs_ntokens,
             gs_log_attention=args.gs_log_attention,
             gs_final_tokens=args.gs_final_tokens,
+            gs_float16=args.gs_float16,
             # gs prefix lora
             gs_prefix_lora=args.gs_prefix_lora,
             gs_prefix_lora_rank=args.gs_prefix_lora_rank,
@@ -2268,6 +2279,8 @@ def main():
         # log metrics
         metric_dict = {
             "eval/score": score,
+            "eval/score_std": np.std(score_list),
+            "eval/score_list": score_list,
             "eval/ttt_num_data": ttt_num_data,
             "eval/gs_num_data": gs_num_data,
             "eval/ttt_num_params": ttt_num_params,

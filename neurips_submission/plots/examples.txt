@@ -1,0 +1,21 @@
+bbh
+instruction: A logical deduction task which requires deducing the order of a sequence of objects. Answer with only the corresponding letter (e.g. (A)).
+The following paragraphs each describe a set of three objects arranged in a fixed order. The statements are logically consistent within each paragraph. In a golf tournament, there were three golfers: Ada, Mel, and Mya. Mya finished below Ada. Mel finished above Ada.\nOptions:\n(A) Ada finished last\n(B) Mel finished last\n(C) Mya finished last
+(C)
+
+arc
+just select two
+
+nlp
+What is the hfc of 375 and 105 highest comman factor?
+answer: not well-formed
+options: not well-formed, well-formed
+
+query: i feel incredibly lucky just to be able to talk to her
+answer: output
+options: "anger", "fear", "joy", "love", "sadness", "surprise"
+
+mmlu
+query: Find the degree for the given field extension Q(sqrt(2) + sqrt(3)) over Q.
+answer: 4
+options: 0, 4, 2, 6

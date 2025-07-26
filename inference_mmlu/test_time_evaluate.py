@@ -76,7 +76,11 @@ logger = get_logger(__name__, log_level="INFO")
 
 
 MODEL_NAME_TO_PATH = {
+    "llama1b": "meta-llama/Llama-3.2-1B-Instruct",
+    "llama3b": "meta-llama/Llama-3.2-3B-Instruct",
     "llama7b": "meta-llama/Llama-2-7b-hf",
+    "llama8b": "meta-llama/Meta-Llama-3-8B-Instruct",
+    "llama3b_uncensored": "chuanli11/Llama-3.2-3B-Instruct-uncensored",
 }
 NBIT_TO_DTYPE = {
     16: torch.bfloat16,
@@ -276,12 +280,12 @@ def initialize_kv(
     elif random_kv != 'none':
         # random kv initialization
         random_kv_ntokens = random_kv_ntokens if random_kv_ntokens != -1 else demon_input_ids.shape[1]
-        if random_kv == 'normal':
-            # initialize from normal distribution
+        if random_kv == 'uniform':
+            # initialize from uniform distribution
             past_key_values = tuple(
                 (
-                    0.02 * torch.randn((1, model.config.num_key_value_heads, random_kv_ntokens, model.config.head_dim), device=accelerator.device, dtype=torch.float32),
-                    0.02 * torch.randn((1, model.config.num_key_value_heads, random_kv_ntokens, model.config.head_dim), device=accelerator.device, dtype=torch.float32),
+                    torch.rand((1, model.config.num_key_value_heads, random_kv_ntokens, model.config.head_dim), device=accelerator.device, dtype=torch.float32),
+                    torch.rand((1, model.config.num_key_value_heads, random_kv_ntokens, model.config.head_dim), device=accelerator.device, dtype=torch.float32),
                 ) for _ in range(model.config.num_hidden_layers)
             )
         else:
@@ -525,6 +529,7 @@ def test_time_evaluate(
     output_dir: str,
     ttt_weight_root_dir: str,
     ttt_weight_dir: Optional[str],
+    zero_shot: bool,
     # compression
     compression_ratio: float,
     # gs
@@ -547,6 +552,7 @@ def test_time_evaluate(
     gs_ntokens: int,
     gs_log_attention: bool,
     gs_final_tokens: int,
+    gs_float16: bool,
     # gs prefix lora
     gs_prefix_lora: bool,
     gs_prefix_lora_rank: int,
@@ -636,7 +642,10 @@ def test_time_evaluate(
     with distributed_state.split_between_processes(dataset.tasks) as process_tasks:
         assert isinstance(process_tasks, list)
 
+        task_i = 0
         for task in tqdm(process_tasks, desc='Task'):
+            task_i += 1
+
             # data: get demonstration ids and indices, hacky
             if dataset.debug_max_len:
                 demon_len = dataset.max_seq_len * 4 // 5
@@ -785,6 +794,11 @@ def test_time_evaluate(
                     start_time = time.time()
                     saved_gradckpt = model.model.gradient_checkpointing
                     model.model.gradient_checkpointing = False
+                    if gs_float16:
+                        past_key_values = tuple(
+                            (layer_k.to(torch.bfloat16), layer_v.to(torch.bfloat16))
+                            for layer_k, layer_v in past_key_values
+                        )
                     model, past_key_values, gs_num_data, gs_num_params, attn_logger, fisher_vals = run_gs(
                         demonstration_pairs=dataset.task_to_demonstrations[task],
                         eval_dataset=dataset,
@@ -885,7 +899,7 @@ def test_time_evaluate(
 
             progress_bar = tqdm(
                 range(len(data_idxs)),
-                desc=f"{task} tests",
+                desc=f"{task_i}/{len(process_tasks)} {task}",
                 disable=not accelerator.is_local_main_process,
             )
 
@@ -926,7 +940,7 @@ def test_time_evaluate(
                     gen_attention_mask = torch.cat([batch_past_key_values_attention_mask, gen_attention_mask], dim=1)
 
                     # i truly dont know why this is necessary, but this is necessary
-                    assert batch_past_key_values[0][0].dtype == torch.float32
+                    # assert batch_past_key_values[0][0].dtype == torch.float32
 
                     if dt_iters > 0 and dt_no_pos:
                         position_start = past_key_values[0][0].shape[2] * 2
@@ -951,9 +965,9 @@ def test_time_evaluate(
 
                     model_out = model(
                         inputs_embeds=gen_inputs_embeds,
-                        attention_mask=gen_attention_mask,
-                        past_key_values=batch_past_key_values,
-                        position_ids=position_ids,
+                        attention_mask=gen_attention_mask if not zero_shot else attention_mask_after_kv,
+                        past_key_values=batch_past_key_values if not zero_shot else None,
+                        position_ids=position_ids if not zero_shot else None,
                     )
                     losses = get_individual_loss(lm_logits=model_out.logits.half(), label_ids=gen_label_ids)
 
@@ -2020,7 +2034,7 @@ def main():
     parser.add_argument("--debug_max_len", action='store_true')
 
     # Model
-    parser.add_argument("--model_name", type=str, default="llama7b")
+    parser.add_argument("--model_name", type=str, default="llama3b")
     parser.add_argument("--flash_attn", action="store_true")
     parser.add_argument("--untrainable_nbit", type=float, choices=[3.6, 4, 8, 16, 32], default=16)
     parser.add_argument("--trainable_nbit", type=int, choices=[16, 32], default=16)
@@ -2031,16 +2045,17 @@ def main():
     parser.add_argument("--ttt_weight_dir", type=str, default=None)
 
     # Evaluation & data
-    parser.add_argument("--num_demonstrations", type=int, default=5)
-    parser.add_argument("--batch_size", type=int, default=4)
+    parser.add_argument("--num_demonstrations", type=int, default=16)
+    parser.add_argument("--batch_size", type=int, default=16)
     parser.add_argument("--max_seq_len", type=int, default=4096)
     parser.add_argument("--pad_side", type=str, choices=["left", "right"], default="left")
     parser.add_argument("--delimiter", type=str, choices=['space', 'newline'], default='newline')
 
     # limit eval
     parser.add_argument('--eval_test_per_task', type=int, default=10000000)
-    parser.add_argument('--eval_ratio', type=float, default=0.1)
+    parser.add_argument('--eval_ratio', type=float, default=0.25)
     parser.add_argument('--eval_on_demonstrations', action='store_true')
+    parser.add_argument('--zero_shot', action='store_true')
 
     # compress
     parser.add_argument("--compression_ratio", type=float, default=1.0)
@@ -2049,7 +2064,7 @@ def main():
     parser.add_argument("--ttt_iters", type=int, default=0)
     parser.add_argument("--ttt_lr", type=float, default=1e-4)
     parser.add_argument("--ttt_weight_decay", type=float, default=0.0)
-    parser.add_argument("--ttt_batch_size", type=int, default=5)
+    parser.add_argument("--ttt_batch_size", type=int, default=8)
     parser.add_argument("--ttt_grad_accum_steps", type=int, default=1)
     parser.add_argument("--ttt_optimizer", type=str, choices=["adamw", "sgd"], default="adamw")
     parser.add_argument("--ttt_lr_scheduler", type=str, choices=["cosine", "constant"], default="cosine")
@@ -2074,7 +2089,7 @@ def main():
     parser.add_argument("--gs_beta1", type=float, default=0.9)
     parser.add_argument("--gs_beta2", type=float, default=0.999)
     parser.add_argument("--gs_weight_decay", type=float, default=0.0)
-    parser.add_argument("--gs_batch_size", type=int, default=1)
+    parser.add_argument("--gs_batch_size", type=int, default=8)
     parser.add_argument("--gs_optimizer", type=str, choices=["adamw", "sgd"], default="adamw")
     parser.add_argument("--gs_lr_scheduler", type=str, choices=["cosine", "constant"], default="cosine")
     parser.add_argument("--gs_max_grad_norm", default=1.0, type=float, help="Max gradient norm.")
@@ -2082,12 +2097,13 @@ def main():
     parser.add_argument("--gs_no_value", action='store_true')
     parser.add_argument("--gs_num_layer", type=int, default=-1) # tune top layers only
     parser.add_argument("--gs_loss_on_input", action='store_true')
-    parser.add_argument("--gs_dropout", choices=['none', 'train', 'suffix', 'power', 'power_with_train'], type=str, default='none')
+    parser.add_argument("--gs_dropout", choices=['none', 'train', 'suffix', 'power', 'power_with_train'], type=str, default='train')
     parser.add_argument("--gs_token_dropout", type=float, default=0.0)
     parser.add_argument("--gs_detach", action='store_true')
     parser.add_argument("--gs_ntokens", type=int, default=-1)
     parser.add_argument("--gs_log_attention", action='store_true')
     parser.add_argument("--gs_final_tokens", type=int, default=-1)
+    parser.add_argument("--gs_float16", action='store_true')
 
     # gradient search prefix lora
     parser.add_argument("--gs_prefix_lora", action='store_true')
@@ -2095,7 +2111,7 @@ def main():
     parser.add_argument("--gs_prefix_lora_share_head", action='store_true')
 
     # gradient search model initialization
-    parser.add_argument("--random_kv", type=str, choices=['none', 'normal', 'token'], default='none')
+    parser.add_argument("--random_kv", type=str, choices=['none', 'uniform', 'token'], default='none')
     parser.add_argument("--random_kv_ntokens", type=int, default=-1)
     parser.add_argument("--separate_kv", action='store_true')
     parser.add_argument("--num_permute", type=int, default=1)
@@ -2272,6 +2288,7 @@ def main():
         output_dir=args.output_dir,
         ttt_weight_root_dir=args.ttt_weight_root_dir,
         ttt_weight_dir=args.ttt_weight_dir,
+        zero_shot=args.zero_shot,
         # eval
         compression_ratio=args.compression_ratio,
         # gs
@@ -2294,6 +2311,7 @@ def main():
         gs_ntokens=args.gs_ntokens,
         gs_log_attention=args.gs_log_attention,
         gs_final_tokens=args.gs_final_tokens,
+        gs_float16=args.gs_float16,
         # gs prefix lora
         gs_prefix_lora=args.gs_prefix_lora,
         gs_prefix_lora_rank=args.gs_prefix_lora_rank,
