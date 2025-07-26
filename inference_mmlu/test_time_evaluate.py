@@ -1781,6 +1781,7 @@ def run_gs(
 
     # train!
     for _ in range(epochs):
+        num_batch = len(gs_loader)
         for batch in gs_loader:
             pair_input_ids = batch["input_ids"].to(accelerator.device)
             pair_attention_mask = batch["attention_mask"].to(accelerator.device)
@@ -1793,56 +1794,7 @@ def run_gs(
             batch_past_key_values_attention_mask = torch.ones((batch_size, past_key_values[0][0].shape[2]), device=accelerator.device, dtype=torch.int64)
 
             if detach:
-                # use the same past key values and attention mask, but detach untrained parts
-                batch_past_key_values = tuple(
-                    (layer_k.repeat(bs, 1, 1, 1), layer_v.repeat(bs, 1, 1, 1)) # repeat here
-                    for layer_k, layer_v in past_key_values
-                )
-
-                # only drop training kv
-                if dropout == 'train':
-                    assert past_key_values[0][0].shape[2] == demon_input_ids_len # make sure demon_start_idxs are correct
-                    for batch_i, idx in enumerate(pair_example_idx):
-                        start = demon_start_idxs[idx]
-                        end = demon_start_idxs[idx + 1] if idx < len(demon_start_idxs) - 1 else demon_input_ids_len
-                        for layer_i, (layer_k, layer_v) in enumerate(batch_past_key_values):
-                            batch_past_key_values[layer_i][0][batch_i] = torch.cat([layer_k[batch_i, :, :start], layer_k[batch_i, :, start: end].detach().clone(), layer_k[batch_i, :, end:]], dim=1)
-                            batch_past_key_values[layer_i][1][batch_i] = torch.cat([layer_v[batch_i, :, :start], layer_v[batch_i, :, start: end].detach().clone(), layer_v[batch_i, :, end:]], dim=1)
-
-                # drop training kv and drop suffix
-                elif dropout == 'suffix':
-                    assert past_key_values[0][0].shape[2] == demon_input_ids_len # make sure demon_start_idxs are correct
-                    for batch_i, idx in enumerate(pair_example_idx):
-                        start = demon_start_idxs[idx]
-                        for layer_i, (layer_k, layer_v) in enumerate(batch_past_key_values):
-                            batch_past_key_values[layer_i][0][batch_i] = torch.cat([layer_k[batch_i, :, :start], layer_k[batch_i, :, start:].detach().clone()], dim=1)
-                            batch_past_key_values[layer_i][1][batch_i] = torch.cat([layer_v[batch_i, :, :start], layer_v[batch_i, :, start:].detach().clone()], dim=1)
-
-                # drop training kv and only keep power set
-                elif dropout in ['power', 'power_with_train']:
-                    assert past_key_values[0][0].shape[2] == demon_input_ids_len # make sure demon_start_idxs are correct
-                    for batch_i, idx in enumerate(pair_example_idx):
-                        # figure out a non-empty set of kv to keep
-                        choices = set(range(len(demon_start_idxs)))
-                        if dropout == 'power':
-                            choices -= {idx}
-                        power_set = set(itertools.chain.from_iterable(itertools.combinations(choices, r) for r in range(len(choices) + 1))) - {()}
-                        to_keep = random.choice(list(power_set))
-                        assert len(to_keep) > 0
-                        # remove
-                        to_remove = [idx for idx in range(len(demon_start_idxs)) if idx not in to_keep]
-                        to_keep, to_remove = set(to_keep), set(to_remove)
-
-                        for layer_i, (layer_k, layer_v) in enumerate(batch_past_key_values):
-                            new_layer_k = [layer_k[batch_i, :, :demon_start_idxs[0]]] # instruction
-                            new_layer_v = [layer_v[batch_i, :, :demon_start_idxs[0]]] # instruction
-                            for idx in range(len(demon_start_idxs)):
-                                start = demon_start_idxs[idx]
-                                end = demon_start_idxs[idx + 1] if idx < len(demon_start_idxs) - 1 else demon_input_ids_len
-                                new_layer_k.append(layer_k[batch_i, :, start: end].detach().clone() if (idx in to_remove) else layer_k[batch_i, :, start: end])
-                                new_layer_v.append(layer_v[batch_i, :, start: end].detach().clone() if (idx in to_remove) else layer_v[batch_i, :, start: end])
-                            batch_past_key_values[layer_i][0][batch_i] = torch.cat(new_layer_k, dim=1)
-                            batch_past_key_values[layer_i][1][batch_i] = torch.cat(new_layer_v, dim=1)
+                raise NotImplementedError()
 
             else:
                 # use the same past key values across batch, but adjust attention mask for dropping
@@ -1861,28 +1813,11 @@ def run_gs(
 
                 # drop training kv and drop suffix
                 elif dropout == 'suffix':
-                    assert past_key_values[0][0].shape[2] == demon_input_ids_len # make sure demon_start_idxs are correct
-                    for batch_i, idx in enumerate(pair_example_idx):
-                        start = demon_start_idxs[idx]
-                        batch_past_key_values_attention_mask[batch_i, start:] = 0
+                    raise NotImplementedError()
 
                 # drop training kv and only keep power set
                 elif dropout in ['power', 'power_with_train']:
-                    assert past_key_values[0][0].shape[2] == demon_input_ids_len # make sure demon_start_idxs are correct
-                    for batch_i, idx in enumerate(pair_example_idx):
-                        # figure out a non-empty set of kv to keep
-                        choices = set(range(len(demon_start_idxs)))
-                        if dropout == 'power':
-                            choices -= {idx}
-                        power_set = set(itertools.chain.from_iterable(itertools.combinations(choices, r) for r in range(len(choices) + 1))) - {()}
-                        to_keep = random.choice(list(power_set))
-                        assert len(to_keep) > 0
-                        # remove
-                        to_remove = [idx for idx in range(len(demon_start_idxs)) if idx not in to_keep]
-                        for idx in to_remove:
-                            start = demon_start_idxs[idx]
-                            end = demon_start_idxs[idx + 1] if idx < len(demon_start_idxs) - 1 else demon_input_ids_len
-                            batch_past_key_values_attention_mask[batch_i, start:end] = 0
+                    raise NotImplementedError()
 
             # debug: check lengths are correct
             for layer_k, layer_v in batch_past_key_values:
@@ -1974,7 +1909,7 @@ def run_gs(
                 #     breakpoint()
 
             # print(loss.item(), reg_loss.item())
-            accelerator.backward(loss + reg_loss)
+            accelerator.backward((loss + reg_loss) / num_batch)
 
         # only at the end of epoch do we backprop
         accelerator.clip_grad_norm_(all_params, max_grad_norm)

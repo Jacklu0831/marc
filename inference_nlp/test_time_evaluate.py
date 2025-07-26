@@ -1714,10 +1714,9 @@ def run_gs(
                 if dropout == 'train':
                     assert past_key_values[0][0].shape[2] == demon_input_ids_len # make sure demon_start_idxs are correct
                     for batch_i, idx in enumerate(pair_example_idx):
-                        if idx < len(demon_start_idxs):
-                            start = demon_start_idxs[idx]
-                            end = demon_start_idxs[idx + 1] if idx < len(demon_start_idxs) - 1 else demon_input_ids_len
-                            batch_past_key_values_attention_mask[batch_i, start:end] = 0
+                        start = demon_start_idxs[idx]
+                        end = demon_start_idxs[idx + 1] if idx < len(demon_start_idxs) - 1 else demon_input_ids_len
+                        batch_past_key_values_attention_mask[batch_i, start:end] = 0
 
                 # drop training kv and drop suffix
                 elif dropout == 'suffix':
