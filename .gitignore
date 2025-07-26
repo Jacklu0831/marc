@@ -167,7 +167,7 @@ downloaded_models/
 train_outputs/
 inference_outputs/
 .cache/
-depre_do_not_delete/
+depre_delete_carefully/
 sbatch_files/
 slurm_outs/
 *.jpg
