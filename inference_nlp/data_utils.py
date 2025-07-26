@@ -72,7 +72,6 @@ def parse_pairs(
     max_seq_len: int,
     delimiter_token_id: torch.Tensor,
     loss_type: str,
-    allow_truncate: bool,
     is_train: bool,
 ) -> Optional[Tuple[torch.Tensor, torch.Tensor, torch.Tensor,
                     Optional[torch.Tensor], Optional[torch.Tensor], Optional[torch.Tensor], Optional[torch.Tensor], Optional[torch.Tensor], Optional[List]]]:
@@ -136,16 +135,7 @@ def parse_pairs(
     # optionally truncate, also messes up pair start idxs
     assert final_output_start_idx > -1
     if len(input_ids) > max_seq_len:
-        if allow_truncate:
-            inp, out = input_ids[:final_output_start_idx], input_ids[final_output_start_idx:]
-            input_ids = torch.cat([inp[:max_seq_len - out.shape[0]], out])
-            inp, out = label_ids[:final_output_start_idx], label_ids[final_output_start_idx:]
-            label_ids = torch.cat([inp[:max_seq_len - out.shape[0]], out])
-            attention_mask = torch.full(input_ids.shape, 1, dtype=input_ids.dtype) # attention mask
-            assert input_ids.shape == attention_mask.shape == label_ids.shape
-            assert input_ids.shape[0] == max_seq_len
-        else:
-            return None
+        return None
 
     # for gs (no ntoken)
     if not is_train:
@@ -223,7 +213,6 @@ class TrainDataset(Dataset):
         num_workers: int,
         max_seq_len: int,
         max_pair_len: int,
-        allow_truncate: bool,
         delimiter: str,
     ):
 
@@ -237,7 +226,6 @@ class TrainDataset(Dataset):
         self.num_workers = num_workers
         self.max_seq_len = max_seq_len
         self.max_pair_len = max_pair_len
-        self.allow_truncate = allow_truncate
         self.delimiter = delimiter
 
         self.num_workers = num_workers
@@ -317,7 +305,6 @@ def collate_fn_train(batch: List[int], dataset: TrainDataset) -> Dict:
             max_seq_len=dataset.max_seq_len,
             delimiter_token_id=dataset.delimiter_token_id,
             loss_type=dataset.loss_type,
-            allow_truncate=dataset.allow_truncate,
             is_train=True,
         )
         if out == None:
@@ -375,6 +362,7 @@ class EvalDataset:
         self,
         data_dir: str,
         config_file: str,
+        task_list: str,
         seed: int,
         eval_seed: str,
         tokenizer: Union[PreTrainedTokenizerFast, GPT2TokenizerFast],
@@ -387,7 +375,6 @@ class EvalDataset:
         eval_test_per_task: int,
         eval_ratio: float,
         split: str,
-        allow_truncate: bool,
         delimiter: str,
         num_demonstrations: int,
         eval_on_demonstrations: bool,
@@ -398,7 +385,6 @@ class EvalDataset:
         self.pad_side = pad_side
         self.max_seq_len = max_seq_len
         self.max_pair_len = max_pair_len
-        self.allow_truncate = allow_truncate
         self.delimiter = delimiter
         self.debug_max_len = debug_max_len
         self.seed = seed
@@ -417,11 +403,20 @@ class EvalDataset:
         self.tasks = json.load(open(config_file))[split]
         assert len(self.tasks) == len(set(self.tasks))
 
+        # optionally limit tasks with a txt file for the included task names
+        if task_list is not None:
+            included_tasks = open('data/nlp_high_demo_task_list.txt', 'r').readlines()
+            included_tasks = [t.strip() for t in included_tasks]
+            self.tasks = [t for t in self.tasks if t in included_tasks]
+
         # load data
         tasks_to_remove = set()
         task_to_demonstrations = defaultdict(list)
         task_to_test_pairs = defaultdict(list)
         for task in self.tasks:
+            if len(included_tasks) > 0 and task not in included_tasks:
+                continue
+
             task_data_dir = os.path.join(data_dir, task)
 
             # train demonstration pairs
@@ -554,7 +549,6 @@ class EvalDataset:
             max_seq_len=self.max_seq_len,
             delimiter_token_id=self.delimiter_token_id,
             loss_type="only_last",
-            allow_truncate=self.allow_truncate,
             is_train=False,
         )
         if out == None:
@@ -703,7 +697,6 @@ class GSDataset(Dataset):
         past_kv_len: int,
         max_seq_len: int,
         max_pair_len: int,
-        allow_truncate: bool,
         delimiter: str,
         loss_on_input: bool,
     ):
@@ -715,7 +708,6 @@ class GSDataset(Dataset):
         self.past_kv_len = past_kv_len
         self.max_seq_len = max_seq_len
         self.max_pair_len = max_pair_len
-        self.allow_truncate = allow_truncate
         self.delimiter = delimiter
         self.loss_on_input = loss_on_input
 
@@ -760,15 +752,7 @@ class GSDataset(Dataset):
         # GS dataset can overflow too because it is taking from eval dataset before filtering
         overflow = len(input_ids) - (self.max_seq_len - self.past_kv_len)
         if overflow > 0:
-            if self.allow_truncate and overflow < len(input_input_ids):
-                input_ids = torch.cat([input_input_ids[:-overflow], output_input_ids])
-                attention_mask = torch.full(input_ids.shape, 1, dtype=torch.int64)
-                label_ids = torch.full(input_input_ids[:-overflow].shape, -100, dtype=input_ids.dtype)
-                label_ids = torch.cat([label_ids, output_input_ids])
-                assert input_ids.shape == attention_mask.shape == label_ids.shape
-                assert input_ids.shape[0] == self.max_seq_len
-            else:
-                return None
+            return None
 
         return {
             "example_idx": example_idx,
@@ -834,7 +818,6 @@ class TTTDataset(Dataset):
         pad_side: str,
         max_seq_len: int,
         max_pair_len: int,
-        allow_truncate: bool,
         delimiter: str,
         permute_n: int,
         seed: int,
@@ -847,7 +830,6 @@ class TTTDataset(Dataset):
         self.pad_side = pad_side
         self.max_seq_len = max_seq_len
         self.max_pair_len = max_pair_len
-        self.allow_truncate = allow_truncate
         self.delimiter = delimiter
         self.permute_n = permute_n
         self.seed = seed
@@ -898,7 +880,6 @@ class TTTDataset(Dataset):
             max_seq_len=self.max_seq_len,
             delimiter_token_id=self.delimiter_token_id,
             loss_type=self.loss_type,
-            allow_truncate=self.allow_truncate,
             is_train=True,
         )
 

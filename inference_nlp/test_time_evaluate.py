@@ -1,8 +1,6 @@
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.colors import LogNorm
-import random
-import itertools
 import copy
 import gc
 import time
@@ -1019,7 +1017,6 @@ def run_ttt(
         pad_side=eval_dataset.pad_side,
         max_seq_len=eval_dataset.max_seq_len,
         max_pair_len=eval_dataset.max_pair_len,
-        allow_truncate=eval_dataset.allow_truncate,
         delimiter=eval_dataset.delimiter,
         permute_n=permute_n,
         seed=eval_dataset.seed,
@@ -1592,7 +1589,6 @@ def run_gs(
         past_kv_len=demon_input_ids_len,
         max_seq_len=eval_dataset.max_seq_len,
         max_pair_len=eval_dataset.max_pair_len,
-        allow_truncate=eval_dataset.allow_truncate,
         delimiter=eval_dataset.delimiter,
         loss_on_input=loss_on_input,
     )
@@ -1705,56 +1701,7 @@ def run_gs(
             batch_past_key_values_attention_mask = torch.ones((bs, past_key_values[0][0].shape[2]), device=accelerator.device, dtype=torch.int64)
 
             if detach:
-                # use the same past key values and attention mask, but detach untrained parts
-                batch_past_key_values = tuple(
-                    (layer_k.repeat(bs, 1, 1, 1), layer_v.repeat(bs, 1, 1, 1)) # repeat here
-                    for layer_k, layer_v in past_key_values
-                )
-
-                # only drop training kv
-                if dropout == 'train':
-                    assert past_key_values[0][0].shape[2] == demon_input_ids_len # make sure demon_start_idxs are correct
-                    for batch_i, idx in enumerate(pair_example_idx):
-                        start = demon_start_idxs[idx]
-                        end = demon_start_idxs[idx + 1] if idx < len(demon_start_idxs) - 1 else demon_input_ids_len
-                        for layer_i, (layer_k, layer_v) in enumerate(batch_past_key_values):
-                            batch_past_key_values[layer_i][0][batch_i] = torch.cat([layer_k[batch_i, :, :start], layer_k[batch_i, :, start: end].detach().clone(), layer_k[batch_i, :, end:]], dim=1)
-                            batch_past_key_values[layer_i][1][batch_i] = torch.cat([layer_v[batch_i, :, :start], layer_v[batch_i, :, start: end].detach().clone(), layer_v[batch_i, :, end:]], dim=1)
-
-                # drop training kv and drop suffix
-                elif dropout == 'suffix':
-                    assert past_key_values[0][0].shape[2] == demon_input_ids_len # make sure demon_start_idxs are correct
-                    for batch_i, idx in enumerate(pair_example_idx):
-                        start = demon_start_idxs[idx]
-                        for layer_i, (layer_k, layer_v) in enumerate(batch_past_key_values):
-                            batch_past_key_values[layer_i][0][batch_i] = torch.cat([layer_k[batch_i, :, :start], layer_k[batch_i, :, start:].detach().clone()], dim=1)
-                            batch_past_key_values[layer_i][1][batch_i] = torch.cat([layer_v[batch_i, :, :start], layer_v[batch_i, :, start:].detach().clone()], dim=1)
-
-                # drop training kv and only keep power set
-                elif dropout in ['power', 'power_with_train']:
-                    assert past_key_values[0][0].shape[2] == demon_input_ids_len # make sure demon_start_idxs are correct
-                    for batch_i, idx in enumerate(pair_example_idx):
-                        # figure out a non-empty set of kv to keep
-                        choices = set(range(len(demon_start_idxs)))
-                        if dropout == 'power':
-                            choices -= {idx}
-                        power_set = set(itertools.chain.from_iterable(itertools.combinations(choices, r) for r in range(len(choices) + 1))) - {()}
-                        to_keep = random.choice(list(power_set))
-                        assert len(to_keep) > 0
-                        # remove
-                        to_remove = [idx for idx in range(len(demon_start_idxs)) if idx not in to_keep]
-                        to_keep, to_remove = set(to_keep), set(to_remove)
-
-                        for layer_i, (layer_k, layer_v) in enumerate(batch_past_key_values):
-                            new_layer_k = [layer_k[batch_i, :, :demon_start_idxs[0]]] # instruction
-                            new_layer_v = [layer_v[batch_i, :, :demon_start_idxs[0]]] # instruction
-                            for idx in range(len(demon_start_idxs)):
-                                start = demon_start_idxs[idx]
-                                end = demon_start_idxs[idx + 1] if idx < len(demon_start_idxs) - 1 else demon_input_ids_len
-                                new_layer_k.append(layer_k[batch_i, :, start: end].detach().clone() if (idx in to_remove) else layer_k[batch_i, :, start: end])
-                                new_layer_v.append(layer_v[batch_i, :, start: end].detach().clone() if (idx in to_remove) else layer_v[batch_i, :, start: end])
-                            batch_past_key_values[layer_i][0][batch_i] = torch.cat(new_layer_k, dim=1)
-                            batch_past_key_values[layer_i][1][batch_i] = torch.cat(new_layer_v, dim=1)
+                raise NotImplementedError()
 
             else:
                 # use the same past key values across batch, but adjust attention mask for dropping
@@ -1767,34 +1714,18 @@ def run_gs(
                 if dropout == 'train':
                     assert past_key_values[0][0].shape[2] == demon_input_ids_len # make sure demon_start_idxs are correct
                     for batch_i, idx in enumerate(pair_example_idx):
-                        start = demon_start_idxs[idx]
-                        end = demon_start_idxs[idx + 1] if idx < len(demon_start_idxs) - 1 else demon_input_ids_len
-                        batch_past_key_values_attention_mask[batch_i, start:end] = 0
-
-                # drop training kv and drop suffix
-                elif dropout == 'suffix':
-                    assert past_key_values[0][0].shape[2] == demon_input_ids_len # make sure demon_start_idxs are correct
-                    for batch_i, idx in enumerate(pair_example_idx):
-                        start = demon_start_idxs[idx]
-                        batch_past_key_values_attention_mask[batch_i, start:] = 0
-
-                # drop training kv and only keep power set
-                elif dropout in ['power', 'power_with_train']:
-                    assert past_key_values[0][0].shape[2] == demon_input_ids_len # make sure demon_start_idxs are correct
-                    for batch_i, idx in enumerate(pair_example_idx):
-                        # figure out a non-empty set of kv to keep
-                        choices = set(range(len(demon_start_idxs)))
-                        if dropout == 'power':
-                            choices -= {idx}
-                        power_set = set(itertools.chain.from_iterable(itertools.combinations(choices, r) for r in range(len(choices) + 1))) - {()}
-                        to_keep = random.choice(list(power_set))
-                        assert len(to_keep) > 0
-                        # remove
-                        to_remove = [idx for idx in range(len(demon_start_idxs)) if idx not in to_keep]
-                        for idx in to_remove:
+                        if idx < len(demon_start_idxs):
                             start = demon_start_idxs[idx]
                             end = demon_start_idxs[idx + 1] if idx < len(demon_start_idxs) - 1 else demon_input_ids_len
                             batch_past_key_values_attention_mask[batch_i, start:end] = 0
+
+                # drop training kv and drop suffix
+                elif dropout == 'suffix':
+                    raise NotImplementedError()
+
+                # drop training kv and only keep power set
+                elif dropout in ['power', 'power_with_train']:
+                    raise NotImplementedError()
 
             # debug: check lengths are correct
             for layer_k, layer_v in batch_past_key_values:
@@ -1961,13 +1892,13 @@ def main():
     # Evaluation & data
     parser.add_argument("--config_file", type=str, default="data/MetaICL/config/hr_to_lr.json")
     parser.add_argument("--data_dir", type=str, default="data/MetaICL/data")
+    parser.add_argument("--task_list", type=str, default=None)
     parser.add_argument("--num_demonstrations", type=int, default=16)
     parser.add_argument("--batch_size", type=int, default=16)
     parser.add_argument("--max_seq_len", type=int, default=1024)
     parser.add_argument("--max_pair_len", type=int, default=256)
     parser.add_argument('--eval_seeds', type=str, nargs="+", default=['13', '21', '42', '87', '100'])
     parser.add_argument("--pad_side", type=str, choices=["left", "right"], default="right") # slightly more accurate
-    parser.add_argument("--allow_truncate", action='store_true')
     parser.add_argument("--delimiter", type=str, choices=['space', 'newline'], default='space')
 
     # limit eval
@@ -2063,6 +1994,7 @@ def main():
         args.tag = 'test'
         args.eval_seeds = ['100']
         args.eval_ratio = 0.01
+        args.gs_epochs = 10
 
     args.delimiter = " " if args.delimiter == 'space' else "\n"
 
@@ -2138,6 +2070,7 @@ def main():
     datasets = [
         EvalDataset(
             data_dir=args.data_dir,
+            task_list=args.task_list,
             config_file=args.config_file,
             seed=args.seed,
             eval_seed=eval_seed,
@@ -2151,7 +2084,6 @@ def main():
             eval_test_per_task=args.eval_test_per_task,
             eval_ratio=args.eval_ratio,
             split='test',
-            allow_truncate=args.allow_truncate,
             delimiter=args.delimiter,
             num_demonstrations=args.num_demonstrations,
             eval_on_demonstrations=args.eval_on_demonstrations,

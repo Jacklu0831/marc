@@ -1,0 +1,9 @@
+codah
+commonsense_qa
+financial_phrasebank
+hate_speech18
+openbookqa
+poem_sentiment
+qasc
+quartz-no_knowledge
+superglue-copa
