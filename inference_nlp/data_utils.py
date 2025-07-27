@@ -377,6 +377,7 @@ class EvalDataset:
         split: str,
         delimiter: str,
         num_demonstrations: int,
+        filter_based_on_ndemo: int,
         eval_on_demonstrations: bool,
     ):
         self.tokenizer = tokenizer
@@ -389,6 +390,7 @@ class EvalDataset:
         self.debug_max_len = debug_max_len
         self.seed = seed
         self.num_demonstrations = num_demonstrations
+        self.filter_based_on_ndemo = filter_based_on_ndemo
 
         # needed in evaluate
         self.split = split
@@ -424,28 +426,28 @@ class EvalDataset:
             assert len(task_to_demonstrations[task]) == 16
 
             # subset demonstrations if needed
-            task_to_demonstrations[task] = task_to_demonstrations[task][:num_demonstrations]
+            task_to_demonstrations[task] = task_to_demonstrations[task][:filter_based_on_ndemo]
 
             with_empty_options = False
             if eval_on_demonstrations:
-                task_to_test_pairs[task] = copy.deepcopy(task_to_demonstrations[task][:num_demonstrations])
+                task_to_test_pairs[task] = copy.deepcopy(task_to_demonstrations[task][:filter_based_on_ndemo])
             else:
                 # subset test pairs
                 test_file = os.path.join(task_data_dir, f"{task}_16_{eval_seed}_test.jsonl")
                 lines = open(test_file, 'r').readlines()
                 rng.shuffle(lines)
                 num_chosen = math.ceil(len(lines) * eval_ratio)
-                num_chosen = max(num_chosen, num_demonstrations - 16 + 1) # at least have one test when debugging
+                num_chosen = max(num_chosen, filter_based_on_ndemo - 16 + 1) # at least have one test when debugging
                 for l in lines[:num_chosen]:
                     example = json.loads(l)
                     task_to_test_pairs[task].append(example)
                     with_empty_options = with_empty_options or (len(example['options'])) == 0
 
             # take from test if needed
-            if num_demonstrations > 16:
-                task_to_demonstrations[task] += task_to_test_pairs[task][:num_demonstrations - 16]
-                task_to_test_pairs[task] = task_to_test_pairs[task][num_demonstrations - 16:]
-                assert len(task_to_demonstrations[task]) == num_demonstrations, len(task_to_demonstrations[task])
+            if filter_based_on_ndemo > 16:
+                task_to_demonstrations[task] += task_to_test_pairs[task][:filter_based_on_ndemo - 16]
+                task_to_test_pairs[task] = task_to_test_pairs[task][filter_based_on_ndemo - 16:]
+                assert len(task_to_demonstrations[task]) == filter_based_on_ndemo, len(task_to_demonstrations[task])
 
             # keep track of tasks that have empty options, we filter them out
             if with_empty_options:
@@ -517,6 +519,9 @@ class EvalDataset:
         assert set(self.tasks) == set(self.task_to_demonstrations.keys())
         logger.info(f'eval split {split}-{eval_seed} filtered to {len(self.tasks)}/{total_unfiltered_tasks} tasks, {filtered_total_test}/{unfiltered_total_test} tests, {len(self.data)}/{unfiltered_total_sample} samples')
 
+        # if filtering based on more demonstrations, limit it back to num_demonstrations
+        self.task_to_demonstrations = {t: task_to_demonstrations[t][:num_demonstrations] for t in self.tasks}
+
         # debug: check demon pairs are same for each task
         task_to_demon_input_ids = {}
         task_to_demon_start_idxs = {}
@@ -539,8 +544,22 @@ class EvalDataset:
         assert all(e['task'] == task for e in demonstrations) # test and demonstration pair have same task (dont need same option)
         assert correct_option in test_pair['options']
 
+        # this is the case of filtering based on MORE demonstration pairs
+        if len(demonstrations) > self.num_demonstrations:
+            out = parse_pairs(
+                pairs=demonstrations + [test_pair],
+                tokenizer=self.tokenizer,
+                max_pair_len=self.max_pair_len,
+                max_seq_len=self.max_seq_len,
+                delimiter_token_id=self.delimiter_token_id,
+                loss_type="only_last",
+                is_train=False,
+            )
+            if out == None:
+                return None
+
         out = parse_pairs(
-            pairs=demonstrations + [test_pair],
+            pairs=demonstrations[:self.num_demonstrations] + [test_pair],
             tokenizer=self.tokenizer,
             max_pair_len=self.max_pair_len,
             max_seq_len=self.max_seq_len,

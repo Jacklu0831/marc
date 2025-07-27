@@ -197,6 +197,7 @@ class EvalDataset:
         eval_ratio: float,
         delimiter: str,
         num_demonstrations: int,
+        filter_based_on_ndemo: int,
         eval_on_demonstrations: bool,
     ):
         self.tokenizer = tokenizer
@@ -208,6 +209,7 @@ class EvalDataset:
         self.debug_max_len = debug_max_len
         self.seed = seed
         self.num_demonstrations = num_demonstrations
+        self.filter_based_on_ndemo = filter_based_on_ndemo
 
         # separate input and output by newline
         self.delimiter_token_id = tokenize(delimiter, tokenizer)
@@ -233,17 +235,17 @@ class EvalDataset:
             task_data = [d for d in data if d['task'] == task]
 
             # get demonstrations
-            assert num_demonstrations <= len(task_data)
+            assert filter_based_on_ndemo <= len(task_data)
             random.seed(seed)
             random.shuffle(task_data)
-            task_to_demonstrations[task] = task_data[:num_demonstrations]
+            task_to_demonstrations[task] = task_data[:filter_based_on_ndemo]
 
             # get test
             if eval_on_demonstrations:
                 task_to_test_pairs[task] = copy.deepcopy(task_to_demonstrations[task])
             else:
-                num_chosen = math.ceil((len(task_data[num_demonstrations:])) * eval_ratio)
-                task_to_test_pairs[task] = task_data[num_demonstrations: num_demonstrations + num_chosen]
+                num_chosen = math.ceil((len(task_data[filter_based_on_ndemo:])) * eval_ratio)
+                task_to_test_pairs[task] = task_data[filter_based_on_ndemo: filter_based_on_ndemo + num_chosen]
 
         # debug: check eval on demonstrations is correct
         if eval_on_demonstrations:
@@ -294,6 +296,9 @@ class EvalDataset:
         assert set(self.tasks) == set(self.task_to_demonstrations.keys())
         logger.info(f'eval split filtered to {len(self.tasks)}/{total_unfiltered_tasks} tasks, {filtered_total_test}/{unfiltered_total_test} tests, {len(self.data)}/{unfiltered_total_sample} samples')
 
+        # if filtering based on more demonstrations, limit it back to num_demonstrations
+        self.task_to_demonstrations = {t: task_to_demonstrations[t][:num_demonstrations] for t in self.tasks}
+
         # get maxseqlen
         new_max_seq_len = 0
         for d in self.data:
@@ -323,8 +328,21 @@ class EvalDataset:
         assert all(e['task'] == task for e in demonstrations) # test and demonstration pair have same task (dont need same option)
         assert correct_option in test_pair['options']
 
+        # this is the case of filtering based on MORE demonstration pairs
+        if len(demonstrations) > self.num_demonstrations:
+            out = parse_pairs(
+                pairs=demonstrations + [test_pair],
+                tokenizer=self.tokenizer,
+                max_seq_len=self.max_seq_len,
+                delimiter_token_id=self.delimiter_token_id,
+                loss_type="only_last",
+                is_train=False,
+            )
+            if out == None:
+                return None
+
         out = parse_pairs(
-            pairs=demonstrations + [test_pair],
+            pairs=demonstrations[:self.num_demonstrations] + [test_pair],
             tokenizer=self.tokenizer,
             max_seq_len=self.max_seq_len,
             delimiter_token_id=self.delimiter_token_id,

@@ -23,24 +23,21 @@ def main():
 
     # 1) Allocate a small tensor
     a = torch.randn(1024, 1024, device='cuda')
-    print_vram_usage("After allocating a")
+    print(torch.cuda.max_memory_allocated() / (1024 ** 2))
 
     # 2) Allocate a larger tensor
     b = torch.randn(2048, 2048, device='cuda')
-    print_vram_usage("After allocating b")
+    print(torch.cuda.max_memory_allocated() / (1024 ** 2))
 
     # 3) Allocate an even larger tensor
     c = torch.empty((4096, 4096), device='cuda')
-    print_vram_usage("After allocating c")
+    print(torch.cuda.max_memory_allocated() / (1024 ** 2))
 
     # 4) Delete one tensor and clear cache
     del a
     torch.cuda.empty_cache()
-    print_vram_usage("After deleting a + empty_cache")
-
-    # 5) Report peak memory usage observed
-    peak = torch.cuda.max_memory_allocated()
-    print(f"{'Peak allocated':>30}: {peak/1024**2:8.2f} MiB")
+    torch.cuda.reset_peak_memory_stats()
+    print(torch.cuda.max_memory_allocated() / (1024 ** 2))
 
 if __name__ == "__main__":
     main()
