@@ -237,7 +237,7 @@ def test_time_evaluate(
     # STAGE 1: demonstration pair processing
     ttt_num_data_list, gs_num_data_list = [], []
     ttt_num_params_list, gs_num_params_list = [], []
-    ttt_time_list, gs_time_list = [], []
+    ttt_time_list, ttt_memory_list, gs_time_list, gs_memory_list = [], [], [], []
     init_prompt_time_list = []
 
     # outputs
@@ -285,13 +285,13 @@ def test_time_evaluate(
             # logging
             ttt_num_data, gs_num_data = 0, 0
             ttt_num_params, gs_num_params = 0, 0
-            ttt_time, gs_time = 0.0, 0.0
+            ttt_memory, ttt_time, gs_memory, gs_time = 0.0, 0.0, 0.0, 0.0
 
             # use ttt to refine model
             if ttt_iters > 0:
                 with accelerator.no_sync(model):
                     start_time = time.time()
-                    model, ttt_num_data, ttt_num_params = run_ttt(
+                    model, ttt_num_data, ttt_num_params, ttt_memory = run_ttt(
                         task=dataset.eval_tasks[task_idx],
                         eval_dataset=dataset,
                         accelerator=accelerator,
@@ -350,7 +350,7 @@ def test_time_evaluate(
                     start_time = time.time()
                     saved_gradckpt = model.model.gradient_checkpointing
                     model.model.gradient_checkpointing = False
-                    model, prompt, gs_num_data, gs_num_params, attn_logger = run_gs(
+                    model, prompt, gs_num_data, gs_num_params, attn_logger, gs_memory = run_gs(
                         task=dataset.eval_tasks[task_idx],
                         eval_dataset=dataset,
                         accelerator=accelerator,
@@ -413,7 +413,9 @@ def test_time_evaluate(
             ttt_num_params_list.append(ttt_num_params)
             gs_num_params_list.append(gs_num_params)
             ttt_time_list.append(ttt_time)
+            ttt_memory_list.append(ttt_memory)
             gs_time_list.append(gs_time)
+            gs_memory_list.append(gs_memory)
             init_prompt_time_list.append(init_prompt_time)
 
             # STAGE 2: apply model and kv to all tests
@@ -526,7 +528,9 @@ def test_time_evaluate(
     ttt_num_params_list = gather_object(ttt_num_params_list)
     gs_num_params_list = gather_object(gs_num_params_list)
     ttt_time_list = gather_object(ttt_time_list)
+    ttt_memory_list = gather_object(ttt_memory_list)
     gs_time_list = gather_object(gs_time_list)
+    gs_memory_list = gather_object(gs_memory_list)
 
     assert len(task_id_and_text_list) == len(dataset), (len(task_id_and_text_list), len(dataset))
     assert len(exact_acc_list) == len(dataset), (len(exact_acc_list), len(dataset))
@@ -539,7 +543,9 @@ def test_time_evaluate(
     assert len(ttt_num_params_list) == len(task_name_to_eval_idxs), (len(ttt_num_params_list), len(task_name_to_eval_idxs))
     assert len(gs_num_params_list) == len(task_name_to_eval_idxs), (len(gs_num_params_list), len(task_name_to_eval_idxs))
     assert len(ttt_time_list) == len(task_name_to_eval_idxs), (len(ttt_time_list), len(task_name_to_eval_idxs))
+    assert len(ttt_memory_list) == len(task_name_to_eval_idxs), (len(ttt_memory_list), len(task_name_to_eval_idxs))
     assert len(gs_time_list) == len(task_name_to_eval_idxs), (len(gs_time_list), len(task_name_to_eval_idxs))
+    assert len(gs_memory_list) == len(task_name_to_eval_idxs), (len(gs_memory_list), len(task_name_to_eval_idxs))
     assert len(init_prompt_time_list) == len(task_name_to_eval_idxs), (len(init_prompt_time_list), len(task_name_to_eval_idxs))
 
     # average metrics
@@ -588,11 +594,13 @@ def test_time_evaluate(
     ttt_num_params = sum(ttt_num_params_list) / len(ttt_num_params_list)
     gs_num_params = sum(gs_num_params_list) / len(gs_num_params_list)
     ttt_time = sum(ttt_time_list) / len(ttt_time_list)
+    ttt_memory = sum(ttt_memory_list) / len(ttt_memory_list)
     gs_time = sum(gs_time_list) / len(gs_time_list)
+    gs_memory = sum(gs_memory_list) / len(gs_memory_list)
     init_prompt_time = sum(init_prompt_time_list) / len(init_prompt_time_list)
 
     return exact_acc, valid_grid, correct_grid_dim, token_acc, relaxed_token_acc, task_id_to_texts, \
-        votes, competition_sub_acc, competition_all_acc, ttt_num_data, gs_num_data, ttt_num_params, gs_num_params, ttt_time, gs_time, init_prompt_time
+        votes, competition_sub_acc, competition_all_acc, ttt_num_data, gs_num_data, ttt_num_params, gs_num_params, ttt_time, ttt_memory, gs_time, gs_memory, init_prompt_time
 
 
 @torch.enable_grad()
@@ -695,6 +703,9 @@ def run_ttt(
     # prepare some stuff
     model.train()
 
+    # reset peak before training
+    torch.cuda.reset_peak_memory_stats()
+
     # train!
     curr_iter = 0
     while curr_iter < iters:
@@ -739,10 +750,13 @@ def run_ttt(
             if curr_iter >= iters:
                 break
 
+    # record peak memory after training
+    peak_memory = torch.cuda.max_memory_allocated() / (1024 ** 2)
+
     model.eval()
     model = merge_lora(model)
 
-    return model, len(ttt_dataset), num_params
+    return model, len(ttt_dataset), num_params, peak_memory
 
 
 class AttentionLogger:
@@ -943,6 +957,9 @@ def run_gs(
     # debug: save for assertions
     kv_len_before_dropout = prompt.shape[1]
 
+    # reset peak before training
+    torch.cuda.reset_peak_memory_stats()
+
     # train!
     curr_epoch = 0
     while curr_epoch < epochs:
@@ -1079,6 +1096,9 @@ def run_gs(
             if curr_epoch >= epochs:
                 break
 
+    # record peak memory after training
+    peak_memory = torch.cuda.max_memory_allocated() / (1024 ** 2)
+
     model.eval()
     if lora:
         model = merge_lora(model)
@@ -1091,7 +1111,7 @@ def run_gs(
     # add prefix
     if prefix_prompt is not None:
         raise NotImplementedError()
-    return model, prompt, len(gs_dataset), num_params, attn_logger
+    return model, prompt, len(gs_dataset), num_params, attn_logger, peak_memory
 
 
 def merge_lora(model: nn.Module) -> nn.Module:
@@ -1402,7 +1422,7 @@ def main():
 
     # evaluate
     exact_acc, valid_grid, correct_grid_dim, token_acc, relaxed_token_acc, texts, votes, competition_sub_acc, competition_all_acc, \
-         ttt_num_data, gs_num_data, ttt_num_params, gs_num_params, ttt_time, gs_time, init_prompt_time = test_time_evaluate(
+         ttt_num_data, gs_num_data, ttt_num_params, gs_num_params, ttt_time, ttt_memory, gs_time, gs_memory, init_prompt_time = test_time_evaluate(
         model=model,
         dataset=dataset,
         accelerator=accelerator,
@@ -1481,7 +1501,9 @@ def main():
             "eval/ttt_num_params": ttt_num_params,
             "eval/gs_num_params": gs_num_params,
             "eval/ttt_time": ttt_time,
+            "eval/ttt_memory": ttt_memory,
             "eval/gs_time": gs_time,
+            "eval/gs_memory": gs_memory,
             "eval/init_prompt_time": init_prompt_time,
         }
         logger.info(f'Evaluation results:\n{pprint.pformat(metric_dict, indent=4)}')

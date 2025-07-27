@@ -625,7 +625,7 @@ def test_time_evaluate(
     # STAGE 1: demonstration pair processing
     ttt_num_data_list, gs_num_data_list = [], []
     ttt_num_params_list, gs_num_params_list = [], []
-    ttt_time_list, gs_time_list = [], []
+    ttt_time_list, ttt_memory_list, gs_time_list, gs_memory_list = [], [], [], []
     init_kv_time_list = []
 
     # outputs
@@ -710,14 +710,14 @@ def test_time_evaluate(
             # logging
             ttt_num_data, gs_num_data = 0, 0
             ttt_num_params, gs_num_params = 0, 0
-            ttt_time, gs_time = 0.0, 0.0
+            ttt_memory, ttt_time, gs_memory, gs_time = 0.0, 0.0, 0.0, 0.0
 
             # use ttt to refine model
             if ttt_iters > 0:
                 with accelerator.no_sync(model):
                     start_time = time.time()
                     ttt_save_path = os.path.join(output_dir, f'{task}.pt') if ttt_save else None
-                    model, ttt_num_data, ttt_num_params = run_ttt(
+                    model, ttt_num_data, ttt_num_params, ttt_memory = run_ttt(
                         demonstration_pairs=dataset.task_to_demonstrations[task],
                         eval_dataset=dataset,
                         accelerator=accelerator,
@@ -806,7 +806,7 @@ def test_time_evaluate(
                             (layer_k.to(torch.bfloat16), layer_v.to(torch.bfloat16))
                             for layer_k, layer_v in past_key_values
                         )
-                    model, past_key_values, gs_num_data, gs_num_params, attn_logger, fisher_vals = run_gs(
+                    model, past_key_values, gs_num_data, gs_num_params, attn_logger, fisher_vals, gs_memory = run_gs(
                         demonstration_pairs=dataset.task_to_demonstrations[task],
                         eval_dataset=dataset,
                         accelerator=accelerator,
@@ -901,7 +901,9 @@ def test_time_evaluate(
             ttt_num_params_list.append(ttt_num_params)
             gs_num_params_list.append(gs_num_params)
             ttt_time_list.append(ttt_time)
+            ttt_memory_list.append(ttt_memory)
             gs_time_list.append(gs_time)
+            gs_memory_list.append(gs_memory)
             init_kv_time_list.append(init_kv_time)
 
             # STAGE 2: apply model and kv to all tests
@@ -1006,7 +1008,9 @@ def test_time_evaluate(
     ttt_num_params_list = gather_object(ttt_num_params_list)
     gs_num_params_list = gather_object(gs_num_params_list)
     ttt_time_list = gather_object(ttt_time_list)
+    ttt_memory_list = gather_object(ttt_memory_list)
     gs_time_list = gather_object(gs_time_list)
+    gs_memory_list = gather_object(gs_memory_list)
     init_kv_time_list = gather_object(init_kv_time_list)
     output_list = gather_object(output_list)
     assert len(ttt_num_data_list) == len(dataset.tasks), (len(ttt_num_data_list), len(dataset.tasks))
@@ -1014,7 +1018,9 @@ def test_time_evaluate(
     assert len(ttt_num_params_list) == len(dataset.tasks), (len(ttt_num_params_list), len(dataset.tasks))
     assert len(gs_num_params_list) == len(dataset.tasks), (len(gs_num_params_list), len(dataset.tasks))
     assert len(ttt_time_list) == len(dataset.tasks), (len(ttt_time_list), len(dataset.tasks))
+    assert len(ttt_memory_list) == len(dataset.tasks), (len(ttt_memory_list), len(dataset.tasks))
     assert len(gs_time_list) == len(dataset.tasks), (len(gs_time_list), len(dataset.tasks))
+    assert len(gs_memory_list) == len(dataset.tasks), (len(gs_memory_list), len(dataset.tasks))
     assert len(init_kv_time_list) == len(dataset.tasks), (len(init_kv_time_list), len(dataset.tasks))
     assert len(output_list) == len(dataset), (len(output_list), len(dataset)) # dataset length, not num task
 
@@ -1058,10 +1064,12 @@ def test_time_evaluate(
     ttt_num_params = sum(ttt_num_params_list) / len(ttt_num_params_list)
     gs_num_params = sum(gs_num_params_list) / len(gs_num_params_list)
     ttt_time = sum(ttt_time_list) / len(ttt_time_list)
+    ttt_memory = sum(ttt_memory_list) / len(ttt_memory_list)
     gs_time = sum(gs_time_list) / len(gs_time_list)
+    gs_memory = sum(gs_memory_list) / len(gs_memory_list)
     init_kv_time = sum(init_kv_time_list) / len(init_kv_time_list)
 
-    return score, ttt_num_data, gs_num_data, ttt_num_params, gs_num_params, ttt_time, gs_time, init_kv_time, output_list
+    return score, ttt_num_data, gs_num_data, ttt_num_params, gs_num_params, ttt_time, ttt_memory, gs_time, gs_memory, init_kv_time, output_list
 
 
 def save_lora(model: nn.Module, save_path: str) -> None:
@@ -1206,6 +1214,9 @@ def run_ttt(
                 ttt_collate_fn=ttt_collate_fn,
             )
 
+    # reset peak before training
+    torch.cuda.reset_peak_memory_stats()
+
     # train!
     curr_iter = 0
     while curr_iter < iters:
@@ -1258,6 +1269,9 @@ def run_ttt(
             if curr_iter >= iters:
                 break
 
+    # record peak memory after training
+    peak_memory = torch.cuda.max_memory_allocated() / (1024 ** 2)
+
     model.eval()
 
     # save and merge lora
@@ -1265,7 +1279,7 @@ def run_ttt(
         save_lora(model, save_path)
     model = merge_lora(model)
 
-    return model, len(ttt_dataset), num_params
+    return model, len(ttt_dataset), num_params, peak_memory
 
 
 class AttentionLogger:
@@ -1830,6 +1844,9 @@ def run_gs(
             #     avg_fisher += fisher_k.mean().item() + fisher_v.mean().item()
             # avg_fisher /= (len(fisher_vals) * 2)
 
+    # reset peak before training
+    torch.cuda.reset_peak_memory_stats()
+
     # train!
     for _ in range(epochs):
         num_batch = len(gs_loader)
@@ -1969,6 +1986,9 @@ def run_gs(
         scheduler.step()
         optim.zero_grad()
 
+    # record peak memory after training
+    peak_memory = torch.cuda.max_memory_allocated() / (1024 ** 2)
+
     model.eval()
     if lora:
         model = merge_lora(model)
@@ -2002,7 +2022,7 @@ def run_gs(
         assert past_key_values[0][0].shape == old_shape
 
     ret_fisher_vals = fisher_vals if log_fisher else None
-    return model, past_key_values, len(gs_dataset), num_params, attn_logger, ret_fisher_vals
+    return model, past_key_values, len(gs_dataset), num_params, attn_logger, ret_fisher_vals, peak_memory
 
 
 def merge_lora(model: nn.Module) -> nn.Module:
@@ -2284,7 +2304,7 @@ def main():
         collate_fn = partial(collate_fn_eval_dummy, dataset=dataset)
 
     # Eval Datasets
-    score, ttt_num_data, gs_num_data, ttt_num_params, gs_num_params, ttt_time, gs_time, init_kv_time, output_list = test_time_evaluate(
+    score, ttt_num_data, gs_num_data, ttt_num_params, gs_num_params, ttt_time, ttt_memory, gs_time, gs_memory, init_kv_time, output_list = test_time_evaluate(
         model=model,
         dataset=dataset,
         accelerator=accelerator,
@@ -2389,7 +2409,9 @@ def main():
             "eval/ttt_num_params": ttt_num_params,
             "eval/gs_num_params": gs_num_params,
             "eval/ttt_time": ttt_time,
+            "eval/ttt_memory": ttt_memory,
             "eval/gs_time": gs_time,
+            "eval/gs_memory": gs_memory,
             "eval/init_kv_time": init_kv_time,
         }
         logger.info(f'Evaluation results:\n{pprint.pformat(metric_dict, indent=4)}')
