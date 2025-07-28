@@ -198,6 +198,7 @@ class EvalDataset:
         delimiter: str,
         num_demonstrations: int,
         filter_based_on_ndemo: int,
+        wrong_label: float,
         eval_on_demonstrations: bool,
     ):
         self.tokenizer = tokenizer
@@ -259,6 +260,14 @@ class EvalDataset:
         logger.info(f'generating samples for mmlu')
         self.data = []
         unfiltered_total_test, filtered_total_test, unfiltered_total_sample = 0, 0, 0
+
+        if wrong_label > 0.0:
+            for task, pairs in task_to_demonstrations.items():
+                for pair in pairs:
+                    if random.random() < wrong_label:
+                        other_options = [opt for opt in pair['options'] if opt != pair['output']]
+                        assert len(other_options) > 0 and len(other_options) < len(pair['options'])
+                        pair['output'] = random.choice(other_options)
 
         for task_i, (task, test_pairs) in enumerate(task_to_test_pairs.items()):
             logger.info(f'{task_i+1}/{len(task_to_test_pairs)}')

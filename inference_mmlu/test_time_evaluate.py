@@ -2057,6 +2057,7 @@ def main():
     # Evaluation & data
     parser.add_argument("--num_demonstrations", type=int, default=16)
     parser.add_argument("--filter_based_on_ndemo", type=int, default=None)
+    parser.add_argument("--wrong_label", type=float, default=0.0)
     parser.add_argument("--batch_size", type=int, default=16)
     parser.add_argument("--max_seq_len", type=int, default=4096)
     parser.add_argument("--pad_side", type=str, choices=["left", "right"], default="left")
@@ -2297,6 +2298,7 @@ def main():
         delimiter=args.delimiter,
         num_demonstrations=args.num_demonstrations,
         filter_based_on_ndemo=args.filter_based_on_ndemo,
+        wrong_label=args.wrong_label,
         eval_on_demonstrations=args.eval_on_demonstrations,
     )
     collate_fn = partial(collate_fn_eval, dataset=dataset)
