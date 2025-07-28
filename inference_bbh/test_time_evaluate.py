@@ -659,6 +659,11 @@ def test_time_evaluate(
             answer_format = TASKS[task]['answer_format']
 
             # load cached for fresh model
+            del model
+            torch.cuda.empty_cache()
+            gc.collect()
+
+            # load cached for fresh model
             model = copy.deepcopy(cached_model).to(accelerator.device)
             model.eval()
 
