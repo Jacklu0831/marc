@@ -26,7 +26,7 @@ from transformers import (
 from accelerate import Accelerator, PartialState, InitProcessGroupKwargs
 from accelerate.logging import get_logger
 from accelerate.utils import ProjectConfiguration, set_seed, gather_object
-from peft import LoraConfig, RandLoraConfig, LNTuningConfig, TaskType, get_peft_model # type: ignore
+from peft import LoraConfig, RandLoraConfig, LNTuningConfig, C3AConfig, TaskType, get_peft_model, prepare_model_for_kbit_training # type: ignore
 
 from data_utils import (
     EvalDataset,
@@ -467,6 +467,7 @@ def test_time_evaluate(
     gs_lora_rslora: bool,
     gs_lora_dora: bool,
     gs_lora_randlora: bool,
+    gs_c3a: bool,
     # gs ft
     gs_ft: bool,
     gs_ft_lr: float,
@@ -736,6 +737,7 @@ def test_time_evaluate(
                         lora_rslora=gs_lora_rslora,
                         lora_dora=gs_lora_dora,
                         lora_randlora=gs_lora_randlora,
+                        c3a=gs_c3a,
                         ft=gs_ft,
                         ft_lr=gs_ft_lr,
                         ft_beta1=gs_ft_beta1,
@@ -1517,6 +1519,7 @@ def run_gs(
     lora_rslora: bool,
     lora_dora: bool,
     lora_randlora: bool,
+    c3a: bool,
     ft: bool,
     ft_lr: float,
     ft_beta1: float,
@@ -1541,6 +1544,11 @@ def run_gs(
         elif lntuning:
             peft_config = LNTuningConfig(
                 task_type=TaskType.CAUSAL_LM,
+            )
+        elif c3a:
+            peft_config = C3AConfig(
+                task_type=TaskType.CAUSAL_LM,
+                target_modules=['q_proj', 'v_proj', 'o_proj', 'gate_proj', 'up_proj', 'down_proj'],
             )
         else:
             peft_config = LoraConfig(
@@ -1630,7 +1638,7 @@ def run_gs(
     if lora:
         lora_params = []
         for n, p in model.named_parameters():
-            if not lntuning:
+            if not lntuning and not c3a:
                 assert p.requires_grad == ('lora' in n)
             if p.requires_grad:
                 lora_params.append(p)
@@ -1971,6 +1979,7 @@ def main():
     parser.add_argument("--task_list", type=str, default=None)
     parser.add_argument("--num_demonstrations", type=int, default=16)
     parser.add_argument("--filter_based_on_ndemo", type=int, default=None)
+    parser.add_argument("--wrong_label", type=float, default=0.0)
     parser.add_argument("--batch_size", type=int, default=16)
     parser.add_argument("--max_seq_len", type=int, default=1024)
     parser.add_argument("--max_pair_len", type=int, default=256)
@@ -2059,6 +2068,7 @@ def main():
     parser.add_argument("--gs_lora_rslora", action='store_true')
     parser.add_argument("--gs_lora_dora", action='store_true')
     parser.add_argument("--gs_lora_randlora", action='store_true')
+    parser.add_argument("--gs_c3a", action='store_true')
 
     # gradient search with ft
     parser.add_argument("--gs_ft", action='store_true')
@@ -2179,6 +2189,7 @@ def main():
             delimiter=args.delimiter,
             num_demonstrations=args.num_demonstrations,
             filter_based_on_ndemo=args.filter_based_on_ndemo,
+            wrong_label=args.wrong_label,
             eval_on_demonstrations=args.eval_on_demonstrations,
         )
         for eval_seed in args.eval_seeds
@@ -2248,6 +2259,7 @@ def main():
             gs_lora_rslora=args.gs_lora_rslora,
             gs_lora_dora=args.gs_lora_dora,
             gs_lora_randlora=args.gs_lora_randlora,
+            gs_c3a=args.gs_c3a,
             # gs ft
             gs_ft=args.gs_ft,
             gs_ft_lr=args.gs_ft_lr,
