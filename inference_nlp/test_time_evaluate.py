@@ -1548,7 +1548,7 @@ def run_gs(
         elif c3a:
             peft_config = C3AConfig(
                 task_type=TaskType.CAUSAL_LM,
-                target_modules=['q_proj', 'v_proj', 'o_proj', 'gate_proj', 'up_proj', 'down_proj'],
+                target_modules=['c_attn', 'c_proj', 'c_fc'],
             )
         else:
             peft_config = LoraConfig(

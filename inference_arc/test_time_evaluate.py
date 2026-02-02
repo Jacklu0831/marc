@@ -34,7 +34,7 @@ from transformers.tokenization_utils_fast import PreTrainedTokenizerFast
 from accelerate import Accelerator, PartialState, InitProcessGroupKwargs
 from accelerate.logging import get_logger
 from accelerate.utils import ProjectConfiguration, set_seed, gather_object
-from peft import LoraConfig, TaskType, PeftModel, get_peft_model, prepare_model_for_kbit_training # type: ignore
+from peft import LoraConfig, RandLoraConfig, LNTuningConfig, C3AConfig, TaskType, PeftModel, get_peft_model, prepare_model_for_kbit_training # type: ignore
 
 from data_utils import (
     ARCTokenizer,
@@ -490,6 +490,8 @@ def test_time_evaluate(
     gs_prefix_lora: bool,
     gs_prefix_lora_rank: int,
     gs_prefix_lora_share_head: bool,
+    # gs lntuning
+    gs_lntuning: bool,
     # gs lora
     gs_lora: bool,
     gs_lora_rank: int,
@@ -499,6 +501,14 @@ def test_time_evaluate(
     gs_lora_beta2: float,
     gs_lora_dropout: float,
     gs_lora_rslora: bool,
+    gs_lora_dora: bool,
+    gs_lora_randlora: bool,
+    gs_c3a: bool,
+    # gs ft
+    gs_ft: bool,
+    gs_ft_lr: float,
+    gs_ft_beta1: float,
+    gs_ft_beta2: float,
     # gs init
     random_kv: str,
     random_kv_ntokens: int,
@@ -769,6 +779,7 @@ def test_time_evaluate(
                         prefix_lora=gs_prefix_lora,
                         prefix_lora_rank=gs_prefix_lora_rank,
                         prefix_lora_share_head=gs_prefix_lora_share_head,
+                        lntuning=gs_lntuning,
                         lora=gs_lora,
                         lora_rank=gs_lora_rank,
                         lora_alpha=gs_lora_alpha,
@@ -777,6 +788,13 @@ def test_time_evaluate(
                         lora_beta2=gs_lora_beta2,
                         lora_dropout=gs_lora_dropout,
                         lora_rslora=gs_lora_rslora,
+                        lora_dora=gs_lora_dora,
+                        lora_randlora=gs_lora_randlora,
+                        c3a=gs_c3a,
+                        ft=gs_ft,
+                        ft_lr=gs_ft_lr,
+                        ft_beta1=gs_ft_beta1,
+                        ft_beta2=gs_ft_beta2,
                         ntokens=gs_ntokens,
                         lambda_param_sqr=gs_lambda_param_sqr,
                         fisher=gs_fisher,
@@ -1560,6 +1578,7 @@ def run_gs(
     prefix_lora: bool,
     prefix_lora_rank: int,
     prefix_lora_share_head: bool,
+    lntuning: bool,
     lora: bool,
     lora_rank: int,
     lora_alpha: int,
@@ -1568,6 +1587,13 @@ def run_gs(
     lora_beta2: float,
     lora_dropout: float,
     lora_rslora: bool,
+    lora_dora: bool,
+    lora_randlora: bool,
+    c3a: bool,
+    ft: bool,
+    ft_lr: float,
+    ft_beta1: float,
+    ft_beta2: float,
     ntokens: int,
     lambda_param_sqr: float,
     fisher: bool,
@@ -1576,16 +1602,39 @@ def run_gs(
 
     # optional lora
     if lora:
-        peft_config = LoraConfig(
-            r=lora_rank,
-            lora_alpha=lora_alpha,
-            lora_dropout=lora_dropout,
-            use_rslora=lora_rslora,
-            target_modules=['q_proj', 'v_proj', 'o_proj', 'gate_proj', 'up_proj', 'down_proj'],
-            task_type=TaskType.CAUSAL_LM,
-        )
+        if lora_randlora:
+            peft_config = RandLoraConfig(
+                r=lora_rank,
+                randlora_alpha=lora_alpha,
+                randlora_dropout=lora_dropout,
+                target_modules=['q_proj', 'v_proj', 'o_proj', 'gate_proj', 'up_proj', 'down_proj'],
+                task_type=TaskType.CAUSAL_LM,
+            )
+        elif lntuning:
+            peft_config = LNTuningConfig(
+                task_type=TaskType.CAUSAL_LM,
+            )
+        elif c3a:
+            peft_config = C3AConfig(
+                task_type=TaskType.CAUSAL_LM,
+                target_modules=['q_proj', 'v_proj', 'o_proj', 'gate_proj', 'up_proj', 'down_proj'],
+            )
+        else:
+            peft_config = LoraConfig(
+                r=lora_rank,
+                lora_alpha=lora_alpha,
+                lora_dropout=lora_dropout,
+                use_rslora=lora_rslora,
+                use_dora=lora_dora,
+                target_modules=['q_proj', 'v_proj', 'o_proj', 'gate_proj', 'up_proj', 'down_proj'],
+                task_type=TaskType.CAUSAL_LM,
+            )
         model = get_peft_model(model, peft_config) # type: ignore
         # model.print_trainable_parameters()
+
+    if ft:
+        for p in model.parameters():
+            p.requires_grad = True
 
     # this copying is necessary because torch is dumb as hell
     assert demon_start_idxs[0] == 0
@@ -1657,10 +1706,20 @@ def run_gs(
     if lora:
         lora_params = []
         for n, p in model.named_parameters():
-            assert p.requires_grad == ('lora' in n)
+            if not lntuning and not c3a:
+                assert p.requires_grad == ('lora' in n)
             if p.requires_grad:
                 lora_params.append(p)
         num_params += sum(p.numel() for p in lora_params)
+
+    # get model parameters
+    ft_params = []
+    if ft:
+        ft_params = []
+        for p in model.parameters():
+            if p.requires_grad:
+                ft_params.append(p)
+        num_params += sum(p.numel() for p in ft_params)
 
     # dataset
     gs_dataset = GSDataset(
@@ -1706,8 +1765,9 @@ def run_gs(
     optimizer_grouped_params = [
         {"params": program_params, "lr": lr, 'betas': (beta1, beta2)},
         {"params": lora_params, "lr": lora_lr, 'betas': (lora_beta1, lora_beta2)},
+        {"params": ft_params, "lr": ft_lr, 'betas': (ft_beta1, ft_beta2)},
     ]
-    all_params = program_params + lora_params
+    all_params = program_params + lora_params + ft_params
     if optimizer == 'adamw':
         optim = torch.optim.AdamW(optimizer_grouped_params, weight_decay=weight_decay) # type: ignore
     else:
@@ -1985,6 +2045,10 @@ def run_gs(
     if lora:
         model = merge_lora(model)
 
+    if ft:
+        for p in model.parameters():
+            p.requires_grad = False
+
     past_key_values = tuple(
         (layer_k.detach().clone(), layer_v.detach().clone())
         for layer_k, layer_v in past_key_values
@@ -2128,6 +2192,9 @@ def main():
     parser.add_argument("--permute_back_strip_position", action='store_true')
     parser.add_argument("--permute_concat", action='store_true')
 
+    # gradient search with LNtuning
+    parser.add_argument("--gs_lntuning", action='store_true')
+
     # gradient search with lora
     parser.add_argument("--gs_lora", action='store_true')
     parser.add_argument("--gs_lora_rank", type=int, default=128)
@@ -2137,6 +2204,15 @@ def main():
     parser.add_argument("--gs_lora_beta2", type=float, default=0.999)
     parser.add_argument("--gs_lora_dropout", type=float, default=0.05)
     parser.add_argument("--gs_lora_rslora", action='store_true')
+    parser.add_argument("--gs_lora_dora", action='store_true')
+    parser.add_argument("--gs_lora_randlora", action='store_true')
+    parser.add_argument("--gs_c3a", action='store_true')
+
+    # gradient search with ft
+    parser.add_argument("--gs_ft", action='store_true')
+    parser.add_argument("--gs_ft_lr", type=float, default=1e-5)
+    parser.add_argument("--gs_ft_beta1", type=float, default=0.9)
+    parser.add_argument("--gs_ft_beta2", type=float, default=0.999)
 
     # gradient search regularization
     parser.add_argument("--gs_lambda_param_sqr", type=float, default=0.0)
@@ -2387,6 +2463,8 @@ def main():
         gs_prefix_lora=args.gs_prefix_lora,
         gs_prefix_lora_rank=args.gs_prefix_lora_rank,
         gs_prefix_lora_share_head=args.gs_prefix_lora_share_head,
+        # gs lntuning
+        gs_lntuning=args.gs_lntuning,
         # gs lora
         gs_lora=args.gs_lora,
         gs_lora_rank=args.gs_lora_rank,
@@ -2396,6 +2474,14 @@ def main():
         gs_lora_beta2=args.gs_lora_beta2,
         gs_lora_dropout=args.gs_lora_dropout,
         gs_lora_rslora=args.gs_lora_rslora,
+        gs_lora_dora=args.gs_lora_dora,
+        gs_lora_randlora=args.gs_lora_randlora,
+        gs_c3a=args.gs_c3a,
+        # gs ft
+        gs_ft=args.gs_ft,
+        gs_ft_lr=args.gs_ft_lr,
+        gs_ft_beta1=args.gs_ft_beta1,
+        gs_ft_beta2=args.gs_ft_beta2,
         # gs init
         random_kv=args.random_kv,
         random_kv_ntokens=args.random_kv_ntokens,

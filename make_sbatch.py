@@ -24,7 +24,7 @@ MASTER_PORT=$(comm -23 <(seq 10000 65000 | sort) <(ss -tan | awk '{print $4}' | 
 singularity exec --nv \\
     --overlay /scratch/yl11330/my_env/overlay-50G-10M-pytorch.ext3:ro \\
     /scratch/work/public/singularity/cuda11.6.124-cudnn8.4.0.27-devel-ubuntu20.04.4.sif \\
-    /bin/bash -c "source /ext3/env.sh; cd /scratch/yl11330/marc; $GITPULL conda activate ./penv; export MASTER_PORT; \\
+    /bin/bash -c "source /ext3/env.sh; cd /scratch/yl11330/marc; $GITPULL conda activate ./penv; export MASTER_PORT; export HF_TOKEN; \\
         $CMD"
 """
 
