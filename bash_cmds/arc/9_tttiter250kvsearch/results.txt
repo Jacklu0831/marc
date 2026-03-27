@@ -1,0 +1,2 @@
+only took a look, 5e-5 did more harm than good, didnt improve a single part1
+1e-4 is however kinda ok, maybe solve 1 or 2 more task but its across 400! barely any difference

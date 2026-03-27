@@ -1,0 +1,57 @@
+be as short, ambiguous as possible
+=> in main paper, compare speed based on total optimization time per task (show performance/time-per-task), selection of hyperparams are in supp
+=> optimized ttt configuration: loss on all, all distinct permutation pairs
+=> all performance plateau at their selected hyperparameter, does not improve further
+=> had to increase learning rate of p/kv-tuning for faster convergence because these tokens are not relevant
+=> note tokendrop applies to all methods except ttt
+=> probably break down hyperparameters into sections
+
+arc:
+- for all methods (including baseline for fairest comparison): lr [1e-4, 1e-3, 3e-3], iters [100, 150, 200, 250], tokendrop [0, 0.1]
+- ct-p: 1e-3 0.1 150
+- ct-kv: 3e-3 0.1 200
+- p-tuning 32token: 3e-3 0 150
+- p-tuning demotoken: 3e-3 0.1 150
+- kv-tuning 32token: waiting for 3e-3 results (should be 200)
+- kv-tuning demotoken: waiting for 3e-3 results (should be 200)
+- ttt: 1e-4 200
+- tttkv: 50
+
+nlp:
+- for all methods (including baseline for fairest comparison): lr [1e-4, 1e-3, 3e-3], iters [150, 200, 250, 300], tokendrop [0, 0.05, 0.1]
+- ct-p: 1e-3 250 0.05
+- ct-kv: 1e-3 250 0.05
+- p-tuning 32token: 3e-3 250
+- p-tuning demotoken: 3e-3 200
+- kv-tuning 32token: 3e-3 250
+- kv-tuning demotoken: 3e-3 250
+- ttt: 1e-4 250
+- tttkv: 30
+
+bbh:
+- for all methods (including baseline for fairest comparison): lr [1e-4, 3e-4, 1e-3], iters [8, 12, 16, 20, 24], tokendrop [0, 0.1]
+- ct-p: 3e-4 12
+- ct-kv: 1e-3 16
+- p-tuning 32token: 3e-4 16
+- p-tuning demotoken: 3e-4 16
+- kv-tuning 32token: waiting for 3e-3 results, 16
+- kv-tuning demotoken: waiting for 3e-3 results, 16
+- ttt: 1e-4 8
+- tttkv: 8
+
+mmlu:
+- for all methods (including baseline for fairest comparison): lr [1e-3, 3e-3], iters [12, 16, 20, 24, 28], tokendrop []
+- ct-p: 3e-4 20
+- ct-kv: 1e-3 20
+- p-tuning 32token: 1e-3 20
+- p-tuning demotoken: 1e-3 16
+- kv-tuning 32token: 1e-3 24
+- kv-tuning demotoken: 1e-3 24
+- ttt: 1e-4 20
+- tttkv: 10
+
+
+
+TODO: hyperparam on ttt lora
+TODO: stare at this more to figure out what might be wrong
+TODO: run all of these to estimate time!

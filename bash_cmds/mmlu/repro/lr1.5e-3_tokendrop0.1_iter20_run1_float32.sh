@@ -1,0 +1,39 @@
+# mmlu gs20 lr1.5e-3 tokendrop0.1 seed42
+accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_mmlu/test_time_evaluate.py \
+    --tag mmlu_gs20_lr1.5e-3_tokendrop0.1_seed42_run1_float32 \
+    --gs_epochs 20 \
+    --gs_lr 1.5e-3 \
+    --gs_token_dropout 0.1 \
+    --seed 42
+
+# mmlu gs20 lr1.5e-3 tokendrop0.1 seed43
+accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_mmlu/test_time_evaluate.py \
+    --tag mmlu_gs20_lr1.5e-3_tokendrop0.1_seed43_run1_float32 \
+    --gs_epochs 20 \
+    --gs_lr 1.5e-3 \
+    --gs_token_dropout 0.1 \
+    --seed 43
+
+# mmlu gs20 lr1.5e-3 tokendrop0.1 seed44
+accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_mmlu/test_time_evaluate.py \
+    --tag mmlu_gs20_lr1.5e-3_tokendrop0.1_seed44_run1_float32 \
+    --gs_epochs 20 \
+    --gs_lr 1.5e-3 \
+    --gs_token_dropout 0.1 \
+    --seed 44
+
+# mmlu gs20 lr1.5e-3 tokendrop0.1 seed45
+accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_mmlu/test_time_evaluate.py \
+    --tag mmlu_gs20_lr1.5e-3_tokendrop0.1_seed45_run1_float32 \
+    --gs_epochs 20 \
+    --gs_lr 1.5e-3 \
+    --gs_token_dropout 0.1 \
+    --seed 45
+
+# mmlu gs20 lr1.5e-3 tokendrop0.1 seed46
+accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_mmlu/test_time_evaluate.py \
+    --tag mmlu_gs20_lr1.5e-3_tokendrop0.1_seed46_run1_float32 \
+    --gs_epochs 20 \
+    --gs_lr 1.5e-3 \
+    --gs_token_dropout 0.1 \
+    --seed 46

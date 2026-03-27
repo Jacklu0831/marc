@@ -1,0 +1,200 @@
+when have compute, do evalratio1.0 in case its higher
+
+gs5 evalratio0.25 took 10min, gs25 evalratio0.25 took 14.5min
+ttt5 evalratio0.25 took 18min, ttt25 evalratio0.25 took 33min
+=> gs iter adds 0.225min, everything else 9min
+=> ttt iter adds 0.75min, everything else 14.25min????? why tf
+
+calculation for time
+=> gs iter 5 + 10 + 15 + 20 + 25 = 75 => 61.875min (fit 3)
+=> ttt iter 10 + 20 + 30 + 40 + 50 = 150 => 183.75min => 1 at a time
+=> randomkv iter 25 + 50 + 75 + 100 => 92.25min => 2 at a time
+=> ttt kv iter 2 + 4 + 6 + 8 + 10 + 12 + 14 + 16 => 88.2 => 2 at a time
+
+ttt ckpt memory
+=> under 16 bits default lora config and 57 tasks each with 301MB => 17GB saved ttt ckpts
+
+
+
+# zeroshot:
+evalratio0.25: 35.169633287923
+evalratio1.0: 35.828043842032
+
+# normalicl:
+evalratio0.25: 41.586940388407
+evalratio1.0: 41.207544727125
+
+# randomhiddenntoken: random hidden state search with evalratio0.25
+iter: 25, 50, 75, 100
+lr: 1e-3
+=> note lr1e-2 is not good
+=> 25 is actually best, put [10, '25', 50, 75, 100]
+=> got 38.521223774903
+
+# randomsearchntoken: randomkv search with evalratio0.25
+iter: 25, 50, 75, 100
+lr: 1e-3
+=> note lr1e-2 is not good
+=> 25 is actually best, put [10, '25', 50, 75, 100]
+=> got 39.922862945876
+
+# randomsearchfull: randomkv search with evalratio0.25
+iter: 25, 50, 75, 100
+lr: 1e-3
+=> note lr1e-2 is not good
+=> 25 is actually best, put [10, '25', 50, 75, 100]
+=> got 38.818151326004
+
+# tttnopermute:
+iter: 5, 10, 20, 30 (3 hours should be enough)
+lr: 1e-4
+=> waiting locally
+
+# tttsave: just get ttt results for all seeds
+iter: 10, 20, 30, 40, 50
+lr: 1e-4
+seed: 42, 43, 44, 45
+=> iter10 is too strong, set [10, '20', 30, 40, 50], performance 43.50 (but put close to 44)
+=> seed46 VRAM OOMs, but no time to care, worry when opensource
+=> can do multiple runs, but just stick to one for now
+
+# prefixsearch
+iter: 5, 10, 15, 20, 25 (up to 25iter for a time under ttt 8iter but didnt test for mmlu)
+lr: 1e-1, 3e-2
+dropout: train
+tokendropout: 0.05, 0.1, 0.2
+seed: 42, 43, 44, 45, 46
+=> waiting locally
+
+# nokey
+iter: 5, 10, 15, 20, 25 (up to 25iter for a time under ttt 8iter but didnt test for mmlu)
+lr: 3e-3, 1e-3 (3e-4 likely too low)
+dropout: train
+tokendropout: 0, 0.05, 0.1, 0.2
+seed: 42, 43, 44, 45, 46
+=> 3e-3 a bit high, but try it anyway
+=> disappointing results, lr1e-3 and lr3e-3 tokendrop0.1 both got ~43.4
+=> just added tokendrop0.2 and lr2e-3, waiting
+=> just added lr2e-3, waiting
+
+# gridsearch
+iter: 5, 10, 15, 20, 25 (up to 25iter for a time under ttt 8iter but didnt test for mmlu)
+lr: 3e-3, 1e-3, 3e-4
+dropout: train
+tokendropout: 0, 0.05, 0.1
+seed: 42, 43, 44, 45, 46
+=> 3e-4 too low, 3e-3 is pretty good but idk if worth it
+=> lr3e-3 tokendrop0.1 works well at 43.61 and 1e-3 tokendrop0.1 at 43.43, put ~44
+=> funny, seed45 is best again, set it for opensource
+=> can search tokendrop0.2 because so far higher the better
+=> can search lr2e-3 to find middle ground between 3e-3 and 1e-3 and tokendrop0.2
+
+# tttiter20kvsearch
+iter: 2, 4, 6, 8, 10, 12, 14, 16
+lr: 1e-3, 1e-4
+dropout: train
+tokendropout: 0, 0.05, 0.1
+seed: 42, 43, 44, 45
+
+# evalondemon: 93.216750841751
+
+# fisher:
+=> key: 2.8087894142913E-8
+=> val: 1.4173107621924E-6
+
+
+
+
+
+# ========= DEPRECATED =========
+
+# smallgridsearch: small grid search for final performance, evalratio 0.1
+iter: 5, 10, 15, 20, 25 (up to 25iter for a time under ttt 8iter but didnt test for mmlu)
+lr: 1e-2, 5e-3, 1e-3
+dropout: train, power
+tokendropout: 0.05, 0.01, 0.0
+lambda: 0, 1e-1, 1e-2
+results:
+- for lr1e-2, only reach 40+ when lambda1e-1, regardless of other hyperparams
+- for 5e-3, reached 43.33642432925549 with tokendrop0.05 and lambda1e-1, strongest reuglarization tried
+- for 1e-3, reached 44.058617599936035 with droptrain tokendrop0.01 lambda0
+- overall, should do a fuller search on 1e-3, sadly power dont work
+=> best is lr1e-3 droptrain tokendrop0.01 lambda0 44.06
+
+# smallgridsearchtokendropout0.1: just a small expansion to smallgridsearch, no lr1e-2 this time
+iter: 5, 10, 15, 20, 25
+lr: 5e-3, 1e-3
+dropout: train, power
+tokendropout: 0.1
+lambda: 0, 1e-1, 1e-2
+=> best is lr1e-3 droptrain tokendrop0.1 lambda0 44.02
+
+# probefulleval: get initial performance on the full evaluation, see if its "easier"
+iter: 10, 20
+lr: 1e-3
+dropout: train (based on grid search)
+tokendropout: 0.01, 0.05 (based on grid search)
+lambda: 0 (based on grid search)
+
+# randomsearchfull: randomkv search with evalratio0.1
+iter: 25, 50, 75, 100
+lr: 1e-2, 1e-3
+
+# randomsearchntoken: randomkv search with evalratio0.1
+iter: 25, 50, 75, 100
+lr: 1e-2, 1e-3
+
+# tttsearch: ttt: search up to 4 times iter for same sample number with evalratio0.1
+iter: 10, 20, 30, 40, 50
+lr: 1e-4
+
+# tttsave: save ttt ckpt with the best ttt config, run multiple times
+iter: 20
+lr: 1e-4
+
+# prefixsearch: prefix grid search with evalratio0.1
+iter: 10, 20, 25, 30, 40, 50 (double the iter compared to normal, keep 25 anyway still <4hrs)
+lr: 1e0, 1e-1, 1e-2
+dropout: train
+tokendropout: 0, 0.01, 0.1
+lambda: 0 (lambda >1 makes no sense for prefixsearch)
+
+# seedsearch: just a sweep over multiple seeds for ensembled results
+iter: 5, 10, 15, 20, 25 (up to 25iter for a time under ttt 8iter but didnt test for mmlu)
+lr: 1e-3
+dropout: train
+tokendropout: 0.01, 0.1
+lambda: 0
+seed: 0, 1, 2, 3, 4, 42, 43, 44, 45, 46
+
+# tttseedsavesearch: just get ttt results for all seeds
+iter: 15
+lr: 1e-4
+seed: 0, 1, 2, 3, 4, 42, 43, 44, 45, 46
+
+# iclfulleval: eval on all seeds, all seeds
+seed: 0, 1, 2, 3, 4, 42, 43, 44, 45, 46
+=> 42-46 gets better, choose it
+
+# gridsearchevalratio1.0: desperate, full search
+iter: 10, 15, 20, 25 (up to 25iter for a time under ttt 20iter)
+lr: 1e-3, 5e-4
+dropout: train
+tokendropout: 0.05, 0.1, 0.2
+lambda: 0
+seed: 42, 43, 44, 45, 46
+=> expensive, so searching sparingly, no 5iter ofc
+
+# tttseedsavesearchevalratio1.0: all seeds evalratio1.0
+iter: 20
+lr: 1e-4
+seed: 42, 43, 44, 45, 46
+
+# prefixsearch
+iter: 5, 10, 15, 20, 25 (up to 25iter for a time under ttt 8iter but didnt test for mmlu)
+lr: 1e-1, 1e-2, 1e-3
+dropout: train
+tokendropout: 0, 0.05, 0.1
+seed: 44 (only 44 for now for hyperparam search, it gets roughly average across all seeds, dont even know magnitude yet so)
+=> at least for seed44, both 1e-1 and 1e-2 are viable, no tokendropout0, try higher tokendropout
+=> tbh 1e-2 is still a bit low, try 3e-2

@@ -1,0 +1,22 @@
+# test saving ttt ckpts and loading + merging them
+
+
+# ttt w high LR, save ckpts
+accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_mmlu_savettt/test_time_evaluate.py \
+    --tag mmlu_test_save_ttt \
+    --ttt_iters 5 \
+    --ttt_gradient_checkpointing \
+    --ttt_permute_n 25 \
+    --ttt_lr 1e-2 \
+    --ttt_save \
+    --eval_ratio 0.01
+
+# 21.407685881370092
+
+# load ttt
+accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_mmlu_savettt/test_time_evaluate.py \
+    --tag mmlu_test_load_ttt \
+    --ttt_weight_dir eval_mmlu_test_save_ttt \
+    --eval_ratio 0.01
+
+# 21.407685881370092 # good

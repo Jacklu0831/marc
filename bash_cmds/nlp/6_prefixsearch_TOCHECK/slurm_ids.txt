@@ -1,0 +1,8 @@
+# running 3e-2 and 3e-3
+
+/scratch/yl11330/marc/sbatch_files/bash_cmds_nlp_6_prefixsearch_TOCHECK_lr3e-2_droptrain_tokendrop0.1.sh_0.sbatch
+code slurm_outs/60395779.out
+/scratch/yl11330/marc/sbatch_files/bash_cmds_nlp_6_prefixsearch_TOCHECK_lr3e-2_droptrain_tokendrop0.2.sh_0.sbatch
+code slurm_outs/60395780.out
+/scratch/yl11330/marc/sbatch_files/bash_cmds_nlp_6_prefixsearch_TOCHECK_lr3e-2_droptrain_tokendrop0.05.sh_0.sbatch
+code slurm_outs/60395781.out

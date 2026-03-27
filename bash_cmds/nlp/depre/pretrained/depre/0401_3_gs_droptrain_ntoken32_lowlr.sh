@@ -1,0 +1,116 @@
+# python make_sbatch.py --ngpu 1 --time 8 --rtx8000 --single --bash_files bash_cmds/0401_nlp/pretrained/0401_3_gs_droptrain_ntoken32.sh
+MASTER_PORT=$(comm -23 <(seq 10000 65000 | sort) <(ss -tan | awk '{print $4}' | cut -d':' -f2 | sort -u) | shuf | head -n 1)
+
+
+
+
+# nlp gs5 lr1e-3 droptrain ntoken32
+accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_nlp/test_time_evaluate.py \
+    --tag nlp_gs5_lr1e-3_droptrain_ntoken32 \
+    --weight_dir nlp_pretrained \
+    --weight_epoch 0 \
+    --gs_epochs 5 \
+    --gs_lr 1e-3 \
+    --gs_dropout train \
+    --gs_ntokens 32 \
+    --eval_seeds 100
+
+# nlp gs25 lr1e-3 droptrain ntoken32
+accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_nlp/test_time_evaluate.py \
+    --tag nlp_gs25_lr1e-3_droptrain_ntoken32 \
+    --weight_dir nlp_pretrained \
+    --weight_epoch 0 \
+    --gs_epochs 25 \
+    --gs_lr 1e-3 \
+    --gs_dropout train \
+    --gs_ntokens 32 \
+    --eval_seeds 100
+
+# nlp gs100 lr1e-3 droptrain ntoken32
+accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_nlp/test_time_evaluate.py \
+    --tag nlp_gs100_lr1e-3_droptrain_ntoken32 \
+    --weight_dir nlp_pretrained \
+    --weight_epoch 0 \
+    --gs_epochs 100 \
+    --gs_lr 1e-3 \
+    --gs_dropout train \
+    --gs_ntokens 32 \
+    --eval_seeds 100
+
+# nlp gs250 lr1e-3 droptrain ntoken32
+accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_nlp/test_time_evaluate.py \
+    --tag nlp_gs250_lr1e-3_droptrain_ntoken32 \
+    --weight_dir nlp_pretrained \
+    --weight_epoch 0 \
+    --gs_epochs 250 \
+    --gs_lr 1e-3 \
+    --gs_dropout train \
+    --gs_ntokens 32 \
+    --eval_seeds 100
+
+
+
+
+
+
+
+
+
+
+# nlp gs5 lr1e-4 droptrain ntoken32
+accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_nlp/test_time_evaluate.py \
+    --tag nlp_gs5_lr1e-4_droptrain_ntoken32 \
+    --weight_dir nlp_pretrained \
+    --weight_epoch 0 \
+    --gs_epochs 5 \
+    --gs_lr 1e-4 \
+    --gs_dropout train \
+    --gs_ntokens 32 \
+    --eval_seeds 100
+
+# nlp gs25 lr1e-4 droptrain ntoken32
+accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_nlp/test_time_evaluate.py \
+    --tag nlp_gs25_lr1e-4_droptrain_ntoken32 \
+    --weight_dir nlp_pretrained \
+    --weight_epoch 0 \
+    --gs_epochs 25 \
+    --gs_lr 1e-4 \
+    --gs_dropout train \
+    --gs_ntokens 32 \
+    --eval_seeds 100
+
+# nlp gs100 lr1e-4 droptrain ntoken32
+accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_nlp/test_time_evaluate.py \
+    --tag nlp_gs100_lr1e-4_droptrain_ntoken32 \
+    --weight_dir nlp_pretrained \
+    --weight_epoch 0 \
+    --gs_epochs 100 \
+    --gs_lr 1e-4 \
+    --gs_dropout train \
+    --gs_ntokens 32 \
+    --eval_seeds 100
+
+# nlp gs250 lr1e-4 droptrain ntoken32
+accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_nlp/test_time_evaluate.py \
+    --tag nlp_gs250_lr1e-4_droptrain_ntoken32 \
+    --weight_dir nlp_pretrained \
+    --weight_epoch 0 \
+    --gs_epochs 250 \
+    --gs_lr 1e-4 \
+    --gs_dropout train \
+    --gs_ntokens 32 \
+    --eval_seeds 100
+
+# Submitted batch job 59510057
+
+# lr1e-3
+# 0.35233484475449206
+# 0.3609740392056625
+# 0.3914685873775395
+# 0.39778183087837865
+
+# lr1e-4
+# 0.34953765362632605
+# 0.34860380974671235
+# 0.3554809526964271
+# 0.36476369979633666

@@ -1,0 +1,166 @@
+jack
+python make_sbatch.py --ngpu 1 --time 8 --single --bash_files bash_cmds/mmlu/13_lora/seed42/c3a.sh
+python make_sbatch.py --ngpu 1 --time 8 --single --bash_files bash_cmds/mmlu/13_lora/seed42/dora.sh
+python make_sbatch.py --ngpu 1 --time 8 --single --bash_files bash_cmds/mmlu/13_lora/seed42/ft.sh
+python make_sbatch.py --ngpu 1 --time 8 --single --bash_files bash_cmds/mmlu/13_lora/seed42/lntuning.sh
+python make_sbatch.py --ngpu 1 --time 8 --single --bash_files bash_cmds/mmlu/13_lora/seed42/lora.sh
+python make_sbatch.py --ngpu 1 --time 8 --single --bash_files bash_cmds/mmlu/13_lora/seed42/randlora_part1.sh
+python make_sbatch.py --ngpu 1 --time 8 --single --bash_files bash_cmds/mmlu/13_lora/seed42/randlora_part2.sh
+python make_sbatch.py --ngpu 1 --time 8 --single --bash_files bash_cmds/mmlu/13_lora/seed42/rslora.sh
+/scratch/yl11330/marc/sbatch_files/bash_cmds_mmlu_13_lora_seed42_c3a.sh_0.sbatch
+Submitted batch job 64272021
+/scratch/yl11330/marc/sbatch_files/bash_cmds_mmlu_13_lora_seed42_dora.sh_0.sbatch
+Submitted batch job 64272022
+/scratch/yl11330/marc/sbatch_files/bash_cmds_mmlu_13_lora_seed42_ft.sh_0.sbatch
+Submitted batch job 64272023
+/scratch/yl11330/marc/sbatch_files/bash_cmds_mmlu_13_lora_seed42_lntuning.sh_0.sbatch
+Submitted batch job 64272024
+/scratch/yl11330/marc/sbatch_files/bash_cmds_mmlu_13_lora_seed42_lora.sh_0.sbatch
+Submitted batch job 64272025
+/scratch/yl11330/marc/sbatch_files/bash_cmds_mmlu_13_lora_seed42_randlora_part1.sh_0.sbatch
+Submitted batch job 64272026
+/scratch/yl11330/marc/sbatch_files/bash_cmds_mmlu_13_lora_seed42_randlora_part2.sh_0.sbatch
+Submitted batch job 64272027
+/scratch/yl11330/marc/sbatch_files/bash_cmds_mmlu_13_lora_seed42_rslora.sh_0.sbatch
+Submitted batch job 64272028
+
+
+
+
+
+mr3182 cs020.hpc.nyu.edu:/scratch/yl11330/marc$ python make_sbatch.py --ngpu 1 --time 8 --single --bash_files bash_cmds/mmlu/13_lora/seed43/c3a.sh
+python make_sbatch.py --ngpu 1 --time 8 --single --bash_files bash_cmds/mmlu/13_lora/seed43/dora.sh
+python make_sbatch.py --ngpu 1 --time 8 --single --bash_files bash_cmds/mmlu/13_lora/seed43/ft.sh
+python make_sbatch.py --ngpu 1 --time 8 --single --bash_files bash_cmds/mmlu/13_lora/seed43/lntuning.sh
+python make_sbatch.py --ngpu 1 --time 8 --single --bash_files bash_cmds/mmlu/13_lora/seed43/lora.sh
+python make_sbatch.py --ngpu 1 --time 8 --single --bash_files bash_cmds/mmlu/13_lora/seed43/randlora_part1.sh
+python make_sbatch.py --ngpu 1 --time 8 --single --bash_files bash_cmds/mmlu/13_lora/seed43/randlora_part2.sh
+python make_sbatch.py --ngpu 1 --time 8 --single --bash_files bash_cmds/mmlu/13_lora/seed43/rslora.sh
+/scratch/yl11330/marc/sbatch_files/bash_cmds_mmlu_13_lora_seed43_c3a.sh_0.sbatch
+Submitted batch job 64272031
+/scratch/yl11330/marc/sbatch_files/bash_cmds_mmlu_13_lora_seed43_dora.sh_0.sbatch
+Submitted batch job 64272032
+/scratch/yl11330/marc/sbatch_files/bash_cmds_mmlu_13_lora_seed43_ft.sh_0.sbatch
+Submitted batch job 64272033
+/scratch/yl11330/marc/sbatch_files/bash_cmds_mmlu_13_lora_seed43_lntuning.sh_0.sbatch
+Submitted batch job 64272034
+/scratch/yl11330/marc/sbatch_files/bash_cmds_mmlu_13_lora_seed43_lora.sh_0.sbatch
+Submitted batch job 64272035
+/scratch/yl11330/marc/sbatch_files/bash_cmds_mmlu_13_lora_seed43_randlora_part1.sh_0.sbatch
+Submitted batch job 64272036
+/scratch/yl11330/marc/sbatch_files/bash_cmds_mmlu_13_lora_seed43_randlora_part2.sh_0.sbatch
+Submitted batch job 64272037
+/scratch/yl11330/marc/sbatch_files/bash_cmds_mmlu_13_lora_seed43_rslora.sh_0.sbatch
+Submitted batch job 64272038
+
+
+mr3182 cs020.hpc.nyu.edu:/scratch/yl11330/marc$ python make_sbatch.py --ngpu 1 --time 8 --single --bash_files bash_cmds/mmlu/13_lora/seed44/c3a.sh
+python make_sbatch.py --ngpu 1 --time 8 --single --bash_files bash_cmds/mmlu/13_lora/seed44/dora.sh
+python make_sbatch.py --ngpu 1 --time 8 --single --bash_files bash_cmds/mmlu/13_lora/seed44/ft.sh
+python make_sbatch.py --ngpu 1 --time 8 --single --bash_files bash_cmds/mmlu/13_lora/seed44/lntuning.sh
+python make_sbatch.py --ngpu 1 --time 8 --single --bash_files bash_cmds/mmlu/13_lora/seed44/lora.sh
+python make_sbatch.py --ngpu 1 --time 8 --single --bash_files bash_cmds/mmlu/13_lora/seed44/randlora_part1.sh
+python make_sbatch.py --ngpu 1 --time 8 --single --bash_files bash_cmds/mmlu/13_lora/seed44/randlora_part2.sh
+python make_sbatch.py --ngpu 1 --time 8 --single --bash_files bash_cmds/mmlu/13_lora/seed44/rslora.sh
+/scratch/yl11330/marc/sbatch_files/bash_cmds_mmlu_13_lora_seed44_c3a.sh_0.sbatch
+Submitted batch job 64272041
+/scratch/yl11330/marc/sbatch_files/bash_cmds_mmlu_13_lora_seed44_dora.sh_0.sbatch
+Submitted batch job 64272042
+/scratch/yl11330/marc/sbatch_files/bash_cmds_mmlu_13_lora_seed44_ft.sh_0.sbatch
+Submitted batch job 64272043
+/scratch/yl11330/marc/sbatch_files/bash_cmds_mmlu_13_lora_seed44_lntuning.sh_0.sbatch
+Submitted batch job 64272044
+/scratch/yl11330/marc/sbatch_files/bash_cmds_mmlu_13_lora_seed44_lora.sh_0.sbatch
+Submitted batch job 64272045
+/scratch/yl11330/marc/sbatch_files/bash_cmds_mmlu_13_lora_seed44_randlora_part1.sh_0.sbatch
+Submitted batch job 64272046
+/scratch/yl11330/marc/sbatch_files/bash_cmds_mmlu_13_lora_seed44_randlora_part2.sh_0.sbatch
+Submitted batch job 64272047
+/scratch/yl11330/marc/sbatch_files/bash_cmds_mmlu_13_lora_seed44_rslora.sh_0.sbatch
+Submitted batch job 64272048
+mr3182 cs020.hpc.nyu.edu:/scratch/yl11330/marc$
+
+
+
+
+
+
+[zy3101@cs088 marc]$ python make_sbatch.py --ngpu 1 --time 8 --single --bash_files bash_cmds/mmlu/13_lora/seed45/c3a.sh
+python make_sbatch.py --ngpu 1 --time 8 --single --bash_files bash_cmds/mmlu/13_lora/seed45/dora.sh
+python make_sbatch.py --ngpu 1 --time 8 --single --bash_files bash_cmds/mmlu/13_lora/seed45/ft.sh
+python make_sbatch.py --ngpu 1 --time 8 --single --bash_files bash_cmds/mmlu/13_lora/seed45/lntuning.sh
+python make_sbatch.py --ngpu 1 --time 8 --single --bash_files bash_cmds/mmlu/13_lora/seed45/lora.sh
+python make_sbatch.py --ngpu 1 --time 8 --single --bash_files bash_cmds/mmlu/13_lora/seed45/randlora_part1.sh
+python make_sbatch.py --ngpu 1 --time 8 --single --bash_files bash_cmds/mmlu/13_lora/seed45/randlora_part2.sh
+python make_sbatch.py --ngpu 1 --time 8 --single --bash_files bash_cmds/mmlu/13_lora/seed45/rslora.sh
+/scratch/yl11330/marc/sbatch_files/bash_cmds_mmlu_13_lora_seed45_c3a.sh_0.sbatch
+Submitted batch job 64272051
+/scratch/yl11330/marc/sbatch_files/bash_cmds_mmlu_13_lora_seed45_dora.sh_0.sbatch
+Submitted batch job 64272052
+/scratch/yl11330/marc/sbatch_files/bash_cmds_mmlu_13_lora_seed45_ft.sh_0.sbatch
+Submitted batch job 64272053
+/scratch/yl11330/marc/sbatch_files/bash_cmds_mmlu_13_lora_seed45_lntuning.sh_0.sbatch
+Submitted batch job 64272054
+/scratch/yl11330/marc/sbatch_files/bash_cmds_mmlu_13_lora_seed45_lora.sh_0.sbatch
+Submitted batch job 64272055
+/scratch/yl11330/marc/sbatch_files/bash_cmds_mmlu_13_lora_seed45_randlora_part1.sh_0.sbatch
+Submitted batch job 64272056
+/scratch/yl11330/marc/sbatch_files/bash_cmds_mmlu_13_lora_seed45_randlora_part2.sh_0.sbatch
+Submitted batch job 64272057
+/scratch/yl11330/marc/sbatch_files/bash_cmds_mmlu_13_lora_seed45_rslora.sh_0.sbatch
+Submitted batch job 64272058
+[zy3101@cs088 marc]$
+
+
+
+
+
+
+[zy3101@cs088 marc]$ python make_sbatch.py --ngpu 1 --time 8 --single --bash_files bash_cmds/mmlu/13_lora/seed46/c3a.sh
+python make_sbatch.py --ngpu 1 --time 8 --single --bash_files bash_cmds/mmlu/13_lora/seed46/dora.sh
+python make_sbatch.py --ngpu 1 --time 8 --single --bash_files bash_cmds/mmlu/13_lora/seed46/ft.sh
+python make_sbatch.py --ngpu 1 --time 8 --single --bash_files bash_cmds/mmlu/13_lora/seed46/lntuning.sh
+python make_sbatch.py --ngpu 1 --time 8 --single --bash_files bash_cmds/mmlu/13_lora/seed46/lora.sh
+python make_sbatch.py --ngpu 1 --time 8 --single --bash_files bash_cmds/mmlu/13_lora/seed46/randlora_part1.sh
+python make_sbatch.py --ngpu 1 --time 8 --single --bash_files bash_cmds/mmlu/13_lora/seed46/randlora_part2.sh
+python make_sbatch.py --ngpu 1 --time 8 --single --bash_files bash_cmds/mmlu/13_lora/seed46/rslora.sh
+/scratch/yl11330/marc/sbatch_files/bash_cmds_mmlu_13_lora_seed46_c3a.sh_0.sbatch
+Submitted batch job 64272061
+/scratch/yl11330/marc/sbatch_files/bash_cmds_mmlu_13_lora_seed46_dora.sh_0.sbatch
+Submitted batch job 64272062
+/scratch/yl11330/marc/sbatch_files/bash_cmds_mmlu_13_lora_seed46_ft.sh_0.sbatch
+Submitted batch job 64272063
+/scratch/yl11330/marc/sbatch_files/bash_cmds_mmlu_13_lora_seed46_lntuning.sh_0.sbatch
+Submitted batch job 64272064
+/scratch/yl11330/marc/sbatch_files/bash_cmds_mmlu_13_lora_seed46_lora.sh_0.sbatch
+Submitted batch job 64272065
+/scratch/yl11330/marc/sbatch_files/bash_cmds_mmlu_13_lora_seed46_randlora_part1.sh_0.sbatch
+Submitted batch job 64272066
+/scratch/yl11330/marc/sbatch_files/bash_cmds_mmlu_13_lora_seed46_randlora_part2.sh_0.sbatch
+Submitted batch job 64272067
+/scratch/yl11330/marc/sbatch_files/bash_cmds_mmlu_13_lora_seed46_rslora.sh_0.sbatch
+Submitted batch job 64272068
+[zy3101@cs088 marc]$
+
+
+
+
+
+
+# rank128 for randlora
+python make_sbatch.py --ngpu 1 --time 8 --single --bash_files bash_cmds/mmlu/13_lora/seed42/randlora_part2.sh
+python make_sbatch.py --ngpu 1 --time 8 --single --bash_files bash_cmds/mmlu/13_lora/seed43/randlora_part2.sh
+python make_sbatch.py --ngpu 1 --time 8 --single --bash_files bash_cmds/mmlu/13_lora/seed44/randlora_part2.sh
+python make_sbatch.py --ngpu 1 --time 8 --single --bash_files bash_cmds/mmlu/13_lora/seed45/randlora_part2.sh
+python make_sbatch.py --ngpu 1 --time 8 --single --bash_files bash_cmds/mmlu/13_lora/seed46/randlora_part2.sh
+/scratch/yl11330/marc/sbatch_files/bash_cmds_mmlu_13_lora_seed42_randlora_part2.sh_0.sbatch
+Submitted batch job 64295172
+/scratch/yl11330/marc/sbatch_files/bash_cmds_mmlu_13_lora_seed43_randlora_part2.sh_0.sbatch
+Submitted batch job 64295173
+/scratch/yl11330/marc/sbatch_files/bash_cmds_mmlu_13_lora_seed44_randlora_part2.sh_0.sbatch
+Submitted batch job 64295174
+/scratch/yl11330/marc/sbatch_files/bash_cmds_mmlu_13_lora_seed45_randlora_part2.sh_0.sbatch
+Submitted batch job 64295175
+/scratch/yl11330/marc/sbatch_files/bash_cmds_mmlu_13_lora_seed46_randlora_part2.sh_0.sbatch
+Submitted batch job 64295176
+[yl11330@cs020 marc]$

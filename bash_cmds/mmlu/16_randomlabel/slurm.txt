@@ -1,0 +1,58 @@
+[zy3101@cs088 marc]$ python make_sbatch.py --ngpu 1 --time 5 --single --bash_files bash_cmds/mmlu/16_randomlabel/seed42/icl.sh
+python make_sbatch.py --ngpu 1 --time 5 --single --bash_files bash_cmds/mmlu/16_randomlabel/seed43/icl.sh
+python make_sbatch.py --ngpu 1 --time 5 --single --bash_files bash_cmds/mmlu/16_randomlabel/seed44/icl.sh
+python make_sbatch.py --ngpu 1 --time 5 --single --bash_files bash_cmds/mmlu/16_randomlabel/seed45/icl.sh
+python make_sbatch.py --ngpu 1 --time 5 --single --bash_files bash_cmds/mmlu/16_randomlabel/seed46/icl.sh
+/scratch/yl11330/marc/sbatch_files/bash_cmds_mmlu_16_randomlabel_seed42_icl.sh_0.sbatch
+Submitted batch job 64264025
+/scratch/yl11330/marc/sbatch_files/bash_cmds_mmlu_16_randomlabel_seed43_icl.sh_0.sbatch
+Submitted batch job 64264026
+/scratch/yl11330/marc/sbatch_files/bash_cmds_mmlu_16_randomlabel_seed44_icl.sh_0.sbatch
+Submitted batch job 64264027
+/scratch/yl11330/marc/sbatch_files/bash_cmds_mmlu_16_randomlabel_seed45_icl.sh_0.sbatch
+Submitted batch job 64264028
+/scratch/yl11330/marc/sbatch_files/bash_cmds_mmlu_16_randomlabel_seed46_icl.sh_0.sbatch
+Submitted batch job 64264029
+[zy3101@cs088 marc]$
+
+
+
+
+
+[zy3101@cs006 marc]$ python make_sbatch.py --ngpu 1 --time 15 --single --bash_files bash_cmds/mmlu/16_randomlabel/seed42/ctkv_lr1e-3.sh
+python make_sbatch.py --ngpu 1 --time 15 --single --bash_files bash_cmds/mmlu/16_randomlabel/seed43/ctkv_lr1e-3.sh
+python make_sbatch.py --ngpu 1 --time 15 --single --bash_files bash_cmds/mmlu/16_randomlabel/seed44/ctkv_lr1e-3.sh
+python make_sbatch.py --ngpu 1 --time 15 --single --bash_files bash_cmds/mmlu/16_randomlabel/seed45/ctkv_lr1e-3.sh
+python make_sbatch.py --ngpu 1 --time 15 --single --bash_files bash_cmds/mmlu/16_randomlabel/seed46/ctkv_lr1e-3.sh
+/scratch/yl11330/marc/sbatch_files/bash_cmds_mmlu_16_randomlabel_seed42_ctkv_lr1e-3.sh_0.sbatch
+Submitted batch job 64234437
+/scratch/yl11330/marc/sbatch_files/bash_cmds_mmlu_16_randomlabel_seed43_ctkv_lr1e-3.sh_0.sbatch
+Submitted batch job 64234438
+/scratch/yl11330/marc/sbatch_files/bash_cmds_mmlu_16_randomlabel_seed44_ctkv_lr1e-3.sh_0.sbatch
+Submitted batch job 64234439
+/scratch/yl11330/marc/sbatch_files/bash_cmds_mmlu_16_randomlabel_seed45_ctkv_lr1e-3.sh_0.sbatch
+Submitted batch job 64234440
+/scratch/yl11330/marc/sbatch_files/bash_cmds_mmlu_16_randomlabel_seed46_ctkv_lr1e-3.sh_0.sbatch
+Submitted batch job 64234441
+
+
+
+
+
+
+[zy3101@cs006 marc]$ python make_sbatch.py --ngpu 1 --time 15 --single --bash_files bash_cmds/mmlu/16_randomlabel/seed42/ntoken_1e-3.sh
+python make_sbatch.py --ngpu 1 --time 15 --single --bash_files bash_cmds/mmlu/16_randomlabel/seed43/ntoken_1e-3.sh
+python make_sbatch.py --ngpu 1 --time 15 --single --bash_files bash_cmds/mmlu/16_randomlabel/seed44/ntoken_1e-3.sh
+python make_sbatch.py --ngpu 1 --time 15 --single --bash_files bash_cmds/mmlu/16_randomlabel/seed45/ntoken_1e-3.sh
+python make_sbatch.py --ngpu 1 --time 15 --single --bash_files bash_cmds/mmlu/16_randomlabel/seed46/ntoken_1e-3.sh
+/scratch/yl11330/marc/sbatch_files/bash_cmds_mmlu_16_randomlabel_seed42_ntoken_1e-3.sh_0.sbatch
+Submitted batch job 64234442
+/scratch/yl11330/marc/sbatch_files/bash_cmds_mmlu_16_randomlabel_seed43_ntoken_1e-3.sh_0.sbatch
+Submitted batch job 64234443
+/scratch/yl11330/marc/sbatch_files/bash_cmds_mmlu_16_randomlabel_seed44_ntoken_1e-3.sh_0.sbatch
+Submitted batch job 64234444
+/scratch/yl11330/marc/sbatch_files/bash_cmds_mmlu_16_randomlabel_seed45_ntoken_1e-3.sh_0.sbatch
+Submitted batch job 64234445
+/scratch/yl11330/marc/sbatch_files/bash_cmds_mmlu_16_randomlabel_seed46_ntoken_1e-3.sh_0.sbatch
+Submitted batch job 64234446
+[zy3101@cs006 marc]$

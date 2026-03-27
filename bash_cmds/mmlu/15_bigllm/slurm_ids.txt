@@ -1,0 +1,144 @@
+python make_sbatch.py --ngpu 1 --time 8 --gb 64 --bash_files bash_cmds/mmlu/15_bigllm/deepseek14b_ctkv.sh
+python make_sbatch.py --ngpu 1 --time 8 --gb 64 --bash_files bash_cmds/mmlu/15_bigllm/deepseek14b_prefix.sh
+python make_sbatch.py --ngpu 1 --time 8 --gb 128 --bash_files bash_cmds/mmlu/15_bigllm/deepseek32b_ctkv.sh
+python make_sbatch.py --ngpu 1 --time 8 --gb 128 --bash_files bash_cmds/mmlu/15_bigllm/deepseek32b_prefix.sh
+python make_sbatch.py --ngpu 1 --time 8 --gb 64 --bash_files bash_cmds/mmlu/15_bigllm/mistral12b_ctkv.sh
+python make_sbatch.py --ngpu 1 --time 8 --gb 64 --bash_files bash_cmds/mmlu/15_bigllm/mistral12b_prefix.sh
+python make_sbatch.py --ngpu 1 --time 8 --gb 64 --bash_files bash_cmds/mmlu/15_bigllm/qwen14b_ctkv.sh
+python make_sbatch.py --ngpu 1 --time 8 --gb 64 --bash_files bash_cmds/mmlu/15_bigllm/qwen14b_prefix.sh
+python make_sbatch.py --ngpu 1 --time 8 --gb 128 --bash_files bash_cmds/mmlu/15_bigllm/qwen32b_ctkv.sh
+python make_sbatch.py --ngpu 1 --time 8 --gb 128 --bash_files bash_cmds/mmlu/15_bigllm/qwen32b_prefix.sh
+
+
+
+
+
+
+
+
+[yl11330@cs020 marc]$
+python make_sbatch.py --ngpu 1 --time 8 --gb 64 --bash_files bash_cmds/mmlu/15_bigllm/mistral12b_ctkv.sh
+python make_sbatch.py --ngpu 1 --time 8 --gb 64 --bash_files bash_cmds/mmlu/15_bigllm/mistral12b_prefix.sh
+/scratch/yl11330/marc/sbatch_files/mistral_14b_ctkv15_seed42_0.sbatch
+/scratch/yl11330/marc/sbatch_files/mistral_14b_ctkv20_seed42_0.sbatch
+/scratch/yl11330/marc/sbatch_files/mistral_14b_ctkv25_seed42_0.sbatch
+/scratch/yl11330/marc/sbatch_files/mistral_14b_ctkv30_seed42_0.sbatch
+Submitted batch job 64258113
+Submitted batch job 64258114
+Submitted batch job 64258115
+Submitted batch job 64258116
+/scratch/yl11330/marc/sbatch_files/mistral_14b_prefixntoken15_seed42_0.sbatch
+/scratch/yl11330/marc/sbatch_files/mistral_14b_prefixntoken20_seed42_0.sbatch
+/scratch/yl11330/marc/sbatch_files/mistral_14b_prefixntoken25_seed42_0.sbatch
+/scratch/yl11330/marc/sbatch_files/mistral_14b_prefixntoken30_seed42_0.sbatch
+Submitted batch job 64258117
+Submitted batch job 64258118
+Submitted batch job 64258119
+Submitted batch job 64258120
+[yl11330@cs020 marc]$
+
+
+
+
+
+
+
+
+[zy3101@cs088 marc]$ python make_sbatch.py --ngpu 1 --time 8 --gb 64 --bash_files bash_cmds/mmlu/15_bigllm/qwen14b_ctkv.sh
+python make_sbatch.py --ngpu 1 --time 8 --gb 64 --bash_files bash_cmds/mmlu/15_bigllm/qwen14b_prefix.sh
+python make_sbatch.py --ngpu 1 --time 8 --gb 128 --bash_files bash_cmds/mmlu/15_bigllm/qwen32b_ctkv.sh
+python make_sbatch.py --ngpu 1 --time 8 --gb 128 --bash_files bash_cmds/mmlu/15_bigllm/qwen32b_prefix.sh
+/scratch/yl11330/marc/sbatch_files/qwen_14b_ctkv15_seed42_0.sbatch
+/scratch/yl11330/marc/sbatch_files/qwen_14b_ctkv20_seed42_0.sbatch
+/scratch/yl11330/marc/sbatch_files/qwen_14b_ctkv25_seed42_0.sbatch
+/scratch/yl11330/marc/sbatch_files/qwen_14b_ctkv30_seed42_0.sbatch
+Submitted batch job 64258057 OOM
+Submitted batch job 64258058 OOM
+Submitted batch job 64258059 OOM
+Submitted batch job 64258060 OOM
+/scratch/yl11330/marc/sbatch_files/qwen_14b_prefixntoken15_seed42_0.sbatch
+/scratch/yl11330/marc/sbatch_files/qwen_14b_prefixntoken20_seed42_0.sbatch
+/scratch/yl11330/marc/sbatch_files/qwen_14b_prefixntoken25_seed42_0.sbatch
+/scratch/yl11330/marc/sbatch_files/qwen_14b_prefixntoken30_seed42_0.sbatch
+Submitted batch job 64258061
+Submitted batch job 64258062
+Submitted batch job 64258063
+Submitted batch job 64258064
+/scratch/yl11330/marc/sbatch_files/qwen_32b_ctkv15_seed42_0.sbatch
+/scratch/yl11330/marc/sbatch_files/qwen_32b_ctkv20_seed42_0.sbatch
+/scratch/yl11330/marc/sbatch_files/qwen_32b_ctkv25_seed42_0.sbatch
+/scratch/yl11330/marc/sbatch_files/qwen_32b_ctkv30_seed42_0.sbatch
+Submitted batch job 64258065
+Submitted batch job 64258066
+Submitted batch job 64258067
+Submitted batch job 64258068
+/scratch/yl11330/marc/sbatch_files/qwen_32b_prefixntoken15_seed42_0.sbatch
+/scratch/yl11330/marc/sbatch_files/qwen_32b_prefixntoken20_seed42_0.sbatch
+/scratch/yl11330/marc/sbatch_files/qwen_32b_prefixntoken25_seed42_0.sbatch
+/scratch/yl11330/marc/sbatch_files/qwen_32b_prefixntoken30_seed42_0.sbatch
+Submitted batch job 64258069
+Submitted batch job 64258070
+Submitted batch job 64258071
+Submitted batch job 64258072
+[zy3101@cs088 marc]$
+
+
+
+
+mr3182 cs020.hpc.nyu.edu:/scratch/yl11330/marc$ python make_sbatch.py --ngpu 1 --time 8 --gb 64 --bash_files bash_cmds/mmlu/15_bigllm/qwen14b_ctkv.sh
+/scratch/yl11330/marc/sbatch_files/qwen_14b_ctkv15_seed42_0.sbatch
+/scratch/yl11330/marc/sbatch_files/qwen_14b_ctkv20_seed42_0.sbatch
+/scratch/yl11330/marc/sbatch_files/qwen_14b_ctkv25_seed42_0.sbatch
+/scratch/yl11330/marc/sbatch_files/qwen_14b_ctkv30_seed42_0.sbatch
+Submitted batch job 64271420
+Submitted batch job 64271421
+Submitted batch job 64271422
+Submitted batch job 64271423
+mr3182 cs020.hpc.nyu.edu:/scratch/yl11330/marc$
+
+
+
+
+
+
+
+
+
+
+[zy3101@cs088 marc]$ python make_sbatch.py --ngpu 1 --time 8 --gb 64 --bash_files bash_cmds/mmlu/15_bigllm/deepseek14b_ctkv.sh
+python make_sbatch.py --ngpu 1 --time 8 --gb 64 --bash_files bash_cmds/mmlu/15_bigllm/deepseek14b_prefix.sh
+python make_sbatch.py --ngpu 1 --time 8 --gb 128 --bash_files bash_cmds/mmlu/15_bigllm/deepseek32b_ctkv.sh
+python make_sbatch.py --ngpu 1 --time 8 --gb 128 --bash_files bash_cmds/mmlu/15_bigllm/deepseek32b_prefix.sh
+/scratch/yl11330/marc/sbatch_files/deepseek_14b_ctkv15_seed42_0.sbatch
+/scratch/yl11330/marc/sbatch_files/deepseek_14b_ctkv20_seed42_0.sbatch
+/scratch/yl11330/marc/sbatch_files/deepseek_14b_ctkv25_seed42_0.sbatch
+/scratch/yl11330/marc/sbatch_files/deepseek_14b_ctkv30_seed42_0.sbatch
+Submitted batch job 64272116
+Submitted batch job 64272117
+Submitted batch job 64272118
+Submitted batch job 64272119
+/scratch/yl11330/marc/sbatch_files/deepseek_14b_prefixntoken15_seed42_0.sbatch
+/scratch/yl11330/marc/sbatch_files/deepseek_14b_prefixntoken20_seed42_0.sbatch
+/scratch/yl11330/marc/sbatch_files/deepseek_14b_prefixntoken25_seed42_0.sbatch
+/scratch/yl11330/marc/sbatch_files/deepseek_14b_prefixntoken30_seed42_0.sbatch
+Submitted batch job 64272120
+Submitted batch job 64272121
+Submitted batch job 64272122
+Submitted batch job 64272123
+/scratch/yl11330/marc/sbatch_files/deepseek_32b_ctkv15_seed42_0.sbatch
+/scratch/yl11330/marc/sbatch_files/deepseek_32b_ctkv20_seed42_0.sbatch
+/scratch/yl11330/marc/sbatch_files/deepseek_32b_ctkv25_seed42_0.sbatch
+/scratch/yl11330/marc/sbatch_files/deepseek_32b_ctkv30_seed42_0.sbatch
+Submitted batch job 64272124
+Submitted batch job 64272125
+Submitted batch job 64272126
+Submitted batch job 64272127
+/scratch/yl11330/marc/sbatch_files/deepseek_32b_prefixntoken15_seed42_0.sbatch
+/scratch/yl11330/marc/sbatch_files/deepseek_32b_prefixntoken20_seed42_0.sbatch
+/scratch/yl11330/marc/sbatch_files/deepseek_32b_prefixntoken25_seed42_0.sbatch
+/scratch/yl11330/marc/sbatch_files/deepseek_32b_prefixntoken30_seed42_0.sbatch
+Submitted batch job 64272128
+Submitted batch job 64272129
+Submitted batch job 64272130
+Submitted batch job 64272131
+[zy3101@cs088 marc]$

@@ -1,0 +1,142 @@
+python make_sbatch.py --ngpu 1 --time 4 --single --bash_files bash_cmds/arc/7_nokey/lr1e-3_dropnone_tokendrop0_part1.sh
+python make_sbatch.py --ngpu 1 --time 4 --single --bash_files bash_cmds/arc/7_nokey/lr1e-3_dropnone_tokendrop0_part2.sh
+python make_sbatch.py --ngpu 1 --time 4 --single --bash_files bash_cmds/arc/7_nokey/lr1e-3_dropnone_tokendrop0_part3.sh
+python make_sbatch.py --ngpu 1 --time 4 --single --bash_files bash_cmds/arc/7_nokey/lr1e-3_dropnone_tokendrop0_part4.sh
+python make_sbatch.py --ngpu 1 --time 4 --single --bash_files bash_cmds/arc/7_nokey/lr1e-3_dropnone_tokendrop0_part5.sh
+python make_sbatch.py --ngpu 1 --time 4 --single --bash_files bash_cmds/arc/7_nokey/lr1e-3_dropnone_tokendrop0.1_part1.sh
+python make_sbatch.py --ngpu 1 --time 4 --single --bash_files bash_cmds/arc/7_nokey/lr1e-3_dropnone_tokendrop0.1_part2.sh
+python make_sbatch.py --ngpu 1 --time 4 --single --bash_files bash_cmds/arc/7_nokey/lr1e-3_dropnone_tokendrop0.1_part3.sh
+python make_sbatch.py --ngpu 1 --time 4 --single --bash_files bash_cmds/arc/7_nokey/lr1e-3_dropnone_tokendrop0.1_part4.sh
+python make_sbatch.py --ngpu 1 --time 4 --single --bash_files bash_cmds/arc/7_nokey/lr1e-3_dropnone_tokendrop0.1_part5.sh
+python make_sbatch.py --ngpu 1 --time 4 --single --bash_files bash_cmds/arc/7_nokey/lr1e-3_dropnone_tokendrop0.05_part1.sh
+python make_sbatch.py --ngpu 1 --time 4 --single --bash_files bash_cmds/arc/7_nokey/lr1e-3_dropnone_tokendrop0.05_part2.sh
+python make_sbatch.py --ngpu 1 --time 4 --single --bash_files bash_cmds/arc/7_nokey/lr1e-3_dropnone_tokendrop0.05_part3.sh
+python make_sbatch.py --ngpu 1 --time 4 --single --bash_files bash_cmds/arc/7_nokey/lr1e-3_dropnone_tokendrop0.05_part4.sh
+python make_sbatch.py --ngpu 1 --time 4 --single --bash_files bash_cmds/arc/7_nokey/lr1e-3_dropnone_tokendrop0.05_part5.sh
+
+Submitted batch job 60001151
+Submitted batch job 60001152
+Submitted batch job 60001153
+Submitted batch job 60001154
+Submitted batch job 60001155
+
+Submitted batch job 60001156
+Submitted batch job 60001157
+Submitted batch job 60001158
+Submitted batch job 60001159
+Submitted batch job 60001160
+
+Submitted batch job 60001162
+Submitted batch job 60001163
+Submitted batch job 60001164 <- cmd error, new 60097960 <- nvm run locally
+Submitted batch job 60001165 <- cmd error, new 60097961 <- nvm run locally
+Submitted batch job 60001166 <- cmd error, new 60097962 <- nvm run locally
+
+
+
+
+
+tokendrop0 part1
+0.1625
+0.1625
+0.1625
+0.1625
+0.1625
+
+tokendrop0 part2
+0.275
+0.275
+0.275
+0.2875
+0.275
+
+tokendrop0 part3
+0.1125
+0.1125
+0.1125
+0.1125
+0.1125
+
+tokendrop0 part4
+0.175
+0.2
+0.225
+0.225
+0.225
+
+tokendrop0 part5
+0.2375
+0.225
+0.2125
+0.2125
+0.2125
+
+tokendrop0.1 part1
+0.1625
+0.175
+0.175
+0.1625
+0.175
+
+tokendrop0.1 part2
+0.2625
+0.25
+0.25
+0.275
+0.2625
+
+tokendrop0.1 part3
+0.1
+0.1125
+0.125
+0.125
+0.125
+
+tokendrop0.1 part4
+0.175
+0.225
+0.25
+0.2125
+0.25
+
+tokendrop0.1 part5
+0.2375
+0.225
+0.2375
+0.225
+0.2375
+
+tokendrop0.05 part1
+0.1625
+0.175
+0.175
+0.175
+0.175
+
+tokendrop0.05 part2
+0.2625
+0.2625
+0.25
+0.2625
+0.25
+
+tokendrop0.05 part3
+0.1
+0.1125
+0.125
+0.125
+0.125
+
+tokendrop0.05 part4
+0.2
+0.2125
+0.2125
+0.2375
+0.25
+
+tokendrop0.05 part5
+0.2375
+0.225
+0.2375
+0.2375
+0.25

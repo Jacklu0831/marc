@@ -1,0 +1,121 @@
+python make_sbatch.py --ngpu 1 --time 8 --gb 64 --bash_files bash_cmds/bbh/15_bigllm/deepseek14b_ctkv.sh
+python make_sbatch.py --ngpu 1 --time 8 --gb 64 --bash_files bash_cmds/bbh/15_bigllm/deepseek14b_prefix.sh
+python make_sbatch.py --ngpu 1 --time 8 --gb 128 --bash_files bash_cmds/bbh/15_bigllm/deepseek32b_ctkv.sh
+python make_sbatch.py --ngpu 1 --time 8 --gb 128 --bash_files bash_cmds/bbh/15_bigllm/deepseek32b_prefix.sh
+python make_sbatch.py --ngpu 1 --time 8 --gb 64 --bash_files bash_cmds/bbh/15_bigllm/mistral12b_ctkv.sh
+python make_sbatch.py --ngpu 1 --time 8 --gb 64 --bash_files bash_cmds/bbh/15_bigllm/mistral12b_prefix.sh
+python make_sbatch.py --ngpu 1 --time 8 --gb 64 --bash_files bash_cmds/bbh/15_bigllm/qwen14b_ctkv.sh
+python make_sbatch.py --ngpu 1 --time 8 --gb 64 --bash_files bash_cmds/bbh/15_bigllm/qwen14b_prefix.sh
+python make_sbatch.py --ngpu 1 --time 8 --gb 128 --bash_files bash_cmds/bbh/15_bigllm/qwen32b_ctkv.sh
+python make_sbatch.py --ngpu 1 --time 8 --gb 128 --bash_files bash_cmds/bbh/15_bigllm/qwen32b_prefix.sh
+
+
+
+
+
+
+mr3182 cs020.hpc.nyu.edu:/scratch/yl11330/marc$
+/scratch/yl11330/marc/sbatch_files/mistral_12b_ctkv15_seed42_0.sbatch
+/scratch/yl11330/marc/sbatch_files/mistral_12b_ctkv20_seed42_0.sbatch
+/scratch/yl11330/marc/sbatch_files/mistral_12b_ctkv25_seed42_0.sbatch
+/scratch/yl11330/marc/sbatch_files/mistral_12b_ctkv30_seed42_0.sbatch
+Submitted batch job 64257872
+Submitted batch job 64257873
+Submitted batch job 64257874
+Submitted batch job 64257875
+/scratch/yl11330/marc/sbatch_files/mistral_12b_prefixntoken15_seed42_0.sbatch
+/scratch/yl11330/marc/sbatch_files/mistral_12b_prefixntoken20_seed42_0.sbatch
+/scratch/yl11330/marc/sbatch_files/mistral_12b_prefixntoken25_seed42_0.sbatch
+/scratch/yl11330/marc/sbatch_files/mistral_12b_prefixntoken30_seed42_0.sbatch
+Submitted batch job 64257876
+Submitted batch job 64257877
+Submitted batch job 64257878
+Submitted batch job 64257879
+mr3182 cs020.hpc.nyu.edu:/scratch/yl11330/marc$
+
+
+
+
+
+
+
+mr3182 cs020.hpc.nyu.edu:/scratch/yl11330/marc$ python make_sbatch.py --ngpu 1 --time 8 --gb 64 --bash_files bash_cmds/bbh/15_bigllm/qwen14b_ctkv.sh
+python make_sbatch.py --ngpu 1 --time 8 --gb 64 --bash_files bash_cmds/bbh/15_bigllm/qwen14b_prefix.sh
+python make_sbatch.py --ngpu 1 --time 8 --gb 128 --bash_files bash_cmds/bbh/15_bigllm/qwen32b_ctkv.sh
+python make_sbatch.py --ngpu 1 --time 8 --gb 128 --bash_files bash_cmds/bbh/15_bigllm/qwen32b_prefix.sh
+/scratch/yl11330/marc/sbatch_files/qwen_14b_ctkv15_seed42_0.sbatch
+/scratch/yl11330/marc/sbatch_files/qwen_14b_ctkv20_seed42_0.sbatch
+/scratch/yl11330/marc/sbatch_files/qwen_14b_ctkv25_seed42_0.sbatch
+/scratch/yl11330/marc/sbatch_files/qwen_14b_ctkv30_seed42_0.sbatch
+Submitted batch job 64258075
+Submitted batch job 64258076
+Submitted batch job 64258077
+Submitted batch job 64258078
+/scratch/yl11330/marc/sbatch_files/qwen_14b_prefixntoken15_seed42_0.sbatch
+/scratch/yl11330/marc/sbatch_files/qwen_14b_prefixntoken20_seed42_0.sbatch
+/scratch/yl11330/marc/sbatch_files/qwen_14b_prefixntoken25_seed42_0.sbatch
+/scratch/yl11330/marc/sbatch_files/qwen_14b_prefixntoken30_seed42_0.sbatch
+Submitted batch job 64258079
+Submitted batch job 64258080
+Submitted batch job 64258081
+Submitted batch job 64258082
+/scratch/yl11330/marc/sbatch_files/qwen_32b_ctkv15_seed42_0.sbatch
+/scratch/yl11330/marc/sbatch_files/qwen_32b_ctkv20_seed42_0.sbatch
+/scratch/yl11330/marc/sbatch_files/qwen_32b_ctkv25_seed42_0.sbatch
+/scratch/yl11330/marc/sbatch_files/qwen_32b_ctkv30_seed42_0.sbatch
+Submitted batch job 64258083
+Submitted batch job 64258084
+Submitted batch job 64258085
+Submitted batch job 64258086
+/scratch/yl11330/marc/sbatch_files/qwen_32b_prefixntoken15_seed42_0.sbatch
+/scratch/yl11330/marc/sbatch_files/qwen_32b_prefixntoken20_seed42_0.sbatch
+/scratch/yl11330/marc/sbatch_files/qwen_32b_prefixntoken25_seed42_0.sbatch
+/scratch/yl11330/marc/sbatch_files/qwen_32b_prefixntoken30_seed42_0.sbatch
+Submitted batch job 64258087
+Submitted batch job 64258088
+Submitted batch job 64258089
+Submitted batch job 64258090
+mr3182 cs020.hpc.nyu.edu:/scratch/yl11330/marc$
+
+
+
+
+
+
+mr3182 cs020.hpc.nyu.edu:/scratch/yl11330/marc$ python make_sbatch.py --ngpu 1 --time 8 --gb 64 --bash_files bash_cmds/bbh/15_bigllm/deepseek14b_ctkv.sh
+python make_sbatch.py --ngpu 1 --time 8 --gb 64 --bash_files bash_cmds/bbh/15_bigllm/deepseek14b_prefix.sh
+python make_sbatch.py --ngpu 1 --time 8 --gb 128 --bash_files bash_cmds/bbh/15_bigllm/deepseek32b_ctkv.sh
+python make_sbatch.py --ngpu 1 --time 8 --gb 128 --bash_files bash_cmds/bbh/15_bigllm/deepseek32b_prefix.sh
+/scratch/yl11330/marc/sbatch_files/deepseek_14b_ctkv15_seed42_0.sbatch
+/scratch/yl11330/marc/sbatch_files/deepseek_14b_ctkv20_seed42_0.sbatch
+/scratch/yl11330/marc/sbatch_files/deepseek_14b_ctkv25_seed42_0.sbatch
+/scratch/yl11330/marc/sbatch_files/deepseek_14b_ctkv30_seed42_0.sbatch
+Submitted batch job 64272080
+Submitted batch job 64272081
+Submitted batch job 64272082
+Submitted batch job 64272083
+/scratch/yl11330/marc/sbatch_files/deepseek_14b_prefixntoken15_seed42_0.sbatch
+/scratch/yl11330/marc/sbatch_files/deepseek_14b_prefixntoken20_seed42_0.sbatch
+/scratch/yl11330/marc/sbatch_files/deepseek_14b_prefixntoken25_seed42_0.sbatch
+/scratch/yl11330/marc/sbatch_files/deepseek_14b_prefixntoken30_seed42_0.sbatch
+Submitted batch job 64272084
+Submitted batch job 64272085
+Submitted batch job 64272086
+Submitted batch job 64272087
+/scratch/yl11330/marc/sbatch_files/deepseek_32b_ctkv15_seed42_0.sbatch
+/scratch/yl11330/marc/sbatch_files/deepseek_32b_ctkv20_seed42_0.sbatch
+/scratch/yl11330/marc/sbatch_files/deepseek_32b_ctkv25_seed42_0.sbatch
+/scratch/yl11330/marc/sbatch_files/deepseek_32b_ctkv30_seed42_0.sbatch
+Submitted batch job 64272088
+Submitted batch job 64272089
+Submitted batch job 64272090
+Submitted batch job 64272091
+/scratch/yl11330/marc/sbatch_files/deepseek_32b_prefixntoken15_seed42_0.sbatch
+/scratch/yl11330/marc/sbatch_files/deepseek_32b_prefixntoken20_seed42_0.sbatch
+/scratch/yl11330/marc/sbatch_files/deepseek_32b_prefixntoken25_seed42_0.sbatch
+/scratch/yl11330/marc/sbatch_files/deepseek_32b_prefixntoken30_seed42_0.sbatch
+Submitted batch job 64272092
+Submitted batch job 64272093
+Submitted batch job 64272094
+Submitted batch job 64272095
+mr3182 cs020.hpc.nyu.edu:/scratch/yl11330/marc$

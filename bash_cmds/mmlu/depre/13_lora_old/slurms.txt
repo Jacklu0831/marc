@@ -1,0 +1,65 @@
+/scratch/yl11330/marc/sbatch_files/bash_cmds_mmlu_13_lora_seed42_ft_lora_rslora_dora.sh_0.sbatch
+Submitted batch job 64221571
+/scratch/yl11330/marc/sbatch_files/bash_cmds_mmlu_13_lora_seed43_ft_lora_rslora_dora.sh_0.sbatch
+Submitted batch job 64221572
+/scratch/yl11330/marc/sbatch_files/bash_cmds_mmlu_13_lora_seed44_ft_lora_rslora_dora.sh_0.sbatch
+Submitted batch job 64221573
+/scratch/yl11330/marc/sbatch_files/bash_cmds_mmlu_13_lora_seed45_ft_lora_rslora_dora.sh_0.sbatch
+Submitted batch job 64221574
+/scratch/yl11330/marc/sbatch_files/bash_cmds_mmlu_13_lora_seed46_ft_lora_rslora_dora.sh_0.sbatch
+Submitted batch job 64221575
+
+/scratch/yl11330/marc/sbatch_files/bash_cmds_mmlu_13_lora_seed42_lntuning_randlora.sh_0.sbatch
+Submitted batch job 64221586
+/scratch/yl11330/marc/sbatch_files/bash_cmds_mmlu_13_lora_seed43_lntuning_randlora.sh_0.sbatch
+Submitted batch job 64221587
+/scratch/yl11330/marc/sbatch_files/bash_cmds_mmlu_13_lora_seed44_lntuning_randlora.sh_0.sbatch
+Submitted batch job 64221588
+/scratch/yl11330/marc/sbatch_files/bash_cmds_mmlu_13_lora_seed45_lntuning_randlora.sh_0.sbatch
+Submitted batch job 64221589
+/scratch/yl11330/marc/sbatch_files/bash_cmds_mmlu_13_lora_seed46_lntuning_randlora.sh_0.sbatch
+Submitted batch job 64221590
+
+
+
+
+
+
+
+
+
+
+#### C3A LR TOO LOW
+mr3182 cs020.hpc.nyu.edu:/scratch/yl11330/marc$ python make_sbatch.py --ngpu 1 --time 3 --single --bash_files bash_cmds/mmlu/13_lora/seed42_c3a.sh
+python make_sbatch.py --ngpu 1 --time 3 --single --bash_files bash_cmds/mmlu/13_lora/seed43_c3a.sh
+python make_sbatch.py --ngpu 1 --time 3 --single --bash_files bash_cmds/mmlu/13_lora/seed44_c3a.sh
+python make_sbatch.py --ngpu 1 --time 3 --single --bash_files bash_cmds/mmlu/13_lora/seed45_c3a.sh
+python make_sbatch.py --ngpu 1 --time 3 --single --bash_files bash_cmds/mmlu/13_lora/seed46_c3a.sh
+/scratch/yl11330/marc/sbatch_files/bash_cmds_mmlu_13_lora_seed42_c3a.sh_0.sbatch
+Submitted batch job 64234894
+/scratch/yl11330/marc/sbatch_files/bash_cmds_mmlu_13_lora_seed43_c3a.sh_0.sbatch
+Submitted batch job 64234895
+/scratch/yl11330/marc/sbatch_files/bash_cmds_mmlu_13_lora_seed44_c3a.sh_0.sbatch
+Submitted batch job 64234896
+/scratch/yl11330/marc/sbatch_files/bash_cmds_mmlu_13_lora_seed45_c3a.sh_0.sbatch
+Submitted batch job 64234897
+/scratch/yl11330/marc/sbatch_files/bash_cmds_mmlu_13_lora_seed46_c3a.sh_0.sbatch
+Submitted batch job 64234898
+#### C3A LR TOO LOW
+
+[zy3101@cs088 marc]$ python make_sbatch.py --ngpu 1 --time 8 --single --bash_files bash_cmds/mmlu/13_lora/seed42_c3a.sh
+python make_sbatch.py --ngpu 1 --time 8 --single --bash_files bash_cmds/mmlu/13_lora/seed43_c3a.sh
+python make_sbatch.py --ngpu 1 --time 8 --single --bash_files bash_cmds/mmlu/13_lora/seed44_c3a.sh
+python make_sbatch.py --ngpu 1 --time 8 --single --bash_files bash_cmds/mmlu/13_lora/seed45_c3a.sh
+python make_sbatch.py --ngpu 1 --time 8 --single --bash_files bash_cmds/mmlu/13_lora/seed46_c3a.sh
+/scratch/yl11330/marc/sbatch_files/bash_cmds_mmlu_13_lora_seed42_c3a.sh_0.sbatch
+Submitted batch job 64262689
+/scratch/yl11330/marc/sbatch_files/bash_cmds_mmlu_13_lora_seed43_c3a.sh_0.sbatch
+Submitted batch job 64262690
+/scratch/yl11330/marc/sbatch_files/bash_cmds_mmlu_13_lora_seed44_c3a.sh_0.sbatch
+Submitted batch job 64262691
+/scratch/yl11330/marc/sbatch_files/bash_cmds_mmlu_13_lora_seed45_c3a.sh_0.sbatch
+Submitted batch job 64262692
+/scratch/yl11330/marc/sbatch_files/bash_cmds_mmlu_13_lora_seed46_c3a.sh_0.sbatch
+Submitted batch job 64262693
+[zy3101@cs088 marc]$

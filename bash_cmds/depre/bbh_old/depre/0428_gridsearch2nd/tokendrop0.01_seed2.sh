@@ -1,0 +1,110 @@
+accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_bbh/test_time_evaluate.py \
+    --tag bbh_llama8b_gs2_tokendrop0.01_seed2 \
+    --model_name llama8b \
+    --gs_epochs 2 \
+    --gs_lr 1e-3 \
+    --gs_batch_size 2 \
+    --gs_dropout power \
+    --gs_token_drop 0.01 \
+    --seed 2
+
+accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_bbh/test_time_evaluate.py \
+    --tag bbh_llama8b_gs4_tokendrop0.01_seed2 \
+    --model_name llama8b \
+    --gs_epochs 4 \
+    --gs_lr 1e-3 \
+    --gs_batch_size 2 \
+    --gs_dropout power \
+    --gs_token_drop 0.01 \
+    --seed 2
+
+accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_bbh/test_time_evaluate.py \
+    --tag bbh_llama8b_gs6_tokendrop0.01_seed2 \
+    --model_name llama8b \
+    --gs_epochs 6 \
+    --gs_lr 1e-3 \
+    --gs_batch_size 2 \
+    --gs_dropout power \
+    --gs_token_drop 0.01 \
+    --seed 2
+
+accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_bbh/test_time_evaluate.py \
+    --tag bbh_llama8b_gs8_tokendrop0.01_seed2 \
+    --model_name llama8b \
+    --gs_epochs 8 \
+    --gs_lr 1e-3 \
+    --gs_batch_size 2 \
+    --gs_dropout power \
+    --gs_token_drop 0.01 \
+    --seed 2
+
+accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_bbh/test_time_evaluate.py \
+    --tag bbh_llama8b_gs10_tokendrop0.01_seed2 \
+    --model_name llama8b \
+    --gs_epochs 10 \
+    --gs_lr 1e-3 \
+    --gs_batch_size 2 \
+    --gs_dropout power \
+    --gs_token_drop 0.01 \
+    --seed 2
+
+accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_bbh/test_time_evaluate.py \
+    --tag bbh_llama8b_gs12_tokendrop0.01_seed2 \
+    --model_name llama8b \
+    --gs_epochs 12 \
+    --gs_lr 1e-3 \
+    --gs_batch_size 2 \
+    --gs_dropout power \
+    --gs_token_drop 0.01 \
+    --seed 2
+
+accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_bbh/test_time_evaluate.py \
+    --tag bbh_llama8b_gs14_tokendrop0.01_seed2 \
+    --model_name llama8b \
+    --gs_epochs 14 \
+    --gs_lr 1e-3 \
+    --gs_batch_size 2 \
+    --gs_dropout power \
+    --gs_token_drop 0.01 \
+    --seed 2
+
+accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_bbh/test_time_evaluate.py \
+    --tag bbh_llama8b_gs16_tokendrop0.01_seed2 \
+    --model_name llama8b \
+    --gs_epochs 16 \
+    --gs_lr 1e-3 \
+    --gs_batch_size 2 \
+    --gs_dropout power \
+    --gs_token_drop 0.01 \
+    --seed 2
+
+accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_bbh/test_time_evaluate.py \
+    --tag bbh_llama8b_gs18_tokendrop0.01_seed2 \
+    --model_name llama8b \
+    --gs_epochs 18 \
+    --gs_lr 1e-3 \
+    --gs_batch_size 2 \
+    --gs_dropout power \
+    --gs_token_drop 0.01 \
+    --seed 2
+
+accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_bbh/test_time_evaluate.py \
+    --tag bbh_llama8b_gs20_tokendrop0.01_seed2 \
+    --model_name llama8b \
+    --gs_epochs 20 \
+    --gs_lr 1e-3 \
+    --gs_batch_size 2 \
+    --gs_dropout power \
+    --gs_token_drop 0.01 \
+    --seed 2
+
+# 48.53140534305375
+# 50.128727573892085
+# 51.68820478599475
+# 51.905245462905796
+# 53.13048508794604
+# 53.03684625136935
+# 54.30025839588817
+# 54.12054840768698
+# 54.01581191170757
+# 54.32886305809203 <-

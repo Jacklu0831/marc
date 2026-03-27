@@ -1,0 +1,24 @@
+zhenbang
+python make_sbatch.py --ngpu 1 --time 8 --single --bash_files bash_cmds/bbh/13_lora/seed42/dora.sh
+python make_sbatch.py --ngpu 1 --time 8 --single --bash_files bash_cmds/bbh/13_lora/seed42/ft.sh
+python make_sbatch.py --ngpu 1 --time 8 --single --bash_files bash_cmds/bbh/13_lora/seed42/lntuning.sh
+python make_sbatch.py --ngpu 1 --time 8 --single --bash_files bash_cmds/bbh/13_lora/seed42/lora.sh
+python make_sbatch.py --ngpu 1 --time 8 --single --bash_files bash_cmds/bbh/13_lora/seed42/randlora_part1.sh
+python make_sbatch.py --ngpu 1 --time 8 --single --bash_files bash_cmds/bbh/13_lora/seed42/randlora_part2.sh
+python make_sbatch.py --ngpu 1 --time 8 --single --bash_files bash_cmds/bbh/13_lora/seed42/rslora.sh
+/scratch/yl11330/marc/sbatch_files/bash_cmds_bbh_13_lora_seed42_c3a.sh_0.sbatch
+Submitted batch job 65544650
+/scratch/yl11330/marc/sbatch_files/bash_cmds_bbh_13_lora_seed42_dora.sh_0.sbatch
+Submitted batch job 65544651
+/scratch/yl11330/marc/sbatch_files/bash_cmds_bbh_13_lora_seed42_ft.sh_0.sbatch
+Submitted batch job 65544652
+/scratch/yl11330/marc/sbatch_files/bash_cmds_bbh_13_lora_seed42_lntuning.sh_0.sbatch
+Submitted batch job 65544653
+/scratch/yl11330/marc/sbatch_files/bash_cmds_bbh_13_lora_seed42_lora.sh_0.sbatch
+Submitted batch job 65544654
+/scratch/yl11330/marc/sbatch_files/bash_cmds_bbh_13_lora_seed42_randlora_part1.sh_0.sbatch
+Submitted batch job 65544655
+/scratch/yl11330/marc/sbatch_files/bash_cmds_bbh_13_lora_seed42_randlora_part2.sh_0.sbatch
+Submitted batch job 65544656
+/scratch/yl11330/marc/sbatch_files/bash_cmds_bbh_13_lora_seed42_rslora.sh_0.sbatch
+Submitted batch job 65544657

@@ -1,0 +1,52 @@
+======= iter150 ======= (this is too fast, hard to argue efficiency)
+part1   part2   part3   part4   part5
+0.2125  0.3     0.15    0.2625  0.2625
+0.2125  0.3     0.15    0.25    0.25
+0.225   0.3125  0.15    0.2375  0.2375
+0.2125  0.3     0.15    0.25    0.25
+
+lo: 0.2325
+avg: 0.23375
+hi: 0.2375
+
+
+
+
+======= iter200 ======= (this is just right)
+part1   part2   part3   part4   part5
+0.2125  0.3     0.15    0.2625  0.2875
+0.225   0.3     0.15    0.2375  0.2875
+0.225   0.3125  0.15    0.2625  0.275
+0.2125  0.2875  0.1375  0.2625  0.275
+
+lo: 0.235
+avg: 0.240625
+hi: 0.245
+
+ckpts for kvopt:
+part1: eval_arc_ttt_iter200_save_seed1_part1_0317_noprogram_base 0.225
+part2: eval_arc_ttt_iter200_save_seed2_part2_0317_noprogram_base 0.3125
+part3: eval_arc_ttt_iter200_save_seed0_part3_0317_noprogram_base 0.15
+part4: eval_arc_ttt_iter200_save_seed0_part4_0317_noprogram_base 0.2625
+part5: eval_arc_ttt_iter200_save_seed0_part5_0317_noprogram_base 0.2875
+
+
+
+
+======= iter250 ======= (performance too high)
+part1   part2   part3   part4   part5
+0.225   0.3125  0.15    0.275   0.275
+0.225   0.3     0.15    0.275   0.275
+0.225   0.275   0.15    0.2625  0.2875
+0.2375  0.3125  0.15    0.2375  0.275
+
+lo: 0.241
+avg: 0.244
+hi: 0.2475
+
+ckpts for kvopt:
+part1: eval_arc_ttt_iter250_save_seed3_part1_0317_noprogram_base 0.2375
+part2: eval_arc_ttt_iter250_save_seed0_part2_0317_noprogram_base 0.3125
+part3: eval_arc_ttt_iter250_save_seed0_part3_0317_noprogram_base 0.15
+part4: eval_arc_ttt_iter250_save_seed0_part4_0317_noprogram_base 0.275
+part5: eval_arc_ttt_iter250_save_seed2_part5_0317_noprogram_base 0.2875

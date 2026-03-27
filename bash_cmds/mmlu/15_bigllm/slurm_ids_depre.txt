@@ -1,0 +1,105 @@
+python make_sbatch.py --ngpu 1 --time 12 --gb 64 --single --bash_files bash_cmds/mmlu/15_bigllm/seed42/deepseek14b_ctkv.sh
+python make_sbatch.py --ngpu 1 --time 12 --gb 64 --single --bash_files bash_cmds/mmlu/15_bigllm/seed42/deepseek14b_prefix.sh
+python make_sbatch.py --ngpu 1 --time 12 --gb 128 --single --bash_files bash_cmds/mmlu/15_bigllm/seed42/deepseek32b_ctkv.sh
+python make_sbatch.py --ngpu 1 --time 12 --gb 128 --single --bash_files bash_cmds/mmlu/15_bigllm/seed42/deepseek32b_prefix.sh
+python make_sbatch.py --ngpu 1 --time 12 --gb 64 --single --bash_files bash_cmds/mmlu/15_bigllm/seed42/mistral12b_ctkv.sh
+python make_sbatch.py --ngpu 1 --time 12 --gb 64 --single --bash_files bash_cmds/mmlu/15_bigllm/seed42/mistral12b_prefix.sh
+python make_sbatch.py --ngpu 1 --time 12 --gb 64 --single --bash_files bash_cmds/mmlu/15_bigllm/seed42/qwen14b_ctkv.sh
+python make_sbatch.py --ngpu 1 --time 12 --gb 64 --single --bash_files bash_cmds/mmlu/15_bigllm/seed42/qwen14b_prefix.sh
+python make_sbatch.py --ngpu 1 --time 12 --gb 128 --single --bash_files bash_cmds/mmlu/15_bigllm/seed42/qwen32b_ctkv.sh
+python make_sbatch.py --ngpu 1 --time 12 --gb 128 --single --bash_files bash_cmds/mmlu/15_bigllm/seed42/qwen32b_prefix.sh
+/scratch/yl11330/marc/sbatch_files/bash_cmds_mmlu_15_bigllm_seed42_deepseek14b_ctkv.sh_0.sbatch
+Submitted batch job 64234484
+/scratch/yl11330/marc/sbatch_files/bash_cmds_mmlu_15_bigllm_seed42_deepseek14b_prefix.sh_0.sbatch
+Submitted batch job 64234485
+/scratch/yl11330/marc/sbatch_files/bash_cmds_mmlu_15_bigllm_seed42_deepseek32b_ctkv.sh_0.sbatch
+Submitted batch job 64234486
+/scratch/yl11330/marc/sbatch_files/bash_cmds_mmlu_15_bigllm_seed42_deepseek32b_prefix.sh_0.sbatch
+Submitted batch job 64234487
+/scratch/yl11330/marc/sbatch_files/bash_cmds_mmlu_15_bigllm_seed42_mistral12b_ctkv.sh_0.sbatch
+Submitted batch job 64234488
+/scratch/yl11330/marc/sbatch_files/bash_cmds_mmlu_15_bigllm_seed42_mistral12b_prefix.sh_0.sbatch
+Submitted batch job 64234489
+/scratch/yl11330/marc/sbatch_files/bash_cmds_mmlu_15_bigllm_seed42_qwen14b_ctkv.sh_0.sbatch
+Submitted batch job 64234490
+/scratch/yl11330/marc/sbatch_files/bash_cmds_mmlu_15_bigllm_seed42_qwen14b_prefix.sh_0.sbatch
+Submitted batch job 64234491
+/scratch/yl11330/marc/sbatch_files/bash_cmds_mmlu_15_bigllm_seed42_qwen32b_ctkv.sh_0.sbatch
+Submitted batch job 64234492
+/scratch/yl11330/marc/sbatch_files/bash_cmds_mmlu_15_bigllm_seed42_qwen32b_prefix.sh_0.sbatch
+Submitted batch job 64234493
+[yl11330@cs020 marc]$
+
+
+
+
+
+python make_sbatch.py --ngpu 1 --time 12 --gb 64 --single --bash_files bash_cmds/mmlu/15_bigllm/seed43/deepseek14b_ctkv.sh
+python make_sbatch.py --ngpu 1 --time 12 --gb 64 --single --bash_files bash_cmds/mmlu/15_bigllm/seed43/deepseek14b_prefix.sh
+python make_sbatch.py --ngpu 1 --time 12 --gb 128 --single --bash_files bash_cmds/mmlu/15_bigllm/seed43/deepseek32b_ctkv.sh
+python make_sbatch.py --ngpu 1 --time 12 --gb 128 --single --bash_files bash_cmds/mmlu/15_bigllm/seed43/deepseek32b_prefix.sh
+python make_sbatch.py --ngpu 1 --time 12 --gb 64 --single --bash_files bash_cmds/mmlu/15_bigllm/seed43/mistral12b_ctkv.sh
+python make_sbatch.py --ngpu 1 --time 12 --gb 64 --single --bash_files bash_cmds/mmlu/15_bigllm/seed43/mistral12b_prefix.sh
+python make_sbatch.py --ngpu 1 --time 12 --gb 64 --single --bash_files bash_cmds/mmlu/15_bigllm/seed43/qwen14b_ctkv.sh
+python make_sbatch.py --ngpu 1 --time 12 --gb 64 --single --bash_files bash_cmds/mmlu/15_bigllm/seed43/qwen14b_prefix.sh
+python make_sbatch.py --ngpu 1 --time 12 --gb 128 --single --bash_files bash_cmds/mmlu/15_bigllm/seed43/qwen32b_ctkv.sh
+python make_sbatch.py --ngpu 1 --time 12 --gb 128 --single --bash_files bash_cmds/mmlu/15_bigllm/seed43/qwen32b_prefix.sh
+/scratch/yl11330/marc/sbatch_files/bash_cmds_mmlu_15_bigllm_seed43_deepseek14b_ctkv.sh_0.sbatch
+Submitted batch job 64234944
+/scratch/yl11330/marc/sbatch_files/bash_cmds_mmlu_15_bigllm_seed43_deepseek14b_prefix.sh_0.sbatch
+Submitted batch job 64234945
+/scratch/yl11330/marc/sbatch_files/bash_cmds_mmlu_15_bigllm_seed43_deepseek32b_ctkv.sh_0.sbatch
+Submitted batch job 64234946
+/scratch/yl11330/marc/sbatch_files/bash_cmds_mmlu_15_bigllm_seed43_deepseek32b_prefix.sh_0.sbatch
+Submitted batch job 64234947
+/scratch/yl11330/marc/sbatch_files/bash_cmds_mmlu_15_bigllm_seed43_mistral12b_ctkv.sh_0.sbatch
+Submitted batch job 64234948
+/scratch/yl11330/marc/sbatch_files/bash_cmds_mmlu_15_bigllm_seed43_mistral12b_prefix.sh_0.sbatch
+Submitted batch job 64234949
+/scratch/yl11330/marc/sbatch_files/bash_cmds_mmlu_15_bigllm_seed43_qwen14b_ctkv.sh_0.sbatch
+Submitted batch job 64234950
+/scratch/yl11330/marc/sbatch_files/bash_cmds_mmlu_15_bigllm_seed43_qwen14b_prefix.sh_0.sbatch
+Submitted batch job 64234951
+/scratch/yl11330/marc/sbatch_files/bash_cmds_mmlu_15_bigllm_seed43_qwen32b_ctkv.sh_0.sbatch
+Submitted batch job 64234952
+/scratch/yl11330/marc/sbatch_files/bash_cmds_mmlu_15_bigllm_seed43_qwen32b_prefix.sh_0.sbatch
+Submitted batch job 64234953
+
+
+
+
+
+
+
+
+
+python make_sbatch.py --ngpu 1 --time 12 --gb 64 --single --bash_files bash_cmds/mmlu/15_bigllm/seed44/deepseek14b_ctkv.sh
+python make_sbatch.py --ngpu 1 --time 12 --gb 64 --single --bash_files bash_cmds/mmlu/15_bigllm/seed44/deepseek14b_prefix.sh
+python make_sbatch.py --ngpu 1 --time 12 --gb 128 --single --bash_files bash_cmds/mmlu/15_bigllm/seed44/deepseek32b_ctkv.sh
+python make_sbatch.py --ngpu 1 --time 12 --gb 128 --single --bash_files bash_cmds/mmlu/15_bigllm/seed44/deepseek32b_prefix.sh
+python make_sbatch.py --ngpu 1 --time 12 --gb 64 --single --bash_files bash_cmds/mmlu/15_bigllm/seed44/mistral12b_ctkv.sh
+python make_sbatch.py --ngpu 1 --time 12 --gb 64 --single --bash_files bash_cmds/mmlu/15_bigllm/seed44/mistral12b_prefix.sh
+python make_sbatch.py --ngpu 1 --time 12 --gb 64 --single --bash_files bash_cmds/mmlu/15_bigllm/seed44/qwen14b_ctkv.sh
+python make_sbatch.py --ngpu 1 --time 12 --gb 64 --single --bash_files bash_cmds/mmlu/15_bigllm/seed44/qwen14b_prefix.sh
+python make_sbatch.py --ngpu 1 --time 12 --gb 128 --single --bash_files bash_cmds/mmlu/15_bigllm/seed44/qwen32b_ctkv.sh
+python make_sbatch.py --ngpu 1 --time 12 --gb 128 --single --bash_files bash_cmds/mmlu/15_bigllm/seed44/qwen32b_prefix.sh
+/scratch/yl11330/marc/sbatch_files/bash_cmds_mmlu_15_bigllm_seed44_deepseek14b_ctkv.sh_0.sbatch
+Submitted batch job 64234954
+/scratch/yl11330/marc/sbatch_files/bash_cmds_mmlu_15_bigllm_seed44_deepseek14b_prefix.sh_0.sbatch
+Submitted batch job 64234955
+/scratch/yl11330/marc/sbatch_files/bash_cmds_mmlu_15_bigllm_seed44_deepseek32b_ctkv.sh_0.sbatch
+Submitted batch job 64234956
+/scratch/yl11330/marc/sbatch_files/bash_cmds_mmlu_15_bigllm_seed44_deepseek32b_prefix.sh_0.sbatch
+Submitted batch job 64234957
+/scratch/yl11330/marc/sbatch_files/bash_cmds_mmlu_15_bigllm_seed44_mistral12b_ctkv.sh_0.sbatch
+Submitted batch job 64234958
+/scratch/yl11330/marc/sbatch_files/bash_cmds_mmlu_15_bigllm_seed44_mistral12b_prefix.sh_0.sbatch
+Submitted batch job 64234959
+/scratch/yl11330/marc/sbatch_files/bash_cmds_mmlu_15_bigllm_seed44_qwen14b_ctkv.sh_0.sbatch
+Submitted batch job 64234960
+/scratch/yl11330/marc/sbatch_files/bash_cmds_mmlu_15_bigllm_seed44_qwen14b_prefix.sh_0.sbatch
+Submitted batch job 64234961
+/scratch/yl11330/marc/sbatch_files/bash_cmds_mmlu_15_bigllm_seed44_qwen32b_ctkv.sh_0.sbatch
+Submitted batch job 64234962
+/scratch/yl11330/marc/sbatch_files/bash_cmds_mmlu_15_bigllm_seed44_qwen32b_prefix.sh_0.sbatch
+Submitted batch job 64234963

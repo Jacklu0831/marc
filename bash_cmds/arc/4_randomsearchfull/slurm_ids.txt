@@ -1,0 +1,38 @@
+python make_sbatch.py --ngpu 1 --time 10 --single --bash_files bash_cmds/arc/4_randomsearchfull/lr1e-3_part1.sh
+python make_sbatch.py --ngpu 1 --time 10 --single --bash_files bash_cmds/arc/4_randomsearchfull/lr1e-3_part2.sh
+python make_sbatch.py --ngpu 1 --time 10 --single --bash_files bash_cmds/arc/4_randomsearchfull/lr1e-3_part3.sh
+python make_sbatch.py --ngpu 1 --time 10 --single --bash_files bash_cmds/arc/4_randomsearchfull/lr1e-3_part4.sh
+python make_sbatch.py --ngpu 1 --time 10 --single --bash_files bash_cmds/arc/4_randomsearchfull/lr1e-3_part5.sh
+
+Submitted batch job 59981127
+0.0125
+0.0125
+0.0125
+0.0125
+0.0125
+
+Submitted batch job 59981128
+0.0375
+0.0375
+0.0375
+0.0375
+0.0375
+
+Submitted batch job 59981129
+0.0125
+0.025
+0.025
+0.025
+0.025
+
+local:
+0.05
+0.05
+0.0625
+
+local:
+0.025
+0.025
+0.025
+
+# average: 0.0325

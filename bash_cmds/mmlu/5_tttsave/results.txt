@@ -1,0 +1,4 @@
+# these are new ones with 16 demo pairs
+
+iter20
+avg over seeds: 43.503031505396

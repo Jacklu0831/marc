@@ -1,0 +1,35 @@
+lr1e-3_droptrain_tokendrop0.1
+code slurm_outs/60396570.out
+
+lr1e-3_droptrain_tokendrop0.2
+code slurm_outs/60396571.out
+
+lr1e-3_droptrain_tokendrop0.05
+code slurm_outs/60396572.out
+
+lr3e-3_droptrain_tokendrop0.1
+code slurm_outs/60396573.out
+
+lr3e-3_droptrain_tokendrop0.2
+code slurm_outs/60396574.out
+
+lr3e-3_droptrain_tokendrop0.05
+code slurm_outs/60396575.out
+
+lr1e-4_droptrain_tokendrop0.1
+code slurm_outs/60396576.out
+
+lr1e-4_droptrain_tokendrop0.2
+code slurm_outs/60396577.out
+
+lr1e-4_droptrain_tokendrop0.05
+code slurm_outs/60396578.out
+
+lr3e-4_droptrain_tokendrop0.1
+code slurm_outs/60396579.out
+
+lr3e-4_droptrain_tokendrop0.2
+code slurm_outs/60396580.out
+
+lr3e-4_droptrain_tokendrop0.05
+code slurm_outs/60396581.out

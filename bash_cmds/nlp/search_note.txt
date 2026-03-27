@@ -1,0 +1,155 @@
+based on past runs, seed100 25iter takes 26min, 100iter takes 40min (all the damn time is on inference)
+by calculation: each iter adds 0.2min and everything else one seed takes 21min
+=> iter 25 + 50 + 75 + 100 = 250 => 134min for search over one seed
+=> set generously 3hrs for each iter search one seed, 4hs with lora or prefix
+=> set generously 15hrs for each iter search five seeds, 20hs with lora or prefix
+=> wtf, idky but 15hrs wasnt enough... set to 20 fuck it, quick remedy to run all 100iter with 4hr each for all seeds
+=> additionally try iters 125 + 150 = 275 => 97mins => 8.08hrs for all seeds
+
+additionally:
+- lora adds 20% iter time
+- data parsing takes time, which is <5min per seed
+
+
+
+calculation for randomkv
+- iter 100 + 200 + 300 + 400 => 284mins for search over one seed
+- but this is for single seed, 5 seeds is 18.5hrs, set 24hrs
+
+
+
+calculation for ttt
+- 0.47777min per iter, everything else takes 30min (why?)
+- with all iters from50 to 400, sum time is 18hrs
+- split 400 + 50, 300 + 150, 200 + 250, 100 + 350 each 4.5hrs
+- but this is for single seed, 5 seeds is 22.5hours, lets gamble on 24hrs
+- under 16 bits default lora config and 21 tasks each with 91MB => 1.9GB saved ttt ckpts
+
+
+
+# zeroshot: 0.357
+# normalicl: 0.357
+
+# randomhiddenntoken
+iter: 200, 300, 400
+lr: 1e-3
+=> lr1e-2 sucks
+=> got 0.40778879583858424
+
+# randomsearchntoken
+iter: 200, 300, 400
+lr: 1e-3
+=> lr1e-2 sucks
+=> got 0.42219849283782745
+
+# randomsearchfull
+iter: 200, 300, 400
+lr: 1e-3
+=> lr1e-2 sucks
+=> got 0.4106588700592363
+
+# tttnopermute:
+iter: 200, 300, 400
+lr: 1e-4
+=> waiting on mengye sbatch
+
+# tttsave
+iter: 250
+lr: 1e-4
+=> 250 gets 0.4419382079135
+=> note: 300 gets similar to 250 on single seed, just report ttt as [200, '300', 400, 500]
+
+# prefixsearch: prefix grid search with 5 seeds
+iter: 25, 50, 75, 100
+lr: 5e-1, 1e-1
+dropout: train, power
+tokendropout: 0, 0.01, 0.05, 0.1
+lambda: 0 (lambda >1 makes no sense for prefixsearch)
+=> 5e-1 is too high
+=> lock in for droptrain and tokendrop0.01/0.05/0.1, reaches ~0.44
+=> tokendrop0.2 didnt help, got lower
+
+# nokey: no keys with 5 seeds
+iter: 20, 40, 60, 80, 100
+lr: 1e-3, 3e-3, 5e-3
+dropout: train
+tokendropout: 0.0, 0.01, 0.05, 0.1, 0.2
+lambda: 0
+=> 3e-3 tokendrop0.05 best at 0.4395
+
+# gridsearchv2: small grid search for final performance, all seeds
+iter: 20, 40, 60, 80, 100
+lr: 1e-3, 2e-3, 3e-3, 4e-3, 5e-3
+dropout: train
+tokendropout: 0.01, 0.05, 0.1, 0.2
+lambda: 0
+=> did not work, 0.44 again
+
+# tttiter250kvsearch: finally, the last column
+iter: 5, 10, 15, 20, 25 (12-14hrs, set higher cuz previously timed out)
+lr: 1e-3, 5e-4, 1e-4, 5e-5
+dropout: train
+tokendropout: 0.01, 0.05, 0.1, 0.2
+lambda: 0
+=> 1e-4, 5e-5 are too low, either 1e-3 or 5e-4 are a-ok
+=> holy shit, 0.4786513728405685 with 1e-3 tokendrop0.2
+
+# evalondemon: 0.8191903628174325
+
+# fisher:
+=> key: 2.364142347520452e-08
+=> val: 6.074722994637063e-08
+
+
+
+
+
+
+##### DEPRECATED
+# smallgridsearchmoreiter: small grid search for final performance, all seeds
+iter: 150, 200
+lr: 1e-3, 5e-3
+dropout: train, power
+tokendropout: 0.0, 0.01, 0.05, 0.1
+lambda: 0, 1e-2, 1e-1
+=> same performance
+
+# tttsearch: search up to 4 times iter for same sample number, all seeds
+iter: 50, 100, 150, 200, 250, 300, 350, 400
+lr: 1e-4
+=> somewhere higher than 0.440, oh no
+
+# lorasearch: lora grid search, only seed100
+iter: 25, 50, 75, 100
+lr: 1e-1, 1e-2, 1e-3
+dropout: train, power
+tokendropout: 0 (TODO: search this)
+lambda: 0
+sharehead/rank: true/64, false/16
+=> lr1e-3 droptrain sharehead gets 0.444
+=> likely deprecate this, it still scales with ntoken
+
+# prefixsearch: prefix grid search, only seed100
+iter: 25, 50, 75, 100
+lr: 1e0, 1e-1, 1e-2
+dropout: train, power
+tokendropout: 0
+lambda: 0 (lambda >1 makes no sense for prefixsearch)
+=> lr1e-1 droptrain gets 0.443 (keep in mind this is single seed)
+
+# gridsearch: small grid search for final performance, all seeds
+iter: 25, 50, 75, 100
+lr: 1e-3, 5e-3
+dropout: train, power
+tokendropout: 0.0, 0.01, 0.05, 0.1
+lambda: 0, 1e-2, 1e-1
+=> only gets 0.4400
+
+
+
+
+
+
+
+this is mostly finished, ttt best with 200iters (searched 100, 200, 300, 400), gs best at 75iters (searched 25, 50, 75, 100)
+need decision on tttkvsearch

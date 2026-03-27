@@ -1,0 +1,52 @@
+# DEPRE
+mr3182 cs020.hpc.nyu.edu:/scratch/yl11330/marc$ python make_sbatch.py --ngpu 1 --time 12 --single --bash_files bash_cmds/mmlu/numdemon/icl.sh
+/scratch/yl11330/marc/sbatch_files/bash_cmds_mmlu_numdemon_icl.sh_0.sbatch
+Submitted batch job 64205977
+# DEPRE
+
+
+/scratch/yl11330/marc/sbatch_files/bash_cmds_mmlu_numdemon_seed42_icl.sh_0.sbatch
+Submitted batch job 64220461
+/scratch/yl11330/marc/sbatch_files/bash_cmds_mmlu_numdemon_seed43_icl.sh_0.sbatch
+Submitted batch job 64220462
+/scratch/yl11330/marc/sbatch_files/bash_cmds_mmlu_numdemon_seed44_icl.sh_0.sbatch
+Submitted batch job 64220463
+/scratch/yl11330/marc/sbatch_files/bash_cmds_mmlu_numdemon_seed45_icl.sh_0.sbatch
+Submitted batch job 64220464
+/scratch/yl11330/marc/sbatch_files/bash_cmds_mmlu_numdemon_seed46_icl.sh_0.sbatch
+Submitted batch job 64220465
+
+
+mr3182 cs020.hpc.nyu.edu:/scratch/yl11330/marc$ python make_sbatch.py --ngpu 1 --time 12 --single --bash_files bash_cmds/mmlu/numdemon/seed42/ctkv_lr1e-3.sh
+python make_sbatch.py --ngpu 1 --time 12 --single --bash_files bash_cmds/mmlu/numdemon/seed43/ctkv_lr1e-3.sh
+python make_sbatch.py --ngpu 1 --time 12 --single --bash_files bash_cmds/mmlu/numdemon/seed44/ctkv_lr1e-3.sh
+python make_sbatch.py --ngpu 1 --time 12 --single --bash_files bash_cmds/mmlu/numdemon/seed45/ctkv_lr1e-3.sh
+python make_sbatch.py --ngpu 1 --time 12 --single --bash_files bash_cmds/mmlu/numdemon/seed46/ctkv_lr1e-3.sh
+/scratch/yl11330/marc/sbatch_files/bash_cmds_mmlu_numdemon_seed42_ctkv_lr1e-3.sh_0.sbatch
+Submitted batch job 64205982
+/scratch/yl11330/marc/sbatch_files/bash_cmds_mmlu_numdemon_seed43_ctkv_lr1e-3.sh_0.sbatch
+Submitted batch job 64205983
+/scratch/yl11330/marc/sbatch_files/bash_cmds_mmlu_numdemon_seed44_ctkv_lr1e-3.sh_0.sbatch
+Submitted batch job 64205984
+/scratch/yl11330/marc/sbatch_files/bash_cmds_mmlu_numdemon_seed45_ctkv_lr1e-3.sh_0.sbatch
+Submitted batch job 64205985
+/scratch/yl11330/marc/sbatch_files/bash_cmds_mmlu_numdemon_seed46_ctkv_lr1e-3.sh_0.sbatch
+Submitted batch job 64205986
+mr3182 cs020.hpc.nyu.edu:/scratch/yl11330/marc$
+
+
+[zy3101@cs006 marc]$ python make_sbatch.py --ngpu 1 --time 12 --single --bash_files bash_cmds/mmlu/numdemon/seed42/ntoken_lr1e-3.sh
+python make_sbatch.py --ngpu 1 --time 12 --single --bash_files bash_cmds/mmlu/numdemon/seed43/ntoken_lr1e-3.sh
+python make_sbatch.py --ngpu 1 --time 12 --single --bash_files bash_cmds/mmlu/numdemon/seed44/ntoken_lr1e-3.sh
+python make_sbatch.py --ngpu 1 --time 12 --single --bash_files bash_cmds/mmlu/numdemon/seed45/ntoken_lr1e-3.sh
+python make_sbatch.py --ngpu 1 --time 12 --single --bash_files bash_cmds/mmlu/numdemon/seed46/ntoken_lr1e-3.sh
+/scratch/yl11330/marc/sbatch_files/bash_cmds_mmlu_numdemon_seed42_ntoken_lr1e-3.sh_0.sbatch
+Submitted batch job 64205988
+/scratch/yl11330/marc/sbatch_files/bash_cmds_mmlu_numdemon_seed43_ntoken_lr1e-3.sh_0.sbatch
+Submitted batch job 64205989
+/scratch/yl11330/marc/sbatch_files/bash_cmds_mmlu_numdemon_seed44_ntoken_lr1e-3.sh_0.sbatch
+Submitted batch job 64205990
+/scratch/yl11330/marc/sbatch_files/bash_cmds_mmlu_numdemon_seed45_ntoken_lr1e-3.sh_0.sbatch
+Submitted batch job 64205991
+/scratch/yl11330/marc/sbatch_files/bash_cmds_mmlu_numdemon_seed46_ntoken_lr1e-3.sh_0.sbatch
+Submitted batch job 64205992

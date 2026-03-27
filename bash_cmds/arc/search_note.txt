@@ -1,0 +1,165 @@
+arc 80/400 iters to time
+5: 10min
+25: 14min
+100: 29min
+250: 58min
+based on past times, each iter adds 0.2min, everything else takes 9min
+=> iter 10 + 50 + 100 + 150 + 200 + 250 = 760 => 206mins
+=> set generously 4hrs for each iter search
+=> 400 tasks 250iter alone takes 4.92hrs, set generously to 7hrs each because im scared
+
+calculation for randomkv
+=> iter 250 + 500 + 750 + 1000 = 2500 => 536mins
+=> set generously 12hrs for each iter search
+
+calculation for ttt
+- 0.342min per iter, everything else takes 10min
+- with iters 25 + 50 + 100 + 200 + 300 + 400 + 500 => 609mins
+- set generously 14hrs for each iter search
+- under 16 bits default lora config and 80 tasks each with 163MB => 13GB saved ttt ckpts
+
+
+
+
+# zeroshot: 0.01 (updated)
+# normalicl: 0.1325 (updated)
+
+# randomsearchntoken
+iter: 100, 250, 500, 750 (29min, 59min, 109min, 159min) <- 100+250+500 can be one run
+lr: 1e-2, 1e-3 (did not run 1e-2)
+=> 0.07
+
+# randomsearchfull
+iter: 100, 250, 500, 750, 1000 (29min, 59min, 109min, 159min)
+lr: 1e-2, 1e-3 (did not run 1e-2)
+=> 0.0325
+
+# tttnopermute:
+iter: 50, 100, 150, 200 (fewer iters than usual)
+lr: 1e-4
+=> done
+
+# tttsave: save a couple ttt ckpts for all 400 tasks, 5 runs
+iter: 150, 200, 250
+lr: 1e-4
+=> all done
+
+# prefixsearch: prefix grid search with 400 tasks
+iter: 50, 100, 150, 200, 250 (within 4 hrs)
+lr: 1e-2 (1e-1 and 1e-3 both didnt work well before, searhc around 1e-2 later)
+dropout: none
+tokendropout: 0, 0.05, 0.1
+lambda: 0 (lambda >1 makes no sense for prefixsearch)
+=> waiting sbatch on jack
+
+# nokey
+iter: 50, 100, 150, 200, 250
+lr: 1e-3
+dropout: none
+tokendropout: 0.05, 0.1 (briefly tried 0, dogshit)
+lambda: 0
+=> 1e-3 is too low, 3e-3 is the best for gridsearch afterall
+=> trying 3e-3, waiting locally
+
+# gridsearch: small grid search for final performance for 400 tasks
+iter: 100, 150, 200, 250
+lr: 1e-3, 2e-3
+dropout: none
+tokendropout: 0.05, 0.1, 0.2
+lambda: 0
+
+# gridsearchv2: small grid search for final performance for 400 tasks
+iter: 50, 100, 150, 200, 250
+lr: 3e-3, 5e-3 (can also do 4e-3 idk)
+dropout: none
+tokendropout: 0.05, 0.1, 0.2
+lambda: 0
+=> ran locally, 3e-3 is good!
+=> waiting locally for tokendrop0.2, rest finished
+
+# tttiter200kvsearch: finally, the last column for 400 tasks
+iter: 10, 20, 30, 40, 50 (only 75mins)
+lr: 1e-3, 1e-4
+dropout: none
+tokendropout: 0.05, 0.1
+lambda: 0
+=> maybe need more tuning (iter, dropout and lr), but just this for now
+=> running locally
+
+# tttiter250kvsearch: finally, the last column for 400 tasks
+iter: 5, 10, 15, 20, 25, 30, 35, 40, 45, 50 (well under 4hrs)
+lr: 5e-4, 1e-4
+dropout: none
+tokendropout: 0.05, 0.1, 0.2
+lambda: 0
+=> 250iter is too strong, so not using it anyway
+=> 5e-4 did not improve anything at all, only lowered at some iters
+=> 1e-4 made only marginal improvement
+
+# evalondemon: 0.22608001728957
+
+# fisher:
+=> key: 2.4291223602147E-9
+=> val: 1.0230665974593E-7
+
+
+
+
+
+
+
+
+
+============ deprecated ============
+
+# randomsearchfull: randomkv search 80 tasks
+iter: 250, 500, 750, 1000
+lr: 1e-2, 1e-3 (did not run)
+
+# randomsearchntoken: randomkv search 80 tasks
+iter: 250, 500, 750, 1000
+lr: 1e-2, 1e-3 (did not run)
+
+# smallgridsearch: small grid search for final performance for 80 tasks
+iter: 10, 50, 100, 150, 200, 250
+lr: 1e-3, 1e-4
+dropout: none, train, power
+tokendropout: 0, 0.01, 0.1, 0.2
+lambda: 0, 1e-2 (not sure if 1e-2 is good at all)
+=> dropnone, tokendropout0.1/0.2 is necessary
+
+# smallgridsearchmoretokendrop: tokendrop0.2
+iter: 10, 50, 100, 150, 200, 250
+lr: 1e-3, 1e-4
+dropout: none, train, power
+tokendropout: 0.2
+lambda: 0, 1e-2 (not sure if 1e-2 is good at all)
+=> dropnone, tokendropout0.1/0.2 is necessary
+
+# tttsave: save a couple ttt ckpts, 5 runs
+iter: 250
+lr: 1e-4
+
+# tttsearch: search up to 4 times iter for same sample number
+iter: 25, 50, 100, 200, 300, 400, 500
+lr: 1e-4
+
+# tttkvsearch: finally, the last column for 80 tasks
+iter: 5, 10, 15, 20, 25, 30, 35, 40, 45, 50 (well under 4hrs)
+lr: 1e-3, 5e-4, 1e-4, 5e-5
+dropout: none
+tokendropout: 0.0, 0.01, 0.05, 0.1, 0.2
+lambda: 0
+
+# prefixsearch: prefix grid search with 80 tasks
+iter: 50, 100, 150, 200, 250 (within 4 hrs)
+lr: 1e0, 1e-1, 1e-2
+dropout: none
+tokendropout: 0, 0.01, 0.1
+lambda: 0 (lambda >1 makes no sense for prefixsearch)
+=> tokendropout always set at 0 by mistake!
+
+# randomhiddenntoken
+iter: 250, 500, 750 (59min, 109min, 159min)
+lr: 1e-2, 1e-3 (did not run 1e-2)
+=> did not run

@@ -1,0 +1,194 @@
+# some new slurm ids, not complete
+
+python make_sbatch.py --ngpu 1 --time 12 --rtx8000 --bash_files bash_cmds/nlp/13_lora/dora_alpha32.sh
+python make_sbatch.py --ngpu 1 --time 12 --rtx8000 --bash_files bash_cmds/nlp/13_lora/dora_alpha128.sh
+python make_sbatch.py --ngpu 1 --time 12 --rtx8000 --bash_files bash_cmds/nlp/13_lora/ft_lr1e-4.sh
+python make_sbatch.py --ngpu 1 --time 12 --rtx8000 --bash_files bash_cmds/nlp/13_lora/ft_lr5e-5.sh
+python make_sbatch.py --ngpu 1 --time 12 --rtx8000 --bash_files bash_cmds/nlp/13_lora/lntuning_lr1e-2.sh
+python make_sbatch.py --ngpu 1 --time 12 --rtx8000 --bash_files bash_cmds/nlp/13_lora/lntuning_lr1e-3.sh
+python make_sbatch.py --ngpu 1 --time 12 --rtx8000 --bash_files bash_cmds/nlp/13_lora/lora_alpha32.sh
+python make_sbatch.py --ngpu 1 --time 12 --rtx8000 --bash_files bash_cmds/nlp/13_lora/lora_alpha128.sh
+python make_sbatch.py --ngpu 1 --time 12 --rtx8000 --bash_files bash_cmds/nlp/13_lora/randlora_rank4.sh
+python make_sbatch.py --ngpu 1 --time 12 --rtx8000 --bash_files bash_cmds/nlp/13_lora/randlora_rank8.sh
+python make_sbatch.py --ngpu 1 --time 12 --rtx8000 --bash_files bash_cmds/nlp/13_lora/randlora_rank16.sh
+python make_sbatch.py --ngpu 1 --time 12 --rtx8000 --bash_files bash_cmds/nlp/13_lora/randlora_rank64.sh
+python make_sbatch.py --ngpu 1 --time 12 --rtx8000 --bash_files bash_cmds/nlp/13_lora/rslora_alpha32.sh
+python make_sbatch.py --ngpu 1 --time 12 --rtx8000 --bash_files bash_cmds/nlp/13_lora/rslora_alpha128.sh
+
+
+
+[yl11330@cs020 marc]$ python make_sbatch.py --ngpu 1 --time 12 --rtx8000 --bash_files bash_cmds/nlp/13_lora/dora_alpha32.sh
+python make_sbatch.py --ngpu 1 --time 12 --rtx8000 --bash_files bash_cmds/nlp/13_lora/dora_alpha128.sh
+python make_sbatch.py --ngpu 1 --time 12 --rtx8000 --bash_files bash_cmds/nlp/13_lora/ft_lr1e-4.sh
+python make_sbatch.py --ngpu 1 --time 12 --rtx8000 --bash_files bash_cmds/nlp/13_lora/ft_lr5e-5.sh
+python make_sbatch.py --ngpu 1 --time 12 --rtx8000 --bash_files bash_cmds/nlp/13_lora/lntuning_lr1e-2.sh
+python make_sbatch.py --ngpu 1 --time 12 --rtx8000 --bash_files bash_cmds/nlp/13_lora/lntuning_lr1e-3.sh
+python make_sbatch.py --ngpu 1 --time 12 --rtx8000 --bash_files bash_cmds/nlp/13_lora/lora_alpha32.sh
+python make_sbatch.py --ngpu 1 --time 12 --rtx8000 --bash_files bash_cmds/nlp/13_lora/lora_alpha128.sh
+/scratch/yl11330/marc/sbatch_files/nlp_gs150_dora_0.sbatch
+/scratch/yl11330/marc/sbatch_files/nlp_gs200_dora_0.sbatch
+/scratch/yl11330/marc/sbatch_files/nlp_gs250_dora_0.sbatch
+/scratch/yl11330/marc/sbatch_files/nlp_gs300_dora_0.sbatch
+code slurm_outs/64271854.out
+code slurm_outs/64271855.out
+code slurm_outs/64271856.out
+code slurm_outs/64271857.out
+/scratch/yl11330/marc/sbatch_files/nlp_gs150_dora_0.sbatch
+/scratch/yl11330/marc/sbatch_files/nlp_gs200_dora_0.sbatch
+/scratch/yl11330/marc/sbatch_files/nlp_gs250_dora_0.sbatch
+/scratch/yl11330/marc/sbatch_files/nlp_gs300_dora_0.sbatch
+code slurm_outs/64271858.out
+code slurm_outs/64271859.out
+code slurm_outs/64271860.out
+code slurm_outs/64271861.out
+/scratch/yl11330/marc/sbatch_files/nlp_gs150_ft_0.sbatch
+/scratch/yl11330/marc/sbatch_files/nlp_gs200_ft_0.sbatch
+/scratch/yl11330/marc/sbatch_files/nlp_gs250_ft_0.sbatch
+/scratch/yl11330/marc/sbatch_files/nlp_gs300_ft_0.sbatch
+code slurm_outs/64271862.out
+code slurm_outs/64271863.out
+code slurm_outs/64271864.out
+code slurm_outs/64271865.out
+/scratch/yl11330/marc/sbatch_files/nlp_gs150_ft_0.sbatch
+/scratch/yl11330/marc/sbatch_files/nlp_gs200_ft_0.sbatch
+/scratch/yl11330/marc/sbatch_files/nlp_gs250_ft_0.sbatch
+/scratch/yl11330/marc/sbatch_files/nlp_gs300_ft_0.sbatch
+code slurm_outs/64271866.out
+code slurm_outs/64271867.out
+code slurm_outs/64271868.out
+code slurm_outs/64271869.out
+/scratch/yl11330/marc/sbatch_files/nlp_gs150_lntuning_0.sbatch
+/scratch/yl11330/marc/sbatch_files/nlp_gs200_lntuning_0.sbatch
+/scratch/yl11330/marc/sbatch_files/nlp_gs250_lntuning_0.sbatch
+/scratch/yl11330/marc/sbatch_files/nlp_gs300_lntuning_0.sbatch
+code slurm_outs/64271870.out
+code slurm_outs/64271871.out
+code slurm_outs/64271872.out
+code slurm_outs/64271873.out
+/scratch/yl11330/marc/sbatch_files/nlp_gs150_lntuning_0.sbatch
+/scratch/yl11330/marc/sbatch_files/nlp_gs200_lntuning_0.sbatch
+/scratch/yl11330/marc/sbatch_files/nlp_gs250_lntuning_0.sbatch
+/scratch/yl11330/marc/sbatch_files/nlp_gs300_lntuning_0.sbatch
+code slurm_outs/64271874.out
+code slurm_outs/64271875.out
+code slurm_outs/64271876.out
+code slurm_outs/64271877.out
+/scratch/yl11330/marc/sbatch_files/nlp_gs150_lora_0.sbatch
+/scratch/yl11330/marc/sbatch_files/nlp_gs200_lora_0.sbatch
+/scratch/yl11330/marc/sbatch_files/nlp_gs250_lora_0.sbatch
+/scratch/yl11330/marc/sbatch_files/nlp_gs300_lora_0.sbatch
+code slurm_outs/64271878.out
+code slurm_outs/64271879.out
+code slurm_outs/64271880.out
+code slurm_outs/64271881.out
+/scratch/yl11330/marc/sbatch_files/nlp_gs150_lora_0.sbatch
+/scratch/yl11330/marc/sbatch_files/nlp_gs200_lora_0.sbatch
+/scratch/yl11330/marc/sbatch_files/nlp_gs250_lora_0.sbatch
+/scratch/yl11330/marc/sbatch_files/nlp_gs300_lora_0.sbatch
+code slurm_outs/64271882.out
+code slurm_outs/64271883.out
+code slurm_outs/64271884.out
+code slurm_outs/64271885.out
+[yl11330@cs020 marc]$
+
+
+
+
+
+
+
+python make_sbatch.py --ngpu 1 --time 12 --rtx8000 --bash_files bash_cmds/nlp/13_lora/randlora_rank4.sh
+python make_sbatch.py --ngpu 1 --time 12 --rtx8000 --bash_files bash_cmds/nlp/13_lora/randlora_rank8.sh
+python make_sbatch.py --ngpu 1 --time 12 --rtx8000 --bash_files bash_cmds/nlp/13_lora/randlora_rank16.sh
+python make_sbatch.py --ngpu 1 --time 12 --rtx8000 --bash_files bash_cmds/nlp/13_lora/randlora_rank64.sh
+python make_sbatch.py --ngpu 1 --time 12 --rtx8000 --bash_files bash_cmds/nlp/13_lora/rslora_alpha32.sh
+python make_sbatch.py --ngpu 1 --time 12 --rtx8000 --bash_files bash_cmds/nlp/13_lora/rslora_alpha128.sh
+mr3182 cs020.hpc.nyu.edu:/scratch/yl11330/marc$ python make_sbatch.py --ngpu 1 --time 12 --rtx8000 --bash_files bash_cmds/nlp/13_lora/randlora_rank4.sh
+/scratch/yl11330/marc/sbatch_files/nlp_gs150_randlora_rank4_0.sbatch
+/scratch/yl11330/marc/sbatch_files/nlp_gs200_randlora_rank4_0.sbatch
+/scratch/yl11330/marc/sbatch_files/nlp_gs250_randlora_rank4_0.sbatch
+/scratch/yl11330/marc/sbatch_files/nlp_gs300_randlora_rank4_0.sbatch
+code slurm_outs/64271886.out
+code slurm_outs/64271887.out
+code slurm_outs/64271888.out
+code slurm_outs/64271889.out
+mr3182 cs020.hpc.nyu.edu:/scratch/yl11330/marc$ python make_sbatch.py --ngpu 1 --time 12 --rtx8000 --bash_files bash_cmds/nlp/13_lora/randlora_rank8.sh
+/scratch/yl11330/marc/sbatch_files/nlp_gs150_randlora_rank8_0.sbatch
+/scratch/yl11330/marc/sbatch_files/nlp_gs200_randlora_rank8_0.sbatch
+/scratch/yl11330/marc/sbatch_files/nlp_gs250_randlora_rank8_0.sbatch
+/scratch/yl11330/marc/sbatch_files/nlp_gs300_randlora_rank8_0.sbatch
+code slurm_outs/64271890.out
+code slurm_outs/64271891.out
+code slurm_outs/64271892.out
+code slurm_outs/64271893.out
+mr3182 cs020.hpc.nyu.edu:/scratch/yl11330/marc$ python make_sbatch.py --ngpu 1 --time 12 --rtx8000 --bash_files bash_cmds/nlp/13_lora/randlora_rank16.sh
+/scratch/yl11330/marc/sbatch_files/nlp_gs150_randlora_rank16_0.sbatch
+/scratch/yl11330/marc/sbatch_files/nlp_gs200_randlora_rank16_0.sbatch
+/scratch/yl11330/marc/sbatch_files/nlp_gs250_randlora_rank16_0.sbatch
+/scratch/yl11330/marc/sbatch_files/nlp_gs300_randlora_rank16_0.sbatch
+code slurm_outs/64271894.out
+code slurm_outs/64271895.out
+code slurm_outs/64271896.out
+code slurm_outs/64271897.out
+mr3182 cs020.hpc.nyu.edu:/scratch/yl11330/marc$ python make_sbatch.py --ngpu 1 --time 12 --rtx8000 --bash_files bash_cmds/nlp/13_lora/randlora_rank64.sh
+/scratch/yl11330/marc/sbatch_files/nlp_gs150_randlora_rank64_0.sbatch
+/scratch/yl11330/marc/sbatch_files/nlp_gs200_randlora_rank64_0.sbatch
+/scratch/yl11330/marc/sbatch_files/nlp_gs250_randlora_rank64_0.sbatch
+/scratch/yl11330/marc/sbatch_files/nlp_gs300_randlora_rank64_0.sbatch
+code slurm_outs/64271898.out
+code slurm_outs/64271899.out
+code slurm_outs/64271900.out
+code slurm_outs/64271901.out
+mr3182 cs020.hpc.nyu.edu:/scratch/yl11330/marc$ python make_sbatch.py --ngpu 1 --time 12 --rtx8000 --bash_files bash_cmds/nlp/13_lora/rslora_alpha32.sh
+/scratch/yl11330/marc/sbatch_files/nlp_gs150_rslora_0.sbatch
+/scratch/yl11330/marc/sbatch_files/nlp_gs200_rslora_0.sbatch
+/scratch/yl11330/marc/sbatch_files/nlp_gs250_rslora_0.sbatch
+/scratch/yl11330/marc/sbatch_files/nlp_gs300_rslora_0.sbatch
+code slurm_outs/64271902.out
+code slurm_outs/64271903.out
+code slurm_outs/64271904.out
+code slurm_outs/64271905.out
+mr3182 cs020.hpc.nyu.edu:/scratch/yl11330/marc$ python make_sbatch.py --ngpu 1 --time 12 --rtx8000 --bash_files bash_cmds/nlp/13_lora/rslora_alpha128.sh
+/scratch/yl11330/marc/sbatch_files/nlp_gs150_rslora_0.sbatch
+/scratch/yl11330/marc/sbatch_files/nlp_gs200_rslora_0.sbatch
+/scratch/yl11330/marc/sbatch_files/nlp_gs250_rslora_0.sbatch
+/scratch/yl11330/marc/sbatch_files/nlp_gs300_rslora_0.sbatch
+code slurm_outs/64271906.out
+code slurm_outs/64271907.out
+code slurm_outs/64271908.out
+code slurm_outs/64271909.out
+mr3182 cs020.hpc.nyu.edu:/scratch/yl11330/marc$
+
+
+
+
+
+
+# previously killed ones
+mr3182 cs020.hpc.nyu.edu:/scratch/yl11330/marc$ python make_sbatch.py --ngpu 1 --time 12 --rtx8000 --bash_files bash_cmds/nlp/13_lora/rslora_alpha32.sh
+/scratch/yl11330/marc/sbatch_files/nlp_gs150_rslora_0.sbatch
+Submitted batch job 64294972
+mr3182 cs020.hpc.nyu.edu:/scratch/yl11330/marc$ python make_sbatch.py --ngpu 1 --time 12 --rtx8000 --bash_files bash_cmds/nlp/13_lora/rslora_alpha128.sh
+/scratch/yl11330/marc/sbatch_files/nlp_gs200_rslora_0.sbatch
+/scratch/yl11330/marc/sbatch_files/nlp_gs300_rslora_0.sbatch
+Submitted batch job 64294976
+Submitted batch job 64294977
+mr3182 cs020.hpc.nyu.edu:/scratch/yl11330/marc$ python make_sbatch.py --ngpu 1 --time 12 --rtx8000 --bash_files bash_cmds/nlp/13_lora/randlora_rank4.sh
+/scratch/yl11330/marc/sbatch_files/nlp_gs300_randlora_rank4_0.sbatch
+Submitted batch job 64294978
+mr3182 cs020.hpc.nyu.edu:/scratch/yl11330/marc$
+
+
+
+
+# randlora128
+[yl11330@cs020 marc]$ python make_sbatch.py --ngpu 1 --time 12 --rtx8000 --bash_files bash_cmds/nlp/13_lora/randlora_rank128.sh
+/scratch/yl11330/marc/sbatch_files/nlp_gs150_randlora_rank128_0.sbatch
+/scratch/yl11330/marc/sbatch_files/nlp_gs200_randlora_rank128_0.sbatch
+/scratch/yl11330/marc/sbatch_files/nlp_gs250_randlora_rank128_0.sbatch
+/scratch/yl11330/marc/sbatch_files/nlp_gs300_randlora_rank128_0.sbatch
+Submitted batch job 64295182
+Submitted batch job 64295183
+Submitted batch job 64295184
+Submitted batch job 64295185
+[yl11330@cs020 marc]$

@@ -1,0 +1,94 @@
+based on past runs, each iter adds 0.275min, and everything else takes 13.5 min
+decision to search up to 25 is due to efficiency, less time than ttt
+=> iters 5 + 10 + 15 + 20 + 25 = 75 => 88.125 for one search over iters
+=> set generously 2hrs for an iter search, 2.5hrs with lora or prefix
+
+TODO: no compute for randomsearch atm
+TODO: no compute for lora or prefix atm (need to implement lora too so)
+TODO: use seed45 for now, expand to more seeds if compute allows
+
+
+calculation for randomsearch
+- iter 25 + 50 + 75 + 100 = 250 => 122.75
+- set generously 3hrs for an iter search
+
+calculation for ttt
+- cannot calculate because ran on h100, 3 hours is more than enough
+- under 16 bits default lora config and 57 tasks each with 301M => 8GB saved ttt ckpts
+
+
+
+# smallgridsearch: small grid search for final performance
+iter: 5, 10, 15, 20, 25 (up to 25iter for a time under ttt 8iter)
+lr: 1e-2, 5e-3, 1e-3
+dropout: train, power
+tokendropout: 0.05, 0.01
+lambda: 0, 1e-1, 1e-2
+seed: 45
+=> lr1e-3, droptrain, tokendrop0.05, lambda0 is best at 56.28
+
+# smallgridsearchhightokendrop: as name
+iter: 5, 10, 15, 20, 25 (up to 25iter for a time under ttt 8iter)
+lr: 1e-3, 5e=3
+dropout: train (take the risk: train with dropout showed hope, we dont want power)
+tokendropout: 0.1, 0.2 (train with tokendrop0.05 worked, go higher)
+lambda: 0
+seed: 45
+=> lr1e-3, droptrain, tokendrop0.2 got 56.58, so far so best but mostly noise, and takes higher iter to reach
+
+# seedsearch: search kv-opt seed42-45
+iter: 5, 10, 15, 20, 25 (up to 25iter for a time under ttt 8iter)
+lr: 1e-3, 5e-4
+dropout: train
+tokendropout: 0.01, 0.05, 0.1
+lambda: 0
+seed: 42, 43, 44, 45, 46
+
+# randomsearchfull: randomkv search
+iter: 25, 50, 75, 100
+lr: 1e-2, 1e-3
+
+# randomsearchntoken: randomkv search
+iter: 25, 50, 75, 100
+lr: 1e-2, 1e-3
+
+# tttsearch: ttt on iters and this new seed 45, just searching for our own info, use 8iter anyway
+iter: 5, 10, 15, 20, 25
+lr: 1e-4
+seed: 45
+
+# tttsave: save 3 repeated runs of ttt ckpts on seeds 42-46
+iter: 8
+lr: 1e-4
+seed: 42, 43, 44, 45, 46
+
+# prefixsearch: prefix grid search with seed45
+iter: 10, 20, 25, 30, 40, 50 (double the iter compared to normal, keep 25 anyway still <4hrs)
+lr: 1e0, 1e-1, 1e-2
+dropout: train
+tokendropout: 0, 0.01, 0.1
+lambda: 0 (lambda >1 makes no sense for prefixsearch)
+
+# tttkvsearch: finally, the last column
+iter: 2, 4, 6, 8, 10, 12 (each iter search is <2hrs)
+lr: 1e-3, 1e-4
+dropout: train
+tokendropout: 0.0, 0.01, 0.1
+lambda: 0
+seed: 42, 43, 44, 45, 46
+=> TODO: search lr5e-4/5e-5 and tokendrop0.05/0.2
+
+
+
+
+
+
+##### DEPRECATED
+# gridsearch2nd: time to apply it for all seeds
+iter: 2, 4, 6, 8, 10, 12, 14, 16, 18, 20 (165.25min, set to 4hrs)
+lr: 1e-3
+dropout: power
+tokendropout: 0, 0.01, 0.05, 0.1
+lambda: 0
+seed: 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 42, 43, 44, 45, 46
+##### DEPRECATED

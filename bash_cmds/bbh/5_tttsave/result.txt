@@ -1,0 +1,15 @@
+# these are new ones with maxseqlen update
+
+for 5 seeds
+min: 57.39043834887908, 56.587030896696014, 56.41203191803037, 58.1304043356473,  58.11630792667944
+=> avg 57.327242685186
+
+max: 57.60700478645066, 56.72591978558492, 56.64882180942553, 58.411734258920966, 58.455567534031154
+=> avg 57.569809634883
+
+use these for kvopt:
+seed42: eval_bbh_ttt_iter8_save_run1_seed42
+seed43: eval_bbh_ttt_iter8_save_run1_seed43
+seed44: eval_bbh_ttt_iter8_save_run3_seed44
+seed45: eval_bbh_ttt_iter8_save_run1_seed45
+seed46: eval_bbh_ttt_iter8_save_run3_seed46

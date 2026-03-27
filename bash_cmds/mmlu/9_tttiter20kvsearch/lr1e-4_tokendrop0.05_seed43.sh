@@ -1,0 +1,80 @@
+# mmlu ttt gs2 lr1e-4 tokendrop0.05 seed43
+accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_mmlu/test_time_evaluate.py \
+    --tag mmlu_ttt_gs2_lr1e-4_tokendrop0.05_seed43 \
+    --ttt_weight_dir eval_mmlu_ttt_iter20_save_seed43_run1 \
+    --gs_epochs 2 \
+    --gs_lr 1e-4 \
+    --gs_token_dropout 0.05 \
+    --seed 43
+
+# mmlu ttt gs4 lr1e-4 tokendrop0.05 seed43
+accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_mmlu/test_time_evaluate.py \
+    --tag mmlu_ttt_gs4_lr1e-4_tokendrop0.05_seed43 \
+    --ttt_weight_dir eval_mmlu_ttt_iter20_save_seed43_run1 \
+    --gs_epochs 4 \
+    --gs_lr 1e-4 \
+    --gs_token_dropout 0.05 \
+    --seed 43
+
+# mmlu ttt gs6 lr1e-4 tokendrop0.05 seed43
+accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_mmlu/test_time_evaluate.py \
+    --tag mmlu_ttt_gs6_lr1e-4_tokendrop0.05_seed43 \
+    --ttt_weight_dir eval_mmlu_ttt_iter20_save_seed43_run1 \
+    --gs_epochs 6 \
+    --gs_lr 1e-4 \
+    --gs_token_dropout 0.05 \
+    --seed 43
+
+# mmlu ttt gs8 lr1e-4 tokendrop0.05 seed43
+accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_mmlu/test_time_evaluate.py \
+    --tag mmlu_ttt_gs8_lr1e-4_tokendrop0.05_seed43 \
+    --ttt_weight_dir eval_mmlu_ttt_iter20_save_seed43_run1 \
+    --gs_epochs 8 \
+    --gs_lr 1e-4 \
+    --gs_token_dropout 0.05 \
+    --seed 43
+
+# mmlu ttt gs10 lr1e-4 tokendrop0.05 seed43
+accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_mmlu/test_time_evaluate.py \
+    --tag mmlu_ttt_gs10_lr1e-4_tokendrop0.05_seed43 \
+    --ttt_weight_dir eval_mmlu_ttt_iter20_save_seed43_run1 \
+    --gs_epochs 10 \
+    --gs_lr 1e-4 \
+    --gs_token_dropout 0.05 \
+    --seed 43
+
+# mmlu ttt gs12 lr1e-4 tokendrop0.05 seed43
+accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_mmlu/test_time_evaluate.py \
+    --tag mmlu_ttt_gs12_lr1e-4_tokendrop0.05_seed43 \
+    --ttt_weight_dir eval_mmlu_ttt_iter20_save_seed43_run1 \
+    --gs_epochs 12 \
+    --gs_lr 1e-4 \
+    --gs_token_dropout 0.05 \
+    --seed 43
+
+# mmlu ttt gs14 lr1e-4 tokendrop0.05 seed43
+accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_mmlu/test_time_evaluate.py \
+    --tag mmlu_ttt_gs14_lr1e-4_tokendrop0.05_seed43 \
+    --ttt_weight_dir eval_mmlu_ttt_iter20_save_seed43_run1 \
+    --gs_epochs 14 \
+    --gs_lr 1e-4 \
+    --gs_token_dropout 0.05 \
+    --seed 43
+
+# mmlu ttt gs16 lr1e-4 tokendrop0.05 seed43
+accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_mmlu/test_time_evaluate.py \
+    --tag mmlu_ttt_gs16_lr1e-4_tokendrop0.05_seed43 \
+    --ttt_weight_dir eval_mmlu_ttt_iter20_save_seed43_run1 \
+    --gs_epochs 16 \
+    --gs_lr 1e-4 \
+    --gs_token_dropout 0.05 \
+    --seed 43
+
+# 42.86382351527915
+# 43.3083441690193
+# 42.89871382872683
+# 43.07995684621028
+# 43.12905251521623
+# 43.076533447181525
+# 42.901967300001715
+# 43.20465183261417

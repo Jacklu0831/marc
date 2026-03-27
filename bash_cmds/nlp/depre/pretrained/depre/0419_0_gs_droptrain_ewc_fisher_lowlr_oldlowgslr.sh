@@ -1,0 +1,127 @@
+# python make_sbatch.py --ngpu 1 --time 8 --rtx8000 --single --bash_files bash_cmds/0401_nlp/pretrained/0419_0_gs_droptrain_ewc_fisher_lowlr.sh
+MASTER_PORT=$(comm -23 <(seq 10000 65000 | sort) <(ss -tan | awk '{print $4}' | cut -d':' -f2 | sort -u) | shuf | head -n 1)
+
+
+
+
+# nlp gs5 lr1e-3 droptrain lambda1e1 fisher
+accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_nlp/test_time_evaluate.py \
+    --tag nlp_gs5_lr1e-3_droptrain_lambda1e1_fisher \
+    --weight_dir nlp_pretrained \
+    --weight_epoch 0 \
+    --gs_epochs 5 \
+    --gs_lr 1e-3 \
+    --gs_dropout train \
+    --gs_lambda_param_sqr 1e1 \
+    --gs_fisher \
+    --eval_seeds 100
+
+# nlp gs25 lr1e-3 droptrain lambda1e1 fisher
+accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_nlp/test_time_evaluate.py \
+    --tag nlp_gs25_lr1e-3_droptrain_lambda1e1_fisher \
+    --weight_dir nlp_pretrained \
+    --weight_epoch 0 \
+    --gs_epochs 25 \
+    --gs_lr 1e-3 \
+    --gs_dropout train \
+    --gs_lambda_param_sqr 1e1 \
+    --gs_fisher \
+    --eval_seeds 100
+
+# nlp gs100 lr1e-3 droptrain lambda1e1 fisher
+accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_nlp/test_time_evaluate.py \
+    --tag nlp_gs100_lr1e-3_droptrain_lambda1e1_fisher \
+    --weight_dir nlp_pretrained \
+    --weight_epoch 0 \
+    --gs_epochs 100 \
+    --gs_lr 1e-3 \
+    --gs_dropout train \
+    --gs_lambda_param_sqr 1e1 \
+    --gs_fisher \
+    --eval_seeds 100
+
+# nlp gs250 lr1e-3 droptrain lambda1e1 fisher
+accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_nlp/test_time_evaluate.py \
+    --tag nlp_gs250_lr1e-3_droptrain_lambda1e1_fisher \
+    --weight_dir nlp_pretrained \
+    --weight_epoch 0 \
+    --gs_epochs 250 \
+    --gs_lr 1e-3 \
+    --gs_dropout train \
+    --gs_lambda_param_sqr 1e1 \
+    --gs_fisher \
+    --eval_seeds 100
+
+
+
+
+
+
+
+
+
+
+
+# nlp gs5 lr1e-3 droptrain lambda1e0 fisher
+accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_nlp/test_time_evaluate.py \
+    --tag nlp_gs5_lr1e-3_droptrain_lambda1e0_fisher \
+    --weight_dir nlp_pretrained \
+    --weight_epoch 0 \
+    --gs_epochs 5 \
+    --gs_lr 1e-3 \
+    --gs_dropout train \
+    --gs_lambda_param_sqr 1e0 \
+    --gs_fisher \
+    --eval_seeds 100
+
+# nlp gs25 lr1e-3 droptrain lambda1e0 fisher
+accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_nlp/test_time_evaluate.py \
+    --tag nlp_gs25_lr1e-3_droptrain_lambda1e0_fisher \
+    --weight_dir nlp_pretrained \
+    --weight_epoch 0 \
+    --gs_epochs 25 \
+    --gs_lr 1e-3 \
+    --gs_dropout train \
+    --gs_lambda_param_sqr 1e0 \
+    --gs_fisher \
+    --eval_seeds 100
+
+# nlp gs100 lr1e-3 droptrain lambda1e0 fisher
+accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_nlp/test_time_evaluate.py \
+    --tag nlp_gs100_lr1e-3_droptrain_lambda1e0_fisher \
+    --weight_dir nlp_pretrained \
+    --weight_epoch 0 \
+    --gs_epochs 100 \
+    --gs_lr 1e-3 \
+    --gs_dropout train \
+    --gs_lambda_param_sqr 1e0 \
+    --gs_fisher \
+    --eval_seeds 100
+
+# nlp gs250 lr1e-3 droptrain lambda1e0 fisher
+accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_nlp/test_time_evaluate.py \
+    --tag nlp_gs250_lr1e-3_droptrain_lambda1e0_fisher \
+    --weight_dir nlp_pretrained \
+    --weight_epoch 0 \
+    --gs_epochs 250 \
+    --gs_lr 1e-3 \
+    --gs_dropout train \
+    --gs_lambda_param_sqr 1e0 \
+    --gs_fisher \
+    --eval_seeds 100
+
+# Submitted batch job 59510169
+
+# lambda1e1
+# 0.3820238885533434
+# 0.410744256449619
+# 0.4385040161914415
+# 0.43869281068643623 <-
+
+# lambda1e0
+# 0.3812342995236052
+# 0.4125816393890318
+# 0.4364141252896151 <-
+# 0.4358724265505342
+
+# so far 0.43869281068643623

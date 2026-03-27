@@ -1,0 +1,2341 @@
+[yl11330@log-3 marc]$ get_gpu 8 4 1 32
+srun: job 60160111 queued and waiting for resources
+get_sin
+get_conda5
+
+
+
+# arc evalondemon part1
+accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_arc/test_time_evaluate.py \
+    --select_tasks_path data/task_info_part1.csv \
+    --no_bos \
+    --tag arc_evalondemon_part1 \
+    --weight_dir 0317_noprogram_base \
+    --weight_epoch 24 \
+    --eval_on_demonstrations
+
+# arc evalondemon part2
+accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_arc/test_time_evaluate.py \
+    --select_tasks_path data/task_info_part2.csv \
+    --no_bos \
+    --tag arc_evalondemon_part2 \
+    --weight_dir 0317_noprogram_base \
+    --weight_epoch 24 \
+    --eval_on_demonstrations
+
+# arc evalondemon part3
+accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_arc/test_time_evaluate.py \
+    --select_tasks_path data/task_info_part3.csv \
+    --no_bos \
+    --tag arc_evalondemon_part3 \
+    --weight_dir 0317_noprogram_base \
+    --weight_epoch 24 \
+    --eval_on_demonstrations
+
+# arc evalondemon part4
+accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_arc/test_time_evaluate.py \
+    --select_tasks_path data/task_info_part4.csv \
+    --no_bos \
+    --tag arc_evalondemon_part4 \
+    --weight_dir 0317_noprogram_base \
+    --weight_epoch 24 \
+    --eval_on_demonstrations
+
+# arc evalondemon part5
+accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_arc/test_time_evaluate.py \
+    --select_tasks_path data/task_info_part5.csv \
+    --no_bos \
+    --tag arc_evalondemon_part5 \
+    --weight_dir 0317_noprogram_base \
+    --weight_epoch 24 \
+    --eval_on_demonstrations
+
+# this will take LONG and should really double check if correct (check the slurm outputs)
+# normal 80 task takes 9min => 400 tasks and avg <4 demon per task => 180mins, 4hr should be fine
+
+
+exit
+exit
+srun: job 60160111 has been allocated resources
+get_sin
+get_conda5
+
+
+
+# arc evalondemon part1
+accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_arc/test_time_evaluate.py \
+    --select_tasks_path data/task_info_part1.csv \
+    --no_bos \
+    --tag arc_evalondemon_part1 \
+    --weight_dir 0317_noprogram_base \
+    --weight_epoch 24 \
+    --eval_on_demonstrations
+
+# arc evalondemon part2
+accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_arc/test_time_evaluate.py \
+    --select_tasks_path data/task_info_part2.csv \
+    --no_bos \
+    --tag arc_evalondemon_part2 \
+    --weight_dir 0317_noprogram_base \
+    --weight_epoch 24 \
+    --eval_on_demonstrations
+
+# arc evalondemon part3
+accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_arc/test_time_evaluate.py \
+    --select_tasks_path data/task_info_part3.csv \
+    --no_bos \
+    --tag arc_evalondemon_part3 \
+    --weight_dir 0317_noprogram_base \
+    --weight_epoch 24 \
+    --eval_on_demonstrations
+
+# arc evalondemon part4
+accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_arc/test_time_evaluate.py \
+    --select_tasks_path data/task_info_part4.csv \
+    --no_bos \
+    --tag arc_evalondemon_part4 \
+    --weight_dir 0317_noprogram_base \
+    --weight_epoch 24 \
+    --eval_on_demonstrations
+
+# arc evalondemon part5
+accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_arc/test_time_evaluate.py \
+    --select_tasks_path data/task_info_part5.csv \
+    --no_bos \
+    --tag arc_evalondemon_part5 \
+    --weight_dir 0317_noprogram_base \
+    --weight_epoch 24 \
+    --eval_on_demonstrations
+
+# this will take LONG and should really double check if correct (check the slurm outputs)
+# normal 80 task takes 9min => 400 tasks and avg <4 demon per task => 180mins, 4hr should be fine
+
+
+exit
+exit
+[yl11330@ga003 marc]$ get_sin
+Singularity> get_conda5
+(/scratch/yl11330/marc/penv) Singularity>
+(/scratch/yl11330/marc/penv) Singularity>
+(/scratch/yl11330/marc/penv) Singularity>
+(/scratch/yl11330/marc/penv) Singularity> # arc evalondemon part1
+(/scratch/yl11330/marc/penv) Singularity> accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_arc/test_time_evaluate.py \
+>     --select_tasks_path data/task_info_part1.csv \
+>     --no_bos \
+>     --tag arc_evalondemon_part1 \
+>     --weight_dir 0317_noprogram_base \
+>     --weight_epoch 24 \
+>     --eval_on_demonstrations
+The following values were not passed to `accelerate launch` and had defaults used instead:
+        `--num_processes` was set to a value of `1`
+        `--num_machines` was set to a value of `1`
+        `--dynamo_backend` was set to a value of `'no'`
+To avoid this warning pass in values for each of the problematic parameters or run `accelerate config`.
+Wed May  7 01:26:55 2025
++---------------------------------------------------------------------------------------+
+| NVIDIA-SMI 535.154.05             Driver Version: 535.154.05   CUDA Version: 12.2     |
+|-----------------------------------------+----------------------+----------------------+
+| GPU  Name                 Persistence-M | Bus-Id        Disp.A | Volatile Uncorr. ECC |
+| Fan  Temp   Perf          Pwr:Usage/Cap |         Memory-Usage | GPU-Util  Compute M. |
+|                                         |                      |               MIG M. |
+|=========================================+======================+======================|
+|   0  NVIDIA A100-SXM4-80GB          On  | 00000000:E3:00.0 Off |                    0 |
+| N/A   25C    P0              60W / 500W |      4MiB / 81920MiB |      0%      Default |
+|                                         |                      |             Disabled |
++-----------------------------------------+----------------------+----------------------+
+
++---------------------------------------------------------------------------------------+
+| Processes:                                                                            |
+|  GPU   GI   CI        PID   Type   Process name                            GPU Memory |
+|        ID   ID                                                             Usage      |
+|=======================================================================================|
+|  No running processes found                                                           |
++---------------------------------------------------------------------------------------+
+05/07/2025 01:26:56 - INFO - __main__ - Distributed environment: NO
+Num processes: 1
+Process index: 0
+Local process index: 0
+Device: cuda
+
+Mixed precision type: bf16
+
+05/07/2025 01:26:56 - INFO - __main__ - Accelerator and seed set up.
+05/07/2025 01:26:56 - INFO - __main__ - #### BEGIN ALL ARGUMENTS ####
+05/07/2025 01:26:56 - INFO - __main__ - tag: eval_arc_evalondemon_part1_0317_noprogram_base
+05/07/2025 01:26:56 - INFO - __main__ - output_dir: ./encoder_decoder/outputs_eval/eval_arc_evalondemon_part1_0317_noprogram_base
+05/07/2025 01:26:56 - INFO - __main__ - log_every: 10
+05/07/2025 01:26:56 - INFO - __main__ - seed: 0
+05/07/2025 01:26:56 - INFO - __main__ - debug: False
+05/07/2025 01:26:56 - INFO - __main__ - debug_max_len: False
+05/07/2025 01:26:56 - INFO - __main__ - debug_random_pad: False
+05/07/2025 01:26:56 - INFO - __main__ - debug_pad_len: -1
+05/07/2025 01:26:56 - INFO - __main__ - model_name: llama1b
+05/07/2025 01:26:56 - INFO - __main__ - flash_attn: False
+05/07/2025 01:26:56 - INFO - __main__ - untrainable_nbit: 16
+05/07/2025 01:26:56 - INFO - __main__ - trainable_nbit: 16
+05/07/2025 01:26:56 - INFO - __main__ - no_tf32: False
+05/07/2025 01:26:56 - INFO - __main__ - weight_root_dir: ./encoder_decoder/outputs
+05/07/2025 01:26:56 - INFO - __main__ - weight_dir: 0317_noprogram_base
+05/07/2025 01:26:56 - INFO - __main__ - weight_epoch: 24
+05/07/2025 01:26:56 - INFO - __main__ - ttt_weight_root_dir: ./encoder_decoder/outputs_eval
+05/07/2025 01:26:56 - INFO - __main__ - ttt_weight_dir: None
+05/07/2025 01:26:56 - INFO - __main__ - max_seq_len: 8192
+05/07/2025 01:26:56 - INFO - __main__ - pad_side: left
+05/07/2025 01:26:56 - INFO - __main__ - no_separate_color_tokens: False
+05/07/2025 01:26:56 - INFO - __main__ - no_bos: True
+05/07/2025 01:26:56 - INFO - __main__ - data_dir: ./data/re-arc/arc_original/evaluation
+05/07/2025 01:26:56 - INFO - __main__ - select_tasks_path: task_info_part1.csv
+05/07/2025 01:26:56 - INFO - __main__ - leave_ns: [0]
+05/07/2025 01:26:56 - INFO - __main__ - leave_ns_inc: False
+05/07/2025 01:26:56 - INFO - __main__ - permute_n: 0
+05/07/2025 01:26:56 - INFO - __main__ - augment_n: 0
+05/07/2025 01:26:56 - INFO - __main__ - permute_iters: 0
+05/07/2025 01:26:56 - INFO - __main__ - eval_on_demonstrations: True
+05/07/2025 01:26:56 - INFO - __main__ - zero_shot: False
+05/07/2025 01:26:56 - INFO - __main__ - compression_ratio: 1.0
+05/07/2025 01:26:56 - INFO - __main__ - ttt_iters: 0
+05/07/2025 01:26:56 - INFO - __main__ - ttt_lr: 0.0001
+05/07/2025 01:26:56 - INFO - __main__ - ttt_weight_decay: 0.0
+05/07/2025 01:26:56 - INFO - __main__ - ttt_batch_size: 4
+05/07/2025 01:26:56 - INFO - __main__ - ttt_grad_accum_steps: 1
+05/07/2025 01:26:56 - INFO - __main__ - ttt_optimizer: adamw
+05/07/2025 01:26:56 - INFO - __main__ - ttt_lr_scheduler: cosine
+05/07/2025 01:26:56 - INFO - __main__ - ttt_max_grad_norm: 1.0
+05/07/2025 01:26:56 - INFO - __main__ - ttt_permute_n: 40
+05/07/2025 01:26:56 - INFO - __main__ - ttt_lora_rank: 128
+05/07/2025 01:26:56 - INFO - __main__ - ttt_lora_alpha: 16
+05/07/2025 01:26:56 - INFO - __main__ - ttt_lora_dropout: 0.05
+05/07/2025 01:26:56 - INFO - __main__ - ttt_lora_rslora: False
+05/07/2025 01:26:56 - INFO - __main__ - ttt_loss_type: all
+05/07/2025 01:26:56 - INFO - __main__ - ttt_save: False
+05/07/2025 01:26:56 - INFO - __main__ - ttt_lambda_param_sqr: 0.0
+05/07/2025 01:26:56 - INFO - __main__ - ttt_fisher: False
+05/07/2025 01:26:56 - INFO - __main__ - ttt_fisher_iters: 25
+05/07/2025 01:26:56 - INFO - __main__ - gs_epochs: 0
+05/07/2025 01:26:56 - INFO - __main__ - gs_lr: 0.001
+05/07/2025 01:26:56 - INFO - __main__ - gs_beta1: 0.9
+05/07/2025 01:26:56 - INFO - __main__ - gs_beta2: 0.999
+05/07/2025 01:26:56 - INFO - __main__ - gs_weight_decay: 0.0
+05/07/2025 01:26:56 - INFO - __main__ - gs_batch_size: 100000
+05/07/2025 01:26:56 - INFO - __main__ - gs_optimizer: adamw
+05/07/2025 01:26:56 - INFO - __main__ - gs_lr_scheduler: cosine
+05/07/2025 01:26:56 - INFO - __main__ - gs_max_grad_norm: 1.0
+05/07/2025 01:26:56 - INFO - __main__ - gs_no_key: False
+05/07/2025 01:26:56 - INFO - __main__ - gs_no_value: False
+05/07/2025 01:26:56 - INFO - __main__ - gs_num_layer: -1
+05/07/2025 01:26:56 - INFO - __main__ - gs_loss_on_input: False
+05/07/2025 01:26:56 - INFO - __main__ - gs_dropout: none
+05/07/2025 01:26:56 - INFO - __main__ - gs_token_dropout: 0.0
+05/07/2025 01:26:56 - INFO - __main__ - gs_detach: False
+05/07/2025 01:26:56 - INFO - __main__ - gs_ntokens: -1
+05/07/2025 01:26:56 - INFO - __main__ - gs_log_attention: False
+05/07/2025 01:26:56 - INFO - __main__ - gs_final_tokens: -1
+05/07/2025 01:26:56 - INFO - __main__ - gs_prefix_lora: False
+05/07/2025 01:26:56 - INFO - __main__ - gs_prefix_lora_rank: 64
+05/07/2025 01:26:56 - INFO - __main__ - gs_prefix_lora_share_head: False
+05/07/2025 01:26:56 - INFO - __main__ - random_kv: none
+05/07/2025 01:26:56 - INFO - __main__ - random_kv_ntokens: -1
+05/07/2025 01:26:56 - INFO - __main__ - separate_kv: False
+05/07/2025 01:26:56 - INFO - __main__ - num_permute: 1
+05/07/2025 01:26:56 - INFO - __main__ - permute_batch_size: 16
+05/07/2025 01:26:56 - INFO - __main__ - permute_back: False
+05/07/2025 01:26:56 - INFO - __main__ - permute_back_strip_position: False
+05/07/2025 01:26:56 - INFO - __main__ - permute_concat: False
+05/07/2025 01:26:56 - INFO - __main__ - gs_lora: False
+05/07/2025 01:26:56 - INFO - __main__ - gs_lora_rank: 128
+05/07/2025 01:26:56 - INFO - __main__ - gs_lora_alpha: 16
+05/07/2025 01:26:56 - INFO - __main__ - gs_lora_lr: 0.0001
+05/07/2025 01:26:56 - INFO - __main__ - gs_lora_beta1: 0.9
+05/07/2025 01:26:56 - INFO - __main__ - gs_lora_beta2: 0.999
+05/07/2025 01:26:56 - INFO - __main__ - gs_lora_dropout: 0.05
+05/07/2025 01:26:56 - INFO - __main__ - gs_lora_rslora: False
+05/07/2025 01:26:56 - INFO - __main__ - gs_lambda_param_sqr: 0.0
+05/07/2025 01:26:56 - INFO - __main__ - gs_fisher: False
+05/07/2025 01:26:56 - INFO - __main__ - gs_log_fisher: False
+05/07/2025 01:26:56 - INFO - __main__ - dt_iters: 0
+05/07/2025 01:26:56 - INFO - __main__ - dt_lr: 0.01
+05/07/2025 01:26:56 - INFO - __main__ - #### END ALL ARGUMENTS ####
+
+05/07/2025 01:26:56 - INFO - __main__ - Tokenizers loaded and pad tokens handled.
+05/07/2025 01:27:00 - INFO - __main__ - Base models loaded.
+05/07/2025 01:27:05 - INFO - root - Skipping import of cpp extensions
+05/07/2025 01:27:07 - INFO - root - lm_eval is not installed, GPTQ may not be usable
+05/07/2025 01:27:10 - INFO - __main__ - loaded model weights
+05/07/2025 01:27:10 - INFO - __main__ - converted model weights to torch.bfloat16
+trainable params: 0 || all params: 1,154,766,336 || trainable%: 0.0000
+05/07/2025 01:27:10 - INFO - __main__ - model size 2.15GB
+05/07/2025 01:27:13 - INFO - data_utils - found 400 files
+05/07/2025 01:27:13 - INFO - data_utils - filtered to 80 files from task_info_part1.csv
+05/07/2025 01:27:14 - INFO - data_utils - found 262 tasks
+05/07/2025 01:27:14 - INFO - data_utils - task num io range from 2 to 6
+05/07/2025 01:27:15 - INFO - data_utils - augmented data from 262 to 262
+05/07/2025 01:27:15 - INFO - data_utils - 00576224-0: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 00576224-1: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 009d5c81-0: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 009d5c81-1: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 009d5c81-2: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 009d5c81-3: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 009d5c81-4: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 00dbd492-0: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 00dbd492-1: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 00dbd492-2: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 00dbd492-3: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 03560426-0: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 03560426-1: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 03560426-2: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 05a7bcf2-0: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 05a7bcf2-1: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 05a7bcf2-2: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 0607ce86-0: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 0607ce86-1: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 0607ce86-2: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 0692e18c-0: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 0692e18c-1: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 0692e18c-2: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 070dd51e-0: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 070dd51e-1: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 08573cc6-0: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 08573cc6-1: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 08573cc6-2: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 0934a4d8-0: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 0934a4d8-1: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 0934a4d8-2: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 0934a4d8-3: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 09c534e7-0: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 09c534e7-1: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 09c534e7-2: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 0a1d4ef5-0: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 0a1d4ef5-1: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 0a1d4ef5-2: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 0a2355a6-0: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 0a2355a6-1: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 0a2355a6-2: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 0a2355a6-3: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 0b17323b-0: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 0b17323b-1: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 0bb8deee-0: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 0bb8deee-1: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 0bb8deee-2: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 0becf7df-0: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 0becf7df-1: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 0becf7df-2: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 0c786b71-0: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 0c786b71-1: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 0c786b71-2: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 0c9aba6e-0: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 0c9aba6e-1: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 0c9aba6e-2: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 0c9aba6e-3: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 0d87d2a6-0: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 0d87d2a6-1: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 0d87d2a6-2: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 0e671a1a-0: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 0e671a1a-1: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 0e671a1a-2: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 0e671a1a-3: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 0f63c0b9-0: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 0f63c0b9-1: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 0f63c0b9-2: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 0f63c0b9-3: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 103eff5b-0: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 103eff5b-1: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 11e1fe23-0: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 11e1fe23-1: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 12422b43-0: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 12422b43-1: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 12422b43-2: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 12422b43-3: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 12422b43-4: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 12997ef3-0: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 12997ef3-1: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 12997ef3-2: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 12997ef3-3: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 12eac192-0: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 12eac192-1: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 12eac192-2: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 12eac192-3: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 136b0064-0: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 136b0064-1: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 136b0064-2: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 13713586-0: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 13713586-1: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 13713586-2: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 137f0df0-0: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 137f0df0-1: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 137f0df0-2: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 140c817e-0: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 140c817e-1: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 140c817e-2: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 14754a24-0: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 14754a24-1: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 14754a24-2: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 14754a24-3: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 15113be4-0: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 15113be4-1: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 15113be4-2: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 15663ba9-0: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 15663ba9-1: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 15663ba9-2: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 15696249-0: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 15696249-1: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 15696249-2: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 15696249-3: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 16b78196-0: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 16b78196-1: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 17b80ad2-0: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 17b80ad2-1: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 17b80ad2-2: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 17b80ad2-3: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 17cae0c1-0: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 17cae0c1-1: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 17cae0c1-2: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 17cae0c1-3: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 18419cfa-0: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 18419cfa-1: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 18419cfa-2: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 184a9768-0: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 184a9768-1: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 184a9768-2: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 195ba7dc-0: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 195ba7dc-1: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 195ba7dc-2: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 195ba7dc-3: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 1990f7a8-0: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 1990f7a8-1: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 1990f7a8-2: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 19bb5feb-0: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 19bb5feb-1: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 19bb5feb-2: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 1a2e2828-0: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 1a2e2828-1: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 1a2e2828-2: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 1a2e2828-3: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 1a2e2828-4: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 1a6449f1-0: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 1a6449f1-1: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 1a6449f1-2: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 1acc24af-0: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 1acc24af-1: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 1acc24af-2: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 1acc24af-3: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 1c02dbbe-0: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 1c02dbbe-1: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 1c02dbbe-2: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 1c0d0a4b-0: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 1c0d0a4b-1: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 1c0d0a4b-2: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 1c56ad9f-0: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 1c56ad9f-1: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 1c56ad9f-2: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 1c56ad9f-3: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 1d0a4b61-0: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 1d0a4b61-1: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 1d0a4b61-2: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 1d398264-0: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 1d398264-1: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 1d398264-2: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 1da012fc-0: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 1da012fc-1: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 1e81d6f9-0: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 1e81d6f9-1: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 1e81d6f9-2: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 1e97544e-0: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 1e97544e-1: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 1e97544e-2: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 2037f2c7-0: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 2037f2c7-1: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 2037f2c7-2: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 2072aba6-0: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 2072aba6-1: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 2072aba6-2: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 20818e16-0: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 20818e16-1: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 20818e16-2: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 20981f0e-0: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 20981f0e-1: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 20981f0e-2: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 212895b5-0: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 212895b5-1: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 212895b5-2: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 21f83797-0: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 21f83797-1: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 22a4bbc2-0: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 22a4bbc2-1: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 22a4bbc2-2: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 22a4bbc2-3: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 25094a63-0: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 25094a63-1: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 2546ccf6-0: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 2546ccf6-1: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 256b0a75-0: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 256b0a75-1: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 256b0a75-2: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 2685904e-0: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 2685904e-1: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 2685904e-2: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 2685904e-3: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 2685904e-4: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 2685904e-5: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 2697da3f-0: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 2697da3f-1: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 2697da3f-2: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 2697da3f-3: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 2753e76c-0: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 2753e76c-1: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 2753e76c-2: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 27a77e38-0: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 27a77e38-1: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 27a77e38-2: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 27f8ce4f-0: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 27f8ce4f-1: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 27f8ce4f-2: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 27f8ce4f-3: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 281123b4-0: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 281123b4-1: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 281123b4-2: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 281123b4-3: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 281123b4-4: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 281123b4-5: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 292dd178-0: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 292dd178-1: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 292dd178-2: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 29700607-0: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 29700607-1: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 29700607-2: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 2a5f8217-0: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 2a5f8217-1: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 2a5f8217-2: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 2b01abd0-0: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 2b01abd0-1: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 2b01abd0-2: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 2c0b0aff-0: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 2c0b0aff-1: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 2c0b0aff-2: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 2c0b0aff-3: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 2c737e39-0: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 2c737e39-1: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 2c737e39-2: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 2f0c5170-0: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 2f0c5170-1: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 2f0c5170-2: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 310f3251-0: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 310f3251-1: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 310f3251-2: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 310f3251-3: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 3194b014-0: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 3194b014-1: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 3194b014-2: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 319f2597-0: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 319f2597-1: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 319f2597-2: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 31adaf00-0: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 31adaf00-1: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - 31adaf00-2: Number of Queries: 1
+05/07/2025 01:27:15 - INFO - data_utils - encoder npairs range from 2 to 6
+05/07/2025 01:27:15 - INFO - data_utils - encoder sequence length range from 165 to 7468]
+Task: 100%|█████████████████████████████████████████████████████████████████████████████████████| 262/262 [14:54<00:00,  3.41s/it]
+05/07/2025 01:42:11 - INFO - __main__ - Evaluation results:
+{   'eval/competition_all_acc': 0.1,
+    'eval/competition_sub_acc': 0.22519083969465647,
+    'eval/correct_grid_dim': 0.9045801526717557,
+    'eval/exact_acc': 0.22519083969465647,
+    'eval/gs_num_data': 0.0,
+    'eval/gs_num_params': 0.0,
+    'eval/gs_time': 0.0,
+    'eval/init_kv_time': 0.014330932202229973,
+    'eval/relaxed_token_acc': 0.8453223211077896,
+    'eval/token_acc': 0.7794790603338548,
+    'eval/ttt_num_data': 0.0,
+    'eval/ttt_num_params': 0.0,
+    'eval/ttt_time': 0.0,
+    'eval/valid_grid': 0.9770992366412213}
+05/07/2025 01:42:11 - INFO - __main__ - Saved eval train pred gt to ./encoder_decoder/outputs_eval/eval_arc_evalondemon_part1_0317_noprogram_base/eval_pred_gt.json
+05/07/2025 01:42:11 - INFO - __main__ - Saved vote to ./encoder_decoder/outputs_eval/eval_arc_evalondemon_part1_0317_noprogram_base/eval_vote.json
+05/07/2025 01:42:11 - INFO - __main__ - All done evaluating.
+(/scratch/yl11330/marc/penv) Singularity>
+(/scratch/yl11330/marc/penv) Singularity> # arc evalondemon part2
+(/scratch/yl11330/marc/penv) Singularity> accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_arc/test_time_evaluate.py \
+>     --select_tasks_path data/task_info_part2.csv \
+>     --no_bos \
+>     --tag arc_evalondemon_part2 \
+>     --weight_dir 0317_noprogram_base \
+>     --weight_epoch 24 \
+>     --eval_on_demonstrations
+The following values were not passed to `accelerate launch` and had defaults used instead:
+        `--num_processes` was set to a value of `1`
+        `--num_machines` was set to a value of `1`
+        `--dynamo_backend` was set to a value of `'no'`
+To avoid this warning pass in values for each of the problematic parameters or run `accelerate config`.
+Wed May  7 01:42:25 2025
++---------------------------------------------------------------------------------------+
+| NVIDIA-SMI 535.154.05             Driver Version: 535.154.05   CUDA Version: 12.2     |
+|-----------------------------------------+----------------------+----------------------+
+| GPU  Name                 Persistence-M | Bus-Id        Disp.A | Volatile Uncorr. ECC |
+| Fan  Temp   Perf          Pwr:Usage/Cap |         Memory-Usage | GPU-Util  Compute M. |
+|                                         |                      |               MIG M. |
+|=========================================+======================+======================|
+|   0  NVIDIA A100-SXM4-80GB          On  | 00000000:E3:00.0 Off |                    0 |
+| N/A   26C    P0              60W / 500W |      4MiB / 81920MiB |      0%      Default |
+|                                         |                      |             Disabled |
++-----------------------------------------+----------------------+----------------------+
+
++---------------------------------------------------------------------------------------+
+| Processes:                                                                            |
+|  GPU   GI   CI        PID   Type   Process name                            GPU Memory |
+|        ID   ID                                                             Usage      |
+|=======================================================================================|
+|  No running processes found                                                           |
++---------------------------------------------------------------------------------------+
+05/07/2025 01:42:25 - INFO - __main__ - Distributed environment: NO
+Num processes: 1
+Process index: 0
+Local process index: 0
+Device: cuda
+
+Mixed precision type: bf16
+
+05/07/2025 01:42:25 - INFO - __main__ - Accelerator and seed set up.
+05/07/2025 01:42:25 - INFO - __main__ - #### BEGIN ALL ARGUMENTS ####
+05/07/2025 01:42:25 - INFO - __main__ - tag: eval_arc_evalondemon_part2_0317_noprogram_base
+05/07/2025 01:42:25 - INFO - __main__ - output_dir: ./encoder_decoder/outputs_eval/eval_arc_evalondemon_part2_0317_noprogram_base
+05/07/2025 01:42:25 - INFO - __main__ - log_every: 10
+05/07/2025 01:42:25 - INFO - __main__ - seed: 0
+05/07/2025 01:42:25 - INFO - __main__ - debug: False
+05/07/2025 01:42:25 - INFO - __main__ - debug_max_len: False
+05/07/2025 01:42:25 - INFO - __main__ - debug_random_pad: False
+05/07/2025 01:42:25 - INFO - __main__ - debug_pad_len: -1
+05/07/2025 01:42:25 - INFO - __main__ - model_name: llama1b
+05/07/2025 01:42:25 - INFO - __main__ - flash_attn: False
+05/07/2025 01:42:25 - INFO - __main__ - untrainable_nbit: 16
+05/07/2025 01:42:25 - INFO - __main__ - trainable_nbit: 16
+05/07/2025 01:42:25 - INFO - __main__ - no_tf32: False
+05/07/2025 01:42:25 - INFO - __main__ - weight_root_dir: ./encoder_decoder/outputs
+05/07/2025 01:42:25 - INFO - __main__ - weight_dir: 0317_noprogram_base
+05/07/2025 01:42:25 - INFO - __main__ - weight_epoch: 24
+05/07/2025 01:42:25 - INFO - __main__ - ttt_weight_root_dir: ./encoder_decoder/outputs_eval
+05/07/2025 01:42:25 - INFO - __main__ - ttt_weight_dir: None
+05/07/2025 01:42:25 - INFO - __main__ - max_seq_len: 8192
+05/07/2025 01:42:25 - INFO - __main__ - pad_side: left
+05/07/2025 01:42:25 - INFO - __main__ - no_separate_color_tokens: False
+05/07/2025 01:42:25 - INFO - __main__ - no_bos: True
+05/07/2025 01:42:25 - INFO - __main__ - data_dir: ./data/re-arc/arc_original/evaluation
+05/07/2025 01:42:25 - INFO - __main__ - select_tasks_path: task_info_part2.csv
+05/07/2025 01:42:25 - INFO - __main__ - leave_ns: [0]
+05/07/2025 01:42:25 - INFO - __main__ - leave_ns_inc: False
+05/07/2025 01:42:25 - INFO - __main__ - permute_n: 0
+05/07/2025 01:42:25 - INFO - __main__ - augment_n: 0
+05/07/2025 01:42:25 - INFO - __main__ - permute_iters: 0
+05/07/2025 01:42:25 - INFO - __main__ - eval_on_demonstrations: True
+05/07/2025 01:42:25 - INFO - __main__ - zero_shot: False
+05/07/2025 01:42:25 - INFO - __main__ - compression_ratio: 1.0
+05/07/2025 01:42:25 - INFO - __main__ - ttt_iters: 0
+05/07/2025 01:42:25 - INFO - __main__ - ttt_lr: 0.0001
+05/07/2025 01:42:25 - INFO - __main__ - ttt_weight_decay: 0.0
+05/07/2025 01:42:25 - INFO - __main__ - ttt_batch_size: 4
+05/07/2025 01:42:25 - INFO - __main__ - ttt_grad_accum_steps: 1
+05/07/2025 01:42:25 - INFO - __main__ - ttt_optimizer: adamw
+05/07/2025 01:42:25 - INFO - __main__ - ttt_lr_scheduler: cosine
+05/07/2025 01:42:25 - INFO - __main__ - ttt_max_grad_norm: 1.0
+05/07/2025 01:42:25 - INFO - __main__ - ttt_permute_n: 40
+05/07/2025 01:42:25 - INFO - __main__ - ttt_lora_rank: 128
+05/07/2025 01:42:25 - INFO - __main__ - ttt_lora_alpha: 16
+05/07/2025 01:42:25 - INFO - __main__ - ttt_lora_dropout: 0.05
+05/07/2025 01:42:25 - INFO - __main__ - ttt_lora_rslora: False
+05/07/2025 01:42:25 - INFO - __main__ - ttt_loss_type: all
+05/07/2025 01:42:25 - INFO - __main__ - ttt_save: False
+05/07/2025 01:42:25 - INFO - __main__ - ttt_lambda_param_sqr: 0.0
+05/07/2025 01:42:25 - INFO - __main__ - ttt_fisher: False
+05/07/2025 01:42:25 - INFO - __main__ - ttt_fisher_iters: 25
+05/07/2025 01:42:25 - INFO - __main__ - gs_epochs: 0
+05/07/2025 01:42:25 - INFO - __main__ - gs_lr: 0.001
+05/07/2025 01:42:25 - INFO - __main__ - gs_beta1: 0.9
+05/07/2025 01:42:25 - INFO - __main__ - gs_beta2: 0.999
+05/07/2025 01:42:25 - INFO - __main__ - gs_weight_decay: 0.0
+05/07/2025 01:42:25 - INFO - __main__ - gs_batch_size: 100000
+05/07/2025 01:42:25 - INFO - __main__ - gs_optimizer: adamw
+05/07/2025 01:42:25 - INFO - __main__ - gs_lr_scheduler: cosine
+05/07/2025 01:42:25 - INFO - __main__ - gs_max_grad_norm: 1.0
+05/07/2025 01:42:25 - INFO - __main__ - gs_no_key: False
+05/07/2025 01:42:25 - INFO - __main__ - gs_no_value: False
+05/07/2025 01:42:25 - INFO - __main__ - gs_num_layer: -1
+05/07/2025 01:42:25 - INFO - __main__ - gs_loss_on_input: False
+05/07/2025 01:42:25 - INFO - __main__ - gs_dropout: none
+05/07/2025 01:42:25 - INFO - __main__ - gs_token_dropout: 0.0
+05/07/2025 01:42:25 - INFO - __main__ - gs_detach: False
+05/07/2025 01:42:25 - INFO - __main__ - gs_ntokens: -1
+05/07/2025 01:42:25 - INFO - __main__ - gs_log_attention: False
+05/07/2025 01:42:25 - INFO - __main__ - gs_final_tokens: -1
+05/07/2025 01:42:25 - INFO - __main__ - gs_prefix_lora: False
+05/07/2025 01:42:25 - INFO - __main__ - gs_prefix_lora_rank: 64
+05/07/2025 01:42:25 - INFO - __main__ - gs_prefix_lora_share_head: False
+05/07/2025 01:42:25 - INFO - __main__ - random_kv: none
+05/07/2025 01:42:25 - INFO - __main__ - random_kv_ntokens: -1
+05/07/2025 01:42:25 - INFO - __main__ - separate_kv: False
+05/07/2025 01:42:25 - INFO - __main__ - num_permute: 1
+05/07/2025 01:42:25 - INFO - __main__ - permute_batch_size: 16
+05/07/2025 01:42:25 - INFO - __main__ - permute_back: False
+05/07/2025 01:42:25 - INFO - __main__ - permute_back_strip_position: False
+05/07/2025 01:42:25 - INFO - __main__ - permute_concat: False
+05/07/2025 01:42:25 - INFO - __main__ - gs_lora: False
+05/07/2025 01:42:25 - INFO - __main__ - gs_lora_rank: 128
+05/07/2025 01:42:25 - INFO - __main__ - gs_lora_alpha: 16
+05/07/2025 01:42:25 - INFO - __main__ - gs_lora_lr: 0.0001
+05/07/2025 01:42:25 - INFO - __main__ - gs_lora_beta1: 0.9
+05/07/2025 01:42:25 - INFO - __main__ - gs_lora_beta2: 0.999
+05/07/2025 01:42:25 - INFO - __main__ - gs_lora_dropout: 0.05
+05/07/2025 01:42:25 - INFO - __main__ - gs_lora_rslora: False
+05/07/2025 01:42:25 - INFO - __main__ - gs_lambda_param_sqr: 0.0
+05/07/2025 01:42:25 - INFO - __main__ - gs_fisher: False
+05/07/2025 01:42:25 - INFO - __main__ - gs_log_fisher: False
+05/07/2025 01:42:25 - INFO - __main__ - dt_iters: 0
+05/07/2025 01:42:25 - INFO - __main__ - dt_lr: 0.01
+05/07/2025 01:42:25 - INFO - __main__ - #### END ALL ARGUMENTS ####
+
+05/07/2025 01:42:25 - INFO - __main__ - Tokenizers loaded and pad tokens handled.
+05/07/2025 01:42:26 - INFO - __main__ - Base models loaded.
+05/07/2025 01:42:29 - INFO - root - Skipping import of cpp extensions
+05/07/2025 01:42:30 - INFO - root - lm_eval is not installed, GPTQ may not be usable
+05/07/2025 01:42:31 - INFO - __main__ - loaded model weights
+05/07/2025 01:42:32 - INFO - __main__ - converted model weights to torch.bfloat16
+trainable params: 0 || all params: 1,154,766,336 || trainable%: 0.0000
+05/07/2025 01:42:32 - INFO - __main__ - model size 2.15GB
+05/07/2025 01:42:32 - INFO - data_utils - found 400 files
+05/07/2025 01:42:32 - INFO - data_utils - filtered to 80 files from task_info_part2.csv
+05/07/2025 01:42:33 - INFO - data_utils - found 266 tasks
+05/07/2025 01:42:33 - INFO - data_utils - task num io range from 2 to 6
+05/07/2025 01:42:34 - INFO - data_utils - augmented data from 266 to 262
+05/07/2025 01:42:34 - INFO - data_utils - 31d5ba1a-0: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 31d5ba1a-1: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 31d5ba1a-2: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 31d5ba1a-3: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 31d5ba1a-4: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 32e9702f-0: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 32e9702f-1: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 32e9702f-2: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 332efdb3-0: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 332efdb3-1: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 332efdb3-2: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 3391f8c0-0: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 3391f8c0-1: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 3391f8c0-2: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 3391f8c0-3: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 33b52de3-0: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 33b52de3-1: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 3490cc26-0: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 3490cc26-1: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 3490cc26-2: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 3490cc26-3: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 34b99a2b-0: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 34b99a2b-1: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 34b99a2b-2: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 34b99a2b-3: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 351d6448-0: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 351d6448-1: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 358ba94e-0: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 358ba94e-1: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 358ba94e-2: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 358ba94e-3: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 37d3e8b2-0: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 37d3e8b2-1: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 37d3e8b2-2: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 3979b1a8-0: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 3979b1a8-1: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 3a301edc-0: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 3a301edc-1: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 3a301edc-2: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 3a301edc-3: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 3a301edc-4: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 3b4c2228-0: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 3b4c2228-1: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 3b4c2228-2: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 3b4c2228-3: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 3b4c2228-4: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 3d31c5b3-0: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 3d31c5b3-1: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 3d31c5b3-2: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 3d31c5b3-3: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 3d31c5b3-4: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 3d31c5b3-5: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 3ed85e70-0: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 3ed85e70-1: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 3ed85e70-2: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 3ee1011a-0: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 3ee1011a-1: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 3ee1011a-2: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 3f23242b-0: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 3f23242b-1: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 40f6cd08-0: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 40f6cd08-1: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 40f6cd08-2: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 414297c0-0: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 414297c0-1: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 414297c0-2: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 423a55dc-0: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 423a55dc-1: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 423a55dc-2: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 423a55dc-3: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 423a55dc-4: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 42918530-0: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 42918530-1: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 42918530-2: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 42918530-3: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 42a15761-0: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 42a15761-1: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 42a15761-2: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 4364c1c4-0: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 4364c1c4-1: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 4364c1c4-2: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 456873bc-0: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 456873bc-1: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 456873bc-2: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 45737921-0: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 45737921-1: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 45737921-2: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 45bbe264-0: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 45bbe264-1: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 45bbe264-2: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 477d2879-0: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 477d2879-1: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 477d2879-2: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 48131b3c-0: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 48131b3c-1: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 48131b3c-2: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 4852f2fa-0: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 4852f2fa-1: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 4852f2fa-2: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 4852f2fa-3: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 4852f2fa-4: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 48f8583b-0: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 48f8583b-1: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 48f8583b-2: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 48f8583b-3: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 48f8583b-4: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 48f8583b-5: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 4aab4007-0: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 4aab4007-1: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 4aab4007-2: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 4acc7107-0: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 4acc7107-1: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 4acc7107-2: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 4acc7107-3: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 4b6b68e5-0: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 4b6b68e5-1: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 4b6b68e5-2: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 4c177718-0: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 4c177718-1: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 4c177718-2: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 4c177718-3: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 4cd1b7b2-0: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 4cd1b7b2-1: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 4cd1b7b2-2: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 4e45f183-0: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 4e45f183-1: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 4e45f183-2: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 4e469f39-0: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 4e469f39-1: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 4e469f39-2: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 4f537728-0: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 4f537728-1: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 4ff4c9da-0: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 4ff4c9da-1: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 4ff4c9da-2: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 505fff84-0: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 505fff84-1: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 505fff84-2: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 505fff84-3: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 505fff84-4: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 506d28a5-0: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 506d28a5-1: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 506d28a5-2: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 506d28a5-3: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 50a16a69-0: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 50a16a69-1: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 50a16a69-2: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 50aad11f-0: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 50aad11f-1: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 50aad11f-2: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 50f325b5-0: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 50f325b5-1: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 50f325b5-2: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 50f325b5-3: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 516b51b7-0: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 516b51b7-1: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 516b51b7-2: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 5207a7b5-0: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 5207a7b5-1: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 5207a7b5-2: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 5289ad53-0: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 5289ad53-1: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 5289ad53-2: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 5289ad53-3: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 52fd389e-0: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 52fd389e-1: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 52fd389e-2: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 54db823b-0: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 54db823b-1: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 54db823b-2: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 54db823b-3: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 55059096-0: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 55059096-1: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 55059096-2: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 551d5bf1-0: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 551d5bf1-1: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 55783887-0: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 55783887-1: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 55783887-2: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 55783887-3: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 55783887-4: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 575b1a71-0: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 575b1a71-1: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 575b1a71-2: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 5783df64-0: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 5783df64-1: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 5783df64-2: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 5833af48-0: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 5833af48-1: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 5833af48-2: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 58743b76-0: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 58743b76-1: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 58e15b12-0: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 58e15b12-1: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 58e15b12-2: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 59341089-0: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 59341089-1: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 59341089-2: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 59341089-3: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 5a5a2103-0: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 5a5a2103-1: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 5af49b42-0: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 5af49b42-1: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 5af49b42-2: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 5b526a93-0: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 5b526a93-1: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 5b692c0f-0: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 5b692c0f-1: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 5b6cbef5-0: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 5b6cbef5-1: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 5b6cbef5-2: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 5b6cbef5-3: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 5b6cbef5-4: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 5d2a5c43-0: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 5d2a5c43-1: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 5d2a5c43-2: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 5d2a5c43-3: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 5d2a5c43-4: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 5ffb2104-0: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 5ffb2104-1: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 5ffb2104-2: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 604001fa-0: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 604001fa-1: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 604001fa-2: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 604001fa-3: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 60a26a3e-0: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 60a26a3e-1: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 60a26a3e-2: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 60c09cac-0: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 60c09cac-1: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 626c0bcc-0: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 626c0bcc-1: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 626c0bcc-2: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 62ab2642-0: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 62ab2642-1: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 62ab2642-2: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 62b74c02-0: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 62b74c02-1: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 62b74c02-2: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 639f5a19-0: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 639f5a19-1: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 642248e4-0: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 642248e4-1: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 642248e4-2: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 642d658d-0: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 642d658d-1: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 642d658d-2: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 64a7c07e-0: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 64a7c07e-1: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 64a7c07e-2: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 66e6c45b-0: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 66e6c45b-1: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 66f2d22f-0: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 66f2d22f-1: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 66f2d22f-2: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 66f2d22f-3: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 67636eac-0: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 67636eac-1: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 67636eac-2: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 67b4a34d-0: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 67b4a34d-1: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - 67b4a34d-2: Number of Queries: 1
+05/07/2025 01:42:34 - INFO - data_utils - encoder npairs range from 2 to 6
+05/07/2025 01:42:34 - INFO - data_utils - encoder sequence length range from 141 to 7468]
+Task: 100%|█████████████████████████████████████████████████████████████████████████████████████| 262/262 [14:10<00:00,  3.25s/it]
+05/07/2025 01:56:45 - INFO - __main__ - Evaluation results:
+{   'eval/competition_all_acc': 0.1125,
+    'eval/competition_sub_acc': 0.2593984962406015,
+    'eval/correct_grid_dim': 0.9198473282442748,
+    'eval/exact_acc': 0.2633587786259542,
+    'eval/gs_num_data': 0.0,
+    'eval/gs_num_params': 0.0,
+    'eval/gs_time': 0.0,
+    'eval/init_kv_time': 0.013811464528091082,
+    'eval/relaxed_token_acc': 0.8465025859089967,
+    'eval/token_acc': 0.7676099396039916,
+    'eval/ttt_num_data': 0.0,
+    'eval/ttt_num_params': 0.0,
+    'eval/ttt_time': 0.0,
+    'eval/valid_grid': 0.9770992366412213}
+05/07/2025 01:56:45 - INFO - __main__ - Saved eval train pred gt to ./encoder_decoder/outputs_eval/eval_arc_evalondemon_part2_0317_noprogram_base/eval_pred_gt.json
+05/07/2025 01:56:45 - INFO - __main__ - Saved vote to ./encoder_decoder/outputs_eval/eval_arc_evalondemon_part2_0317_noprogram_base/eval_vote.json
+05/07/2025 01:56:45 - INFO - __main__ - All done evaluating.
+(/scratch/yl11330/marc/penv) Singularity>
+(/scratch/yl11330/marc/penv) Singularity> # arc evalondemon part3
+(/scratch/yl11330/marc/penv) Singularity> accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_arc/test_time_evaluate.py \
+>     --select_tasks_path data/task_info_part3.csv \
+>     --no_bos \
+>     --tag arc_evalondemon_part3 \
+>     --weight_dir 0317_noprogram_base \
+>     --weight_epoch 24 \
+>     --eval_on_demonstrations
+The following values were not passed to `accelerate launch` and had defaults used instead:
+        `--num_processes` was set to a value of `1`
+        `--num_machines` was set to a value of `1`
+        `--dynamo_backend` was set to a value of `'no'`
+To avoid this warning pass in values for each of the problematic parameters or run `accelerate config`.
+Wed May  7 01:56:59 2025
++---------------------------------------------------------------------------------------+
+| NVIDIA-SMI 535.154.05             Driver Version: 535.154.05   CUDA Version: 12.2     |
+|-----------------------------------------+----------------------+----------------------+
+| GPU  Name                 Persistence-M | Bus-Id        Disp.A | Volatile Uncorr. ECC |
+| Fan  Temp   Perf          Pwr:Usage/Cap |         Memory-Usage | GPU-Util  Compute M. |
+|                                         |                      |               MIG M. |
+|=========================================+======================+======================|
+|   0  NVIDIA A100-SXM4-80GB          On  | 00000000:E3:00.0 Off |                    0 |
+| N/A   25C    P0              60W / 500W |      4MiB / 81920MiB |      0%      Default |
+|                                         |                      |             Disabled |
++-----------------------------------------+----------------------+----------------------+
+
++---------------------------------------------------------------------------------------+
+| Processes:                                                                            |
+|  GPU   GI   CI        PID   Type   Process name                            GPU Memory |
+|        ID   ID                                                             Usage      |
+|=======================================================================================|
+|  No running processes found                                                           |
++---------------------------------------------------------------------------------------+
+05/07/2025 01:57:00 - INFO - __main__ - Distributed environment: NO
+Num processes: 1
+Process index: 0
+Local process index: 0
+Device: cuda
+
+Mixed precision type: bf16
+
+05/07/2025 01:57:00 - INFO - __main__ - Accelerator and seed set up.
+05/07/2025 01:57:00 - INFO - __main__ - #### BEGIN ALL ARGUMENTS ####
+05/07/2025 01:57:00 - INFO - __main__ - tag: eval_arc_evalondemon_part3_0317_noprogram_base
+05/07/2025 01:57:00 - INFO - __main__ - output_dir: ./encoder_decoder/outputs_eval/eval_arc_evalondemon_part3_0317_noprogram_base
+05/07/2025 01:57:00 - INFO - __main__ - log_every: 10
+05/07/2025 01:57:00 - INFO - __main__ - seed: 0
+05/07/2025 01:57:00 - INFO - __main__ - debug: False
+05/07/2025 01:57:00 - INFO - __main__ - debug_max_len: False
+05/07/2025 01:57:00 - INFO - __main__ - debug_random_pad: False
+05/07/2025 01:57:00 - INFO - __main__ - debug_pad_len: -1
+05/07/2025 01:57:00 - INFO - __main__ - model_name: llama1b
+05/07/2025 01:57:00 - INFO - __main__ - flash_attn: False
+05/07/2025 01:57:00 - INFO - __main__ - untrainable_nbit: 16
+05/07/2025 01:57:00 - INFO - __main__ - trainable_nbit: 16
+05/07/2025 01:57:00 - INFO - __main__ - no_tf32: False
+05/07/2025 01:57:00 - INFO - __main__ - weight_root_dir: ./encoder_decoder/outputs
+05/07/2025 01:57:00 - INFO - __main__ - weight_dir: 0317_noprogram_base
+05/07/2025 01:57:00 - INFO - __main__ - weight_epoch: 24
+05/07/2025 01:57:00 - INFO - __main__ - ttt_weight_root_dir: ./encoder_decoder/outputs_eval
+05/07/2025 01:57:00 - INFO - __main__ - ttt_weight_dir: None
+05/07/2025 01:57:00 - INFO - __main__ - max_seq_len: 8192
+05/07/2025 01:57:00 - INFO - __main__ - pad_side: left
+05/07/2025 01:57:00 - INFO - __main__ - no_separate_color_tokens: False
+05/07/2025 01:57:00 - INFO - __main__ - no_bos: True
+05/07/2025 01:57:00 - INFO - __main__ - data_dir: ./data/re-arc/arc_original/evaluation
+05/07/2025 01:57:00 - INFO - __main__ - select_tasks_path: task_info_part3.csv
+05/07/2025 01:57:00 - INFO - __main__ - leave_ns: [0]
+05/07/2025 01:57:00 - INFO - __main__ - leave_ns_inc: False
+05/07/2025 01:57:00 - INFO - __main__ - permute_n: 0
+05/07/2025 01:57:00 - INFO - __main__ - augment_n: 0
+05/07/2025 01:57:00 - INFO - __main__ - permute_iters: 0
+05/07/2025 01:57:00 - INFO - __main__ - eval_on_demonstrations: True
+05/07/2025 01:57:00 - INFO - __main__ - zero_shot: False
+05/07/2025 01:57:00 - INFO - __main__ - compression_ratio: 1.0
+05/07/2025 01:57:00 - INFO - __main__ - ttt_iters: 0
+05/07/2025 01:57:00 - INFO - __main__ - ttt_lr: 0.0001
+05/07/2025 01:57:00 - INFO - __main__ - ttt_weight_decay: 0.0
+05/07/2025 01:57:00 - INFO - __main__ - ttt_batch_size: 4
+05/07/2025 01:57:00 - INFO - __main__ - ttt_grad_accum_steps: 1
+05/07/2025 01:57:00 - INFO - __main__ - ttt_optimizer: adamw
+05/07/2025 01:57:00 - INFO - __main__ - ttt_lr_scheduler: cosine
+05/07/2025 01:57:00 - INFO - __main__ - ttt_max_grad_norm: 1.0
+05/07/2025 01:57:00 - INFO - __main__ - ttt_permute_n: 40
+05/07/2025 01:57:00 - INFO - __main__ - ttt_lora_rank: 128
+05/07/2025 01:57:00 - INFO - __main__ - ttt_lora_alpha: 16
+05/07/2025 01:57:00 - INFO - __main__ - ttt_lora_dropout: 0.05
+05/07/2025 01:57:00 - INFO - __main__ - ttt_lora_rslora: False
+05/07/2025 01:57:00 - INFO - __main__ - ttt_loss_type: all
+05/07/2025 01:57:00 - INFO - __main__ - ttt_save: False
+05/07/2025 01:57:00 - INFO - __main__ - ttt_lambda_param_sqr: 0.0
+05/07/2025 01:57:00 - INFO - __main__ - ttt_fisher: False
+05/07/2025 01:57:00 - INFO - __main__ - ttt_fisher_iters: 25
+05/07/2025 01:57:00 - INFO - __main__ - gs_epochs: 0
+05/07/2025 01:57:00 - INFO - __main__ - gs_lr: 0.001
+05/07/2025 01:57:00 - INFO - __main__ - gs_beta1: 0.9
+05/07/2025 01:57:00 - INFO - __main__ - gs_beta2: 0.999
+05/07/2025 01:57:00 - INFO - __main__ - gs_weight_decay: 0.0
+05/07/2025 01:57:00 - INFO - __main__ - gs_batch_size: 100000
+05/07/2025 01:57:00 - INFO - __main__ - gs_optimizer: adamw
+05/07/2025 01:57:00 - INFO - __main__ - gs_lr_scheduler: cosine
+05/07/2025 01:57:00 - INFO - __main__ - gs_max_grad_norm: 1.0
+05/07/2025 01:57:00 - INFO - __main__ - gs_no_key: False
+05/07/2025 01:57:00 - INFO - __main__ - gs_no_value: False
+05/07/2025 01:57:00 - INFO - __main__ - gs_num_layer: -1
+05/07/2025 01:57:00 - INFO - __main__ - gs_loss_on_input: False
+05/07/2025 01:57:00 - INFO - __main__ - gs_dropout: none
+05/07/2025 01:57:00 - INFO - __main__ - gs_token_dropout: 0.0
+05/07/2025 01:57:00 - INFO - __main__ - gs_detach: False
+05/07/2025 01:57:00 - INFO - __main__ - gs_ntokens: -1
+05/07/2025 01:57:00 - INFO - __main__ - gs_log_attention: False
+05/07/2025 01:57:00 - INFO - __main__ - gs_final_tokens: -1
+05/07/2025 01:57:00 - INFO - __main__ - gs_prefix_lora: False
+05/07/2025 01:57:00 - INFO - __main__ - gs_prefix_lora_rank: 64
+05/07/2025 01:57:00 - INFO - __main__ - gs_prefix_lora_share_head: False
+05/07/2025 01:57:00 - INFO - __main__ - random_kv: none
+05/07/2025 01:57:00 - INFO - __main__ - random_kv_ntokens: -1
+05/07/2025 01:57:00 - INFO - __main__ - separate_kv: False
+05/07/2025 01:57:00 - INFO - __main__ - num_permute: 1
+05/07/2025 01:57:00 - INFO - __main__ - permute_batch_size: 16
+05/07/2025 01:57:00 - INFO - __main__ - permute_back: False
+05/07/2025 01:57:00 - INFO - __main__ - permute_back_strip_position: False
+05/07/2025 01:57:00 - INFO - __main__ - permute_concat: False
+05/07/2025 01:57:00 - INFO - __main__ - gs_lora: False
+05/07/2025 01:57:00 - INFO - __main__ - gs_lora_rank: 128
+05/07/2025 01:57:00 - INFO - __main__ - gs_lora_alpha: 16
+05/07/2025 01:57:00 - INFO - __main__ - gs_lora_lr: 0.0001
+05/07/2025 01:57:00 - INFO - __main__ - gs_lora_beta1: 0.9
+05/07/2025 01:57:00 - INFO - __main__ - gs_lora_beta2: 0.999
+05/07/2025 01:57:00 - INFO - __main__ - gs_lora_dropout: 0.05
+05/07/2025 01:57:00 - INFO - __main__ - gs_lora_rslora: False
+05/07/2025 01:57:00 - INFO - __main__ - gs_lambda_param_sqr: 0.0
+05/07/2025 01:57:00 - INFO - __main__ - gs_fisher: False
+05/07/2025 01:57:00 - INFO - __main__ - gs_log_fisher: False
+05/07/2025 01:57:00 - INFO - __main__ - dt_iters: 0
+05/07/2025 01:57:00 - INFO - __main__ - dt_lr: 0.01
+05/07/2025 01:57:00 - INFO - __main__ - #### END ALL ARGUMENTS ####
+
+05/07/2025 01:57:01 - INFO - __main__ - Tokenizers loaded and pad tokens handled.
+05/07/2025 01:57:01 - INFO - __main__ - Base models loaded.
+05/07/2025 01:57:04 - INFO - root - Skipping import of cpp extensions
+05/07/2025 01:57:05 - INFO - root - lm_eval is not installed, GPTQ may not be usable
+05/07/2025 01:57:07 - INFO - __main__ - loaded model weights
+05/07/2025 01:57:07 - INFO - __main__ - converted model weights to torch.bfloat16
+trainable params: 0 || all params: 1,154,766,336 || trainable%: 0.0000
+05/07/2025 01:57:07 - INFO - __main__ - model size 2.15GB
+05/07/2025 01:57:08 - INFO - data_utils - found 400 files
+05/07/2025 01:57:08 - INFO - data_utils - filtered to 80 files from task_info_part3.csv
+05/07/2025 01:57:08 - INFO - data_utils - found 281 tasks
+05/07/2025 01:57:08 - INFO - data_utils - task num io range from 2 to 7
+05/07/2025 01:57:09 - INFO - data_utils - augmented data from 281 to 277
+05/07/2025 01:57:09 - INFO - data_utils - 67c52801-0: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 67c52801-1: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 67c52801-2: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 67c52801-3: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 68b67ca3-0: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 68b67ca3-1: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 68b67ca3-2: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 692cd3b6-0: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 692cd3b6-1: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 692cd3b6-2: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 695367ec-0: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 695367ec-1: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 695367ec-2: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 696d4842-0: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 696d4842-1: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 696d4842-2: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 69889d6e-0: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 69889d6e-1: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 69889d6e-2: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 69889d6e-3: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 6a11f6da-0: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 6a11f6da-1: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 6a11f6da-2: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 6a11f6da-3: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 6a11f6da-4: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 6ad5bdfd-0: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 6ad5bdfd-1: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 6ad5bdfd-2: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 6df30ad6-0: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 6df30ad6-1: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 6df30ad6-2: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 6df30ad6-3: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 6df30ad6-4: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 6ea4a07e-0: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 6ea4a07e-1: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 6ea4a07e-2: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 6ea4a07e-3: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 6ea4a07e-4: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 6ea4a07e-5: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 6f473927-0: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 6f473927-1: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 6f473927-2: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 6f473927-3: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 7039b2d7-0: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 7039b2d7-1: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 7039b2d7-2: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 705a3229-0: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 705a3229-1: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 705a3229-2: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 705a3229-3: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 712bf12e-0: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 712bf12e-1: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 712bf12e-2: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 72207abc-0: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 72207abc-1: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 72207abc-2: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 72a961c9-0: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 72a961c9-1: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 72a961c9-2: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 72a961c9-3: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 73182012-0: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 73182012-1: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 73182012-2: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 73c3b0d8-0: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 73c3b0d8-1: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 73c3b0d8-2: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 73c3b0d8-3: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 73ccf9c2-0: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 73ccf9c2-1: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 73ccf9c2-2: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 759f3fd3-0: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 759f3fd3-1: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 762cd429-0: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 762cd429-1: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 762cd429-2: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 770cc55f-0: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 770cc55f-1: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 770cc55f-2: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 770cc55f-3: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 782b5218-0: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 782b5218-1: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 782b5218-2: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 79369cc6-0: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 79369cc6-1: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 79369cc6-2: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 7953d61e-0: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 7953d61e-1: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 7953d61e-2: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 7953d61e-3: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 7953d61e-4: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 79fb03f4-0: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 79fb03f4-1: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 79fb03f4-2: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 79fb03f4-3: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 79fb03f4-4: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 79fb03f4-5: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 7bb29440-0: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 7bb29440-1: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 7bb29440-2: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 7bb29440-3: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 7bb29440-4: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 7c8af763-0: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 7c8af763-1: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 7c8af763-2: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 7c9b52a0-0: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 7c9b52a0-1: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 7c9b52a0-2: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 7d18a6fb-0: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 7d18a6fb-1: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 7d18a6fb-2: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 7d1f7ee8-0: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 7d1f7ee8-1: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 7d1f7ee8-2: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 7d419a02-0: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 7d419a02-1: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 7d419a02-2: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 7e02026e-0: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 7e02026e-1: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 7e02026e-2: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 7ee1c6ea-0: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 7ee1c6ea-1: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 7ee1c6ea-2: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 817e6c09-0: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 817e6c09-1: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 817e6c09-2: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 817e6c09-3: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 817e6c09-4: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 81c0276b-0: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 81c0276b-1: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 81c0276b-2: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 833dafe3-0: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 833dafe3-1: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 845d6e51-0: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 845d6e51-1: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 845d6e51-2: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 84db8fc4-0: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 84db8fc4-1: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 84db8fc4-2: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 84db8fc4-3: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 84f2aca1-0: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 84f2aca1-1: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 84f2aca1-2: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 84f2aca1-3: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 8597cfd7-0: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 8597cfd7-1: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 8597cfd7-2: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 8597cfd7-3: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 85b81ff1-0: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 85b81ff1-1: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 85b81ff1-2: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 85b81ff1-3: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 85fa5666-0: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 85fa5666-1: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 85fa5666-2: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 85fa5666-3: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 8719f442-0: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 8719f442-1: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 8719f442-2: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 88207623-0: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 88207623-1: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 891232d6-0: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 891232d6-1: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 891232d6-2: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 891232d6-3: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 896d5239-0: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 896d5239-1: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 896d5239-2: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 8a371977-0: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 8a371977-1: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 8a371977-2: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 8b28cd80-0: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 8b28cd80-1: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 8b28cd80-2: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 8b28cd80-3: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 8b28cd80-4: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 8ba14f53-0: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 8ba14f53-1: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 8ba14f53-2: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 8ba14f53-3: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 8ba14f53-4: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 8ba14f53-5: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 8cb8642d-0: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 8cb8642d-1: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 8cb8642d-2: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 8dae5dfc-0: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 8dae5dfc-1: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 8dae5dfc-2: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 8dae5dfc-3: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 8e2edd66-0: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 8e2edd66-1: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 8e2edd66-2: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 8ee62060-0: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 8ee62060-1: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 8ee62060-2: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 8fbca751-0: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 8fbca751-1: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 8fbca751-2: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 90347967-0: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 90347967-1: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 90347967-2: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 903d1b4a-0: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 903d1b4a-1: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 903d1b4a-2: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 903d1b4a-3: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 9110e3c5-0: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 9110e3c5-1: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 9110e3c5-2: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 9110e3c5-3: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 9110e3c5-4: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 9110e3c5-5: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 9110e3c5-6: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 917bccba-0: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 917bccba-1: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 917bccba-2: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 929ab4e9-0: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 929ab4e9-1: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 929ab4e9-2: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 929ab4e9-3: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 92e50de0-0: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 92e50de0-1: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 92e50de0-2: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 9356391f-0: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 9356391f-1: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 93b4f4b3-0: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 93b4f4b3-1: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 93c31fbe-0: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 93c31fbe-1: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 93c31fbe-2: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 94133066-0: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 94133066-1: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 94133066-2: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 94414823-0: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 94414823-1: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 94414823-2: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 94be5b80-0: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 94be5b80-1: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 95a58926-0: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 95a58926-1: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 95a58926-2: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 963f59bc-0: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 963f59bc-1: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 963f59bc-2: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 963f59bc-3: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 96a8c0cd-0: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 96a8c0cd-1: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 96a8c0cd-2: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 96a8c0cd-3: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 97239e3d-0: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 97239e3d-1: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 97239e3d-2: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 9772c176-0: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 9772c176-1: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 992798f6-0: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 992798f6-1: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 992798f6-2: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 992798f6-3: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 99306f82-0: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 99306f82-1: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 99306f82-2: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 9a4bb226-0: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 9a4bb226-1: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 9a4bb226-2: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 9b2a60aa-0: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 9b2a60aa-1: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 9b2a60aa-2: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 9b365c51-0: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 9b365c51-1: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 9b365c51-2: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 9b4c17c4-0: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 9b4c17c4-1: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 9b4c17c4-2: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 9b4c17c4-3: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 9bebae7a-0: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 9bebae7a-1: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 9bebae7a-2: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 9bebae7a-3: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - 9bebae7a-4: Number of Queries: 1
+05/07/2025 01:57:09 - INFO - data_utils - encoder npairs range from 2 to 7
+05/07/2025 01:57:09 - INFO - data_utils - encoder sequence length range from 217 to 6035]
+Task: 100%|█████████████████████████████████████████████████████████████████████████████████████| 277/277 [14:36<00:00,  3.17s/it]
+05/07/2025 02:11:47 - INFO - __main__ - Evaluation results:
+{   'eval/competition_all_acc': 0.05,
+    'eval/competition_sub_acc': 0.15658362989323843,
+    'eval/correct_grid_dim': 0.9169675090252708,
+    'eval/exact_acc': 0.1588447653429603,
+    'eval/gs_num_data': 0.0,
+    'eval/gs_num_params': 0.0,
+    'eval/gs_time': 0.0,
+    'eval/init_kv_time': 0.013661339825241144,
+    'eval/relaxed_token_acc': 0.8202136100839799,
+    'eval/token_acc': 0.754246916465656,
+    'eval/ttt_num_data': 0.0,
+    'eval/ttt_num_params': 0.0,
+    'eval/ttt_time': 0.0,
+    'eval/valid_grid': 0.9855595667870036}
+05/07/2025 02:11:47 - INFO - __main__ - Saved eval train pred gt to ./encoder_decoder/outputs_eval/eval_arc_evalondemon_part3_0317_noprogram_base/eval_pred_gt.json
+05/07/2025 02:11:47 - INFO - __main__ - Saved vote to ./encoder_decoder/outputs_eval/eval_arc_evalondemon_part3_0317_noprogram_base/eval_vote.json
+05/07/2025 02:11:47 - INFO - __main__ - All done evaluating.
+(/scratch/yl11330/marc/penv) Singularity>
+(/scratch/yl11330/marc/penv) Singularity> # arc evalondemon part4
+(/scratch/yl11330/marc/penv) Singularity> accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_arc/test_time_evaluate.py \
+>     --select_tasks_path data/task_info_part4.csv \
+>     --no_bos \
+>     --tag arc_evalondemon_part4 \
+>     --weight_dir 0317_noprogram_base \
+>     --weight_epoch 24 \
+>     --eval_on_demonstrations
+The following values were not passed to `accelerate launch` and had defaults used instead:
+        `--num_processes` was set to a value of `1`
+        `--num_machines` was set to a value of `1`
+        `--dynamo_backend` was set to a value of `'no'`
+To avoid this warning pass in values for each of the problematic parameters or run `accelerate config`.
+Wed May  7 02:12:00 2025
++---------------------------------------------------------------------------------------+
+| NVIDIA-SMI 535.154.05             Driver Version: 535.154.05   CUDA Version: 12.2     |
+|-----------------------------------------+----------------------+----------------------+
+| GPU  Name                 Persistence-M | Bus-Id        Disp.A | Volatile Uncorr. ECC |
+| Fan  Temp   Perf          Pwr:Usage/Cap |         Memory-Usage | GPU-Util  Compute M. |
+|                                         |                      |               MIG M. |
+|=========================================+======================+======================|
+|   0  NVIDIA A100-SXM4-80GB          On  | 00000000:E3:00.0 Off |                    0 |
+| N/A   25C    P0              60W / 500W |      4MiB / 81920MiB |      0%      Default |
+|                                         |                      |             Disabled |
++-----------------------------------------+----------------------+----------------------+
+
++---------------------------------------------------------------------------------------+
+| Processes:                                                                            |
+|  GPU   GI   CI        PID   Type   Process name                            GPU Memory |
+|        ID   ID                                                             Usage      |
+|=======================================================================================|
+|  No running processes found                                                           |
++---------------------------------------------------------------------------------------+
+05/07/2025 02:12:01 - INFO - __main__ - Distributed environment: NO
+Num processes: 1
+Process index: 0
+Local process index: 0
+Device: cuda
+
+Mixed precision type: bf16
+
+05/07/2025 02:12:01 - INFO - __main__ - Accelerator and seed set up.
+05/07/2025 02:12:01 - INFO - __main__ - #### BEGIN ALL ARGUMENTS ####
+05/07/2025 02:12:01 - INFO - __main__ - tag: eval_arc_evalondemon_part4_0317_noprogram_base
+05/07/2025 02:12:01 - INFO - __main__ - output_dir: ./encoder_decoder/outputs_eval/eval_arc_evalondemon_part4_0317_noprogram_base
+05/07/2025 02:12:01 - INFO - __main__ - log_every: 10
+05/07/2025 02:12:01 - INFO - __main__ - seed: 0
+05/07/2025 02:12:01 - INFO - __main__ - debug: False
+05/07/2025 02:12:01 - INFO - __main__ - debug_max_len: False
+05/07/2025 02:12:01 - INFO - __main__ - debug_random_pad: False
+05/07/2025 02:12:01 - INFO - __main__ - debug_pad_len: -1
+05/07/2025 02:12:01 - INFO - __main__ - model_name: llama1b
+05/07/2025 02:12:01 - INFO - __main__ - flash_attn: False
+05/07/2025 02:12:01 - INFO - __main__ - untrainable_nbit: 16
+05/07/2025 02:12:01 - INFO - __main__ - trainable_nbit: 16
+05/07/2025 02:12:01 - INFO - __main__ - no_tf32: False
+05/07/2025 02:12:01 - INFO - __main__ - weight_root_dir: ./encoder_decoder/outputs
+05/07/2025 02:12:01 - INFO - __main__ - weight_dir: 0317_noprogram_base
+05/07/2025 02:12:01 - INFO - __main__ - weight_epoch: 24
+05/07/2025 02:12:01 - INFO - __main__ - ttt_weight_root_dir: ./encoder_decoder/outputs_eval
+05/07/2025 02:12:01 - INFO - __main__ - ttt_weight_dir: None
+05/07/2025 02:12:01 - INFO - __main__ - max_seq_len: 8192
+05/07/2025 02:12:01 - INFO - __main__ - pad_side: left
+05/07/2025 02:12:01 - INFO - __main__ - no_separate_color_tokens: False
+05/07/2025 02:12:01 - INFO - __main__ - no_bos: True
+05/07/2025 02:12:01 - INFO - __main__ - data_dir: ./data/re-arc/arc_original/evaluation
+05/07/2025 02:12:01 - INFO - __main__ - select_tasks_path: task_info_part4.csv
+05/07/2025 02:12:01 - INFO - __main__ - leave_ns: [0]
+05/07/2025 02:12:01 - INFO - __main__ - leave_ns_inc: False
+05/07/2025 02:12:01 - INFO - __main__ - permute_n: 0
+05/07/2025 02:12:01 - INFO - __main__ - augment_n: 0
+05/07/2025 02:12:01 - INFO - __main__ - permute_iters: 0
+05/07/2025 02:12:01 - INFO - __main__ - eval_on_demonstrations: True
+05/07/2025 02:12:01 - INFO - __main__ - zero_shot: False
+05/07/2025 02:12:01 - INFO - __main__ - compression_ratio: 1.0
+05/07/2025 02:12:01 - INFO - __main__ - ttt_iters: 0
+05/07/2025 02:12:01 - INFO - __main__ - ttt_lr: 0.0001
+05/07/2025 02:12:01 - INFO - __main__ - ttt_weight_decay: 0.0
+05/07/2025 02:12:01 - INFO - __main__ - ttt_batch_size: 4
+05/07/2025 02:12:01 - INFO - __main__ - ttt_grad_accum_steps: 1
+05/07/2025 02:12:01 - INFO - __main__ - ttt_optimizer: adamw
+05/07/2025 02:12:01 - INFO - __main__ - ttt_lr_scheduler: cosine
+05/07/2025 02:12:01 - INFO - __main__ - ttt_max_grad_norm: 1.0
+05/07/2025 02:12:01 - INFO - __main__ - ttt_permute_n: 40
+05/07/2025 02:12:01 - INFO - __main__ - ttt_lora_rank: 128
+05/07/2025 02:12:01 - INFO - __main__ - ttt_lora_alpha: 16
+05/07/2025 02:12:01 - INFO - __main__ - ttt_lora_dropout: 0.05
+05/07/2025 02:12:01 - INFO - __main__ - ttt_lora_rslora: False
+05/07/2025 02:12:01 - INFO - __main__ - ttt_loss_type: all
+05/07/2025 02:12:01 - INFO - __main__ - ttt_save: False
+05/07/2025 02:12:01 - INFO - __main__ - ttt_lambda_param_sqr: 0.0
+05/07/2025 02:12:01 - INFO - __main__ - ttt_fisher: False
+05/07/2025 02:12:01 - INFO - __main__ - ttt_fisher_iters: 25
+05/07/2025 02:12:01 - INFO - __main__ - gs_epochs: 0
+05/07/2025 02:12:01 - INFO - __main__ - gs_lr: 0.001
+05/07/2025 02:12:01 - INFO - __main__ - gs_beta1: 0.9
+05/07/2025 02:12:01 - INFO - __main__ - gs_beta2: 0.999
+05/07/2025 02:12:01 - INFO - __main__ - gs_weight_decay: 0.0
+05/07/2025 02:12:01 - INFO - __main__ - gs_batch_size: 100000
+05/07/2025 02:12:01 - INFO - __main__ - gs_optimizer: adamw
+05/07/2025 02:12:01 - INFO - __main__ - gs_lr_scheduler: cosine
+05/07/2025 02:12:01 - INFO - __main__ - gs_max_grad_norm: 1.0
+05/07/2025 02:12:01 - INFO - __main__ - gs_no_key: False
+05/07/2025 02:12:01 - INFO - __main__ - gs_no_value: False
+05/07/2025 02:12:01 - INFO - __main__ - gs_num_layer: -1
+05/07/2025 02:12:01 - INFO - __main__ - gs_loss_on_input: False
+05/07/2025 02:12:01 - INFO - __main__ - gs_dropout: none
+05/07/2025 02:12:01 - INFO - __main__ - gs_token_dropout: 0.0
+05/07/2025 02:12:01 - INFO - __main__ - gs_detach: False
+05/07/2025 02:12:01 - INFO - __main__ - gs_ntokens: -1
+05/07/2025 02:12:01 - INFO - __main__ - gs_log_attention: False
+05/07/2025 02:12:01 - INFO - __main__ - gs_final_tokens: -1
+05/07/2025 02:12:01 - INFO - __main__ - gs_prefix_lora: False
+05/07/2025 02:12:01 - INFO - __main__ - gs_prefix_lora_rank: 64
+05/07/2025 02:12:01 - INFO - __main__ - gs_prefix_lora_share_head: False
+05/07/2025 02:12:01 - INFO - __main__ - random_kv: none
+05/07/2025 02:12:01 - INFO - __main__ - random_kv_ntokens: -1
+05/07/2025 02:12:01 - INFO - __main__ - separate_kv: False
+05/07/2025 02:12:01 - INFO - __main__ - num_permute: 1
+05/07/2025 02:12:01 - INFO - __main__ - permute_batch_size: 16
+05/07/2025 02:12:01 - INFO - __main__ - permute_back: False
+05/07/2025 02:12:01 - INFO - __main__ - permute_back_strip_position: False
+05/07/2025 02:12:01 - INFO - __main__ - permute_concat: False
+05/07/2025 02:12:01 - INFO - __main__ - gs_lora: False
+05/07/2025 02:12:01 - INFO - __main__ - gs_lora_rank: 128
+05/07/2025 02:12:01 - INFO - __main__ - gs_lora_alpha: 16
+05/07/2025 02:12:01 - INFO - __main__ - gs_lora_lr: 0.0001
+05/07/2025 02:12:01 - INFO - __main__ - gs_lora_beta1: 0.9
+05/07/2025 02:12:01 - INFO - __main__ - gs_lora_beta2: 0.999
+05/07/2025 02:12:01 - INFO - __main__ - gs_lora_dropout: 0.05
+05/07/2025 02:12:01 - INFO - __main__ - gs_lora_rslora: False
+05/07/2025 02:12:01 - INFO - __main__ - gs_lambda_param_sqr: 0.0
+05/07/2025 02:12:01 - INFO - __main__ - gs_fisher: False
+05/07/2025 02:12:01 - INFO - __main__ - gs_log_fisher: False
+05/07/2025 02:12:01 - INFO - __main__ - dt_iters: 0
+05/07/2025 02:12:01 - INFO - __main__ - dt_lr: 0.01
+05/07/2025 02:12:01 - INFO - __main__ - #### END ALL ARGUMENTS ####
+
+05/07/2025 02:12:02 - INFO - __main__ - Tokenizers loaded and pad tokens handled.
+05/07/2025 02:12:02 - INFO - __main__ - Base models loaded.
+05/07/2025 02:12:05 - INFO - root - Skipping import of cpp extensions
+05/07/2025 02:12:06 - INFO - root - lm_eval is not installed, GPTQ may not be usable
+05/07/2025 02:12:08 - INFO - __main__ - loaded model weights
+05/07/2025 02:12:08 - INFO - __main__ - converted model weights to torch.bfloat16
+trainable params: 0 || all params: 1,154,766,336 || trainable%: 0.0000
+05/07/2025 02:12:08 - INFO - __main__ - model size 2.15GB
+05/07/2025 02:12:09 - INFO - data_utils - found 400 files
+05/07/2025 02:12:09 - INFO - data_utils - filtered to 80 files from task_info_part4.csv
+05/07/2025 02:12:09 - INFO - data_utils - found 275 tasks
+05/07/2025 02:12:09 - INFO - data_utils - task num io range from 2 to 7
+05/07/2025 02:12:10 - INFO - data_utils - augmented data from 275 to 271
+05/07/2025 02:12:10 - INFO - data_utils - 9c1e755f-0: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - 9c1e755f-1: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - 9c1e755f-2: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - 9c1e755f-3: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - 9c56f360-0: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - 9c56f360-1: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - 9c56f360-2: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - 9caba7c3-0: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - 9caba7c3-1: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - 9caba7c3-2: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - 9ddd00f0-0: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - 9ddd00f0-1: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - 9def23fe-0: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - 9def23fe-1: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - 9def23fe-2: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - 9f27f097-0: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - 9f27f097-1: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - 9f27f097-2: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - a04b2602-0: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - a04b2602-1: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - a04b2602-2: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - a096bf4d-0: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - a096bf4d-1: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - a096bf4d-2: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - a3f84088-0: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - a3f84088-1: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - a3f84088-2: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - a3f84088-3: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - a406ac07-0: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - a406ac07-1: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - a406ac07-2: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - a57f2f04-0: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - a57f2f04-1: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - a57f2f04-2: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - a59b95c0-0: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - a59b95c0-1: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - a59b95c0-2: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - a59b95c0-3: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - a59b95c0-4: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - a680ac02-0: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - a680ac02-1: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - a680ac02-2: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - a8610ef7-0: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - a8610ef7-1: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - a8610ef7-2: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - a8610ef7-3: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - a934301b-0: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - a934301b-1: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - a934301b-2: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - aa18de87-0: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - aa18de87-1: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - aa18de87-2: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - aa18de87-3: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - aa300dc3-0: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - aa300dc3-1: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - aa300dc3-2: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - aa300dc3-3: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - aa4ec2a5-0: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - aa4ec2a5-1: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - aa4ec2a5-2: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - aab50785-0: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - aab50785-1: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - aab50785-2: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - aab50785-3: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - aab50785-4: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - ac0c5833-0: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - ac0c5833-1: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - ac0c5833-2: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - ac2e8ecf-0: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - ac2e8ecf-1: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - ac2e8ecf-2: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - ac3e2b04-0: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - ac3e2b04-1: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - ac3e2b04-2: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - ac3e2b04-3: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - ac605cbb-0: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - ac605cbb-1: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - ac605cbb-2: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - ac605cbb-3: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - ac605cbb-4: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - ac605cbb-5: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - ad7e01d0-0: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - ad7e01d0-1: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - ad7e01d0-2: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - ad7e01d0-3: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - ae58858e-0: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - ae58858e-1: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - ae58858e-2: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - ae58858e-3: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - aee291af-0: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - aee291af-1: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - aee291af-2: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - af24b4cc-0: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - af24b4cc-1: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - af24b4cc-2: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - b0722778-0: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - b0722778-1: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - b0f4d537-0: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - b0f4d537-1: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - b0f4d537-2: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - b0f4d537-3: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - b15fca0b-0: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - b15fca0b-1: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - b15fca0b-2: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - b15fca0b-3: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - b15fca0b-4: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - b1fc8b8e-0: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - b1fc8b8e-1: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - b1fc8b8e-2: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - b1fc8b8e-3: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - b1fc8b8e-4: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - b20f7c8b-0: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - b20f7c8b-1: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - b20f7c8b-2: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - b457fec5-0: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - b457fec5-1: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - b457fec5-2: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - b4a43f3b-0: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - b4a43f3b-1: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - b4a43f3b-2: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - b4a43f3b-3: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - b7999b51-0: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - b7999b51-1: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - b7999b51-2: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - b7cb93ac-0: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - b7cb93ac-1: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - b7cb93ac-2: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - b7f8a4d8-0: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - b7f8a4d8-1: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - b7f8a4d8-2: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - b7fb29bc-0: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - b7fb29bc-1: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - b7fb29bc-2: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - b942fd60-0: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - b942fd60-1: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - b942fd60-2: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - b942fd60-3: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - b942fd60-4: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - b942fd60-5: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - b9630600-0: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - b9630600-1: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - b9630600-2: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - ba9d41b8-0: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - ba9d41b8-1: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - ba9d41b8-2: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - baf41dbf-0: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - baf41dbf-1: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - baf41dbf-2: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - bb52a14b-0: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - bb52a14b-1: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - bb52a14b-2: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - bbb1b8b6-0: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - bbb1b8b6-1: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - bbb1b8b6-2: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - bbb1b8b6-3: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - bbb1b8b6-4: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - bbb1b8b6-5: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - bbb1b8b6-6: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - bc4146bd-0: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - bc4146bd-1: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - bc4146bd-2: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - bc4146bd-3: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - bcb3040b-0: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - bcb3040b-1: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - bcb3040b-2: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - bd14c3bf-0: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - bd14c3bf-1: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - bd14c3bf-2: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - be03b35f-0: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - be03b35f-1: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - be03b35f-2: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - bf32578f-0: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - bf32578f-1: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - bf32578f-2: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - bf699163-0: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - bf699163-1: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - bf89d739-0: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - bf89d739-1: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - bf89d739-2: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - bf89d739-3: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - c074846d-0: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - c074846d-1: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - c074846d-2: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - c074846d-3: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - c074846d-4: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - c1990cce-0: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - c1990cce-1: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - c1990cce-2: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - c3202e5a-0: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - c3202e5a-1: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - c3202e5a-2: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - c35c1b4c-0: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - c35c1b4c-1: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - c35c1b4c-2: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - c48954c1-0: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - c48954c1-1: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - c48954c1-2: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - c62e2108-0: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - c62e2108-1: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - c62e2108-2: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - c64f1187-0: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - c64f1187-1: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - c658a4bd-0: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - c658a4bd-1: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - c663677b-0: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - c663677b-1: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - c663677b-2: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - c6e1b8da-0: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - c6e1b8da-1: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - c6e1b8da-2: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - c7d4e6ad-0: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - c7d4e6ad-1: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - c87289bb-0: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - c87289bb-1: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - c87289bb-2: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - c87289bb-3: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - c8b7cc0f-0: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - c8b7cc0f-1: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - c8b7cc0f-2: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - c92b942c-0: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - c92b942c-1: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - c92b942c-2: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - c92b942c-3: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - c97c0139-0: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - c97c0139-1: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - ca8de6ea-0: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - ca8de6ea-1: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - ca8de6ea-2: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - ca8f78db-0: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - ca8f78db-1: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - ca8f78db-2: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - cad67732-0: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - cad67732-1: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - cad67732-2: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - cb227835-0: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - cb227835-1: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - cb227835-2: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - ccd554ac-0: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - ccd554ac-1: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - ccd554ac-2: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - ccd554ac-3: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - ccd554ac-4: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - ccd554ac-5: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - cd3c21df-0: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - cd3c21df-1: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - cd3c21df-2: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - ce039d91-0: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - ce039d91-1: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - ce039d91-2: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - ce039d91-3: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - ce8d95cc-0: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - ce8d95cc-1: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - ce8d95cc-2: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - ce8d95cc-3: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - cf133acc-0: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - cf133acc-1: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - cf133acc-2: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - cfb2ce5a-0: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - cfb2ce5a-1: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - cfb2ce5a-2: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - d017b73f-0: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - d017b73f-1: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - d017b73f-2: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - d017b73f-3: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - d19f7514-0: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - d19f7514-1: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - d19f7514-2: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - d19f7514-3: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - d282b262-0: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - d282b262-1: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - d282b262-2: Number of Queries: 1
+05/07/2025 02:12:10 - INFO - data_utils - encoder npairs range from 2 to 7
+05/07/2025 02:12:10 - INFO - data_utils - encoder sequence length range from 172 to 7468]
+Task: 100%|█████████████████████████████████████████████████████████████████████████████████████| 271/271 [15:03<00:00,  3.34s/it]
+05/07/2025 02:27:15 - INFO - __main__ - Evaluation results:
+{   'eval/competition_all_acc': 0.075,
+    'eval/competition_sub_acc': 0.20363636363636364,
+    'eval/correct_grid_dim': 0.8560885608856088,
+    'eval/exact_acc': 0.2066420664206642,
+    'eval/gs_num_data': 0.0,
+    'eval/gs_num_params': 0.0,
+    'eval/gs_time': 0.0,
+    'eval/init_kv_time': 0.013430032343002263,
+    'eval/relaxed_token_acc': 0.8091142216112484,
+    'eval/token_acc': 0.736724676368493,
+    'eval/ttt_num_data': 0.0,
+    'eval/ttt_num_params': 0.0,
+    'eval/ttt_time': 0.0,
+    'eval/valid_grid': 0.9704797047970479}
+05/07/2025 02:27:15 - INFO - __main__ - Saved eval train pred gt to ./encoder_decoder/outputs_eval/eval_arc_evalondemon_part4_0317_noprogram_base/eval_pred_gt.json
+05/07/2025 02:27:15 - INFO - __main__ - Saved vote to ./encoder_decoder/outputs_eval/eval_arc_evalondemon_part4_0317_noprogram_base/eval_vote.json
+05/07/2025 02:27:15 - INFO - __main__ - All done evaluating.
+(/scratch/yl11330/marc/penv) Singularity>
+(/scratch/yl11330/marc/penv) Singularity> # arc evalondemon part5
+(/scratch/yl11330/marc/penv) Singularity> accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_arc/test_time_evaluate.py \
+>     --select_tasks_path data/task_info_part5.csv \
+>     --no_bos \
+>     --tag arc_evalondemon_part5 \
+>     --weight_dir 0317_noprogram_base \
+>     --weight_epoch 24 \
+>     --eval_on_demonstrations
+The following values were not passed to `accelerate launch` and had defaults used instead:
+        `--num_processes` was set to a value of `1`
+        `--num_machines` was set to a value of `1`
+        `--dynamo_backend` was set to a value of `'no'`
+To avoid this warning pass in values for each of the problematic parameters or run `accelerate config`.
+Wed May  7 02:27:34 2025
++---------------------------------------------------------------------------------------+
+| NVIDIA-SMI 535.154.05             Driver Version: 535.154.05   CUDA Version: 12.2     |
+|-----------------------------------------+----------------------+----------------------+
+| GPU  Name                 Persistence-M | Bus-Id        Disp.A | Volatile Uncorr. ECC |
+| Fan  Temp   Perf          Pwr:Usage/Cap |         Memory-Usage | GPU-Util  Compute M. |
+|                                         |                      |               MIG M. |
+|=========================================+======================+======================|
+|   0  NVIDIA A100-SXM4-80GB          On  | 00000000:E3:00.0 Off |                    0 |
+| N/A   25C    P0              60W / 500W |      4MiB / 81920MiB |      0%      Default |
+|                                         |                      |             Disabled |
++-----------------------------------------+----------------------+----------------------+
+
++---------------------------------------------------------------------------------------+
+| Processes:                                                                            |
+|  GPU   GI   CI        PID   Type   Process name                            GPU Memory |
+|        ID   ID                                                             Usage      |
+|=======================================================================================|
+|  No running processes found                                                           |
++---------------------------------------------------------------------------------------+
+05/07/2025 02:27:34 - INFO - __main__ - Distributed environment: NO
+Num processes: 1
+Process index: 0
+Local process index: 0
+Device: cuda
+
+Mixed precision type: bf16
+
+05/07/2025 02:27:34 - INFO - __main__ - Accelerator and seed set up.
+05/07/2025 02:27:34 - INFO - __main__ - #### BEGIN ALL ARGUMENTS ####
+05/07/2025 02:27:34 - INFO - __main__ - tag: eval_arc_evalondemon_part5_0317_noprogram_base
+05/07/2025 02:27:34 - INFO - __main__ - output_dir: ./encoder_decoder/outputs_eval/eval_arc_evalondemon_part5_0317_noprogram_base
+05/07/2025 02:27:34 - INFO - __main__ - log_every: 10
+05/07/2025 02:27:34 - INFO - __main__ - seed: 0
+05/07/2025 02:27:34 - INFO - __main__ - debug: False
+05/07/2025 02:27:34 - INFO - __main__ - debug_max_len: False
+05/07/2025 02:27:34 - INFO - __main__ - debug_random_pad: False
+05/07/2025 02:27:34 - INFO - __main__ - debug_pad_len: -1
+05/07/2025 02:27:34 - INFO - __main__ - model_name: llama1b
+05/07/2025 02:27:34 - INFO - __main__ - flash_attn: False
+05/07/2025 02:27:34 - INFO - __main__ - untrainable_nbit: 16
+05/07/2025 02:27:34 - INFO - __main__ - trainable_nbit: 16
+05/07/2025 02:27:34 - INFO - __main__ - no_tf32: False
+05/07/2025 02:27:34 - INFO - __main__ - weight_root_dir: ./encoder_decoder/outputs
+05/07/2025 02:27:34 - INFO - __main__ - weight_dir: 0317_noprogram_base
+05/07/2025 02:27:34 - INFO - __main__ - weight_epoch: 24
+05/07/2025 02:27:34 - INFO - __main__ - ttt_weight_root_dir: ./encoder_decoder/outputs_eval
+05/07/2025 02:27:34 - INFO - __main__ - ttt_weight_dir: None
+05/07/2025 02:27:34 - INFO - __main__ - max_seq_len: 8192
+05/07/2025 02:27:34 - INFO - __main__ - pad_side: left
+05/07/2025 02:27:34 - INFO - __main__ - no_separate_color_tokens: False
+05/07/2025 02:27:34 - INFO - __main__ - no_bos: True
+05/07/2025 02:27:34 - INFO - __main__ - data_dir: ./data/re-arc/arc_original/evaluation
+05/07/2025 02:27:34 - INFO - __main__ - select_tasks_path: task_info_part5.csv
+05/07/2025 02:27:34 - INFO - __main__ - leave_ns: [0]
+05/07/2025 02:27:34 - INFO - __main__ - leave_ns_inc: False
+05/07/2025 02:27:34 - INFO - __main__ - permute_n: 0
+05/07/2025 02:27:34 - INFO - __main__ - augment_n: 0
+05/07/2025 02:27:34 - INFO - __main__ - permute_iters: 0
+05/07/2025 02:27:34 - INFO - __main__ - eval_on_demonstrations: True
+05/07/2025 02:27:34 - INFO - __main__ - zero_shot: False
+05/07/2025 02:27:34 - INFO - __main__ - compression_ratio: 1.0
+05/07/2025 02:27:34 - INFO - __main__ - ttt_iters: 0
+05/07/2025 02:27:34 - INFO - __main__ - ttt_lr: 0.0001
+05/07/2025 02:27:34 - INFO - __main__ - ttt_weight_decay: 0.0
+05/07/2025 02:27:34 - INFO - __main__ - ttt_batch_size: 4
+05/07/2025 02:27:34 - INFO - __main__ - ttt_grad_accum_steps: 1
+05/07/2025 02:27:34 - INFO - __main__ - ttt_optimizer: adamw
+05/07/2025 02:27:34 - INFO - __main__ - ttt_lr_scheduler: cosine
+05/07/2025 02:27:34 - INFO - __main__ - ttt_max_grad_norm: 1.0
+05/07/2025 02:27:34 - INFO - __main__ - ttt_permute_n: 40
+05/07/2025 02:27:34 - INFO - __main__ - ttt_lora_rank: 128
+05/07/2025 02:27:34 - INFO - __main__ - ttt_lora_alpha: 16
+05/07/2025 02:27:34 - INFO - __main__ - ttt_lora_dropout: 0.05
+05/07/2025 02:27:34 - INFO - __main__ - ttt_lora_rslora: False
+05/07/2025 02:27:34 - INFO - __main__ - ttt_loss_type: all
+05/07/2025 02:27:34 - INFO - __main__ - ttt_save: False
+05/07/2025 02:27:34 - INFO - __main__ - ttt_lambda_param_sqr: 0.0
+05/07/2025 02:27:34 - INFO - __main__ - ttt_fisher: False
+05/07/2025 02:27:34 - INFO - __main__ - ttt_fisher_iters: 25
+05/07/2025 02:27:34 - INFO - __main__ - gs_epochs: 0
+05/07/2025 02:27:34 - INFO - __main__ - gs_lr: 0.001
+05/07/2025 02:27:34 - INFO - __main__ - gs_beta1: 0.9
+05/07/2025 02:27:34 - INFO - __main__ - gs_beta2: 0.999
+05/07/2025 02:27:34 - INFO - __main__ - gs_weight_decay: 0.0
+05/07/2025 02:27:34 - INFO - __main__ - gs_batch_size: 100000
+05/07/2025 02:27:34 - INFO - __main__ - gs_optimizer: adamw
+05/07/2025 02:27:34 - INFO - __main__ - gs_lr_scheduler: cosine
+05/07/2025 02:27:34 - INFO - __main__ - gs_max_grad_norm: 1.0
+05/07/2025 02:27:34 - INFO - __main__ - gs_no_key: False
+05/07/2025 02:27:34 - INFO - __main__ - gs_no_value: False
+05/07/2025 02:27:34 - INFO - __main__ - gs_num_layer: -1
+05/07/2025 02:27:34 - INFO - __main__ - gs_loss_on_input: False
+05/07/2025 02:27:34 - INFO - __main__ - gs_dropout: none
+05/07/2025 02:27:34 - INFO - __main__ - gs_token_dropout: 0.0
+05/07/2025 02:27:34 - INFO - __main__ - gs_detach: False
+05/07/2025 02:27:34 - INFO - __main__ - gs_ntokens: -1
+05/07/2025 02:27:34 - INFO - __main__ - gs_log_attention: False
+05/07/2025 02:27:34 - INFO - __main__ - gs_final_tokens: -1
+05/07/2025 02:27:34 - INFO - __main__ - gs_prefix_lora: False
+05/07/2025 02:27:34 - INFO - __main__ - gs_prefix_lora_rank: 64
+05/07/2025 02:27:34 - INFO - __main__ - gs_prefix_lora_share_head: False
+05/07/2025 02:27:34 - INFO - __main__ - random_kv: none
+05/07/2025 02:27:34 - INFO - __main__ - random_kv_ntokens: -1
+05/07/2025 02:27:34 - INFO - __main__ - separate_kv: False
+05/07/2025 02:27:34 - INFO - __main__ - num_permute: 1
+05/07/2025 02:27:34 - INFO - __main__ - permute_batch_size: 16
+05/07/2025 02:27:34 - INFO - __main__ - permute_back: False
+05/07/2025 02:27:34 - INFO - __main__ - permute_back_strip_position: False
+05/07/2025 02:27:34 - INFO - __main__ - permute_concat: False
+05/07/2025 02:27:34 - INFO - __main__ - gs_lora: False
+05/07/2025 02:27:34 - INFO - __main__ - gs_lora_rank: 128
+05/07/2025 02:27:34 - INFO - __main__ - gs_lora_alpha: 16
+05/07/2025 02:27:34 - INFO - __main__ - gs_lora_lr: 0.0001
+05/07/2025 02:27:34 - INFO - __main__ - gs_lora_beta1: 0.9
+05/07/2025 02:27:34 - INFO - __main__ - gs_lora_beta2: 0.999
+05/07/2025 02:27:34 - INFO - __main__ - gs_lora_dropout: 0.05
+05/07/2025 02:27:34 - INFO - __main__ - gs_lora_rslora: False
+05/07/2025 02:27:34 - INFO - __main__ - gs_lambda_param_sqr: 0.0
+05/07/2025 02:27:34 - INFO - __main__ - gs_fisher: False
+05/07/2025 02:27:34 - INFO - __main__ - gs_log_fisher: False
+05/07/2025 02:27:34 - INFO - __main__ - dt_iters: 0
+05/07/2025 02:27:34 - INFO - __main__ - dt_lr: 0.01
+05/07/2025 02:27:34 - INFO - __main__ - #### END ALL ARGUMENTS ####
+
+05/07/2025 02:27:35 - INFO - __main__ - Tokenizers loaded and pad tokens handled.
+05/07/2025 02:27:35 - INFO - __main__ - Base models loaded.
+05/07/2025 02:27:38 - INFO - root - Skipping import of cpp extensions
+05/07/2025 02:27:39 - INFO - root - lm_eval is not installed, GPTQ may not be usable
+05/07/2025 02:27:41 - INFO - __main__ - loaded model weights
+05/07/2025 02:27:41 - INFO - __main__ - converted model weights to torch.bfloat16
+trainable params: 0 || all params: 1,154,766,336 || trainable%: 0.0000
+05/07/2025 02:27:41 - INFO - __main__ - model size 2.15GB
+05/07/2025 02:27:42 - INFO - data_utils - found 400 files
+05/07/2025 02:27:42 - INFO - data_utils - filtered to 80 files from task_info_part5.csv
+05/07/2025 02:27:42 - INFO - data_utils - found 279 tasks
+05/07/2025 02:27:42 - INFO - data_utils - task num io range from 2 to 7
+05/07/2025 02:27:43 - INFO - data_utils - augmented data from 279 to 275
+05/07/2025 02:27:43 - INFO - data_utils - d2acf2cb-0: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - d2acf2cb-1: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - d2acf2cb-2: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - d304284e-0: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - d304284e-1: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - d37a1ef5-0: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - d37a1ef5-1: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - d37a1ef5-2: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - d47aa2ff-0: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - d47aa2ff-1: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - d47aa2ff-2: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - d492a647-0: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - d492a647-1: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - d4b1c2b1-0: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - d4b1c2b1-1: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - d4b1c2b1-2: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - d4b1c2b1-3: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - d4b1c2b1-4: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - d4b1c2b1-5: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - d4b1c2b1-6: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - d4c90558-0: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - d4c90558-1: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - d4c90558-2: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - d56f2372-0: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - d56f2372-1: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - d56f2372-2: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - d5c634a2-0: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - d5c634a2-1: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - d5c634a2-2: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - d5c634a2-3: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - d5c634a2-4: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - d5c634a2-5: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - d5c634a2-6: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - d931c21c-0: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - d931c21c-1: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - d931c21c-2: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - d931c21c-3: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - d94c3b52-0: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - d94c3b52-1: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - d94c3b52-2: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - da2b0fe3-0: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - da2b0fe3-1: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - da2b0fe3-2: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - da515329-0: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - da515329-1: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - da515329-2: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - dc2aa30b-0: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - dc2aa30b-1: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - dc2aa30b-2: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - dc2e9a9d-0: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - dc2e9a9d-1: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - dc2e9a9d-2: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - dd2401ed-0: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - dd2401ed-1: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - dd2401ed-2: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - dd2401ed-3: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - de493100-0: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - de493100-1: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - de493100-2: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - de493100-3: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - df8cc377-0: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - df8cc377-1: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - df8cc377-2: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - e0fb7511-0: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - e0fb7511-1: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - e0fb7511-2: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - e133d23d-0: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - e133d23d-1: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - e133d23d-2: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - e133d23d-3: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - e133d23d-4: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - e1baa8a4-0: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - e1baa8a4-1: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - e1baa8a4-2: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - e1baa8a4-3: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - e1d2900e-0: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - e1d2900e-1: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - e1d2900e-2: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - e2092e0c-0: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - e2092e0c-1: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - e2092e0c-2: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - e21a174a-0: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - e21a174a-1: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - e21a174a-2: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - e345f17b-0: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - e345f17b-1: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - e345f17b-2: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - e345f17b-3: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - e4075551-0: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - e4075551-1: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - e4075551-2: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - e41c6fd3-0: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - e41c6fd3-1: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - e41c6fd3-2: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - e57337a4-0: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - e57337a4-1: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - e57337a4-2: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - e5790162-0: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - e5790162-1: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - e5790162-2: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - e5790162-3: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - e5790162-4: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - e5c44e8f-0: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - e5c44e8f-1: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - e5c44e8f-2: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - e619ca6e-0: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - e619ca6e-1: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - e619ca6e-2: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - e633a9e5-0: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - e633a9e5-1: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - e633a9e5-2: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - e66aafb8-0: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - e66aafb8-1: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - e66aafb8-2: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - e66aafb8-3: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - e66aafb8-4: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - e681b708-0: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - e681b708-1: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - e681b708-2: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - e69241bd-0: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - e69241bd-1: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - e69241bd-2: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - e6de6e8f-0: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - e6de6e8f-1: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - e6de6e8f-2: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - e6de6e8f-3: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - e74e1818-0: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - e74e1818-1: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - e74e1818-2: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - e760a62e-0: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - e760a62e-1: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - e760a62e-2: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - e7639916-0: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - e7639916-1: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - e7639916-2: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - e78887d1-0: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - e78887d1-1: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - e78887d1-2: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - e78887d1-3: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - e7a25a18-0: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - e7a25a18-1: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - e7b06bea-0: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - e7b06bea-1: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - e7b06bea-2: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - e7b06bea-3: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - e7b06bea-4: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - e7dd8335-0: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - e7dd8335-1: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - e7dd8335-2: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - e872b94a-0: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - e872b94a-1: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - e872b94a-2: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - e872b94a-3: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - e88171ec-0: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - e88171ec-1: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - e88171ec-2: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - e95e3d8e-0: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - e95e3d8e-1: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - e95e3d8e-2: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - e99362f0-0: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - e99362f0-1: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - e99362f0-2: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - e99362f0-3: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - e99362f0-4: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - e99362f0-5: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - e9ac8c9e-0: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - e9ac8c9e-1: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - e9ac8c9e-2: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - e9b4f6fc-0: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - e9b4f6fc-1: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - e9b4f6fc-2: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - e9b4f6fc-3: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - e9bb6954-0: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - e9bb6954-1: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - e9bb6954-2: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - e9bb6954-3: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - e9c9d9a1-0: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - e9c9d9a1-1: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - e9c9d9a1-2: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - ea959feb-0: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - ea959feb-1: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - ea959feb-2: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - ea9794b1-0: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - ea9794b1-1: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - ea9794b1-2: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - ea9794b1-3: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - ea9794b1-4: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - ea9794b1-5: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - ecaa0ec1-0: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - ecaa0ec1-1: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - ecaa0ec1-2: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - ecaa0ec1-3: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - ed74f2f2-0: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - ed74f2f2-1: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - ed74f2f2-2: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - ed74f2f2-3: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - ed74f2f2-4: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - ed74f2f2-5: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - ed98d772-0: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - ed98d772-1: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - ed98d772-2: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - ed98d772-3: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - ed98d772-4: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - ef26cbf6-0: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - ef26cbf6-1: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - f0afb749-0: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - f0afb749-1: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - f0afb749-2: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - f0df5ff0-0: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - f0df5ff0-1: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - f0df5ff0-2: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - f21745ec-0: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - f21745ec-1: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - f21745ec-2: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - f3b10344-0: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - f3b10344-1: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - f3b10344-2: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - f3cdc58f-0: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - f3cdc58f-1: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - f3cdc58f-2: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - f3e62deb-0: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - f3e62deb-1: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - f3e62deb-2: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - f3e62deb-3: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - f3e62deb-4: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - f3e62deb-5: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - f4081712-0: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - f4081712-1: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - f4081712-2: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - f4081712-3: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - f4081712-4: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - f45f5ca7-0: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - f45f5ca7-1: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - f45f5ca7-2: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - f5aa3634-0: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - f5aa3634-1: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - f5aa3634-2: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - f5c89df1-0: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - f5c89df1-1: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - f5c89df1-2: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - f823c43c-0: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - f823c43c-1: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - f83cb3f6-0: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - f83cb3f6-1: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - f83cb3f6-2: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - f8be4b64-0: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - f8be4b64-1: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - f8be4b64-2: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - f8be4b64-3: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - f9a67cb5-0: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - f9a67cb5-1: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - f9a67cb5-2: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - fafd9572-0: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - fafd9572-1: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - fb791726-0: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - fb791726-1: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - fb791726-2: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - fc754716-0: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - fc754716-1: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - fc754716-2: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - fc754716-3: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - fd096ab6-0: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - fd096ab6-1: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - fd4b2b02-0: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - fd4b2b02-1: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - fd4b2b02-2: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - fe9372f3-0: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - fe9372f3-1: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - fea12743-0: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - fea12743-1: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - fea12743-2: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - ff72ca3e-0: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - ff72ca3e-1: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - ff72ca3e-2: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - ff72ca3e-3: Number of Queries: 1
+05/07/2025 02:27:43 - INFO - data_utils - encoder npairs range from 2 to 7
+05/07/2025 02:27:43 - INFO - data_utils - encoder sequence length range from 196 to 7158]
+Task: 100%|█████████████████████████████████████████████████████████████████████████████████████| 275/275 [14:55<00:00,  3.25s/it]
+05/07/2025 02:42:39 - INFO - __main__ - Evaluation results:
+{   'eval/competition_all_acc': 0.0875,
+    'eval/competition_sub_acc': 0.2724014336917563,
+    'eval/correct_grid_dim': 0.9163636363636364,
+    'eval/exact_acc': 0.27636363636363637,
+    'eval/gs_num_data': 0.0,
+    'eval/gs_num_params': 0.0,
+    'eval/gs_time': 0.0,
+    'eval/init_kv_time': 0.01370363322171298,
+    'eval/relaxed_token_acc': 0.8547580228472684,
+    'eval/token_acc': 0.8001098015522723,
+    'eval/ttt_num_data': 0.0,
+    'eval/ttt_num_params': 0.0,
+    'eval/ttt_time': 0.0,
+    'eval/valid_grid': 0.9745454545454545}
+05/07/2025 02:42:39 - INFO - __main__ - Saved eval train pred gt to ./encoder_decoder/outputs_eval/eval_arc_evalondemon_part5_0317_noprogram_base/eval_pred_gt.json
+05/07/2025 02:42:39 - INFO - __main__ - Saved vote to ./encoder_decoder/outputs_eval/eval_arc_evalondemon_part5_0317_noprogram_base/eval_vote.json
+05/07/2025 02:42:39 - INFO - __main__ - All done evaluating.
+(/scratch/yl11330/marc/penv) Singularity>
+(/scratch/yl11330/marc/penv) Singularity> # this will take LONG and should really double check if correct (check the slurm outputs)
+(/scratch/yl11330/marc/penv) Singularity> # normal 80 task takes 9min => 400 tasks and avg <4 demon per task => 180mins, 4hr should be fine
+(/scratch/yl11330/marc/penv) Singularity>
+(/scratch/yl11330/marc/penv) Singularity>
+(/scratch/yl11330/marc/penv) Singularity> exit
+exit
+[yl11330@ga003 marc]$ exit
+exit
+[yl11330@log-3 marc]$

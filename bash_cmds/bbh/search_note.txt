@@ -1,0 +1,92 @@
+EVERYTHING IS A SLIGHT OVERESTIMATE
+based on past runs, each iter adds 0.275min, and everything else takes 13.5 min
+decision to search up to 25 is due to efficiency, less time than ttt
+=> iters 8 + 12 + 16 + 20 => 69.4 for one search over iters
+=> can fit 3 in one 4hr run
+
+calculation for randomsearch
+- iter 25 + 50 + 75 + 100 = 250 => 122.75min
+- set generously 3hrs for an iter search
+
+calculation for ttt
+- cannot calculate because ran on h100, but 3 a100 hours is more than enough
+- under 16 bits default lora config and 57 tasks each with 301M => 8GB saved ttt ckpts
+
+
+
+
+# zeroshot: just put 40
+# normalicl: just put 50
+
+# randomhiddenntoken: randomhidden search
+iter: 25, 50, 75, 100
+lr: 1e-3
+=> note 1e-2 is bad
+=> iter50 is best
+
+# randomsearchntoken: randomkv search
+iter: 25, 50, 75, 100
+lr: 1e-3
+=> note 1e-2 is bad
+=> iter50 is best
+=> 52.742058982255
+
+# randomsearchfull: randomkv search with full context
+iter: 25, 50, 75, 100
+lr: 1e-3
+=> iter25 is best
+=> 52.841612111265
+
+# tttnopermute:
+iter: 4, 8, 12, 16, 20
+lr: 1e-4
+=> waiting locally
+
+# tttsave: save 3 repeated runs of ttt ckpts on seeds 42-46
+iter: 8
+lr: 1e-4
+=> got about 0.5 worse than 57.8
+=> we'll use 57.8 anyway, but need to save ckpts
+
+# prefixsearch
+iter: 8, 12, 16, 20 (might need to search higher iter for prefix)
+lr: 1e-1, 5e-2, 3e-2 (1e0, 3e-1 are way way too high, 1e-2 is too low)
+tokendropout: 0, 0.05, 0.1
+=> waiting 5e-2
+
+# nokey
+iter: 8, 12, 16, 20
+lr: 1e-3, 2e-3, 3e-3
+tokendropout: 0.05, 0.1
+=> 3e-3 is too big, try 2e-3?
+=> waiting local 2e-3
+=> TODO: maybe try tokendrop 0.2
+
+# gridsearch: search kv-opt seed42-45
+iter: 8, 12, 16, 20 (up to 25iter for a time under ttt 8iter)
+lr: 3e-3, 2e-3, 1e-3, 3e-4
+dropout: train
+tokendropout: 0, 0.05, 0.1, 0.2
+=> 3e-4 is too low, 1e-3 and 3e-3 are both alright, 1e-3 being best
+=> waiting local 2e-3 => done, need analyze
+=> so far hyperparams: drop0.1, iter4, 8, '12', 16, 20
+
+# tttiter8kvsearch (REQUIRE 48GB RAM!)
+iter: 4, 8, 12, 16 (loading ttt takes time, so only fit 2 to be extra safe), but try to search finer
+lr: 1e-3, 1e-4
+dropout: train
+tokendropout: 0, 0.05, 0.1
+=> waiting 3e-4
+=> maybe more fine iteration search?
+
+# evalondemon: 84.131469979296
+
+# fisher:
+=> key: 1.8925089830645E-6
+=> val: 0.00039923571965452
+
+
+
+
+
+========== deprecated ==========

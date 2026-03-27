@@ -1,0 +1,7 @@
+python make_sbatch.py --ngpu 1 --time 12 --single --bash_files bash_cmds/arc/2_randomhiddenntoken/lr1e-3_part1.sh
+python make_sbatch.py --ngpu 1 --time 12 --single --bash_files bash_cmds/arc/2_randomhiddenntoken/lr1e-3_part2.sh
+python make_sbatch.py --ngpu 1 --time 12 --single --bash_files bash_cmds/arc/2_randomhiddenntoken/lr1e-3_part3.sh
+python make_sbatch.py --ngpu 1 --time 12 --single --bash_files bash_cmds/arc/2_randomhiddenntoken/lr1e-3_part4.sh
+python make_sbatch.py --ngpu 1 --time 12 --single --bash_files bash_cmds/arc/2_randomhiddenntoken/lr1e-3_part5.sh
+
+# didnt run, prefix tuning does tune the kv

@@ -1,0 +1,73 @@
+# zhenbang
+python make_sbatch.py --ngpu 1 --time 4 --single --bash_files bash_cmds/arc/13_lora/part1/c3a_lr1e-1.sh
+python make_sbatch.py --ngpu 1 --time 4 --single --bash_files bash_cmds/arc/13_lora/part1/c3a_lr1e-2.sh
+python make_sbatch.py --ngpu 1 --time 4 --single --bash_files bash_cmds/arc/13_lora/part1/c3a_lr1e-3.sh
+python make_sbatch.py --ngpu 1 --time 4 --single --bash_files bash_cmds/arc/13_lora/part1/dora_alpha32.sh
+python make_sbatch.py --ngpu 1 --time 4 --single --bash_files bash_cmds/arc/13_lora/part1/dora_alpha64.sh
+python make_sbatch.py --ngpu 1 --time 4 --single --bash_files bash_cmds/arc/13_lora/part1/dora_alpha128.sh
+python make_sbatch.py --ngpu 1 --time 4 --single --bash_files bash_cmds/arc/13_lora/part1/ft_lr1e-4.sh
+python make_sbatch.py --ngpu 1 --time 4 --single --bash_files bash_cmds/arc/13_lora/part1/ft_lr1e-5.sh
+python make_sbatch.py --ngpu 1 --time 4 --single --bash_files bash_cmds/arc/13_lora/part1/ft_lr5e-5.sh
+python make_sbatch.py --ngpu 1 --time 4 --single --bash_files bash_cmds/arc/13_lora/part1/lntuning_lr1e-2.sh
+python make_sbatch.py --ngpu 1 --time 4 --single --bash_files bash_cmds/arc/13_lora/part1/lntuning_lr1e-3.sh
+python make_sbatch.py --ngpu 1 --time 4 --single --bash_files bash_cmds/arc/13_lora/part1/lntuning_lr1e-4.sh
+python make_sbatch.py --ngpu 1 --time 4 --single --bash_files bash_cmds/arc/13_lora/part1/lora_alpha32.sh
+python make_sbatch.py --ngpu 1 --time 4 --single --bash_files bash_cmds/arc/13_lora/part1/lora_alpha64.sh
+python make_sbatch.py --ngpu 1 --time 4 --single --bash_files bash_cmds/arc/13_lora/part1/lora_alpha128.sh
+python make_sbatch.py --ngpu 1 --time 4 --single --bash_files bash_cmds/arc/13_lora/part1/randlora_rank4.sh
+python make_sbatch.py --ngpu 1 --time 4 --single --bash_files bash_cmds/arc/13_lora/part1/randlora_rank8.sh
+python make_sbatch.py --ngpu 1 --time 4 --single --bash_files bash_cmds/arc/13_lora/part1/randlora_rank16.sh
+python make_sbatch.py --ngpu 1 --time 4 --single --bash_files bash_cmds/arc/13_lora/part1/randlora_rank32.sh
+python make_sbatch.py --ngpu 1 --time 4 --single --bash_files bash_cmds/arc/13_lora/part1/randlora_rank64.sh
+python make_sbatch.py --ngpu 1 --time 4 --single --bash_files bash_cmds/arc/13_lora/part1/randlora_rank128.sh
+python make_sbatch.py --ngpu 1 --time 4 --single --bash_files bash_cmds/arc/13_lora/part1/rslora_alpha32.sh
+python make_sbatch.py --ngpu 1 --time 4 --single --bash_files bash_cmds/arc/13_lora/part1/rslora_alpha64.sh
+python make_sbatch.py --ngpu 1 --time 4 --single --bash_files bash_cmds/arc/13_lora/part1/rslora_alpha128.sh
+/scratch/yl11330/marc/sbatch_files/bash_cmds_arc_13_lora_part1_c3a_lr1e-1.sh_0.sbatch
+Submitted batch job 65541659
+/scratch/yl11330/marc/sbatch_files/bash_cmds_arc_13_lora_part1_c3a_lr1e-2.sh_0.sbatch
+Submitted batch job 65541660
+/scratch/yl11330/marc/sbatch_files/bash_cmds_arc_13_lora_part1_c3a_lr1e-3.sh_0.sbatch
+Submitted batch job 65541661
+/scratch/yl11330/marc/sbatch_files/bash_cmds_arc_13_lora_part1_dora_alpha32.sh_0.sbatch
+Submitted batch job 65541662
+/scratch/yl11330/marc/sbatch_files/bash_cmds_arc_13_lora_part1_dora_alpha64.sh_0.sbatch
+Submitted batch job 65541663
+/scratch/yl11330/marc/sbatch_files/bash_cmds_arc_13_lora_part1_dora_alpha128.sh_0.sbatch
+Submitted batch job 65541664
+/scratch/yl11330/marc/sbatch_files/bash_cmds_arc_13_lora_part1_ft_lr1e-4.sh_0.sbatch
+Submitted batch job 65541665
+/scratch/yl11330/marc/sbatch_files/bash_cmds_arc_13_lora_part1_ft_lr1e-5.sh_0.sbatch
+Submitted batch job 65541666
+/scratch/yl11330/marc/sbatch_files/bash_cmds_arc_13_lora_part1_ft_lr5e-5.sh_0.sbatch
+Submitted batch job 65541667
+/scratch/yl11330/marc/sbatch_files/bash_cmds_arc_13_lora_part1_lntuning_lr1e-2.sh_0.sbatch
+Submitted batch job 65541668
+/scratch/yl11330/marc/sbatch_files/bash_cmds_arc_13_lora_part1_lntuning_lr1e-3.sh_0.sbatch
+Submitted batch job 65541669
+/scratch/yl11330/marc/sbatch_files/bash_cmds_arc_13_lora_part1_lntuning_lr1e-4.sh_0.sbatch
+Submitted batch job 65541670
+/scratch/yl11330/marc/sbatch_files/bash_cmds_arc_13_lora_part1_lora_alpha32.sh_0.sbatch
+Submitted batch job 65541671
+/scratch/yl11330/marc/sbatch_files/bash_cmds_arc_13_lora_part1_lora_alpha64.sh_0.sbatch
+Submitted batch job 65541672
+/scratch/yl11330/marc/sbatch_files/bash_cmds_arc_13_lora_part1_lora_alpha128.sh_0.sbatch
+Submitted batch job 65541673
+/scratch/yl11330/marc/sbatch_files/bash_cmds_arc_13_lora_part1_randlora_rank4.sh_0.sbatch
+Submitted batch job 65541678
+/scratch/yl11330/marc/sbatch_files/bash_cmds_arc_13_lora_part1_randlora_rank8.sh_0.sbatch
+Submitted batch job 65541679
+/scratch/yl11330/marc/sbatch_files/bash_cmds_arc_13_lora_part1_randlora_rank16.sh_0.sbatch
+Submitted batch job 65541680
+/scratch/yl11330/marc/sbatch_files/bash_cmds_arc_13_lora_part1_randlora_rank32.sh_0.sbatch
+Submitted batch job 65541681
+/scratch/yl11330/marc/sbatch_files/bash_cmds_arc_13_lora_part1_randlora_rank64.sh_0.sbatch
+Submitted batch job 65541682
+/scratch/yl11330/marc/sbatch_files/bash_cmds_arc_13_lora_part1_randlora_rank128.sh_0.sbatch
+Submitted batch job 65541684
+/scratch/yl11330/marc/sbatch_files/bash_cmds_arc_13_lora_part1_rslora_alpha32.sh_0.sbatch
+Submitted batch job 65541685
+/scratch/yl11330/marc/sbatch_files/bash_cmds_arc_13_lora_part1_rslora_alpha64.sh_0.sbatch
+Submitted batch job 65541686
+/scratch/yl11330/marc/sbatch_files/bash_cmds_arc_13_lora_part1_rslora_alpha128.sh_0.sbatch
+Submitted batch job 65541687

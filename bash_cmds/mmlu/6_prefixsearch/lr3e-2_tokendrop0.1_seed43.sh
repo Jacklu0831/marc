@@ -1,0 +1,55 @@
+# mmlu gs5 lr3e-2 tokendrop0.1 seed43 ntoken32
+accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_mmlu/test_time_evaluate.py \
+    --tag mmlu_gs5_lr3e-2_tokendrop0.1_seed43_ntoken32 \
+    --gs_epochs 5 \
+    --gs_lr 3e-2 \
+    --gs_token_dropout 0.1 \
+    --gs_ntokens 32 \
+    --gs_batch_size 4 \
+    --seed 43
+
+# mmlu gs10 lr3e-2 tokendrop0.1 seed43 ntoken32
+accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_mmlu/test_time_evaluate.py \
+    --tag mmlu_gs10_lr3e-2_tokendrop0.1_seed43_ntoken32 \
+    --gs_epochs 10 \
+    --gs_lr 3e-2 \
+    --gs_token_dropout 0.1 \
+    --gs_ntokens 32 \
+    --gs_batch_size 4 \
+    --seed 43
+
+# mmlu gs15 lr3e-2 tokendrop0.1 seed43 ntoken32
+accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_mmlu/test_time_evaluate.py \
+    --tag mmlu_gs15_lr3e-2_tokendrop0.1_seed43_ntoken32 \
+    --gs_epochs 15 \
+    --gs_lr 3e-2 \
+    --gs_token_dropout 0.1 \
+    --gs_ntokens 32 \
+    --gs_batch_size 4 \
+    --seed 43
+
+# mmlu gs20 lr3e-2 tokendrop0.1 seed43 ntoken32
+accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_mmlu/test_time_evaluate.py \
+    --tag mmlu_gs20_lr3e-2_tokendrop0.1_seed43_ntoken32 \
+    --gs_epochs 20 \
+    --gs_lr 3e-2 \
+    --gs_token_dropout 0.1 \
+    --gs_ntokens 32 \
+    --gs_batch_size 4 \
+    --seed 43
+
+# mmlu gs25 lr3e-2 tokendrop0.1 seed43 ntoken32
+accelerate launch --main_process_port $MASTER_PORT --mixed_precision bf16 inference_mmlu/test_time_evaluate.py \
+    --tag mmlu_gs25_lr3e-2_tokendrop0.1_seed43_ntoken32 \
+    --gs_epochs 25 \
+    --gs_lr 3e-2 \
+    --gs_token_dropout 0.1 \
+    --gs_ntokens 32 \
+    --gs_batch_size 4 \
+    --seed 43
+
+# 41.8955156974372
+# 41.51706924188989
+# 42.297625993834245
+# 42.19954329267522
+# 41.65697537579815
