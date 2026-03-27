@@ -1,0 +1,153 @@
+# Reviewer 1
+
+Summary:
+This paper introduces Context Tuning, a method designed to improve few-shot adaptation in LLMs by optimizing lightweight representations of the context rather than model weights. They also propose In-Context Optimization (ICO) framework and two variants: CT-Prompt and CT-KV, which utilize demonstration-derived tokens and key-value cache optimization to capture task-specific information more effectively. To ensure robust learning, they use Leave-One-Out Masking and Token Dropout.
+
+Through extensive experiments, Context Tuning consistently outperforms standard tuning methods and achieves competitive performance with Test-Time Training while maintaining significantly higher efficiency.
+
+Strengths And Weaknesses:
+Soundness: technically sound and well-motivated.
+
+Presentation: clearly organized.
+
+Significance: The framework this paper propose is a highly practical and efficient solution for inference-time adaptation, especially when modifying model parameters is not feasible.
+
+Originality (Weakness): The work is largely incremental, as it primarily unifies and refines established techniques like prefix tuning and test-time optimization.
+
+Soundness: 3: good
+Presentation: 3: good
+Significance: 3: good
+Originality: 2: fair
+Key Questions For Authors:
+Generalization across tasks: The method optimizes context for each task individually. Have the authors explored whether optimized contexts can generalize across related tasks or datasets?
+How sensitive are the two variants to noisy or mislabeled demonstration pairs? Since the context is directly optimized from demonstrations, it would be interesting to understand robustness in such settings.
+Limitations:
+Yes.
+
+Overall Recommendation: 4: Weak accept: Technically solid paper that advances at least one sub-area of AI, with a contribution that others are likely to build on, but with some weaknesses that limit its impact (e.g., limited evaluation). Please use sparingly.
+Confidence: 3: You are fairly confident in your assessment. It is possible that you did not understand some parts of the submission or that you are unfamiliar with some pieces of related work. Math/other details were not carefully checked.
+Compliance With LLM Reviewing Policy: Affirmed.
+Code Of Conduct Acknowledgement: Affirmed.
+
+# Reviewer 2
+
+Summary:
+This paper proposes Context Tuning (CT), a novel few-shot adaptation method operating within a broader ``In-Context Optimization'' (ICO) framework. Unlike traditional prompt-based adaptation methods that optimize randomly initialized vectors, Context Tuning initializes trainable vectors from the few-shot examples of a novel task. The paper introduces two variants: CT-Prompt and CT-KV.
+
+CT-KV is a notable component: it initializes a key-value prefix from the model's layer-wise activations on the demonstration pairs. To prevent the model from trivially retrieving answers, the authors introduce ``Leave-One-Out Masking'' and regularize the process with ``Token Dropout''. Extensive evaluations demonstrate that CT-KV consistently outperforms In-Context Learning (ICL) and standard Prefix Tuning. Crucially, while achieving competitive accuracy to Test-Time Training (TTT) , CT-KV achieves linear training time complexity with respect to the number of demonstration pairs , effectively breaking the quadratic cost bottleneck associated with TTT.
+
+Strengths And Weaknesses:
+Strengths:
+
+The reduction in training time complexity from
+ to
+ is a substantial practical contribution. Achieving test-time optimization performance comparable to TTT but with a fraction of the computational overhead provides clear practical value for resource-constrained environments or high-throughput serving scenarios.
+The paper is well-structured and clear. Figure 1 summarizes the performance-efficiency tradeoff , and Figure 2 illustrates the CT-KV architecture and the masking mechanism. The theoretical derivation of time complexity in Appendix B is rigorous and supports the empirical efficiency claims.
+The experimental design is comprehensive, evaluating models ranging from 1B to 32B parameters across multiple distinct benchmarks (NLP-LR, MMLU, BBH, ARC). The ablation studies in Section 5.7 isolate and support the importance of Leave-One-Out Masking and Token Dropout.
+While prefix tuning and test-time optimization are existing concepts, using the KV cache of actual demonstration pairs as the initialization , combined with leave-one-out masking to prevent information leakage, constitutes a meaningful and novel synthesis of ideas.
+Weaknesses:
+
+Base Model Selection for ARC: For the ARC benchmark, the authors used a Llama3.2-1B model that was explicitly fine-tuned on the ARC training split. Although this choice is justified by the base model's inability to solve ARC tasks zero-shot, the pre-tuning blurs the line between inference-time optimization and task-specific fine-tuning. This setup weakens the evidence for CT-KV's zero-shot generalization on fully unseen task formats.
+Hyperparameter Sensitivity in Extreme Few-Shot Settings: The authors note that for ARC tasks (which average fewer than 4 demonstration pairs), Leave-One-Out Masking actually reduces prompt effectiveness, and thus it was disabled. Because many real-world few-shot scenarios fall into this
+ regime, the sensitivity of the method's core mechanism to sample size indicates limited robustness or automated adaptability in extreme low-resource settings.
+Soundness: 3: good
+Presentation: 4: excellent
+Significance: 4: excellent
+Originality: 3: good
+Key Questions For Authors:
+Base Model Generalization: In the ARC experiments, Llama3.2-1B was fine-tuned on the ARC training set. How does CT-KV perform on ARC (or similar symbolic reasoning tasks) when applied to a larger, off-the-shelf open-source model that possesses stronger native spatial reasoning capabilities but has \textit{not} undergone any task-specific fine-tuning?
+Adaptive Masking: The paper notes that Leave-One-Out Masking harms performance when
+. In black-box deployment scenarios where users cannot manually tune hyperparameters per task, would the authors recommend implementing a dynamic threshold (e.g., automatically disabling the mask when
+ is below a certain value) to ensure robustness?
+Serving Scalability: While CT-KV training is linear and efficient, inference requires conditioning on the optimized prefix
+. Does storing and swapping these unique, optimized KV prefixes for thousands of distinct user tasks introduce significant memory bandwidth overheads or latency during inference scaling compared to standard ICL (which only requires text tokens)?
+Limitations:
+yes
+
+Overall Recommendation: 4: Weak accept: Technically solid paper that advances at least one sub-area of AI, with a contribution that others are likely to build on, but with some weaknesses that limit its impact (e.g., limited evaluation). Please use sparingly.
+Confidence: 4: You are confident in your assessment, but not absolutely certain. It is unlikely, but not impossible, that you did not understand some parts of the submission or that you are unfamiliar with some pieces of related work.
+Compliance With LLM Reviewing Policy: Affirmed.
+Code Of Conduct Acknowledgement: Affirmed.
+
+# Reviewer 3
+
+Summary:
+This paper studies few-shot adaptation for large language models and proposes Context Tuning, a method that optimizes representations derived from demonstration contexts while keeping the model parameters fixed. The approach is framed under a broader In-Context Optimization (ICO) paradigm and introduces two variants: CT-Prompt, which performs prompt tuning on a soft prompt initialized from demonstrations, and CT-KV, which applies prefix tuning to optimize the key-value cache derived from demonstration pairs. The goal is to improve few-shot generalization without updating model weights. Experiments on multiple reasoning benchmarks show improvements over standard prompt-based methods and competitive performance compared to test-time training approaches, while maintaining better efficiency in some settings.
+
+Strengths And Weaknesses:
+Strengths
+
+（1）The paper identifies limitations of standard in-context learning, particularly the inability of pure forward-pass conditioning to fully utilize information from demonstrations.
+
+（2）The proposed method is easy to implement and integrates naturally with existing prompt/prefix tuning frameworks while avoiding modification of model weights.
+
+（3）The CT-KV variant reduces computational complexity compared with several inference-time adaptation approaches, making it more scalable when the number of demonstrations increases.
+
+（4）Experiments show consistent improvements over standard prompt/prefix tuning baselines on several reasoning tasks.
+
+Weaknesses
+
+（1）The method largely builds on existing prompt tuning and prefix tuning techniques. The main contribution lies in applying these methods to representations derived from demonstration contexts rather than introducing fundamentally new optimization mechanisms.
+
+（2）While the paper introduces the notion of “In-Context Optimization,” the conceptual boundaries between ICO, context tuning, and existing test-time training methods are not always clearly articulated.
+
+（3）The experiments focus mainly on reasoning-style benchmarks. It remains unclear how well the method generalizes to broader task categories or more realistic deployment scenarios.
+
+（4）The method relies on demonstration contexts, yet the paper does not thoroughly analyze sensitivity to demonstration quality, ordering, or selection.
+
+Soundness: 2: fair
+Presentation: 3: good
+Significance: 2: fair
+Originality: 3: good
+Key Questions For Authors:
+（1）How does the proposed ICO framework fundamentally differ from existing test-time training or inference-time optimization methods?
+
+（2）How sensitive is Context Tuning to the quality and ordering of the demonstration examples used for initialization?
+
+（3）Have the authors evaluated the approach on larger LLMs or more complex tasks beyond the current benchmarks?
+
+（4）What is the practical latency or computational overhead introduced by optimizing context representations during inference?
+
+（5）Does Context Tuning improve performance on tasks that are significantly different from the demonstration distribution?
+
+Limitations:
+The proposed method is evaluated primarily on a limited set of reasoning benchmarks and relatively small models, leaving open questions regarding scalability and applicability to broader LLM settings. Additionally, the reliance on demonstration contexts raises concerns about robustness to example quality and selection, which are not thoroughly analyzed in the paper.
+
+Overall Recommendation: 3: Weak reject: A paper with clear merits, but also some weaknesses, which overall outweigh the merits. Papers in this category require revisions before they can be meaningfully built upon by others. Please use sparingly.
+Confidence: 3: You are fairly confident in your assessment. It is possible that you did not understand some parts of the submission or that you are unfamiliar with some pieces of related work. Math/other details were not carefully checked.
+Compliance With LLM Reviewing Policy: Affirmed.
+Code Of Conduct Acknowledgement: Affirmed.
+
+# Reviewer 4
+
+Summary:
+This work introduces Context Tuning, which initializes trainable context representations of language models using task-specific demonstration examples, and then frames this approach within a broader In-Context Optimization framework, which could include Test-Time Training (TTT) that optimizes the model itself and Context Tuning that optimizes the model context. Specifically, the authors introduce two variants for it: (1) CT-Prompt, which tunes soft prompt embeddings derived from demonstrations; (2) CT-KV, which optimizes the key-value cache derived from demonstration activations. The authors perform extensive experiments on In-Context Learning (ICL) benchmarks, and show that it outperforms existing prompt-based methods and achieves performance comparable to TTT with lower computational cost.
+
+Strengths And Weaknesses:
+Strengths
+This paper introduces the In-Context Optimization framework, which provides a clear conceptual perspective on how context and model updates can complement each other within a unified framework.
+The proposed approach is simple yet has clear performance gains over existing baselines (except for TTT) with multiple models and benchmarks.
+The experiments demonstrate the robustness to noisy demonstrations and a varying number of examples, which is useful especially in real-world applications.
+This paper is well-written and easy-to-follow.
+Weaknesses
+Although the proposed methods outperform prompt-based baselines such as Prompt Tuning and Prefix Tuning, their advantage becomes less compelling when compared to Test-Time Training (TTT). The improvements of CT-Prompt and CT-KV over TTT are very marginal, and CT-Prompt in particular does not appear to offer meaningful efficiency benefits.
+Compared to the existing methods, the proposed approach may optimize a relatively large number of context representations, and (while this aspect was acknowledged by the authors), this expanded parameterization may increase the risk of overfitting; in other words, the proposed method may have a lack of generalizability to examples in inference time, which are less similar to the demonstrations.
+While this is not a major point, multiple recent studies are exploring the many-shot in-context learning paradigm, and from the results in Figure 4 (varying the number of demonstrations), it would be interesting to see how the proposed approach would perform with larger numbers of demonstrations. Also, similarly, it is questionable whether the proposed approach is a reasonable choice at scale.
+[A] Many-Shot In-Context Learning, 2024
+
+[B] Revisiting In-Context Learning with Long Context Language Models, 2025
+
+Soundness: 3: good
+Presentation: 4: excellent
+Significance: 3: good
+Originality: 3: good
+Key Questions For Authors:
+Please see my comments in the Weaknesses part and address them.
+
+Limitations:
+The authors adequately discuss the limitaions and there are no clear negative societal impacts associated with their work.
+
+Overall Recommendation: 4: Weak accept: Technically solid paper that advances at least one sub-area of AI, with a contribution that others are likely to build on, but with some weaknesses that limit its impact (e.g., limited evaluation). Please use sparingly.
+Confidence: 3: You are fairly confident in your assessment. It is possible that you did not understand some parts of the submission or that you are unfamiliar with some pieces of related work. Math/other details were not carefully checked.
+Compliance With LLM Reviewing Policy: Affirmed.
+Code Of Conduct Acknowledgement: Affirmed.
