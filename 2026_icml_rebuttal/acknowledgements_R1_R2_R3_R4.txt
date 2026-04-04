@@ -1,0 +1,26 @@
+# Reviewer 1
+
+(Missing. The reviewer did not respond yet.)
+
+# Reviewer 2
+
+Acknowledgement: (b) Partially resolved - I have follow-up questions for the authors.
+Reasons:
+I still find some of the responses quite confusing.
+Regarding the first question, I would prefer to see results based on a much stronger model, given that this is a no task-specific fine-tuning setting.
+Additionally, concerning parameter sensitivity, my concern is not merely whether it outperforms the original baseline; rather, as a user, I do not have clear guidance on how to use it effectively in practice.
+As for serving scalability, I feel that a clear yes-or-no answer is still missing, along with a concrete quantitative comparison.
+However, this does not influence my final evaluation. I believe the work has some merits to be accepted.
+If this work can be validated on current large-scale LLMs, it would be very strong. However, even if it is only effective on smaller-scale LLMs, it still holds certain value.
+
+# Reviewer 3
+
+Acknowledgement: (b) Partially resolved - I have follow-up questions for the authors.
+Reasons:
+Thank the authors for their further response.
+
+# Reviewer 4
+
+Acknowledgement: (a) Fully resolved - My concerns have been adequately addressed. If you select this option, please consider adjusting your score accordingly.
+Reasons:
+I have reviewed the response from the authors, and it clearly addresses all my concerns. I would like to encourage the authors to include the supporting experiments and analyses for the expanded parameterization (which is not associated with the overfitting issue) and larger numbers of demonstrations, provided in the response, in their revision.

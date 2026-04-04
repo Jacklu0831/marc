@@ -1,0 +1,691 @@
+# Reviewer 1
+
+Summary:
+The paper proposes Context Tuning (CT), a lightweight, inference-time adaptation technique that directly optimizes the context fed to a frozen large language model instead of its parameters. Two realizations are introduced: CT-Prompt, which learns a soft prompt initialized with the actual few-shot demonstration tokens, and the more efficient CT-KV, which initializes and tunes layer-wise key-value prefixes derived from those demonstrations. Both variants incorporate Leave-One-Out masking to prevent label leakage and Token Dropout to improve generalization. Across four benchmarks, CT outperforms standard in-context learning, Prompt/Prefix Tuning, and matches or exceeds the TTT approach while using roughly half the training time. Further, CT-KV can stack on top of TTT for additional gains.
+
+Strengths And Weaknesses:
+Strengths:
+
+CT-KV replaces the quadratic cost of re-encoding soft prompts with a linear-time ke-value prefix update, cutting per-task training time by roughly 40-60% relative to CT-Prompt and about half relative to Test-Time Training (TTT) while matching or slightly exceeding their accuracy.
+
+Context Tuning can be stacked on top of model-centric methods like TTT for additional gains; its demonstration-initialized prefixes also reduce seed variance and avoid label leakage via Leave-One-Out masking and Token Dropout. These qualities make CT easy to plug into existing pipelines
+
+Weaknesses:
+
+CT-KV stores a full key-value prefix per layer per demonstration token. For long contexts or deeper models this could inflate GPU memory, yet the paper does not profile memory usage or compare it with alternatives like LoRA or compressed-cache methods.
+
+The paper fixes the number of demonstrations per benchmark without systematically varying k within any dataset. I strongly recommend the authors include an ablation over the number of few-shot examples—even on one or two representative tasks—to demonstrate how Context Tuning‘s performance and robustness depend on demonstration size.
+
+Quality: 3: good
+Clarity: 3: good
+Significance: 2: fair
+Originality: 3: good
+Questions:
+My main concern has already been listed in the weaknesses section, and I look forward to the authors’ response.yes
+
+Limitations:
+yes
+
+Rating: 3: Borderline reject: Technically solid paper where reasons to reject, e.g., limited evaluation, outweigh reasons to accept, e.g., good evaluation. Please use sparingly.
+Confidence: 4: You are confident in your assessment, but not absolutely certain. It is unlikely, but not impossible, that you did not understand some parts of the submission or that you are unfamiliar with some pieces of related work.
+Ethical Concerns: NO or VERY MINOR ethics concerns only
+Paper Formatting Concerns:
+I have no Paper Formatting Concerns
+
+Code Of Conduct Acknowledgement: Yes
+Responsible Reviewing Acknowledgement: Yes
+Final Justification:
+I suggest incorporating the discussion into paper to further enhance its quality. I will keep my current score.
+
+# Response to Reviewer 1
+
+Rebuttal:
+We thank the reviewer for their helpful feedback. We are encouraged that the reviewer views CT-KV as achieving a strong performance-efficiency tradeoff and as easy to integrate into existing pipelines. We thoroughly address the concerns below and will improve the paper accordingly.
+
+the paper does not profile memory usage or compare it with alternatives like LoRA or compressed-cache methods.
+
+We structure our response to this comment into 3 sections: (1) Profiling Memory Usage, (2) Comparing Context Tuning to LoRA and More, and (3) Comparing Context Tuning to Compressed-Cache Methods.
+
+(1) Profiling Memory Usage
+
+We understand the reviewer’s concern about CT-KV’s memory requirements. In practice, we were able to set CT-KV’s training batch size to be the same as vanilla Prefix Tuning for all of our experiments, detailed in Section E (Supplementary).
+
+We now comprehensively compare the training-time memory usage of all methods and benchmarks in the table below. Values indicate the peak GPU memory usage (MB) when training with batch size 1 for one epoch with no gradient accumulation or checkpointing. Results are averaged across all tasks of each benchmark. We omit Zero-Shot and ICL because they do not require training. Since TTT + CT-KV simply runs the two methods sequentially, its memory usage would be the maximum of TTT and CT-KV. All other experimental settings remain identical to those in Table 1.
+
+Method	NLP-LR	MMLU	BBH	ARC
+Prompt Tuning (m = 32)	3601	13051	31640	4486
+Prompt Tuning (m = #demo)	7319	18868	37493	6451
+Prefix Tuning (m = 32)	3588	13220	31549	4598
+Prefix Tuning (m = #demo)	5648	15570	33292	5340
+TTT	8883	18690	54752	7232
+CT-Prompt	7318	18911	37571	6629
+CT-KV	5648	15569	33292	5340
+Together with the accuracy results in Table 1, our memory profiling shows that CT-KV:
+
+uses less memory than TTT,
+outperforms Prefix Tuning (m = #demo) at the same memory usage,
+incurs less than 20% additional memory overhead compared to Prefix Tuning (m = 32) on MMLU, BBH, and ARC, while achieving significantly higher accuracy.
+(2) Comparing Context Tuning to LoRA and More
+
+Thank you for the suggestion. We did not include several adapter-based methods (e.g., LoRA) in our paper because their preliminary results were not good, but we agree that Context Tuning should be thoroughly compared to them. We now compare CT-KV against Fine-Tuning (full model) and a comprehensive set of PEFT methods, including LoRA, Rank-Stabilized LoRA [1], DoRA [2], RandLoRA [3], LayerNorm Tuning [4], and C3A [5], in the table below for NLP-LR and MMLU. We omit C3A for NLP-LR as C3A is designed for linear layers but GPT-2 uses 1D convolutions. We report average accuracy over 5 random seeds and show the number of trained parameters.
+
+Method	NLP-LR		MMLU
+Accuracy (%)	# Params (in thousands)	Accuracy (%)	# Params (in thousands)
+Fine-Tuning	42.3	774030	40.0	3212750
+LoRA	42.8	47186	40.1	89915
+Rank-Stabilized LoRA	41.7	47186	38.8	89915
+DoRA	42.9	47601	40.3	90661
+RandLoRA	42.6	2028	38.9	11010
+LayerNorm Tuning	42.7	187	38.6	175
+C3A	N/A	N/A	40.6	10666
+CT-KV	44.2	41634	43.7	40327
+The table shows that CT-KV achieves superior performance compared to Fine-Tuning and both the older and the more recent PEFT methods, further supporting our claim that CT-KV is a simple yet highly effective few-shot learning approach.
+
+Note that we represent each baseline using its best-performing hyperparameter setting from the searches below. We utilize HuggingFace implementations to avoid errors. All experiment settings remain identical to those in Table 1 for direct comparison with CT-KV. We set the number of training parameters for each PEFT method to match or exceed that of CT-KV whenever possible.
+
+Method	Hyperparameter Name	Hyperparameter Values
+Fine-Tuning	learning rate	1e-5, 5e-5, 1e-4
+LoRA	alpha	32, 64, 128
+Rank-Stabilized LoRA	alpha	32, 64, 128
+DoRA	alpha	32, 64, 128
+RandLoRA	rank	4, 8, 16, 32, 64, 128
+LayerNorm Tuning	learning rate	1e-4, 1e-3, 1e-2
+C3A	learning rate	1e-3, 1e-2, 1e-1
+(3) Comparing Context Tuning to Compressed-Cache Methods
+
+We surveyed compressed-cache methods and identified FastGen [6] and
+ Norm-Based Compression [7] as two relevant approaches that improve inference efficiency. In contrast, Context Tuning is developed to improve few-shot learning accuracy. Therefore, we did not directly compare Context Tuning to these methods in our paper. If you have other compressed-cache methods in mind, please let us know as we are eager to improve our paper with additional baselines.
+
+As future work, we are interested in further improving Context Tuning’s efficiency by compressing the KV-cache corresponding to the few-shot examples (
+ in Section 4) before training. While this deviates from your feedback, please let us know if you would like to see experiments on this!
+
+I strongly recommend the authors include an ablation over the number of few-shot examples
+
+Thank you for the suggestion. Ablating the number of few-shot examples (
+) is valuable for assessing the robustness of Context Tuning and investigating its scalability with additional samples. We compare CT-KV to ICL and Prefix Tuning on NLP-LR and MMLU, ablating over
+ for NLP-LR and
+ for MMLU. We do not increase
+ further to ensure that each task has sufficient remaining examples for evaluation. We also ensure consistent test sets across different values of
+. All other experimental settings remain identical to those in Table 1.
+
+NLP-LR Results:
+
+# few-shot examples (
+)	8	16	24	32
+ICL	37.8	37.1	35.6	36.1
+Prefix Tuning (m = 32)	40.5	41.7	42.0	44.0
+CT-KV	43.1	45.5	46.6	48.9
+MMLU Results:
+
+# few-shot examples (
+)	16	32	48	64
+ICL	43.3	43.4	43.8	44.0
+Prefix Tuning (m = 32)	42.4	43.0	44.1	44.2
+CT-KV	45.5	45.8	46.3	47.6
+Across both benchmarks, CT-KV consistently outperforms ICL and Prefix Tuning across all values of
+ and exhibits strong performance scaling as
+ increases. In particular, despite ICL’s limited scalability with
+ on NLP-LR due to GPT-2 being released before GPT-3’s investigation into ICL, CT-KV achieves greater relative performance gains with increasing
+ compared to both ICL and Prefix Tuning (m = 32). Additionally, we will include qualitative examples in the paper to illustrate CT-KV’s improved performance as
+ increases (omitted here for brevity).
+
+References
+
+[1] Kalajdzievski, D. (2023). A Rank Stabilization Scaling Factor for Fine-Tuning with LoRA.
+
+[2] Liu, S., Wang, C., Yin, H., Molchanov, P., Wang, F., Cheng, K., Chen, M. (2024). DoRA: Weight-Decomposed Low-Rank Adaptation.
+
+[3] Albert, P, Zhang, F., Saratchandran, H., Opazo, C., Hengel, A., Abbasnejad, E. (2025). RandLoRA: Full-rank parameter-efficient fine-tuning of large models.
+
+[4] Zhao, B, Tu, H, Wei, C, Mei, J, Xie, C (2023). Tuning LayerNorm in Attention: Towards Efficient Multi-Modal LLM Finetuning.
+
+[5] Chen, A., Cheng, J., Liu, Z., Gao, Z., Tsung, F., Li, Y., Li, J. (2024). Parameter-Efficient Fine-Tuning via Circular Convolution.
+
+[6] Ge, S., Zhang, Y., Liu, L., Zhang, M., Han, J., and Gao, J. (2023). Model Tells You What to Discard: Adaptive KV Cache Compression for LLMs.
+
+[7] Devoto, A., Zhao, Y., Scardapane, S., and Minervini, P (2024). A Simple and Effective L 2 Norm-Based Strategy for KV Cache Compression.
+
+# Reviewer 2
+
+Summary:
+This paper introduces Context Tuning, which optimizes the embeddings of the demonstration pairs to improve few-shot task performance. To enhance the training efficiency, the author proposes to optimize the KV-cache corresponding to the demonstration pairs directly to avoid extra computation of the key and value projection matrices. Moreover, two regularization techniques to improve the generalization ability of the optimized prompt are proposed. Experiments demonstrate the proposed Context Tuning outperforms In-Context Learning and prompt-based adaptation methods, while being on-par with Test-Time Training method.
+
+Strengths And Weaknesses:
+Strengths
+
+The idea of tuning the demonstration pairs in few-shot learning is simple and effective.
+The experiment conducted is comprehensive and insightful.
+The paper is well written and easy to follow.
+Weaknesses
+
+The analysis of why Context Tuning works is mostly based on empirical evidence and lacks theoretical validation.
+The evaluated model architecture has relatively small number of parameters. The effectiveness of the method remains unknown
+when applied to larger models.
+Computational overhead in terms of time and memory complexity is still high. The analysis of memory complexity is lacking.
+Quality: 3: good
+Clarity: 3: good
+Significance: 3: good
+Originality: 3: good
+Questions:
+What is the memory complexity of Context Tuning compared to other methods? How will the training complexity scale if the length of demonstration pairs keeps increasing?
+
+Limitations:
+Yes.
+
+Rating: 4: Borderline accept: Technically solid paper where reasons to accept outweigh reasons to reject, e.g., limited evaluation. Please use sparingly.
+Confidence: 3: You are fairly confident in your assessment. It is possible that you did not understand some parts of the submission or that you are unfamiliar with some pieces of related work. Math/other details were not carefully checked.
+Ethical Concerns: NO or VERY MINOR ethics concerns only
+Paper Formatting Concerns:
+No Formatting Concerns
+
+Code Of Conduct Acknowledgement: Yes
+Responsible Reviewing Acknowledgement: Yes
+
+# Response to Reviewer 2
+
+Rebuttal:
+We thank the reviewer for their helpful feedback. We are encouraged that the reviewer finds Context Tuning to be simple and effective, the experiments to be comprehensive, and the paper to be well-written. We thoroughly address the concerns below and will improve the paper accordingly.
+
+The analysis of why Context Tuning works is mostly based on empirical evidence and lacks theoretical validation.
+
+We appreciate the reviewer’s request for deeper theoretical insight. While Context Tuning was developed as a high-performing and practical method for LLM few-shot learning, we also provide a simple argument below to help explain why it outperforms ICL.
+
+As discussed in Section 5.7, ICL constructs a task-specific KV-cache
+ from the demonstration pairs, which is then used to solve the query input. CT-KV extracts the same KV-cache but directly optimizes it via gradient descent on the demonstration pairs before using it to solve the query input. Assuming the demonstration pairs are sampled i.i.d. from the same underlying task distribution as the query, minimizing the loss on the demonstration pairs can improve the cache’s ability to generalize to the held-out query. This is analogous to fine-tuning model weights on a training set to improve performance on a held-out test set. We will include a more thorough explanation of why Context Tuning improves upon our baselines in the paper to enhance its clarity and theoretical depth.
+
+The evaluated model architecture has relatively small number of parameters. The effectiveness of the method remains unknown when applied to larger models.
+
+We respectfully note that our use of models up to Llama3-8B (for BBH) is consistent with recent academic standards for LLM adaptation. For example, RandLoRA [1], presented at ICLR 2025, also uses up to Llama3-8B. To clarify, this work is conducted with limited academic computing resources rather than an industry setting. However, to broaden our model architecture and size selections, we additionally evaluate 5 modern LLMs. The models all have over 10B parameters, are from different organizations, and may or may not have reasoning capabilities:
+
+nvidia/Mistral-NeMo-12B-Instruct (Mistral12B) was trained by NVIDIA and Mistral AI between June and July 2024 [2],
+deepseek-ai/DeepSeek-R1-Distill-Qwen-14B (DeepSeek14B) and deepseek-ai/DeepSeek-R1-Distill-Qwen-32B (DeepSeek32B) are reasoning models released by DeepSeek in January, 2025 [3],
+Qwen/Qwen3-14B (Qwen14B) and Qwen/Qwen3-32B (Qwen32B) were released by the Qwen team in April, 2025 [4].
+We evaluate ICL, Prefix Tuning, and CT-KV on BIG-Bench Hard (BBH), as it is the most recent benchmark in our evaluation suite. We perform 4-bit quantization on the 32B models to mitigate resource overhead. Apart from lowering training batch sizes and adjusting gradient accumulation steps to match the effective batch size to our setup for Table 1, the experiment setup remains identical to those in Table 1.
+
+Method	Mistral12B	DeepSeek14B	DeepSeek32B	Qwen14B	Qwen32B
+ICL	51.3	55.2	63.5	60.8	63.1
+Prefix Tuning (m = 32)	37.0	49.8	53.0	49.3	56.4
+CT-KV	57.4	58.4	66.7	64.2	69.1
+Based on the table, CT-KV significantly outperforms both ICL and Prefix Tuning, demonstrating its effectiveness in combining the strengths of ICL and prompt-based adaptation across modern LLMs of varying sizes, architecture, and either before or after post-training.
+
+Computational overhead in terms of time and memory complexity is still high. The analysis of memory complexity is lacking.
+
+What is the memory complexity of Context Tuning compared to other methods? How will the training complexity scale if the length of demonstration pairs keeps increasing?
+
+Thank you for the suggestion. Table 1 presents the empirical training time of each method. Below, we analyze the time complexity, memory complexity, and empirical memory profiling for each method.
+
+Time and Memory Complexity
+
+Self-attention operation is defined as
+
+where
+,
+, and
+ are the query, key, and value matrices, respectively. Since all other layers in the transformer require only linear runtime and memory with respect to token length, the computation and storage of the
+ product dominate both runtime and memory, as they scale quadratically with token length. Therefore, time and memory complexity are effectively equivalent with respect to the token lengths of
+ and
+.
+
+We analyze each method’s runtime and
+ size with respect to demonstration length in Section C (Supplementary). The table below summarizes the derived complexities, where
+ is the number of demonstration pairs and
+ is their average length. Following the notations from Section C, the time and memory complexities for Prompt Tuning and Prefix Tuning (with
+ virtual tokens) are obtained by setting
+ and
+ in their respective Big-O formulations. While Section C includes
+ (hidden size) in its derivations, we omit the constant here.
+
+Method	Time and Memory Complexity
+Prompt Tuning (m = 32)
+Prompt Tuning (m = #demo)
+Prefix Tuning (m = 32)
+Prefix Tuning (m = #demo)
+TTT
+CT-Prompt
+CT-KV
+As shown in the table, all methods’ runtime and memory scale quadratically with the average demonstration length
+. However, compared to Prefix Tuning (m = 32), CT-KV’s training time and memory overhead are only linear in
+ because it does not require recomputing the KV-cache for each demonstration pair during training, unlike CT-Prompt and TTT, whose costs scale quadratically with
+. Additionally, Table 1 empirically demonstrates that CT-KV introduces minimal extra wall-clock training time over Prefix Tuning (m = 32), while achieving substantially higher performance.
+
+Profiling Memory Usage
+
+Next, we measure the training-time memory usage of all methods and benchmarks in the table below. Values indicate the peak GPU memory usage (MB) when training with batch size 1 for one epoch with no gradient accumulation or checkpointing. Results are averaged across all tasks of each benchmark. We omit Zero-Shot and ICL because they do not require training. Since TTT + CT-KV simply runs the two methods sequentially, its memory usage would be the maximum of TTT and CT-KV. All other experimental settings remain identical to those in Table 1.
+
+Method	NLP-LR	MMLU	BBH	ARC
+Prompt Tuning (m = 32)	3601	13051	31640	4486
+Prompt Tuning (m = #demo)	7319	18868	37493	6451
+Prefix Tuning (m = 32)	3588	13220	31549	4598
+Prefix Tuning (m = #demo)	5648	15570	33292	5340
+TTT	8883	18690	54752	7232
+CT-Prompt	7318	18911	37571	6629
+CT-KV	5648	15569	33292	5340
+Together with the accuracy results in Table 1, our memory profiling shows that CT-KV:
+
+uses less memory than TTT,
+outperforms Prefix Tuning (m = #demo) at the same memory usage,
+incurs less than 20% additional memory overhead compared to Prefix Tuning (m = 32) on MMLU, BBH, and ARC, while achieving significantly higher accuracy.
+References
+
+[1] Albert, P., Zhang, F., Saratchandran, H., Opazo, C., Hengel, A., Abbasnejad, E. (2025). RandLoRA: Full-rank parameter-efficient fine-tuning of large models.
+
+[2] Mistral AI team (2024). Mistral NeMo. URL https://mistral.ai/news/mistral-nemo.
+
+[3] DeepSeek-AI, et. al. (2025). DeepSeek-R1: Incentivizing Reasoning Capability in LLMs via Reinforcement Learning.
+
+[4] Yang A., et. al. (2025). Qwen3 Technical Report.
+
+# Reviewer 3
+
+Summary:
+This paper proposes Context Tuning, a method for improving few-shot learning in language models by directly optimizing the context. The key idea is to initialize trainable soft prompts or key-value (KV) prefixes using demonstration examples instead of random tokens. The authors develop two variants; CT-Prompt and CT-KV. CT is shown to outperform standard in-context learning and traditional prompt/prefix tuning on several benchmarks including NLP-LR, MMLU, BBH, and ARC. CT-KV in particular achieves competitive or better performance than test-time training (TTT) while being more efficient. Furthermore, combining CT-KV with TTT yields further improvements.
+
+Strengths And Weaknesses:
+Strengths:
+
+The paper is well-written with clear motivation and formulation.
+
+The paper provides comprehensive background section laying out the foundation for ICL, prompt tuning, and prefix tuning.
+
+Weakness:
+
+The proposed method appears to be a straightforward combination of existing approaches [1,2] applied within the same domain, which limits its novelty.
+
+The absence of comparisons with state-of-the-art methods makes it difficult to assess the contribution and position of this work within the broader literature.
+
+[1] Xiang Lisa Li and Percy Liang. Prefix-tuning: Optimizing continuous prompts for generation, 2021.
+
+[2] Brian Lester, Rami Al-Rfou, and Noah Constant. The power of scale for parameter-efficient prompt tuning. In Proceedings of the 2021 Conference on Empirical Methods in Natural Language Processing, 2021.
+
+Quality: 2: fair
+Clarity: 3: good
+Significance: 2: fair
+Originality: 2: fair
+Questions:
+Is the proposed method directly comparable to MetaICL under the evaluation setup used in this paper?
+
+Can the model trained with a fixed number of demonstration examples generalize effectively to scenarios with a greater or fewer number of demonstrations?
+
+Limitations:
+Yes
+
+Rating: 3: Borderline reject: Technically solid paper where reasons to reject, e.g., limited evaluation, outweigh reasons to accept, e.g., good evaluation. Please use sparingly.
+Confidence: 3: You are fairly confident in your assessment. It is possible that you did not understand some parts of the submission or that you are unfamiliar with some pieces of related work. Math/other details were not carefully checked.
+Ethical Concerns: NO or VERY MINOR ethics concerns only
+Paper Formatting Concerns:
+No
+
+Code Of Conduct Acknowledgement: Yes
+Responsible Reviewing Acknowledgement: Yes
+Final Justification:
+My concerns on comparison with relevant methods and limitations of this method are still not well addressed, so I will keep my initial score.
+
+# Response to Reviewer 3
+
+Rebuttal:
+We thank the reviewer for their helpful feedback and are encouraged that they found the paper to be well-written. We believe the concerns raised are largely due to misunderstandings of our method. We thoroughly address the concerns below and will improve the paper accordingly.
+
+The proposed method appears to be a straightforward combination of existing approaches [1,2] applied within the same domain, which limits its novelty.
+
+Thank you for raising the concern on novelty. We would like to clarify that Context Tuning is not a simple combination of Prompt Tuning and Prefix Tuning. While CT-Prompt and CT-KV both build on these prior methods, they introduce fundamentally distinct mechanisms and leverage ICL in novel ways. We summarize the novelties of our paper below and will update our paper for clarity.
+
+Distinct Optimization Targets: CT-Prompt initializes a set of soft prompt tokens directly from the demonstration pairs and fine-tunes only those input-level embeddings via gradient descent. CT-KV, on the other hand, initializes layer-wise key/value prefixes from the same demonstrations and directly optimizes the KV cache itself.
+First Integration of ICL and Prompt-Based Adaptation: To our knowledge, this is the first work to combine LLMs’ ICL capabilities with prompt-based adaptation methods. We initialize the trainable prompt or prefix from in-context demonstration tokens and then directly optimize it on each demonstration pair.
+Critical Design Decisions: Our ablation studies (Table 2) show that Leave One Out Masking and Token Dropout are essential to Context Tuning’s performance. Without them, a naive combination of ICL and Prefix Tuning (the “Neither” row in Table 2) performs even worse than vanilla Prefix Tuning on NLP-LR and BBH (Table 1).
+Practical Efficiency with Strong Accuracy Gains: As shown in Table 1, CT-KV achieves substantial accuracy improvements over traditional prompt and prefix tuning methods with minimal computational overhead. CT-KV was therefore developed as a simple yet practical enhancement to ICL, Prefix Tuning, and Prompt Tuning.
+The absence of comparisons with state-of-the-art methods makes it difficult to assess the contribution and position of this work within the broader literature.
+
+Thank you for the suggestion. We did not include several adapter-based methods (e.g., LoRA) in our paper because their preliminary results were not good, but we agree that Context Tuning should be thoroughly compared to them. We now compare CT-KV against Fine-Tuning (full model) and a comprehensive set of PEFT methods, including LoRA, Rank-Stabilized LoRA [1], DoRA [2], RandLoRA [3], LayerNorm Tuning [4], and C3A [5], in the table below for NLP-LR and MMLU. We omit C3A for NLP-LR as C3A is designed for linear layers but GPT-2 uses 1D convolutions. We report the average over 5 seeds and show the number of trained parameters.
+
+Method	NLP-LR		MMLU
+Accuracy (%)	# Params (in thousands)	Accuracy (%)	# Params (in thousands)
+Fine-Tuning	42.3	774030	40.0	3212750
+LoRA	42.8	47186	40.1	89915
+Rank-Stabilized LoRA	41.7	47186	38.8	89915
+DoRA	42.9	47601	40.3	90661
+RandLoRA	42.6	2028	38.9	11010
+LayerNorm Tuning	42.7	187	38.6	175
+C3A	N/A	N/A	40.6	10666
+CT-KV	44.2	41634	43.7	40327
+The table shows that CT-KV achieves superior performance compared to Fine-Tuning and both the older and the more recent PEFT methods, further supporting our claim that CT-KV is a simple yet highly effective few-shot learning approach.
+
+Note that we represent each baseline using its best-performing hyperparameter setting from the searches below. We utilize HuggingFace implementations to avoid errors. We set the number of training parameters for each PEFT method to match or exceed that of CT-KV whenever possible.
+
+Method	Hyperparameter Name	Hyperparameter Values
+Fine-Tuning	learning rate	1e-5, 5e-5, 1e-4
+LoRA	alpha	32, 64, 128
+Rank-Stabilized LoRA	alpha	32, 64, 128
+DoRA	alpha	32, 64, 128
+RandLoRA	rank	4, 8, 16, 32, 64, 128
+LayerNorm Tuning	learning rate	1e-4, 1e-3, 1e-2
+C3A	learning rate	1e-3, 1e-2, 1e-1
+Is the proposed method directly comparable to MetaICL under the evaluation setup used in this paper?
+
+Yes. We carefully follow MetaICL in using 16 demonstration pairs, evaluating on the same split of data from UnifiedQA and CrossFit that is publicly available at allenai/metaicl-data on HuggingFace, and use the same GPT2 checkpoint from openai-community/gpt2-large on HuggingFace. Additionally, MetaICL paper’s Table 5 shows a zero-shot performance of 34.8. With our evaluation setup, we get a close zero-shot performance of 34.9. We will update the paper to clarify this.
+
+Can the model trained with a fixed number of demonstration examples generalize effectively to scenarios with a greater or fewer number of demonstrations?
+
+We would like to clarify that Context Tuning does not optimize model weights, instead, it optimizes the context of few-shot demonstrations. Since the optimized context’s token length is directly tied to the number of demonstration pairs, the context is always the same length between training and inference. However, we show that Context Tuning’s performance is robust and scales well to varying numbers of demonstrations in the following experiment.
+
+We ablate the number of few-shot examples (
+) to assess the robustness of Context Tuning and to investigate its scalability with additional samples. We compare CT-KV to ICL and Prefix Tuning on NLP-LR and MMLU, ablating over
+ for NLP-LR and
+ for MMLU. We do not increase
+ further to ensure that each task has sufficient remaining examples for evaluation. We also ensure consistent test sets across different values of
+. All other experimental settings remain identical to those in Table 1.
+
+NLP-LR Results:
+
+# few-shot examples (
+)	8	16	24	32
+ICL	37.8	37.1	35.6	36.1
+Prefix Tuning (m = 32)	40.5	41.7	42.0	44.0
+CT-KV	43.1	45.5	46.6	48.9
+MMLU Results:
+
+# few-shot examples (
+)	16	32	48	64
+ICL	43.3	43.4	43.8	44.0
+Prefix Tuning (m = 32)	42.4	43.0	44.1	44.2
+CT-KV	45.5	45.8	46.3	47.6
+Across both benchmarks, CT-KV consistently outperforms ICL and Prefix Tuning across all values of
+ and exhibits strong performance scaling as
+ increases. Notably, despite ICL’s limited scalability with
+ on NLP-LR due to GPT-2 being released before GPT-3’s investigation into ICL, CT-KV achieves greater relative performance gains with increasing
+ compared to both ICL and Prefix Tuning (m = 32). Additionally, we will include qualitative examples in the paper to illustrate CT-KV’s improved performance as
+ increases (omitted here for brevity).
+
+References
+
+[1] Kalajdzievski, D. (2023). A Rank Stabilization Scaling Factor for Fine-Tuning with LoRA.
+
+[2] Liu, S., Wang, C., Yin, H., Molchanov, P., Wang, F., Cheng, K., Chen, M. (2024). DoRA: Weight-Decomposed Low-Rank Adaptation.
+
+[3] Albert, P, Zhang, F., Saratchandran, H., Opazo, C., Hengel, A., Abbasnejad, E. (2025). RandLoRA: Full-rank parameter-efficient fine-tuning of large models.
+
+[4] Zhao, B, Tu, H, Wei, C, Mei, J, Xie, C (2023). Tuning LayerNorm in Attention: Towards Efficient Multi-Modal LLM Finetuning.
+
+[5] Chen, A., Cheng, J., Liu, Z., Gao, Z., Tsung, F., Li, Y., Li, J. (2024). Parameter-Efficient Fine-Tuning via Circular Convolution.
+
+# Reviewer 4
+
+Summary:
+This paper extends the existing paradigm of In-Context Optimization (ICO) by LoRA at test-time (TTT), to by tuning the prompt (ct-prompt) or prefix (ct-kv) at test-time. Experiments shows that the proposed method has advantage in efficiency comparing with TTT, and can be combined with TTT for better performance.
+
+Strengths And Weaknesses:
+Strength: The proposed method is indeed simple and reasonable to be effective in some circumstances, as claimed by the authors.
+
+Weaknesses:
+
+Confusing concepts: As far as I know, Prompt Tuning and Prefix Tuning were proposed for PEFT, which is completely different from the pipeline of ICO. However, in Section 3, this paper presents Prompt/Prefix tuning to be ICO. Note that the nature of PEFT setting makes Prompt/Prefix tuning can not be initialized with question-specific tokens. This further results in disagreeable illustration of difference between the proposed method and existing ones in Section 4. I would suggest the authors motivate and present their methods from the importance of parameter-efficiency problem in ICO.
+
+The inherent limitation of ICO: Comparing with no-inference-time-optimization, it is obvious that ICO is slow and consuming, and requires high quality in-context examples. And I personally do not very appreciate the general idea of ICO, as it goes against the basic characters of LARGElms, ICL, to some extent.
+
+Experiment: This paper has only provided baselines inside the ICO scope. However, considering above inherent limitation of ICO, there should be much more to discuss about. First, ICO can only be down with open-source models and datasets with training split, while the a widely-used and strong baseline family for the same setting is PEFT, e.g., FT, adapters, Prompt/Prefix tuning (w/o confusing), LoRA, and many more recent and stronger variants. Second, it is assumed that the proposed method is very sensitive to the in-context example selection, including the quality/relevance and number, so related analysis is particularly necessary. Third, the studied LLMs are relatively old /small, whose ICL ability is weak. It is assumed that with large and modern LLMs, the advantage brought by the proposed method would be very small.
+
+Related works: most recent related works are not mentioned, especially about understanding ICL. e.g.,[1].
+
+[1] Wu S, Wang Y, Yao Q. Why In-Context Learning Models are Good Few-Shot Learners?[C]//The Thirteenth International Conference on Learning Representations.
+
+Still, I believe the proposed method is simple and can to be effective in some circumstances. But the paper needs to analyze and discuss the circumstances and trade-offs in detail, explicitly.
+
+Quality: 3: good
+Clarity: 2: fair
+Significance: 3: good
+Originality: 3: good
+Questions:
+Please refer to weakness 3 for questions about experiments.
+
+Limitations:
+NA
+
+Rating: 3: Borderline reject: Technically solid paper where reasons to reject, e.g., limited evaluation, outweigh reasons to accept, e.g., good evaluation. Please use sparingly.
+Confidence: 4: You are confident in your assessment, but not absolutely certain. It is unlikely, but not impossible, that you did not understand some parts of the submission or that you are unfamiliar with some pieces of related work.
+Ethical Concerns: NO or VERY MINOR ethics concerns only
+Paper Formatting Concerns:
+NA
+
+Code Of Conduct Acknowledgement: Yes
+Responsible Reviewing Acknowledgement: Yes
+Final Justification:
+I would like to maintain my rating. As the method could possibly be useful, but this paper has confusing concepts and insufficient discussion.
+
+# Response to Reviewer 4
+
+Rebuttal:
+We thank the reviewer for their helpful feedback. We believe that the concerns raised are mainly due to misunderstandings of Context Tuning’s goal and the lack of supporting experiments. We thoroughly address them below and will improve the paper accordingly.
+
+Confusing concepts: As far as I know, Prompt Tuning and Prefix Tuning were proposed for PEFT, which is completely different from the pipeline of ICO. However, in Section 3, this paper presents Prompt/Prefix tuning to be ICO.
+
+Thank you for highlighting the confusion. We do not present Prompt Tuning or Prefix Tuning as part of the ICO framework in Section 3 or elsewhere. ICO refers specifically to methods that leverage the LLM’s ICL ability and adapt either model parameters or the context representation. As such, only Context Tuning and Test-Time Training fall under this definition. We will clarify this in our paper.
+
+the nature of PEFT setting makes Prompt/Prefix tuning can not be initialized with question-specific tokens. This further results in disagreeable illustration of difference between the proposed method and existing ones in Section 4.
+
+ICO can only be down with open-source models and datasets with training split, while the a widely-used and strong baseline family for the same setting is PEFT
+
+We do not position Context Tuning as a PEFT method. Rather, it is a general few-shot learning approach that outperforms existing LLM adaptation methods with no restriction on parameter efficiency. To further support this claim, we now compare CT-KV against full model fine-tuning and a comprehensive set of PEFT baselines: LoRA, Rank-Stabilized LoRA [1], DoRA [2], RandLoRA [3], LayerNorm Tuning [4], and C3A [5]. We omit C3A for NLP-LR as C3A is designed for linear layers but GPT-2 uses 1D convolutions. The table below reports average accuracy over 5 random seeds and includes the number of training parameters.
+
+Method	NLP-LR		MMLU
+Accuracy (%)	# Params (in thousands)	Accuracy (%)	# Params (in thousands)
+Fine-Tuning	42.3	774030	40.0	3212750
+LoRA	42.8	47186	40.1	89915
+Rank-Stabilized LoRA	41.7	47186	38.8	89915
+DoRA	42.9	47601	40.3	90661
+RandLoRA	42.6	2028	38.9	11010
+LayerNorm Tuning	42.7	187	38.6	175
+C3A	N/A	N/A	40.6	10666
+CT-KV	44.2	41634	43.7	40327
+The table shows that CT-KV achieves superior performance compared to all older and more recent baselines, supporting our claim that CT-KV is a highly effective few-shot learning approach.
+
+Note that we represent each baseline using its best hyperparameter setting and we omit search details due to space constraint (we can include it in discussion). We utilize HuggingFace implementations to avoid errors. We set the number of training parameters for each PEFT method to at least match CT-KV whenever possible.
+
+The inherent limitation of ICO: Comparing with no-inference-time-optimization, it is obvious that ICO is slow and consuming, and requires high quality in-context examples.
+
+Addressing ICO’s Slowness
+
+ICO is indeed more resource-intensive than zero-shot prompting and ICL. However, we designed Context Tuning to prioritize few-shot learning accuracy, and demonstrate its favorable performance-efficiency tradeoff in Figure 1 and Table 1. When resources permit, Context Tuning offers a practical upgrade to existing adapter-based methods like Prefix Tuning with little runtime and memory overhead. To further support its practicality, we performed memory profiling across methods. Due to space constraints and because it is not a direct concern, we omit the results but can include it in the discussion.
+
+Varying the Quality of Few-Shot Examples
+
+In Table 1, we randomly sample in-context examples for each task and use the remaining examples for evaluation. This setup ensures that, in expectation over the relevance between sampled contexts and query pairs, Context Tuning consistently outperforms ICL and other baselines.
+
+We test CT-KV’s robustness to low-quality demonstrations by injecting label noise. For MMLU and NLP-LR, we corrupt few-shot examples by replacing the correct multiple-choice option with an incorrect option with probability
+.
+
+NLP-LR Results:
+
+Corruption Probability (
+)	0%	25%	50%	75%	100%
+ICL	35.6	36.1	35.4	34.7	31.7
+Prefix Tuning (m = 32)	42.0	41.2	38.7	34.9	31.4
+CT-KV	44.2	42.2	39.9	35.6	31.4
+MMLU Results:
+
+Corruption Probability (
+)	0%	25%	50%	75%	100%
+ICL	41.2	41.3	40.7	40.4	40.2
+Prefix Tuning (m = 32)	39.9	39.4	38.7	38.3	37.4
+CT-KV	43.7	42.5	41.6	40.5	39.1
+The tables show that CT-KV achieves the best performance across both benchmarks for corruption rates up to 75%, demonstrating strong robustness to noisy few-shot examples. Therefore, CT-KV does not always require high-quality in-context examples to improve ICL’s performance.
+
+I personally do not very appreciate the general idea of ICO, as it goes against the basic characters of LARGElms, ICL, to some extent.
+
+the studied LLMs are relatively old /small, whose ICL ability is weak. It is assumed that with large and modern LLMs, the advantage brought by the proposed method would be very small.
+
+We designed Context Tuning as a simple yet effective enhancement to ICL when compute resources allow. As shown in Table 1, CT-KV consistently outperforms ICL across all benchmarks.
+
+We respectfully note that our use of models up to Llama3-8B (for BBH) is consistent with recent academic standards for LLM adaptation. For example, RandLoRA [3], presented at ICLR 2025, also uses up to Llama3-8B. To clarify, this work is conducted with limited academic computing resources rather than an industry setting. However, to broaden our model selections, we additionally evaluate 5 modern LLMs. The models all have over 10B parameters, are from different organizations, and may or may not have reasoning capabilities:
+
+nvidia/Mistral-NeMo-12B-Instruct (Mistral12B) was trained by NVIDIA and Mistral AI between June and July 2024 [6],
+deepseek-ai/DeepSeek-R1-Distill-Qwen-14B (DeepSeek14B) and deepseek-ai/DeepSeek-R1-Distill-Qwen-32B (DeepSeek32B) are reasoning models released by DeepSeek in January, 2025 [7],
+Qwen/Qwen3-14B (Qwen14B) and Qwen/Qwen3-32B (Qwen32B) were released by the Qwen team in April, 2025 [8].
+We evaluate on BIG-Bench Hard (BBH), as it is the most recent benchmark in our evaluation suite. We perform 4-bit quantization on the 32B models to mitigate resource overhead.
+
+Method	Mistral12B	DeepSeek14B	DeepSeek32B	Qwen14B	Qwen32B
+ICL	51.3	55.2	63.5	60.8	63.1
+Prefix Tuning (m = 32)	37.0	49.8	53.0	49.3	56.4
+CT-KV	57.4	58.4	66.7	64.2	69.1
+Based on the table, CT-KV significantly outperforms both ICL and Prefix Tuning, demonstrating its effectiveness across modern LLMs of varying sizes, architecture, and either before or after post-training.
+
+it is assumed that the proposed method is very sensitive to the in-context example selection, including the quality/relevance and number, so related analysis is particularly necessary.
+
+We previously addressed the quality and relevance of few-shot example selection. We now ablate the number of few-shot examples (
+) to assess Context Tuning’s robustness and scalability with additional samples. We compare CT-KV to ICL and Prefix Tuning on NLP-LR and MMLU, varying
+ for NLP-LR and
+ for MMLU. We keep the test sets consistent across
+ and do not increase
+ further to ensure each task retains enough examples for evaluation.
+
+NLP-LR Results:
+
+# few-shot examples (
+)	8	16	24	32
+ICL	37.8	37.1	35.6	36.1
+Prefix Tuning (m = 32)	40.5	41.7	42.0	44.0
+CT-KV	43.1	45.5	46.6	48.9
+MMLU Results:
+
+# few-shot examples (
+)	16	32	48	64
+ICL	43.3	43.4	43.8	44.0
+Prefix Tuning (m = 32)	42.4	43.0	44.1	44.2
+CT-KV	45.5	45.8	46.3	47.6
+Across both benchmarks, CT-KV consistently outperforms ICL and Prefix Tuning across
+ values and gets strong performance gains as
+ increases. Notably, despite ICL’s limited scalability with
+ on NLP-LR due to GPT-2 being released before GPT-3’s investigation into ICL, CT-KV achieves greater relative performance gains with increasing
+ compared to both ICL and Prefix Tuning (m = 32).
+
+Related works: most recent related works are not mentioned, especially about understanding ICL.
+
+We will expand our Related Works section to discuss recent ICL studies such as [9], [10], and [11]. Thank you for pointing out [9]!
+
+References
+
+[1] Kalajdzievski, D. (2023). A Rank Stabilization Scaling Factor for Fine-Tuning with LoRA.
+
+[2] Liu, S., Wang, C., Yin, H., Molchanov, P., Wang, F., Cheng, K., Chen, M. (2024). DoRA: Weight-Decomposed Low-Rank Adaptation.
+
+[3] Albert, P, Zhang, F., Saratchandran, H., Opazo, C., Hengel, A., Abbasnejad, E. (2025). RandLoRA: Full-rank parameter-efficient fine-tuning of large models.
+
+[4] Zhao, B, Tu, H, Wei, C, Mei, J, Xie, C (2023). Tuning LayerNorm in Attention: Towards Efficient Multi-Modal LLM Finetuning.
+
+[5] Chen, A., Cheng, J., Liu, Z., Gao, Z., Tsung, F., Li, Y., Li, J. (2024). Parameter-Efficient Fine-Tuning via Circular Convolution.
+
+[6] Mistral AI team (2024). Mistral NeMo. URL https://mistral.ai/news/mistral-nemo.
+
+[7] DeepSeek-AI, et. al. (2025). DeepSeek-R1: Incentivizing Reasoning Capability in LLMs via Reinforcement Learning.
+
+[8] Yang A., et. al. (2025). Qwen3 Technical Report.
+
+[9] Wu, S., Wang, Y., Yao, Q. (2025). Why In-Context Learning Models are Good Few-Shot Learners? In ICLR 2025.
+
+[10] Park, C., Lee, A., Lubana, E., Yang, Y., Okawa, M., Nishi, K., Wattenberg, M., Tanaka, H. (2025). ICLR: In-Context Learning of Representations. In ICLR 2025.
+
+[11] Niu, J, Dutta, S, Elshabrawy, A, Madabushi, H, Gurevych, I (2025). Illusion or Algorithm? Investigating Memorization, Emergence, and Symbolic Processing in In-Context Learning
+
+# Final Remarks by Authors
+
+Author Final Remarks:
+We thank the reviewers for their comments. We are encouraged that reviewers find Context Tuning effective and easy to integrate into existing pipelines (T1ic, nMqs), the experiments comprehensive (nMqs), and the paper well-written (nMqs, LN77). We address common concerns below.
+
+What is the goal of Context Tuning? How does it compare to existing methods?
+
+Context Tuning is a general few-shot learning approach that improves LLM performance on new tasks by optimizing the context built from few-shot examples while keeping weights frozen. Context Tuning can be compared with any LLM adaptation approach. In the paper, we show that CT-KV outperforms ICL, Prompt Tuning, and Prefix Tuning. In the rebuttal (T1ic, LN77, wD3o), we further compare with full model fine-tuning and 6 PEFT methods (e.g., LoRA, C3A), showing that CT-KV achieves superior performance to both established and recent baselines.
+
+How efficient is Context Tuning in runtime and memory?
+
+Theoretical analysis: In the rebuttal (nMqs), we derived time and memory complexity for all methods in Table 1. Relative to Prefix Tuning, CT-KV incurs training time and memory overheads that only scale linearly with the number of examples, whereas CT-Prompt and TTT scale quadratically.
+
+Empirical comparison: Table 1 shows that CT-KV requires minimal extra training time compared to Prefix Tuning, while achieving substantially higher accuracy. We also profiled memory in the rebuttal (T1ic, nMqs), showing that CT-KV uses less memory than TTT and only marginally more than Prefix Tuning.
+
+How generalizable and robust is Context Tuning?
+
+We provided new results in the rebuttal that improve the scope and reliability of our findings, showing that Context Tuning consistently outperforms baselines across:
+
+9 models with different architectures, release times, and sizes up to 32B (Table 1, nMqs, wD3o).
+varying numbers of few-shot examples (T1ic, LN77, wD3o).
+varying quality of examples with intentionally corrupted labels (wD3o).
+Takeaway
+
+In the rebuttal, we clarified the goal of Context Tuning, introduced 7 new baselines, conducted both theoretical and empirical analyses of runtime and memory, and performed extensive ablations over models and the number and quality of few-shot examples. These results show that CT-KV is an effective, efficient, and practical method for few-shot adaptation. We believe that these clarifications and results provide strong grounds for reconsideration of the scores.
+
+# Final Decision by Area Chair
+
+Decision: Reject
+Comment:
+Contributions: This paper investigates gradient-based tuning of soft prompts that will encourage a pretrained Transformer to better solve a mapping task x ↦ y on training examples (x,y).
+
+The soft prompt is initialized to a hard prompt.
+
+In prior work on prompt tuning or prefix tuning (called "CT-Prompt" here), the layer-0 embeddings of the prompt tokens are tuned, and the upper-layer embeddings are constructed from them in the usual way, using the pretrained parameters. After each parameter update, the upper-layer embeddings and their KV vectors must be recomputed using self-attention, which is slow.
+The paper advocates a modification (called "CT-KV") in which the prompt's KV cache is tuned at all layers simultaneously (all KV vectors are detached from their ancestors in the computation graph). This is claimed to result in more accurate models. It is also claimed to speed up training because it doesn't need to use self-attention to recompute the upper layers.
+The paper focuses specifically on the case where the soft prompt is initialized to a sequence of few-shot examples, x₁y₁x₂y₂...xₖyₖ. There is nothing technically special about this case, except that they reuse the same (xᵢ,yᵢ) examples as the training examples for tuning. This requires a leave-one-out mechanism where they are masked in the prompt. As a result, there are k different prompts. The same prompt isn't used across training examples, reducing the opportunity for shared work and increasing the practical importance of the speedup above.
+
+Strengths: The idea is reasonable, the experiments are thorough, and the method appears to be effective.
+
+One way of interpreting the results is this:
+
+ICL is not as good as gradient-based tuning like Prompt Tuning, Prefix Tuning, and PEFT methods, but if you combine them ("Context Tuning" = "CT") then you do best of all.
+CT-KV is both more efficient and more accurate than CT-Prompt.
+Weaknesses: The core CT-KV contribution is incremental engineering: directly tuning the KV cache of the prompt. Sensible, but a small contribution. (The method is rather like Prefix Tuning but with a long, well-initialized prefix.)
+
+The CT-KV contribution appears to be applicable beyond ICL, but it is unfortunately only evaluated for ICL. For example, if prompting with verbal instructions (for an instruction-tuned model), one could tune the KV cache of that prompt to do well on the training examples (x,y).
+
+Some reviewers appear to be skeptical of ICL, because the long prompts become increasingly expensive at both training and test time as the number
+ of training examples grows. (While the rebuttal did try varying
+, it only reported accuracy, not also training time as in the paper.)
+
+The idea of combining ICL and gradient-based tuning is worthwhile as well, but it's still a little hard to discern what's going on. It would be helpful to vary the following dimensions in a factorial design, evaluating accuracy and computational cost for each combination of settings:
+
+no instructions vs. textual instructions vs. an equal number of random tokens
+no tuning vs. gradient tuning of the instructions part of the prompt (if any)
+no examples vs. some of the examples vs. all of the examples vs. an equal number of random tokens
+no tuning vs. gradient tuning of the examples part of the prompt (if any)
+whether gradient tuning of the prompt tunes the layer-0 embeddings or the KV cache
+whether gradient tuning of the prompt tunes all tokens, or just the last one as is common for steering (see section 6.1.2 of this survey)
+no tuning vs. gradient tuning of the model parameters (e.g., PEFT); could also consider TTT
+This would then allow separating out the effects of the different choices, possibly by fitting a simple predictive model (e.g., linear regression) to all the results.
+
+Rebuttal period: The authors were extremely responsive to reviewers, doing new rounds of experiments on several separate topics. However, the reviewers did not elect to change their ratings. I think this was because of a sense that the contribution was small and that ICL is limited to small training sets.
+
+There was some useful discussion with reviewer wD3o that should be shared back with the authors.
+
+Reviewer T1ic (despite 2 requests from the AC) did not appear to evaluate the new experiments that they had requested, saying only that the experiments should be added to a future submission; I fear this was discourteous to the authors, who had gone to some trouble.
+
+Discussion among AC and reviewers
+Sharing here in case these comments are useful to authors.
+
+Question from AC to Reviewer LN77
+I agree that CT-Prompt is just a straightforward application of soft prompt optimization to the ICL problem. What ICL methods do you think they should have compared with?
+
+CT-KV might be a little more original, though, and it's not limited to ICL, right? The idea is just to tune the KV cache rather than the input tokens. (Basically, this detaches internal nodes of the computation graph and turns them into parameters, to increase expressivity and save some computation.) So I expected you to say that they should try it on other Prompt Tuning problems, comparing to Prompt Tuning. Your thoughts?
+
+Reply from Reviewer LN77
+I believe comparing with more recent methods for improving ICL performance, such as MAML-en-LLM [1], would be beneficial and help position the work more clearly within the existing literature.
+
+The perspective on CT-KV sounds reasonable, but the KV cache relies on demonstration examples and I believe it is important to match experimental setting for comparing different methods.
+
+[1] Sinha, S., Yue, Y., Soto, V., Kulkarni, M., Lu, J., & Zhang, A. (2024, August). Maml-en-llm: Model agnostic meta-training of llms for improved in-context learning. In Proceedings of the 30th ACM SIGKDD Conference on Knowledge Discovery and Data Mining (pp. 2711-2720)
+
+Question from AC to Reviewer wD3o
+I'm having trouble understanding your point here. They are trying to solve a few-shot learning problem, right? In other words, learn an input → output mapping given a small training set. Here are some possible ways to do it:
+
+Method 1: Don't use any prompt. Just adapt the LLM's parameters on the small training set examples using any generic PEFT method. They did this in their initial rebuttal (I think?), because they thought that's what you wanted.
+
+Method 2: Don't adapt any parameters. Just prompt with the small training set and rely on ICL to continue the pattern on a test input. This is their baseline.
+
+Method 3: Like method 2, but additionally adapt the prompt encoding so that it performs well under leave-one-out. This is their main method. It trains a relatively small number of parameters, like method 1, but not the Transformer parameters. It's an application of Prompt Tuning to ICL prompts rather than instruction prompts.
+
+Are we in agreement about the above? If so, what did you want them to do differently?
+
+Reply from Reviewer wD3o
+Your understanding is correct, while one thing worth noticing is that any adaptive parameter in Method 1 (PEFT) can be adaptive in Method 3 (ICO) and vice versa, including transformer parameters (e.g., LORA) and caches (prefix/prompt tuning). The inherent difference is about if it is adaptive to a dataset or a input.
+
+My main concern left now is how small the training set is (the complete training set from which few-shot examples of each input are chosen), to make the proposed ICO beneficial.
+
+If the training set is big enough, I would certainly prefer Method 1, maybe with larger adaptive parameters, as it can utilize the complete training set.
+
+If the training set is small enough, the proposed Method 3 also show little advantage over M1 and M2. ICL examples for all testing inputs would be similar as they are chosen from the same small set, thus the advantage of "input-dependent" adaptive comparing with M1 vanishes. And there might not be enough supervision to adapting parameters, causing overfitting, comparing with M2.
+
+More importantly, M3 us significantly much more costly than the others, making it worthy only when significant benefit could be expected. As mentioned in above parts and reviews, the proposed method is likely to be very sensitive to training set size and ICL example scale and selection. These concerns have not been appropriately discussed yet. Thus I give my negative rating.

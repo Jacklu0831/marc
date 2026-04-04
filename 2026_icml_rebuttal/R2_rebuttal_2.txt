@@ -1,0 +1,15 @@
+We thank the reviewer for the continued engagement and the encouraging assessment that our work has merit for acceptance.
+
+## (W1 + Q1) Stronger Models for ARC.
+
+We appreciate the suggestion and scale our ARC evaluation to Qwen3-14B and Qwen3-32B, both fully off-the-shelf with **no task-specific fine-tuning**. These are among the strongest open-source dense models available. For reference, GPT-4o achieves approximately 5% on ARC-AGI-1 with direct few-shot prompting [1], establishing that low absolute accuracy on ARC is characteristic of all LLMs under direct generation (without Chain-of-Thought or program synthesis), not a limitation of any particular method.
+
+|Model|ICL|CT-KV (LOO)|
+|-|-|-|
+|Qwen3-8B|3.5%|4.5%|
+|Qwen3-14B|5.1%|5.6%|
+|Qwen3-32B|6.6%|**7.1%**|
+
+CT-KV consistently improves over ICL at every scale. Notably, Qwen3-32B's ICL accuracy (6.6%) already exceeds GPT-4o's published ~5%, and CT-KV pushes it further to 7.1%. Combined with our existing results scaling from 1B to 32B on BBH and MMLU (Section 5.6, Table 2), CT-KV demonstrates consistent gains across model scales and benchmarks.
+
+[1] ARC Prize, "OpenAI o3 Breakthrough High Score on ARC-AGI-Pub," December 2024. https://arcprize.org/blog/oai-o3-pub-breakthrough

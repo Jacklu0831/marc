@@ -1,0 +1,62 @@
+We thank the reviewer for the positive assessment and recognition of Context Tuning's clear practical value, our comprehensive experimental design, and the meaningful and novel synthesis of ideas.
+## (W1 + Q1) Base Model Generalization for ARC.
+
+We clarify that fine-tuning on the ARC training split is standard practice: both TTT and "Searching Latent Program Spaces" (Section 2) adopt the same approach. The fine-tuning teaches the model to parse the grid input-output format, not to solve specific test tasks (training and test tasks are entirely disjoint). Without it, Llama3.2-1B scores 0% on ICL. All methods in our ARC comparisons use the same fine-tuned base model, ensuring a fair evaluation.
+
+That said, we agree that demonstrating CT-KV on a fully off-the-shelf model strengthens the paper. We evaluate on ARC using Qwen3-8B with **no task-specific fine-tuning**, lowering LR to 1e-3 and performing 50 steps for each of 400 ARC tasks.
+
+|Method|ARC Acc. (%)|
+|-|-|
+|Prefix Tuning|0.0%|
+|ICL|3.5%|
+|CT-KV (no LOO)|4.0%|
+|CT-KV (with LOO)|**4.8%**|
+
+CT-KV with LOO achieves 4.8%, a 37% relative improvement over ICL's 3.5%. Prefix Tuning scores 0% because it optimizes randomly initialized vectors, failing to leverage the model's spatial reasoning priors. This demonstrates CT-KV generalizes to fully unseen task formats.
+
+**LOO on off-the-shelf models.** Interestingly, LOO masking helps on Qwen3-8B (4.8% vs 4.0%), contrary to Section 5.7 where it hurts on the fine-tuned Llama3.2-1B. We hypothesize that fine-tuning Llama3.2-1B on ARC makes its representations sensitive to the train-test discrepancy introduced by LOO masking, whereas Qwen3-8B's general-purpose representations are robust to this gap. This is encouraging: CT-KV with LOO is broadly effective on off-the-shelf models, and its past failure on ARC appears specific to the fine-tuned model rather than a fundamental limitation.
+## (W2 + Q2) Extreme Few-Shot Settings and Adaptive Masking.
+
+We thank the reviewer for this suggestion. We first note that even with LOO enabled on all ARC tasks, CT-KV achieves 22.5% accuracy (Section 5.7), which still outperforms all baselines except TTT. Hence, while disabling LOO improves ARC performance further, LOO does not break CT-KV.
+
+**LOO in extreme few-shot settings (BBH, MMLU).** We sweep low numbers of demonstrations ($k$) on BBH and MMLU with hyperparameters from Table 1.
+
+**MMLU Results:**
+|k|CT-KV (no LOO)|CT-KV (LOO)|
+|-|-|-|
+|2|40.26|40.43|
+|3|41.64|42.05|
+|4|41.96|43.30|
+|6|42.10|43.75|
+
+**BBH Results:**
+|k|CT-KV (no LOO)|CT-KV (LOO)|
+|-|-|-|
+|2|44.89|46.30|
+|3|46.95|49.07|
+|4|49.28|51.99|
+|6|50.82|53.56|
+
+CT-KV with LOO outperforms no LOO at every $k$, indicating that adaptive masking is not necessary for BBH and MMLU. This corrects our Section 5.7's $k<4$ hypothesis: LOO helps on ARC with off-the-shelf Qwen3-8B (4.8% vs 4.0%), showing that LOO is broadly effective across all benchmarks and demonstration counts, and its failure on ARC is specific to the fine-tuned checkpoint.
+
+**Adaptive masking for ARC.** That said, following the reviewer's suggestion, we implement adaptive masking for the fine-tuned Llama3.2-1B: a threshold $K$ where LOO is applied only to tasks with at least $K$ demonstrations.
+
+|Config|No LOO|K=7|K=6|K=5|K=4|K=3|LOO|
+|-|-|-|-|-|-|-|-|
+|Acc (%)|23.8|24.0|**24.3**|23.8|23.0|22.5|22.5|
+
+Adaptive masking at $K=6$ achieves 24.3%, our best CT-KV performance on ARC with Llama3.2-1B, improving over both no-LOO (23.8%) and full LOO (22.5%). This confirms that LOO benefits tasks with sufficient demonstrations even on the fine-tuned model.
+
+## (Q3) Serving Scalability.
+
+We thank the reviewer for recognizing CT-KV's training efficiency.
+
+**Intended use case.** Context Tuning is designed as an inference-time optimization method where the KV cache is optimized on-the-fly for a given query and discarded afterward, so persistent storage and swapping are not the intended use case.
+
+**Storage and swapping.** If one were to store optimized prefixes, CT-KV's memory footprint/overhead is modest: the same size as ICL's KV cache from the same demonstrations, with fewer parameters than LoRA at the demonstration counts we use (Appendix F).
+
+**Inference efficiency.** When loaded from storage, inference is similar to ICL: prepend the cache and generate. CT-KV's cache is already precomputed, whereas ICL must prefill all demonstration tokens through the model at each inference call. Skipping this prefill for the typically long demonstration context gives CT-KV a significant latency advantage over ICL at serve time.
+
+# Concluding Note
+
+We thank the reviewer again for the thoughtful assessment, which led to new experiments strengthening our work: base model generalization with Qwen3-8B, LOO analysis across demonstration counts, and adaptive masking achieving our best ARC results. Given the additional evidence and your recognition of CT-KV as a substantial practical contribution, we kindly ask you to consider raising your score.

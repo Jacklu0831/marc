@@ -1,16 +1,16 @@
-from transformers.models.llama.modeling_llama import apply_rotary_pos_emb
-import datasets
-import transformers
-import logging
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.colors import LogNorm
+import random
+import itertools
+import copy
+from arclib.arc import Task
 import copy
 import gc
 import time
-from transformers.tokenization_utils_fast import PreTrainedTokenizerFast
 from datetime import timedelta
-from typing import Union, Callable, List, Tuple, Dict, Any, Optional, Iterator
+from collections import defaultdict
+from typing import Union, List, Tuple, Dict, Any, Optional
 import pprint
 import math
 import json
@@ -21,44 +21,52 @@ import torch
 from torch import nn
 from torch.nn.parallel import DistributedDataParallel
 from torch.utils.data import DataLoader
+
 from transformers import (
     AutoTokenizer,
+    AutoConfig,
+    AutoModelForCausalLM,
     BitsAndBytesConfig,
+    DynamicCache,
     get_constant_schedule,
     get_cosine_schedule_with_warmup,
     LlamaConfig,
 )
-from custom_llama import MyLlamaForCausalLM
+try:
+    from custom_llama import MyLlamaForCausalLM
+except ImportError:
+    MyLlamaForCausalLM = None  # custom_llama not compatible with this transformers version
+from transformers.tokenization_utils_fast import PreTrainedTokenizerFast
 from accelerate import Accelerator, PartialState, InitProcessGroupKwargs
 from accelerate.logging import get_logger
 from accelerate.utils import ProjectConfiguration, set_seed, gather_object
-from peft import LoraConfig, RandLoraConfig, LNTuningConfig, C3AConfig, TaskType, get_peft_model, prepare_model_for_kbit_training # type: ignore
+from peft import LoraConfig, RandLoraConfig, LNTuningConfig, C3AConfig, TaskType, PeftModel, get_peft_model, prepare_model_for_kbit_training # type: ignore
 
 from data_utils import (
     EvalDataset,
     GSDataset,
     TTTDataset,
-    collate_fn_eval,
-    collate_fn_eval_dummy,
     collate_fn_gs,
     collate_fn_gs_dummy,
     collate_fn_ttt,
     collate_fn_ttt_dummy,
 )
 
-from transformers.tokenization_utils_fast import PreTrainedTokenizerFast
-from datetime import timedelta
-import pprint
-import json
-from functools import partial
-import argparse
-import torch
-from transformers import AutoTokenizer
-from accelerate import Accelerator, InitProcessGroupKwargs
-from accelerate.logging import get_logger
-from accelerate.utils import ProjectConfiguration, set_seed
+try:
+    from transformers.models.llama.modeling_llama import apply_rotary_pos_emb
+except ImportError:
+    apply_rotary_pos_emb = None  # not needed for non-Llama models
 
-from data_utils import EvalDataset, collate_fn_eval
+from arc_utils import (
+    set_up_main_process_logger,
+    print_trainable_parameters,
+    best_match_count,
+    text_to_2d_grid,
+    list2d_to_tuple,
+    invert_and_vote,
+    grid_2d_to_text,
+    chunks,
+)
 
 
 import os
@@ -73,12 +81,93 @@ os.environ["TORCH_NCCL_BLOCKING_WAIT"] = "1"
 logger = get_logger(__name__, log_level="INFO")
 
 
+def to_legacy_cache(past_key_values):
+    """Convert DynamicCache (transformers >=4.50) to legacy tuple-of-tuples format.
+
+    If already a tuple, returns as-is.
+    """
+    if isinstance(past_key_values, tuple):
+        return past_key_values
+    if hasattr(past_key_values, 'to_legacy_cache'):
+        return past_key_values.to_legacy_cache()
+    # transformers 5.x fallback
+    return tuple(
+        (layer.keys, layer.values)
+        for layer in past_key_values.layers
+    )
+
+
+class NonGrowingCache(DynamicCache):
+    """DynamicCache that doesn't mutate during forward pass.
+
+    DynamicCache.update() concatenates new KV to stored KV in-place. This breaks
+    gradient checkpointing because recomputation calls update() again on the
+    already-grown cache, producing shape mismatches.
+
+    This subclass stores initial KV during from_legacy_cache(), then returns
+    cat(stored, new) from update() WITHOUT modifying stored tensors. Each forward
+    pass sees the same initial state, making recomputation deterministic.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._frozen = False
+
+    def freeze(self) -> None:
+        """Call after populating initial KV to switch to non-growing mode."""
+        self._frozen = True
+
+    def update(
+        self,
+        key_states: torch.Tensor,
+        value_states: torch.Tensor,
+        layer_idx: int,
+        cache_kwargs: Optional[Dict[str, Any]] = None,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        if not self._frozen:
+            return super().update(key_states, value_states, layer_idx, cache_kwargs)
+        # Return concatenation without modifying stored tensors
+        return (
+            torch.cat([self.key_cache[layer_idx], key_states], dim=-2),
+            torch.cat([self.value_cache[layer_idx], value_states], dim=-2),
+        )
+
+
+def to_dynamic_cache(past_key_values, non_growing: bool = False):
+    """Convert legacy tuple-of-tuples to DynamicCache for models that require it (Qwen3).
+
+    Args:
+        past_key_values: tuple-of-tuples or existing Cache object.
+        non_growing: if True, return a NonGrowingCache that won't mutate during
+            forward pass (required when gradient checkpointing is active).
+    """
+    if not isinstance(past_key_values, tuple):
+        return past_key_values
+    if non_growing:
+        cache = NonGrowingCache()
+        for layer_idx in range(len(past_key_values)):
+            key_states, value_states = past_key_values[layer_idx]
+            cache.update(key_states, value_states, layer_idx)
+        cache.freeze()
+        return cache
+    return DynamicCache.from_legacy_cache(past_key_values)
+
+
 MODEL_NAME_TO_PATH = {
     "llama1b": "meta-llama/Llama-3.2-1B-Instruct",
-    "llama3b": "meta-llama/Llama-3.2-3B-Instruct",
-    "llama7b": "meta-llama/Llama-2-7b-hf",
     "llama8b": "meta-llama/Meta-Llama-3-8B-Instruct",
-    "llama3b_uncensored": "chuanli11/Llama-3.2-3B-Instruct-uncensored",
+    "qwen1.5b": "Qwen/Qwen2.5-1.5B-Instruct",
+    "qwen7b": "Qwen/Qwen2.5-7B-Instruct",
+    "qwen14b": "Qwen/Qwen2.5-14B-Instruct",
+    "qwen32b": "Qwen/Qwen2.5-32B-Instruct",
+    "qwen3_1.7b": "Qwen/Qwen3-1.7B",
+    "qwen3_4b": "Qwen/Qwen3-4B",
+    "qwen3_8b": "Qwen/Qwen3-8B",
+    "qwen3_14b": "Qwen/Qwen3-14B",
+    "qwen3_32b": "Qwen/Qwen3-32B",
+    "deepseek14b": "deepseek-ai/DeepSeek-R1-Distill-Qwen-14B",
+    "deepseek32b": "deepseek-ai/DeepSeek-R1-Distill-Qwen-32B",
+    "mistral12b": "mistralai/Mistral-Nemo-Base-2407",
 }
 NBIT_TO_DTYPE = {
     16: torch.bfloat16,
@@ -86,89 +175,7 @@ NBIT_TO_DTYPE = {
 }
 
 
-def get_individual_loss(lm_logits: torch.Tensor, label_ids: torch.Tensor) -> torch.Tensor:
-    # move labels to correct device to enable model parallelism
-    labels = label_ids.to(lm_logits.device)
-    # Shift so that tokens < n predict n
-    assert lm_logits.shape[0] == labels.shape[0]
-    losses = []
-    for logs, labs in zip(lm_logits, labels):
-        shift_logits = logs[:-1, :].contiguous()
-        shift_labels = labs[1:].contiguous()
-        # Flatten the tokens
-        loss_fct = nn.CrossEntropyLoss(reduction='none')
-        loss = loss_fct(shift_logits.view(-1, shift_logits.size(-1)), shift_labels.view(-1))
-
-        assert loss.shape == labs[1:].shape
-        loss = loss[labs[1:] != -100].mean()
-        losses.append(loss)
-
-    # debugging, should match crossentropy reduction (currently just match to 4 decimals)
-    # ns = [(l != -100).sum() for l in labels]
-    # ns = [n / sum(ns) for n in ns]
-    # m = 0
-    # for loss, n in zip(losses, ns):
-    #     m += loss * n
-    # print(m.item())
-
-    return torch.stack(losses)
-
-
-def print_trainable_parameters(model):
-    if hasattr(model, "print_trainable_parameters"):
-        model.print_trainable_parameters()
-    else:
-        trainable_params = 0
-        all_param = 0
-        for _, param in model.named_parameters():
-            num_params = param.numel()
-            if param.__class__.__name__ == "Params4bit":
-                if hasattr(param, "element_size"):
-                    num_bytes = param.element_size()
-                elif not hasattr(param, "quant_storage"):
-                    num_bytes = 1
-                else:
-                    num_bytes = param.quant_storage.itemsize
-                num_params = num_params * 2 * num_bytes
-            all_param += num_params
-            if param.requires_grad:
-                trainable_params += num_params
-        logger.info(
-            f"trainable params: {trainable_params:,d} || all params: {all_param:,d} || trainable%: {100 * trainable_params / all_param:.4f}"
-        )
-
-
-def compute_accuracy(predictions: List[str], targets: List[str]) -> float:
-    """
-    Compare predictions and targets (case-insensitive match).
-    Return accuracy as a percentage (float).
-    """
-    correct = 0
-    for pred, target in zip(predictions, targets):
-        if pred.strip().lower() == target.strip().lower():
-            correct += 1
-    return (correct / len(targets)) * 100 if len(targets) > 0 else 0.0
-
-
-def chunks(lst: List[Any], n: int) -> Iterator[List[Any]]:
-    for i in range(0, len(lst), n):
-        yield lst[i:i + n]
-
-
-def set_up_main_process_logger(accelerator, logger):
-    logging.basicConfig(
-        format="%(asctime)s - %(levelname)s - %(name)s - %(message)s",
-        datefmt="%m/%d/%Y %H:%M:%S",
-        level=logging.INFO,
-    )
-    logger.info(accelerator.state, main_process_only=False)
-    if accelerator.is_local_main_process:
-        datasets.utils.logging.set_verbosity_warning()
-        transformers.utils.logging.set_verbosity_warning()
-    else:
-        datasets.utils.logging.set_verbosity_error()
-        transformers.utils.logging.set_verbosity_error()
-
+# print_trainable_parameters imported from arc_utils
 
 def generate_unique_permute_masks(tensor, start_idxs, M):
     # ensure first perm is identity
@@ -221,7 +228,6 @@ def initialize_kv(
     # dt
     dt_iters: int,
     dt_lr: int,
-    dt_no_pos: bool,
 ) -> Tuple[Tuple[torch.Tensor, torch.Tensor]]:
 
     if separate_kv:
@@ -251,7 +257,7 @@ def initialize_kv(
     elif dt_iters > 0:
         # first initialize KV, no shinanigans
         with accelerator.autocast():
-            past_key_values = model(input_ids=demon_input_ids, output_hidden_states=True).past_key_values
+            past_key_values = to_legacy_cache(model(input_ids=demon_input_ids, output_hidden_states=True).past_key_values)
 
         # now the iterative part
         demonstration_len = past_key_values[0][0].shape[2]
@@ -260,7 +266,7 @@ def initialize_kv(
                 past_key_values = model(
                     input_ids=demon_input_ids,
                     past_key_values=past_key_values,
-                    position_ids=None if dt_no_pos else torch.arange(demon_input_ids.shape[1], device=accelerator.device)[None, ...],
+                    position_ids=torch.arange(demon_input_ids.shape[1], device=accelerator.device)[None, ...],
                     output_hidden_states=True,
                 ).past_key_values # first demonstration_len are old unmodified kv, then demonstration_len for new kv
 
@@ -287,15 +293,18 @@ def initialize_kv(
                 ) for _ in range(model.config.num_hidden_layers)
             )
         else:
-            # initialize from first 1000 tokens distribution
-            dummy_input_ids = torch.arange(0, random_kv_ntokens)[None, ...].to(accelerator.device)
+            # initialize from all available tokens
+            num_tokens_available = model.model.embed_tokens.weight.shape[0]
+            dummy_input_ids = torch.arange(0, num_tokens_available).repeat(math.ceil(random_kv_ntokens / num_tokens_available))[:random_kv_ntokens]
+            dummy_input_ids = dummy_input_ids[None, ...].to(accelerator.device)
+            assert dummy_input_ids.shape[1] == random_kv_ntokens
             with accelerator.autocast():
-                past_key_values = model(input_ids=dummy_input_ids, output_hidden_states=True).past_key_values
+                past_key_values = to_legacy_cache(model(input_ids=dummy_input_ids, output_hidden_states=True).past_key_values)
 
     elif num_permute == 1:
         # only one kv is needed
         with accelerator.autocast():
-            past_key_values = model(input_ids=demon_input_ids, output_hidden_states=True).past_key_values
+            past_key_values = to_legacy_cache(model(input_ids=demon_input_ids, output_hidden_states=True).past_key_values)
 
     elif not permute_concat:
         # generate batches of permutations of them and average all
@@ -322,7 +331,7 @@ def initialize_kv(
                     output_hidden_states=True,
                     return_key_states_no_pos=permute_back_strip_position,
                 )
-                batch_past_key_values = model_out.past_key_values
+                batch_past_key_values = to_legacy_cache(model_out.past_key_values)
             assert len(batch_permute_masks) == batch_past_key_values[0][0].shape[0]
 
             # strip position for aggregation
@@ -397,7 +406,7 @@ def initialize_kv(
 
             # get kv of each
             with accelerator.autocast():
-                batch_past_key_values = model(input_ids=batch_demon_input_ids, output_hidden_states=True).past_key_values
+                batch_past_key_values = to_legacy_cache(model(input_ids=batch_demon_input_ids, output_hidden_states=True).past_key_values)
             assert len(batch_permute_masks) == batch_past_key_values[0][0].shape[0]
 
             # add batch sum to a total sum of past_key_values
@@ -520,10 +529,8 @@ def test_time_evaluate(
     model: Union[nn.Module, DistributedDataParallel],
     dataset: EvalDataset,
     accelerator: Accelerator,
-    batch_size: int,
-    collate_fn: Callable,
     trainable_nbit: int,
-    log_every: int,
+    no_flash_attn: bool,
     output_dir: str,
     ttt_weight_root_dir: str,
     ttt_weight_dir: Optional[str],
@@ -534,6 +541,7 @@ def test_time_evaluate(
     gs_epochs: int,
     gs_batch_size: int,
     gs_lr: float,
+    gs_lr_scale_ref: int,
     gs_beta1: float,
     gs_beta2: float,
     gs_weight_decay: float,
@@ -611,16 +619,12 @@ def test_time_evaluate(
     # dt
     dt_iters: int,
     dt_lr: int,
-    dt_no_pos: bool,
-    # cross-task transfer
-    demo_source_task: Optional[str] = None,
-) -> Tuple[float, float, float, float, float, float, float, float, List]:
+):
 
     model.eval()
 
     # get modules in case of DDP
     model = model.module if isinstance(model, DistributedDataParallel) else model
-    embed_tokens = model.model.embed_tokens
     model.generation_config.pad_token_id = dataset.tokenizer.pad_token_id
 
     # We perform test-time adaptation in 2 stages.
@@ -633,54 +637,52 @@ def test_time_evaluate(
     init_kv_time_list = []
 
     # outputs
-    output_list = []
-
-    assert set(len(v) for v in dataset.task_to_demonstrations.values()) == {dataset.num_demonstrations}
-    assert len(dataset.tasks) >= accelerator.num_processes # avoid padding issue
+    task_id_and_text_list = []
+    task_id_and_inverter_grids = []
+    exact_acc_list = []
+    valid_grid_list = []
+    correct_grid_dim_list = []
+    token_acc_list = []
+    relaxed_token_acc_list = []
 
     # we need to cache model in case of ttt or gs with trainable lora
     cached_model = copy.deepcopy(model).cpu()
+
+    # group tasks based on task name
+    task_name_to_eval_idxs = defaultdict(list)
+    for task_i, task in enumerate(dataset.eval_tasks):
+        assert task_i not in task_name_to_eval_idxs[task.name]
+        task_name_to_eval_idxs[task.name].append(task_i)
+    task_names = sorted(task_name_to_eval_idxs.keys())
+    assert all(len(v) == 1 for v in task_name_to_eval_idxs.values())
 
     # if loading ttt, make sure ckpts actually exist
     task_to_ttt_paths = {}
     if ttt_weight_dir is not None:
         ttt_weight_dir = os.path.join(ttt_weight_root_dir, ttt_weight_dir)
-        for task in dataset.tasks:
+        for task in task_names:
             task_to_ttt_paths[task] = os.path.join(ttt_weight_dir, f'{task}.pt')
             assert os.path.exists(task_to_ttt_paths[task]), task_to_ttt_paths[task]
 
     distributed_state = PartialState()
-    with distributed_state.split_between_processes(dataset.tasks) as process_tasks:
-        assert isinstance(process_tasks, list)
+    with distributed_state.split_between_processes(task_names) as process_task_names:
+        assert isinstance(process_task_names, list)
 
-        task_i = 0
-        for task in tqdm(process_tasks, desc='Task'):
-            task_i += 1
-
-            # data: get demonstration ids and indices, hacky
-            # cross-task transfer: use source task's demos for KV init and optimization
-            demo_task = demo_source_task if demo_source_task is not None else task
+        # for now, let's not worry about voting
+        for task_name in tqdm(process_task_names, desc='Task'):
+            # data: get demonstration ids, assume no permute or augmentation
+            task_idx = task_name_to_eval_idxs[task_name][0]
+            data = dataset[task_idx]
+            assert data is not None
+            demon_input_ids = data['demon_input_ids'].unsqueeze(0).to(accelerator.device)
+            demon_start_idxs = data["demon_start_idxs"]
             if dataset.debug_max_len:
-                demon_len = dataset.max_seq_len * 4 // 5
+                demon_len = dataset.max_seq_len * 6 // 8
                 demon_input_ids = torch.randint(0, 30, (1, demon_len), dtype=torch.int64, device=accelerator.device)
-                demon_start_idxs = [x * (demon_len // 16) for x in range(16)]
-            else:
-                demon_input_ids = None
-                demon_start_idxs = None
-                for data in dataset.data:
-                    if data['task'] == demo_task:
-                        demon_input_ids = data["demon_input_ids"].unsqueeze(0).to(accelerator.device)
-                        demon_start_idxs = data["demon_start_idxs"]
-                        break
-            assert demon_input_ids is not None and demon_start_idxs is not None, \
-                f"Could not find demon_input_ids for demo_task='{demo_task}'"
-            assert demon_input_ids.shape[1] <= dataset.max_seq_len
+                demon_start_idxs = [x * (demon_len // 8) for x in range(8)]
+            # dataset.tokenizer.decode(demon_input_ids[0, demon_start_idxs[0]: demon_start_idxs[1]], False)
 
             # load cached for fresh model
-            del model
-            torch.cuda.empty_cache()
-            gc.collect()
-
             model = copy.deepcopy(cached_model).to(accelerator.device)
             model.eval()
 
@@ -703,14 +705,14 @@ def test_time_evaluate(
                         assert param.data.dtype == NBIT_TO_DTYPE[trainable_nbit]
                 # load ttt checkpoint
                 ttt_state_dict = torch.load(
-                    task_to_ttt_paths[task],
+                    task_to_ttt_paths[task_name],
                     weights_only=True,
                     map_location=accelerator.device,
                 )
                 model.load_state_dict(ttt_state_dict, strict=False)
                 model = merge_lora(model)
                 model.eval()
-                logger.info(f'loaded ttt weights from {task_to_ttt_paths[task]}')
+                logger.info(f'loaded ttt weights from {task_to_ttt_paths[task_name]}')
                 # for n, p in model.named_parameters(): print(n, p.dtype, p.requires_grad)
                 # breakpoint()
 
@@ -723,9 +725,9 @@ def test_time_evaluate(
             if ttt_iters > 0:
                 with accelerator.no_sync(model):
                     start_time = time.time()
-                    ttt_save_path = os.path.join(output_dir, f'{task}.pt') if ttt_save else None
+                    ttt_save_path = os.path.join(output_dir, f'{task_name}.pt') if ttt_save else None
                     model, ttt_num_data, ttt_num_params, ttt_memory = run_ttt(
-                        demonstration_pairs=dataset.task_to_demonstrations[demo_task],
+                        task=dataset.eval_tasks[task_idx],
                         eval_dataset=dataset,
                         accelerator=accelerator,
                         model=model,
@@ -755,9 +757,6 @@ def test_time_evaluate(
                     gc.collect()
 
             # initialize kv
-            # cross-task transfer: reset seed so KV optimization is identical for all targets
-            if demo_source_task is not None:
-                set_seed(accelerator.process_index)
             start_time = time.time()
             past_key_values = initialize_kv(
                 model=model,
@@ -777,9 +776,7 @@ def test_time_evaluate(
                 # dt
                 dt_iters=dt_iters,
                 dt_lr=dt_lr,
-                dt_no_pos=dt_no_pos,
             )
-
             if random_kv != 'none' and random_kv_ntokens == -1:
                 assert past_key_values[0][0].shape[2] == demon_input_ids.shape[1]
             elif random_kv != 'none' and random_kv_ntokens > -1:
@@ -794,10 +791,19 @@ def test_time_evaluate(
             torch.cuda.empty_cache()
             gc.collect()
 
+            # this is necessary, but idk if this improves anything
+            past_key_values = tuple(
+                (
+                    layer_k.to(torch.float32),
+                    layer_v.to(torch.float32),
+                )
+                for layer_k, layer_v in past_key_values
+            )
+
             # compression
             if compression_ratio < 1.0:
                 past_key_values = l2_compress(
-                    past_key_values=past_key_values,
+                    past_key_values=past_key_values, # type: ignore
                     keep_ratio=compression_ratio,
                     skip_layers=[],
                 )
@@ -810,7 +816,6 @@ def test_time_evaluate(
 
                     start_time = time.time()
                     saved_gradckpt = model.model.gradient_checkpointing
-                    model.model.gradient_checkpointing = False
                     if gs_float16:
                         past_key_values = tuple(
                             (layer_k.to(torch.bfloat16), layer_v.to(torch.bfloat16))
@@ -824,8 +829,16 @@ def test_time_evaluate(
                     else:
                         effective_gs_dropout = gs_dropout
 
+                    # scale lr by KV length to normalize across different task sizes
+                    kv_len = past_key_values[0][0].shape[2]
+                    if gs_lr_scale_ref > 0:
+                        effective_gs_lr = gs_lr * (gs_lr_scale_ref / kv_len)
+                        logger.info(f"LR scaling: base={gs_lr}, kv_len={kv_len}, ref={gs_lr_scale_ref}, effective={effective_gs_lr:.6f}")
+                    else:
+                        effective_gs_lr = gs_lr
+
                     model, past_key_values, gs_num_data, gs_num_params, attn_logger, fisher_vals, gs_memory = run_gs(
-                        demonstration_pairs=dataset.task_to_demonstrations[demo_task],
+                        task=dataset.eval_tasks[task_idx],
                         eval_dataset=dataset,
                         accelerator=accelerator,
                         model=model,
@@ -835,7 +848,7 @@ def test_time_evaluate(
                         demon_input_ids_len=demon_input_ids.shape[1] if (random_kv == 'none' or random_kv_ntokens == -1) else random_kv_ntokens,
                         # config
                         epochs=gs_epochs,
-                        lr=gs_lr,
+                        lr=effective_gs_lr,
                         beta1=gs_beta1,
                         beta2=gs_beta2,
                         weight_decay=gs_weight_decay,
@@ -883,7 +896,7 @@ def test_time_evaluate(
 
                     if attn_logger is not None:
                         os.makedirs(os.path.join(output_dir, 'attn'), exist_ok=True)
-                        save_path = os.path.join(output_dir, 'attn', task) + '.jpg'
+                        save_path = os.path.join(output_dir, 'attn', task_name) + '.jpg'
                         iters = range(len(attn_logger.instruct_attn))
 
                         plt.figure()
@@ -905,13 +918,13 @@ def test_time_evaluate(
                         heatmap_v = torch.stack([x[1].squeeze(0) for x in fisher_vals]).mean(dim=(1, 3)) # (layer, seq)
 
                         os.makedirs(os.path.join(output_dir, 'fisher'), exist_ok=True)
-                        save_path = os.path.join(output_dir, 'fisher', task) + '.jpg'
-                        plot_heatmap(heatmap_k.cpu().numpy(), heatmap_v.cpu().numpy(), task, save_path)
+                        save_path = os.path.join(output_dir, 'fisher', task_name) + '.jpg'
+                        plot_heatmap(heatmap_k.cpu().numpy(), heatmap_v.cpu().numpy(), task_name, save_path)
                         logger.info(f'saved fisher to {save_path}')
 
                         os.makedirs(os.path.join(output_dir, 'log_fisher'), exist_ok=True)
-                        save_path = os.path.join(output_dir, 'log_fisher', task) + '.jpg'
-                        plot_log_heatmap(heatmap_k.cpu().numpy(), heatmap_v.cpu().numpy(), task, save_path)
+                        save_path = os.path.join(output_dir, 'log_fisher', task_name) + '.jpg'
+                        plot_log_heatmap(heatmap_k.cpu().numpy(), heatmap_v.cpu().numpy(), task_name, save_path)
                         logger.info(f'saved log fisher to {save_path}')
 
             # logging
@@ -926,101 +939,152 @@ def test_time_evaluate(
             init_kv_time_list.append(init_kv_time)
 
             # STAGE 2: apply model and kv to all tests
-            process_data_idxs = [i for i, d in enumerate(dataset.data) if d['task'] == task]
-            assert isinstance(process_data_idxs, list)
-            n_batches = math.ceil(len(process_data_idxs) / batch_size)
-            data_idxs = [idxs for idxs in chunks(process_data_idxs, batch_size)]
-            assert len(data_idxs) == n_batches
+            arbitrary_increase = 5
+            out_token_length = data['out_token_length']
+            gen_input_ids = data['gen_input_ids'].unsqueeze(0).to(accelerator.device)
+            gen_attention_mask = data['gen_attention_mask'].unsqueeze(0).to(accelerator.device)
 
-            progress_bar = tqdm(
-                range(len(data_idxs)),
-                desc=f"{task_i}/{len(process_tasks)} {task}",
-                disable=not accelerator.is_local_main_process,
-            )
+            with accelerator.autocast():
+                # second step to generate
+                # add past key values portion to input_ids and attention mask
+                # the padding of input_ids is ignored
+                if not zero_shot:
+                    gen_input_ids = torch.cat([
+                        torch.zeros((1, past_key_values[0][0].shape[2]), device=accelerator.device, dtype=torch.int64),
+                        gen_input_ids,
+                    ], dim=1)
+                gen_attention_mask = torch.cat([
+                    torch.ones((1, past_key_values[0][0].shape[2]), device=accelerator.device, dtype=torch.int64),
+                    gen_attention_mask,
+                ], dim=1)
 
-            for eval_step, batch_idxs in enumerate(data_idxs):
-                batch_data = [dataset[i] for i in batch_idxs]
-                bs = len(batch_data)
-                batch = collate_fn(batch_data)
-
-                # get tensors
-                task = batch['task']
-                test_idx = batch['test_idx']
-                option = batch['option']
-                correct_option = batch['correct_option']
-                assert len(set(task)) == 1 # same task!
-
-                # for gs
-                gen_input_ids = batch["gen_input_ids"].to(accelerator.device)
-                gen_attention_mask = batch["gen_attention_mask"].to(accelerator.device)
-                gen_label_ids = batch["gen_label_ids"].to(accelerator.device)
-
-                with accelerator.autocast():
-                    # expand past key values
-                    assert past_key_values[0][0].shape[0] == 1
-                    batch_past_key_values = [
+                # i truly dont know why this is necessary, but this is necessary
+                # assert past_key_values[0][0].dtype == torch.float32
+                if not no_flash_attn:
+                    casted_past_key_values = tuple(
                         (
-                            layer_k.detach().clone().expand(bs, *layer_k.shape[1:]),
-                            layer_v.detach().clone().expand(bs, *layer_v.shape[1:]),
+                            layer_k.to(NBIT_TO_DTYPE[trainable_nbit]),
+                            layer_v.to(NBIT_TO_DTYPE[trainable_nbit]),
                         )
                         for layer_k, layer_v in past_key_values
-                    ]
-                    batch_past_key_values_attention_mask = torch.ones(
-                        (bs, batch_past_key_values[0][0].shape[2]),
-                        device=accelerator.device,
-                        dtype=torch.int64
                     )
+                else:
+                    casted_past_key_values = past_key_values
 
-                    gen_inputs_embeds = embed_tokens(gen_input_ids)
-                    gen_attention_mask = torch.cat([batch_past_key_values_attention_mask, gen_attention_mask], dim=1)
+                if zero_shot:
+                    model.subtract_position_ids_by = 0
+                elif random_kv == 'none' or random_kv_ntokens == -1:
+                    model.subtract_position_ids_by = past_key_values[0][0].shape[2] - demon_input_ids.shape[1] # HACK for prefix # type: ignore
+                else:
+                    model.subtract_position_ids_by = 0 # HACK for prefix # type: ignore
+                # collect all EOS-like token IDs for stopping generation
+                stop_token_ids = [dataset.tokenizer.eos_token_id]
+                if dataset.tokenizer.pad_token_id is not None and dataset.tokenizer.pad_token_id != dataset.tokenizer.eos_token_id:
+                    stop_token_ids.append(dataset.tokenizer.pad_token_id)
+                # for Qwen: <|endoftext|> (pad) and <|im_end|> (eos) are both stop tokens
+                if hasattr(dataset.tokenizer, 'added_tokens_encoder'):
+                    for tok_str in ['<|endoftext|>', '<|im_end|>']:
+                        tid = dataset.tokenizer.added_tokens_encoder.get(tok_str)
+                        if tid is not None and tid not in stop_token_ids:
+                            stop_token_ids.append(tid)
+                gen_tokens = model.generate(
+                    input_ids=gen_input_ids,
+                    attention_mask=gen_attention_mask if not zero_shot else None, # can just infer attention
+                    past_key_values=to_dynamic_cache(casted_past_key_values) if not zero_shot else None,
+                    max_new_tokens=out_token_length + arbitrary_increase,
+                    num_return_sequences=1,
+                    temperature=1.0,
+                    top_p=1.0,
+                    do_sample=False,
+                    eos_token_id=stop_token_ids,
+                )
+                model.subtract_position_ids_by = 0 # HACK for prefix # type: ignore
+                assert gen_tokens.shape[0] == 1
+                gen_tokens = gen_tokens[0, gen_input_ids.shape[1]:]
 
-                    # i truly dont know why this is necessary, but this is necessary
-                    # assert batch_past_key_values[0][0].dtype == torch.float32
+            gen_tokens[out_token_length + arbitrary_increase:] = dataset.tokenizer.pad_token_id
+            gen_texts = dataset.tokenizer.batch_decode(
+                gen_tokens.unsqueeze(0),
+                skip_special_tokens=True,
+            )
+            assert len(gen_texts) == 1
+            gen_text = gen_texts[0]
+            print(f"=== RAW GEN ({data['task_id']}) ===\n{gen_text}\n=== END RAW GEN ===")
 
-                    if dt_iters > 0 and dt_no_pos:
-                        position_start = past_key_values[0][0].shape[2] * 2
-                    elif random_kv == 'none' or random_kv_ntokens == -1:
-                        position_start = demon_input_ids.shape[1]
-                    else:
-                        position_start = past_key_values[0][0].shape[2]
+            # Post-process: strip trailing non-grid text (LLMs may append conversational text)
+            # Keep only lines that look like grid content (digits, spaces, newlines)
+            import re
+            lines = gen_text.split('\n')
+            clean_lines = []
+            for line in lines:
+                stripped = line.strip()
+                if stripped == '':
+                    continue
+                # a grid line is either dimensions ("H W" or "HW") or a row of digits
+                if re.fullmatch(r'[\d ]+', stripped):
+                    clean_lines.append(stripped)
+                else:
+                    break  # stop at first non-grid line
+            gen_text = '\n'.join(clean_lines)
 
-                    # build position ids (does NOT depend on dropout)
-                    attention_mask_after_kv = gen_attention_mask[:, batch_past_key_values[0][0].shape[2]:]
-                    position_ids = []
-                    for mask_after_kv in attention_mask_after_kv:
-                        sequence_position_ids = torch.zeros(gen_inputs_embeds.shape[1], device=accelerator.device, dtype=torch.int64)
-                        n_new_positions = mask_after_kv.sum()
-                        new_positions = torch.tensor(range(position_start, position_start + n_new_positions), device=accelerator.device, dtype=torch.int64)
-                        if dataset.pad_side == "right":
-                            sequence_position_ids[:n_new_positions] = new_positions
-                        else:
-                            sequence_position_ids[-n_new_positions:] = new_positions
-                        position_ids.append(sequence_position_ids)
-                    position_ids = torch.stack(position_ids)
+            task_id = data["task_id"]
+            inverter = data["inverter"]
+            label_text = data["label_texts"]
 
-                    model_out = model(
-                        inputs_embeds=gen_inputs_embeds,
-                        attention_mask=gen_attention_mask if not zero_shot else attention_mask_after_kv,
-                        past_key_values=batch_past_key_values if not zero_shot else None,
-                        position_ids=position_ids if not zero_shot else None,
-                    )
-                    losses = get_individual_loss(lm_logits=model_out.logits.half(), label_ids=gen_label_ids)
+            # Compare each gen_text with label_texts
+            relaxed_token_acc_list.append(best_match_count(gen_text, label_text) / len(label_text))
+            # is valid grid
+            gen_grid, gen_is_grid = text_to_2d_grid(text=gen_text)
+            label_grid, label_is_grid = text_to_2d_grid(text=label_text)
+            assert label_is_grid
+            valid_grid_list.append(int(gen_is_grid))
+            if not gen_is_grid:
+                task_id_and_text_list.append((task_id, gen_text, label_text))
+                exact_acc_list.append(0)
+                correct_grid_dim_list.append(0)
+                token_acc_list.append(0)
+                print(f"[RESULT] {task_id}: exact=0 tok_acc=0.000 grid_ok=0 gs_mem={gs_memory_list[-1]:.0f}MB", flush=True)
+                continue
+            assert isinstance(gen_grid, list)
+            assert isinstance(label_grid, list)
+            # now we know it's a valid grid
+            gen_text = grid_2d_to_text(gen_grid)
+            task_id_and_text_list.append((task_id, gen_text, label_text))
+            gen_grid, label_grid = list2d_to_tuple(gen_grid), list2d_to_tuple(label_grid)
+            # exact acc
+            exact_acc_list.append(int(gen_grid == label_grid))
+            # save gen and gt grid
+            task_id_and_inverter_grids.append((task_id, inverter, gen_grid, label_grid))
+            # correct grid dim
+            is_correct_grid_dim = (len(gen_grid) == len(label_grid) and len(gen_grid[0]) == len(label_grid[0]))
+            correct_grid_dim_list.append(int(is_correct_grid_dim))
+            if not is_correct_grid_dim:
+                token_acc_list.append(0)
+                print(f"[RESULT] {task_id}: exact={exact_acc_list[-1]} tok_acc=0.000 grid_ok=1 gs_mem={gs_memory_list[-1]:.0f}MB", flush=True)
+                continue
+            # token acc
+            grid_size = len(label_grid) * len(label_grid[0])
+            num_token_correct = 0
+            for gen_row, label_row in zip(gen_grid, label_grid):
+                for gen_x, label_x in zip(gen_row, label_row):
+                    num_token_correct += int(gen_x == label_x)
+            token_acc_list.append(num_token_correct / grid_size)
 
-                # if gen_attention_mask.sum() < gen_attention_mask.numel():
-                #     print(losses.tolist())
-                #     breakpoint()
-
-                assert isinstance(losses, torch.Tensor)
-                assert losses.shape[0] == len(task) == len(test_idx) == len(option) == len(correct_option) == bs
-                for x0, x1, x2, x3, x4 in zip(losses, task, test_idx, option, correct_option):
-                    output_list.append((x0.item(), x1, x2, x3, x4))
-                if (eval_step + 1) % log_every == 0:
-                    progress_bar.update(log_every)
-
-                torch.cuda.empty_cache()
-                gc.collect()
+            # per-example result (flushed immediately so partial results survive OOM)
+            print(f"[RESULT] {task_id}: exact={exact_acc_list[-1]} tok_acc={token_acc_list[-1]:.3f} grid_ok={valid_grid_list[-1]} gs_mem={gs_memory_list[-1]:.0f}MB", flush=True)
 
     distributed_state.wait_for_everyone()
+    # results
+    task_id_and_text_list = gather_object(task_id_and_text_list)
+    task_id_and_inverter_grids = gather_object(task_id_and_inverter_grids) # likely diff len from dataset
+    # accuracies
+    exact_acc_list = gather_object(exact_acc_list)
+    valid_grid_list = gather_object(valid_grid_list)
+    correct_grid_dim_list = gather_object(correct_grid_dim_list)
+    token_acc_list = gather_object(token_acc_list)
+    relaxed_token_acc_list = gather_object(relaxed_token_acc_list)
+    init_kv_time_list = gather_object(init_kv_time_list)
+    # other logging
     # results
     ttt_num_data_list = gather_object(ttt_num_data_list)
     gs_num_data_list = gather_object(gs_num_data_list)
@@ -1030,52 +1094,62 @@ def test_time_evaluate(
     ttt_memory_list = gather_object(ttt_memory_list)
     gs_time_list = gather_object(gs_time_list)
     gs_memory_list = gather_object(gs_memory_list)
-    init_kv_time_list = gather_object(init_kv_time_list)
-    output_list = gather_object(output_list)
-    assert len(ttt_num_data_list) == len(dataset.tasks), (len(ttt_num_data_list), len(dataset.tasks))
-    assert len(gs_num_data_list) == len(dataset.tasks), (len(gs_num_data_list), len(dataset.tasks))
-    assert len(ttt_num_params_list) == len(dataset.tasks), (len(ttt_num_params_list), len(dataset.tasks))
-    assert len(gs_num_params_list) == len(dataset.tasks), (len(gs_num_params_list), len(dataset.tasks))
-    assert len(ttt_time_list) == len(dataset.tasks), (len(ttt_time_list), len(dataset.tasks))
-    assert len(ttt_memory_list) == len(dataset.tasks), (len(ttt_memory_list), len(dataset.tasks))
-    assert len(gs_time_list) == len(dataset.tasks), (len(gs_time_list), len(dataset.tasks))
-    assert len(gs_memory_list) == len(dataset.tasks), (len(gs_memory_list), len(dataset.tasks))
-    assert len(init_kv_time_list) == len(dataset.tasks), (len(init_kv_time_list), len(dataset.tasks))
-    assert len(output_list) == len(dataset), (len(output_list), len(dataset)) # dataset length, not num task
 
-    # metrics
-    task_to_score = {}
-    for task in dataset.tasks:
-        task_outs = [x for x in output_list if x[1] == task]
-        if len(task_outs) == 0:
-            logger.info(f'[WARNING] {task} is not evaluated (likely due max_seq_len)')
-            continue
+    assert len(task_id_and_text_list) == len(dataset), (len(task_id_and_text_list), len(dataset))
+    assert len(exact_acc_list) == len(dataset), (len(exact_acc_list), len(dataset))
+    assert len(valid_grid_list) == len(dataset), (len(valid_grid_list), len(dataset))
+    assert len(correct_grid_dim_list) == len(dataset), (len(correct_grid_dim_list), len(dataset))
+    assert len(token_acc_list) == len(dataset), (len(token_acc_list), len(dataset))
+    assert len(relaxed_token_acc_list) == len(dataset), (len(relaxed_token_acc_list), len(dataset))
+    assert len(ttt_num_data_list) == len(task_name_to_eval_idxs), (len(ttt_num_data_list), len(task_name_to_eval_idxs))
+    assert len(gs_num_data_list) == len(task_name_to_eval_idxs), (len(gs_num_data_list), len(task_name_to_eval_idxs))
+    assert len(ttt_num_params_list) == len(task_name_to_eval_idxs), (len(ttt_num_params_list), len(task_name_to_eval_idxs))
+    assert len(gs_num_params_list) == len(task_name_to_eval_idxs), (len(gs_num_params_list), len(task_name_to_eval_idxs))
+    assert len(ttt_time_list) == len(task_name_to_eval_idxs), (len(ttt_time_list), len(task_name_to_eval_idxs))
+    assert len(ttt_memory_list) == len(task_name_to_eval_idxs), (len(ttt_memory_list), len(task_name_to_eval_idxs))
+    assert len(gs_time_list) == len(task_name_to_eval_idxs), (len(gs_time_list), len(task_name_to_eval_idxs))
+    assert len(gs_memory_list) == len(task_name_to_eval_idxs), (len(gs_memory_list), len(task_name_to_eval_idxs))
+    assert len(init_kv_time_list) == len(task_name_to_eval_idxs), (len(init_kv_time_list), len(task_name_to_eval_idxs))
 
-        preds, gts = [], []
-        test_idxs = set(x[2] for x in task_outs)
-        for test_i in test_idxs:
-            task_test_outs = [x for x in task_outs if x[2] == test_i]
-            correct_option = task_test_outs[0][4]
-            assert all(x[4] == correct_option for x in task_test_outs)
-            # choose option with lowest loss
-            lowest_loss = float('inf')
-            chosen_option = None
-            for x in task_test_outs:
-                if x[0] < lowest_loss:
-                    lowest_loss = x[0]
-                    chosen_option = x[3]
-            assert chosen_option is not None
-            # record
-            preds.append(chosen_option)
-            gts.append(correct_option)
+    # average metrics
+    # note these are all computed without accounting for skipped eval grids
+    exact_acc = sum(exact_acc_list) / len(dataset)
+    valid_grid = sum(valid_grid_list) / len(dataset)
+    correct_grid_dim = sum(correct_grid_dim_list) / len(dataset)
+    token_acc = sum(token_acc_list) / len(dataset)
+    relaxed_token_acc = sum(relaxed_token_acc_list) / len(dataset)
 
-        task_to_score[task] = compute_accuracy(preds, gts)
+    # grab all results
+    task_id_to_texts = defaultdict(list)
+    for task_id, gen_text, label_text in task_id_and_text_list:
+        task_id_to_texts[task_id].append((gen_text, label_text))
 
-    # average scores
-    sorted_tasks = sorted(task_to_score.keys())
-    for task in sorted_tasks:
-        logger.info(f"{task} has a score {task_to_score[task]}")
-    score = sum(v for v in task_to_score.values()) / len(task_to_score)
+    # voting
+    votes = {}
+    for task_id in dataset.task_id_to_gt:
+        # get 2 vote results
+        inverters_and_gen_grids = [(x[1], list2d_to_tuple(x[2])) for x in task_id_and_inverter_grids if x[0] == task_id]
+        votes[task_id] = [[[0]], [[0]]]
+        if len(inverters_and_gen_grids) > 0:
+            attempt1, attempt2, _ = invert_and_vote(inverters_and_gen_grids)
+            votes[task_id] = [attempt1, attempt2]
+        # assert all label grids are the same after invert augmentation
+        inverters_and_label_grids = [(x[1], list2d_to_tuple(x[3])) for x in task_id_and_inverter_grids if x[0] == task_id]
+        if len(inverters_and_label_grids) > 0:
+            _, _, inverted_labels = invert_and_vote(inverters_and_label_grids)
+            assert len(set(inverted_labels)) == 1
+
+    # competition evaluation
+    task_name_to_corrects = defaultdict(list)
+    for task_id, gt in dataset.task_id_to_gt.items():
+        correct = list2d_to_tuple(gt) in votes[task_id]
+        task_name = task_id.split('-')[0]
+        task_name_to_corrects[task_name].append(correct)
+
+    competition_sub_correct = sum(sum(corrects) for corrects in task_name_to_corrects.values())
+    competition_all_correct = sum(all(corrects) for corrects in task_name_to_corrects.values())
+    competition_sub_acc = competition_sub_correct / sum(len(corrects) for corrects in task_name_to_corrects.values())
+    competition_all_acc = competition_all_correct / len(task_name_to_corrects)
 
     # average others
     ttt_num_data = sum(ttt_num_data_list) / len(ttt_num_data_list)
@@ -1088,7 +1162,8 @@ def test_time_evaluate(
     gs_memory = sum(gs_memory_list) / len(gs_memory_list)
     init_kv_time = sum(init_kv_time_list) / len(init_kv_time_list)
 
-    return score, ttt_num_data, gs_num_data, ttt_num_params, gs_num_params, ttt_time, ttt_memory, gs_time, gs_memory, init_kv_time, output_list
+    return exact_acc, valid_grid, correct_grid_dim, token_acc, relaxed_token_acc, task_id_to_texts, \
+        votes, competition_sub_acc, competition_all_acc, ttt_num_data, gs_num_data, ttt_num_params, gs_num_params, ttt_time, ttt_memory, gs_time, gs_memory, init_kv_time
 
 
 def save_lora(model: nn.Module, save_path: str) -> None:
@@ -1102,7 +1177,7 @@ def save_lora(model: nn.Module, save_path: str) -> None:
 
 @torch.enable_grad()
 def run_ttt(
-    demonstration_pairs: List[Dict],
+    task: Task,
     eval_dataset: EvalDataset,
     accelerator: Accelerator,
     model: Union[nn.Module, DistributedDataParallel],
@@ -1158,16 +1233,16 @@ def run_ttt(
 
     # dataset and dataloader
     ttt_dataset = TTTDataset(
-        demonstration_pairs=demonstration_pairs,
+        task=task,
         tokenizer=eval_dataset.tokenizer,
         debug_random_pad=eval_dataset.debug_random_pad,
         debug_pad_len=eval_dataset.debug_pad_len,
         pad_side=eval_dataset.pad_side,
         max_seq_len=eval_dataset.max_seq_len,
-        delimiter=eval_dataset.delimiter,
         permute_n=permute_n,
         seed=eval_dataset.seed,
         loss_type=loss_type,
+        no_bos=eval_dataset.no_bos,
     )
     if len(ttt_dataset) == 0:
         # save and merge lora
@@ -1405,8 +1480,8 @@ def compute_gs_fisher(
                 "inputs_embeds": pair_inputs_embeds,
                 "attention_mask": pair_attention_mask,
                 "labels": pair_label_ids,
-                "use_cache": True,
-                "past_key_values": past_key_values,
+                "use_cache": False,  # don't allocate output cache during TTT training
+                "past_key_values": to_dynamic_cache(past_key_values),
                 "position_ids": position_ids,
                 "output_attentions": False,
             }
@@ -1465,8 +1540,8 @@ def compute_ttt_fisher(
         input_ids = batch["input_ids"].to(accelerator.device)
         attention_mask = batch["attention_mask"].to(accelerator.device)
         label_ids = batch["label_ids"].to(accelerator.device)
-        device, dtype = input_ids.device, input_ids.dtype
         bs = input_ids.shape[0]
+        device, dtype = input_ids.device, input_ids.dtype
 
         # necessary
         with accelerator.autocast():
@@ -1589,7 +1664,7 @@ class KVLora(nn.Module):
 
 @torch.enable_grad()
 def run_gs(
-    demonstration_pairs: List[Dict],
+    task: Task,
     eval_dataset: EvalDataset,
     accelerator: Accelerator,
     model: Union[nn.Module, DistributedDataParallel],
@@ -1670,7 +1745,6 @@ def run_gs(
                 target_modules=['q_proj', 'v_proj', 'o_proj', 'gate_proj', 'up_proj', 'down_proj'],
                 task_type=TaskType.CAUSAL_LM,
             )
-        # apply lora
         model = get_peft_model(model, peft_config) # type: ignore
         # model.print_trainable_parameters()
 
@@ -1765,17 +1839,20 @@ def run_gs(
 
     # dataset
     gs_dataset = GSDataset(
-        demonstration_pairs={i: p for i, p in enumerate(demonstration_pairs)},
+        task=task,
         tokenizer=eval_dataset.tokenizer,
         debug_random_pad=eval_dataset.debug_random_pad,
         debug_pad_len=eval_dataset.debug_pad_len,
         pad_side=eval_dataset.pad_side,
-        past_kv_len=demon_input_ids_len,
+        no_bos=eval_dataset.no_bos,
         max_seq_len=eval_dataset.max_seq_len,
-        delimiter=eval_dataset.delimiter,
         loss_on_input=loss_on_input,
     )
-    assert len(gs_dataset) > 0
+    if len(gs_dataset) == 0:
+        if lora:
+            model = merge_lora(model)
+        # prefix tuning or not, just return the unmodified past_key_values
+        return model, past_key_values, 0, num_params, None, None
 
     # dataloader
     batch_size = min(batch_size, len(gs_dataset))
@@ -1874,7 +1951,6 @@ def run_gs(
 
     # train!
     for _ in range(epochs):
-        num_batch = len(gs_loader)
         for batch in gs_loader:
             pair_input_ids = batch["input_ids"].to(accelerator.device)
             pair_attention_mask = batch["attention_mask"].to(accelerator.device)
@@ -1884,10 +1960,59 @@ def run_gs(
             bs = pair_input_ids.shape[0]
 
             # construct full attention mask for past key values first
-            batch_past_key_values_attention_mask = torch.ones((bs, past_key_values[0][0].shape[2]), device=accelerator.device, dtype=torch.int64)
+            batch_past_key_values_attention_mask = torch.ones((batch_size, past_key_values[0][0].shape[2]), device=accelerator.device, dtype=torch.int64)
 
             if detach:
-                raise NotImplementedError()
+                # use the same past key values and attention mask, but detach untrained parts
+                batch_past_key_values = tuple(
+                    (layer_k.repeat(bs, 1, 1, 1), layer_v.repeat(bs, 1, 1, 1)) # repeat here
+                    for layer_k, layer_v in past_key_values
+                )
+
+                # only drop training kv
+                if dropout == 'train':
+                    assert past_key_values[0][0].shape[2] == demon_input_ids_len # make sure demon_start_idxs are correct
+                    for batch_i, idx in enumerate(pair_example_idx):
+                        start = demon_start_idxs[idx]
+                        end = demon_start_idxs[idx + 1] if idx < len(demon_start_idxs) - 1 else demon_input_ids_len
+                        for layer_i, (layer_k, layer_v) in enumerate(batch_past_key_values):
+                            batch_past_key_values[layer_i][0][batch_i] = torch.cat([layer_k[batch_i, :, :start], layer_k[batch_i, :, start: end].detach().clone(), layer_k[batch_i, :, end:]], dim=1)
+                            batch_past_key_values[layer_i][1][batch_i] = torch.cat([layer_v[batch_i, :, :start], layer_v[batch_i, :, start: end].detach().clone(), layer_v[batch_i, :, end:]], dim=1)
+
+                # drop training kv and drop suffix
+                elif dropout == 'suffix':
+                    assert past_key_values[0][0].shape[2] == demon_input_ids_len # make sure demon_start_idxs are correct
+                    for batch_i, idx in enumerate(pair_example_idx):
+                        start = demon_start_idxs[idx]
+                        for layer_i, (layer_k, layer_v) in enumerate(batch_past_key_values):
+                            batch_past_key_values[layer_i][0][batch_i] = torch.cat([layer_k[batch_i, :, :start], layer_k[batch_i, :, start:].detach().clone()], dim=1)
+                            batch_past_key_values[layer_i][1][batch_i] = torch.cat([layer_v[batch_i, :, :start], layer_v[batch_i, :, start:].detach().clone()], dim=1)
+
+                # drop training kv and only keep power set
+                elif dropout in ['power', 'power_with_train']:
+                    assert past_key_values[0][0].shape[2] == demon_input_ids_len # make sure demon_start_idxs are correct
+                    for batch_i, idx in enumerate(pair_example_idx):
+                        # figure out a non-empty set of kv to keep
+                        choices = set(range(len(demon_start_idxs)))
+                        if dropout == 'power':
+                            choices -= {idx}
+                        power_set = set(itertools.chain.from_iterable(itertools.combinations(choices, r) for r in range(len(choices) + 1))) - {()}
+                        to_keep = random.choice(list(power_set))
+                        assert len(to_keep) > 0
+                        # remove
+                        to_remove = [idx for idx in range(len(demon_start_idxs)) if idx not in to_keep]
+                        to_keep, to_remove = set(to_keep), set(to_remove)
+
+                        for layer_i, (layer_k, layer_v) in enumerate(batch_past_key_values):
+                            new_layer_k = [layer_k[batch_i, :, :demon_start_idxs[0]]] # instruction
+                            new_layer_v = [layer_v[batch_i, :, :demon_start_idxs[0]]] # instruction
+                            for idx in range(len(demon_start_idxs)):
+                                start = demon_start_idxs[idx]
+                                end = demon_start_idxs[idx + 1] if idx < len(demon_start_idxs) - 1 else demon_input_ids_len
+                                new_layer_k.append(layer_k[batch_i, :, start: end].detach().clone() if (idx in to_remove) else layer_k[batch_i, :, start: end])
+                                new_layer_v.append(layer_v[batch_i, :, start: end].detach().clone() if (idx in to_remove) else layer_v[batch_i, :, start: end])
+                            batch_past_key_values[layer_i][0][batch_i] = torch.cat(new_layer_k, dim=1)
+                            batch_past_key_values[layer_i][1][batch_i] = torch.cat(new_layer_v, dim=1)
 
             else:
                 # use the same past key values across batch, but adjust attention mask for dropping
@@ -1906,11 +2031,28 @@ def run_gs(
 
                 # drop training kv and drop suffix
                 elif dropout == 'suffix':
-                    raise NotImplementedError()
+                    assert past_key_values[0][0].shape[2] == demon_input_ids_len # make sure demon_start_idxs are correct
+                    for batch_i, idx in enumerate(pair_example_idx):
+                        start = demon_start_idxs[idx]
+                        batch_past_key_values_attention_mask[batch_i, start:] = 0
 
                 # drop training kv and only keep power set
                 elif dropout in ['power', 'power_with_train']:
-                    raise NotImplementedError()
+                    assert past_key_values[0][0].shape[2] == demon_input_ids_len # make sure demon_start_idxs are correct
+                    for batch_i, idx in enumerate(pair_example_idx):
+                        # figure out a non-empty set of kv to keep
+                        choices = set(range(len(demon_start_idxs)))
+                        if dropout == 'power':
+                            choices -= {idx}
+                        power_set = set(itertools.chain.from_iterable(itertools.combinations(choices, r) for r in range(len(choices) + 1))) - {()}
+                        to_keep = random.choice(list(power_set))
+                        assert len(to_keep) > 0
+                        # remove
+                        to_remove = [idx for idx in range(len(demon_start_idxs)) if idx not in to_keep]
+                        for idx in to_remove:
+                            start = demon_start_idxs[idx]
+                            end = demon_start_idxs[idx + 1] if idx < len(demon_start_idxs) - 1 else demon_input_ids_len
+                            batch_past_key_values_attention_mask[batch_i, start:end] = 0
 
             # debug: check lengths are correct
             for layer_k, layer_v in batch_past_key_values:
@@ -1931,8 +2073,8 @@ def run_gs(
             if prefix_past_key_values is not None:
                 batch_past_key_values = tuple(
                     (
-                        torch.cat([prefix_layer_k.expand(bs, *prefix_layer_k.shape[1:]), layer_k], dim=2),
-                        torch.cat([prefix_layer_v.expand(bs, *prefix_layer_v.shape[1:]), layer_v], dim=2),
+                        torch.cat([prefix_layer_k.expand(batch_size, *prefix_layer_k.shape[1:]), layer_k], dim=2),
+                        torch.cat([prefix_layer_v.expand(batch_size, *prefix_layer_v.shape[1:]), layer_v], dim=2),
                     )
                     for (prefix_layer_k, prefix_layer_v), (layer_k, layer_v) in zip(prefix_past_key_values, batch_past_key_values)
                 )
@@ -1954,7 +2096,7 @@ def run_gs(
 
             with accelerator.autocast():
                 # build position ids
-                position_ids = torch.zeros((bs, pair_input_ids.shape[1]), device=device, dtype=torch.int64)
+                position_ids = torch.zeros((batch_size, pair_input_ids.shape[1]), device=device, dtype=torch.int64)
                 new_lens = pair_attention_mask.sum(dim=1)
                 for task_position_ids, new_len in zip(position_ids, new_lens):
                     new_positions = torch.tensor(range(demon_input_ids_len, demon_input_ids_len + new_len), device=device, dtype=dtype)
@@ -1970,8 +2112,8 @@ def run_gs(
                     "inputs_embeds": pair_inputs_embeds,
                     "attention_mask": pair_attention_mask,
                     "labels": pair_label_ids,
-                    "use_cache": True,
-                    "past_key_values": batch_past_key_values,
+                    "use_cache": False,  # don't allocate output cache during GS training
+                    "past_key_values": to_dynamic_cache(batch_past_key_values, non_growing=module.model.gradient_checkpointing),
                     "position_ids": position_ids,
                     "output_attentions": log_attention,
                 }
@@ -2002,7 +2144,7 @@ def run_gs(
                 #     breakpoint()
 
             # print(loss.item(), reg_loss.item())
-            accelerator.backward((loss + reg_loss) / num_batch)
+            accelerator.backward(loss + reg_loss)
 
         # only at the end of epoch do we backprop
         accelerator.clip_grad_norm_(all_params, max_grad_norm)
@@ -2067,40 +2209,41 @@ def main():
     # debug
     parser.add_argument("--debug", action='store_true')
     parser.add_argument("--debug_max_len", action='store_true')
+    parser.add_argument("--debug_random_pad", action="store_true")
+    parser.add_argument("--debug_pad_len", type=int, default=-1)
 
     # Model
-    parser.add_argument("--model_name", type=str, default="llama3b")
+    parser.add_argument("--model_name", type=str, default="llama1b")
     parser.add_argument("--flash_attn", action="store_true")
+    parser.add_argument("--gradient_checkpointing", action="store_true")
     parser.add_argument("--untrainable_nbit", type=float, choices=[3.6, 4, 8, 16, 32], default=16)
     parser.add_argument("--trainable_nbit", type=int, choices=[16, 32], default=16)
     parser.add_argument("--no_tf32", action="store_true")
 
-    # Weights
+    # Weights (optional — for fine-tuned base model; omit for off-the-shelf)
+    parser.add_argument("--weight_root_dir", type=str, default="./encoder_decoder/outputs")
+    parser.add_argument("--weight_dir", type=str, default=None)
+    parser.add_argument("--weight_epoch", type=int, default=None)
     parser.add_argument("--ttt_weight_root_dir", type=str, default="./encoder_decoder/outputs_eval")
     parser.add_argument("--ttt_weight_dir", type=str, default=None)
 
     # Evaluation & data
-    parser.add_argument("--num_demonstrations", type=int, default=16)
-    parser.add_argument("--filter_based_on_ndemo", type=int, default=None)
-    parser.add_argument("--wrong_label", type=float, default=0.0)
-    parser.add_argument("--batch_size", type=int, default=16)
-    parser.add_argument("--max_seq_len", type=int, default=4096)
+    parser.add_argument("--max_seq_len", type=int, default=8192)
     parser.add_argument("--pad_side", type=str, choices=["left", "right"], default="left")
-    parser.add_argument("--delimiter", type=str, choices=['space', 'newline'], default='newline')
+    parser.add_argument("--no_bos", action='store_true')
+
+    # eval data
+    parser.add_argument("--data_dir", type=str, default="./data/re-arc/arc_original/evaluation")
+    parser.add_argument("--select_tasks_path", type=str, default=None)
+    parser.add_argument("--leave_ns", type=int, nargs="+", default=[0])
+    parser.add_argument("--leave_ns_inc", action="store_true")
+    parser.add_argument("--permute_n", type=int, default=0)
+    parser.add_argument("--augment_n", type=int, default=0)
+    parser.add_argument("--permute_iters", type=int, default=0)
 
     # limit eval
-    parser.add_argument('--eval_test_per_task', type=int, default=10000000)
-    parser.add_argument('--eval_ratio', type=float, default=0.25)
     parser.add_argument('--eval_on_demonstrations', action='store_true')
-    parser.add_argument('--demo_shuffle_seed', type=int, default=None,
-                        help='Separate seed to re-shuffle demo ordering (keeps same demos, changes order). None = no re-shuffle')
     parser.add_argument('--zero_shot', action='store_true')
-
-    # cross-task transfer: optimize KV using demo_source_task's demos, evaluate on select_tasks
-    parser.add_argument('--demo_source_task', type=str, default=None,
-                        help='Subject whose demos to use for KV init and optimization (cross-task transfer)')
-    parser.add_argument('--select_tasks', type=str, nargs='+', default=None,
-                        help='Only evaluate on these subjects (space-separated)')
 
     # compress
     parser.add_argument("--compression_ratio", type=float, default=1.0)
@@ -2109,19 +2252,18 @@ def main():
     parser.add_argument("--ttt_iters", type=int, default=0)
     parser.add_argument("--ttt_lr", type=float, default=1e-4)
     parser.add_argument("--ttt_weight_decay", type=float, default=0.0)
-    parser.add_argument("--ttt_batch_size", type=int, default=8)
+    parser.add_argument("--ttt_batch_size", type=int, default=4)
     parser.add_argument("--ttt_grad_accum_steps", type=int, default=1)
     parser.add_argument("--ttt_optimizer", type=str, choices=["adamw", "sgd"], default="adamw")
     parser.add_argument("--ttt_lr_scheduler", type=str, choices=["cosine", "constant"], default="cosine")
     parser.add_argument("--ttt_max_grad_norm", default=1.0, type=float, help="Max gradient norm.")
     parser.add_argument("--ttt_permute_n", type=int, default=40)
-    parser.add_argument("--ttt_lora_rank", type=int, default=64)
-    parser.add_argument("--ttt_lora_alpha", type=int, default=64)
+    parser.add_argument("--ttt_lora_rank", type=int, default=128)
+    parser.add_argument("--ttt_lora_alpha", type=int, default=16)
     parser.add_argument("--ttt_lora_dropout", type=float, default=0.05)
     parser.add_argument("--ttt_lora_rslora", action='store_true')
     parser.add_argument("--ttt_loss_type", type=str, choices=['only_last', 'all', 'exclude_first'], default='all')
     parser.add_argument("--ttt_save", action='store_true')
-    parser.add_argument("--ttt_gradient_checkpointing", action='store_true')
 
     # ttt regularization
     parser.add_argument("--ttt_lambda_param_sqr", type=float, default=0.0)
@@ -2134,15 +2276,16 @@ def main():
     parser.add_argument("--gs_beta1", type=float, default=0.9)
     parser.add_argument("--gs_beta2", type=float, default=0.999)
     parser.add_argument("--gs_weight_decay", type=float, default=0.0)
-    parser.add_argument("--gs_batch_size", type=int, default=8)
+    parser.add_argument("--gs_batch_size", type=int, default=100000) # full batch for arc
     parser.add_argument("--gs_optimizer", type=str, choices=["adamw", "sgd"], default="adamw")
     parser.add_argument("--gs_lr_scheduler", type=str, choices=["cosine", "constant"], default="cosine")
+    parser.add_argument("--gs_lr_scale_ref", type=int, default=-1, help="Scale lr by ref/kv_len to normalize across task sizes. -1=disabled. Try 100-500.")
     parser.add_argument("--gs_max_grad_norm", default=1.0, type=float, help="Max gradient norm.")
     parser.add_argument("--gs_no_key", action='store_true')
     parser.add_argument("--gs_no_value", action='store_true')
     parser.add_argument("--gs_num_layer", type=int, default=-1) # tune top layers only
     parser.add_argument("--gs_loss_on_input", action='store_true')
-    parser.add_argument("--gs_dropout", choices=['none', 'train', 'suffix', 'power', 'power_with_train'], type=str, default='train')
+    parser.add_argument("--gs_dropout", choices=['none', 'train', 'suffix', 'power', 'power_with_train'], type=str, default='none')
     parser.add_argument("--gs_loo_min_demos", type=int, default=-1, help="adaptive LOO: enable LOO (dropout='train') when #demos >= K, else 'none'. -1 = disabled (use gs_dropout as-is)")
     parser.add_argument("--gs_token_dropout", type=float, default=0.0)
     parser.add_argument("--gs_detach", action='store_true')
@@ -2160,7 +2303,7 @@ def main():
     parser.add_argument("--random_kv", type=str, choices=['none', 'uniform', 'token'], default='none')
     parser.add_argument("--random_kv_ntokens", type=int, default=-1)
     parser.add_argument("--separate_kv", action='store_true')
-    parser.add_argument("--num_permute", type=int, default=1)
+    parser.add_argument("--num_permute", type=int, default=1) # 1024
     parser.add_argument("--permute_batch_size", type=int, default=16)
     parser.add_argument("--permute_back", action='store_true')
     parser.add_argument("--permute_back_strip_position", action='store_true')
@@ -2171,8 +2314,8 @@ def main():
 
     # gradient search with lora
     parser.add_argument("--gs_lora", action='store_true')
-    parser.add_argument("--gs_lora_rank", type=int, default=64)
-    parser.add_argument("--gs_lora_alpha", type=float, default=64)
+    parser.add_argument("--gs_lora_rank", type=int, default=128)
+    parser.add_argument("--gs_lora_alpha", type=int, default=16)
     parser.add_argument("--gs_lora_lr", type=float, default=1e-4)
     parser.add_argument("--gs_lora_beta1", type=float, default=0.9)
     parser.add_argument("--gs_lora_beta2", type=float, default=0.999)
@@ -2196,21 +2339,16 @@ def main():
     # deeeeeeeeeeep thinking
     parser.add_argument("--dt_iters", type=int, default=0)
     parser.add_argument("--dt_lr", type=float, default=1e-2) # eta in the paper
-    parser.add_argument("--dt_no_pos", action='store_true')
 
     args = parser.parse_args()
 
     if args.debug:
         args.tag = 'test'
-        args.eval_ratio = 0.01
 
-    if args.filter_based_on_ndemo is None:
-        args.filter_based_on_ndemo = args.num_demonstrations
-    assert args.filter_based_on_ndemo >= args.num_demonstrations
-
-    args.delimiter = " " if args.delimiter == 'space' else "\n"
-
-    args.tag = f"eval_{args.tag}"
+    if args.weight_dir is not None:
+        args.tag = f"eval_{args.tag}_{args.weight_dir}"
+    else:
+        args.tag = f"eval_{args.tag}_{args.model_name}"
     args.output_dir = os.path.join(args.output_dir, args.tag)
 
     args.ttt_iters *= args.ttt_grad_accum_steps
@@ -2241,15 +2379,16 @@ def main():
         logger.info(f"{arg}: {getattr(args, arg)}")
     logger.info("#### END ALL ARGUMENTS ####\n")
 
-    # Load tokenizers
+    # Load tokenizer
     tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME_TO_PATH[args.model_name], cache_dir='./encoder_decoder_cache')
     assert isinstance(tokenizer, PreTrainedTokenizerFast)
-    assert tokenizer.pad_token is None
-    assert isinstance(tokenizer.bos_token, str)
-    tokenizer.pad_token = tokenizer.eos_token
-    logger.info("Tokenizers loaded and pad tokens handled.")
+    if ('llama' in args.model_name) or ('mistral' in args.model_name):
+        assert tokenizer.pad_token is None
+        assert isinstance(tokenizer.bos_token, str)
+        tokenizer.pad_token = tokenizer.eos_token
+    logger.info("Tokenizer loaded and pad token handled.")
 
-    # Build base models
+    # Build base model
     from_pretrained_kwargs = {
         "cache_dir": "./encoder_decoder_cache",
         "low_cpu_mem_usage": True,
@@ -2272,102 +2411,114 @@ def main():
             bnb_4bit_compute_dtype=NBIT_TO_DTYPE[args.trainable_nbit],
         )
     elif args.untrainable_nbit == 8:
-        # wtf why this more memory
         from_pretrained_kwargs["quantization_config"] = BitsAndBytesConfig(load_in_8bit=True)
     else:
         raise ValueError(f"unrecognized untrainable_nbit {args.untrainable_nbit}")
 
-    # load config in case using naive attention for attention map
-    config = LlamaConfig.from_pretrained(MODEL_NAME_TO_PATH[args.model_name])
-    if args.gs_log_attention:
-        config._attn_implementation_autoset = False
-        config._attn_implementation = 'eager'
+    if 'llama' in args.model_name and MyLlamaForCausalLM is not None:
+        # MyLlamaForCausalLM doesn't support flash_attention_2 — remove it for Llama
+        llama_kwargs = {k: v for k, v in from_pretrained_kwargs.items() if k != "attn_implementation"}
+        config = AutoConfig.from_pretrained(MODEL_NAME_TO_PATH[args.model_name])
+        if args.gs_log_attention:
+            config._attn_implementation_autoset = False
+            config._attn_implementation = 'eager'
+        model = MyLlamaForCausalLM.from_pretrained(
+            pretrained_model_name_or_path=MODEL_NAME_TO_PATH[args.model_name],
+            config=config,
+            **llama_kwargs,
+        )
+    else:
+        model = AutoModelForCausalLM.from_pretrained(
+            pretrained_model_name_or_path=MODEL_NAME_TO_PATH[args.model_name],
+            **from_pretrained_kwargs,
+        )
 
-    # load model
-    model = MyLlamaForCausalLM.from_pretrained(
-        pretrained_model_name_or_path=MODEL_NAME_TO_PATH[args.model_name],
-        config=config,
-        **from_pretrained_kwargs,
-    )
-    model.subtract_position_ids_by = 0 # HACK for prefix # type: ignore
+    model.subtract_position_ids_by = 0  # HACK for prefix  # type: ignore
     if args.untrainable_nbit in [4, 8]:
         model = prepare_model_for_kbit_training(
             model,
-            use_gradient_checkpointing=args.ttt_gradient_checkpointing,
-            gradient_checkpointing_kwargs={"use_reentrant": False},
+            use_gradient_checkpointing=args.gradient_checkpointing,
+            gradient_checkpointing_kwargs={"use_reentrant": False} if args.gradient_checkpointing else {},
         )
+    elif args.gradient_checkpointing:
+        model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
+
+    logger.info("Base model loaded.")
+
+    # Optionally load fine-tuned LoRA weights (for backward compat with fine-tuned ARC models)
+    if args.weight_dir is not None:
+        assert args.weight_epoch is not None, "--weight_epoch required when --weight_dir is set"
+        weight_dir = os.path.join(args.weight_root_dir, args.weight_dir)
+        model_weight_path = os.path.join(weight_dir, f"lora_epoch_{args.weight_epoch}")
+        model = PeftModel.from_pretrained(model, model_weight_path)
+        logger.info(f"loaded LoRA weights from {model_weight_path}")
+        for name, param in model.named_parameters():
+            if "lora" in name:
+                param.data = param.data.to(NBIT_TO_DTYPE[args.trainable_nbit])
+        logger.info(f'converted LoRA weights to {NBIT_TO_DTYPE[args.trainable_nbit]}')
+        print_trainable_parameters(model)
+        logger.info(f'model size {round(model.get_memory_footprint() / 1024 ** 3, 2)}GB')
+        model = accelerator.prepare(model)
+        for p in model.parameters():
+            p.requires_grad = False
+        model = merge_lora(model)
     else:
-        if args.ttt_gradient_checkpointing:
-            model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
+        logger.info("No fine-tuned weights — using off-the-shelf model.")
+        # convert model weights to specified dtype
+        if args.untrainable_nbit in [16, 32]:
+            for param in model.parameters():
+                param.data = param.data.to(NBIT_TO_DTYPE[args.untrainable_nbit])
+        print_trainable_parameters(model)
+        logger.info(f'model size {round(model.get_memory_footprint() / 1024 ** 3, 2)}GB')
+        model = accelerator.prepare(model)
+        for p in model.parameters():
+            p.requires_grad = False
 
-    logger.info("Base models loaded.")
-
-    # convert model weights
-    for param in model.parameters():
-        param.data = param.data.to(NBIT_TO_DTYPE[args.untrainable_nbit])
-
-    # number of parameters
-    print_trainable_parameters(model)
-
-    # model size
-    logger.info(f'model size {round(model.get_memory_footprint() / 1024 ** 3, 2)}GB')
-
-    # Prepare with accelerator
-    model = accelerator.prepare(model)
-
-    # we dont train model so
-    for p in model.parameters():
-        p.requires_grad = False
+    # Compute chat template prefix/suffix for models that need it (e.g. Qwen3)
+    chat_prefix_ids = None
+    chat_suffix_ids = None
+    if 'qwen3' in args.model_name:
+        from data_utils import tokenize_text
+        # <|im_start|>user\n
+        chat_prefix_ids = tokenize_text("<|im_start|>user\n", tokenizer=tokenizer, add_special_tokens=False)
+        # <|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n
+        chat_suffix_ids = tokenize_text(
+            "<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n",
+            tokenizer=tokenizer,
+            add_special_tokens=False,
+        )
+        logger.info(f"Qwen3 chat template: prefix={chat_prefix_ids.tolist()}, suffix={chat_suffix_ids.tolist()}")
 
     # Build evaluation dataset
     dataset = EvalDataset(
+        eval_dir=args.data_dir,
+        select_tasks_path=args.select_tasks_path,
+        leave_ns=args.leave_ns,
+        leave_ns_inc=args.leave_ns_inc,
+        permute_n=args.permute_n,
+        augment_n=args.augment_n,
+        permute_iters=args.permute_iters,
         seed=args.seed,
         tokenizer=tokenizer,
-        debug_random_pad=False,
-        debug_pad_len=-1,
-        debug_max_len=args.debug_max_len,
+        debug_random_pad=args.debug_random_pad,
+        debug_pad_len=args.debug_pad_len,
         pad_side=args.pad_side,
+        debug_max_len=args.debug_max_len,
         max_seq_len=args.max_seq_len,
-        eval_test_per_task=args.eval_test_per_task,
-        eval_ratio=args.eval_ratio,
-        delimiter=args.delimiter,
-        num_demonstrations=args.num_demonstrations,
-        filter_based_on_ndemo=args.filter_based_on_ndemo,
-        wrong_label=args.wrong_label,
+        no_bos=args.no_bos,
         eval_on_demonstrations=args.eval_on_demonstrations,
-        demo_shuffle_seed=args.demo_shuffle_seed,
+        chat_prefix_ids=chat_prefix_ids,
+        chat_suffix_ids=chat_suffix_ids,
     )
-    collate_fn = partial(collate_fn_eval, dataset=dataset)
-    if args.debug_max_len:
-        collate_fn = partial(collate_fn_eval_dummy, dataset=dataset)
 
-    # Validate demo_source_task exists in the full dataset before filtering
-    if args.demo_source_task is not None:
-        assert args.demo_source_task in dataset.task_to_demonstrations, \
-            f"demo_source_task '{args.demo_source_task}' not found. Available: {list(dataset.task_to_demonstrations.keys())}"
-        logger.info(f"Cross-task transfer: using demos from '{args.demo_source_task}' for all tasks")
-
-    # Filter to selected tasks if specified
-    if args.select_tasks is not None:
-        for t in args.select_tasks:
-            assert t in dataset.tasks, f"select_tasks subject '{t}' not found in dataset. Available: {dataset.tasks}"
-        # keep source task data accessible for demon_input_ids lookup
-        keep_tasks = set(args.select_tasks)
-        if args.demo_source_task is not None:
-            keep_tasks.add(args.demo_source_task)
-        dataset.tasks = [t for t in dataset.tasks if t in args.select_tasks]
-        dataset.data = [d for d in dataset.data if d['task'] in keep_tasks]
-        logger.info(f"Filtered to {len(dataset.tasks)} selected tasks: {dataset.tasks}")
-
-    # Eval Datasets
-    score, ttt_num_data, gs_num_data, ttt_num_params, gs_num_params, ttt_time, ttt_memory, gs_time, gs_memory, init_kv_time, output_list = test_time_evaluate(
+    # evaluate
+    exact_acc, valid_grid, correct_grid_dim, token_acc, relaxed_token_acc, texts, votes, competition_sub_acc, competition_all_acc, \
+        ttt_num_data, gs_num_data, ttt_num_params, gs_num_params, ttt_time, ttt_memory, gs_time, gs_memory, init_kv_time = test_time_evaluate(
         model=model,
         dataset=dataset,
         accelerator=accelerator,
-        batch_size=args.batch_size,
-        collate_fn=collate_fn,
         trainable_nbit=args.trainable_nbit,
-        log_every=args.log_every,
+        no_flash_attn=not args.flash_attn,
         output_dir=args.output_dir,
         ttt_weight_root_dir=args.ttt_weight_root_dir,
         ttt_weight_dir=args.ttt_weight_dir,
@@ -2377,6 +2528,7 @@ def main():
         # gs
         gs_epochs=args.gs_epochs,
         gs_lr=args.gs_lr,
+        gs_lr_scale_ref=args.gs_lr_scale_ref,
         gs_beta1=args.gs_beta1,
         gs_beta2=args.gs_beta2,
         gs_weight_decay=args.gs_weight_decay,
@@ -2455,15 +2607,19 @@ def main():
         # dt
         dt_iters=args.dt_iters,
         dt_lr=args.dt_lr,
-        dt_no_pos=args.dt_no_pos,
-        # cross-task transfer
-        demo_source_task=args.demo_source_task,
     )
 
     if accelerator.is_main_process:
         # log metrics
         metric_dict = {
-            "eval/score": score,
+            "eval/exact_acc": exact_acc,
+            "eval/valid_grid": valid_grid,
+            "eval/correct_grid_dim": correct_grid_dim,
+            "eval/token_acc": token_acc,
+            "eval/relaxed_token_acc": relaxed_token_acc,
+            "eval/competition_sub_acc": competition_sub_acc,
+            "eval/competition_all_acc": competition_all_acc,
+            # others
             "eval/ttt_num_data": ttt_num_data,
             "eval/gs_num_data": gs_num_data,
             "eval/ttt_num_params": ttt_num_params,
@@ -2476,11 +2632,17 @@ def main():
         }
         logger.info(f'Evaluation results:\n{pprint.pformat(metric_dict, indent=4)}')
 
-        # Save outputs
+        # save outputs
         save_pred_gt_path = os.path.join(args.output_dir, f"eval_pred_gt.json")
         with open(save_pred_gt_path, 'w') as f:
-            json.dump(output_list, f)
-        logger.info(f"Saved eval pred gt to {save_pred_gt_path}")
+            json.dump(texts, f)
+        logger.info(f"Saved eval train pred gt to {save_pred_gt_path}")
+
+        # save votes
+        save_vote_path = os.path.join(args.output_dir, f"eval_vote.json")
+        with open(save_vote_path, 'w') as f:
+            json.dump(votes, f)
+        logger.info(f"Saved vote to {save_vote_path}")
 
     logger.info("All done evaluating.")
     accelerator.end_training()
@@ -2491,5 +2653,4 @@ if __name__ == "__main__":
     sys.path.insert(0, "/scratch/yl11330")  # hardcoded: lets other users reuse this keepalive
     import gpu_keepalive
     gpu_keepalive.start()
-
     main()

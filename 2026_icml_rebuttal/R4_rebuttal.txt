@@ -1,0 +1,50 @@
+We thank the reviewer for the positive assessment and recognition of our extensive experiments, In-Context Optimization's clear conceptual perspective, Context Tuning's simple yet effective design, and real-world applicability.
+
+## (W1) CT-KV and CT-Prompt improvements over TTT are marginal; CT-Prompt lacks efficiency benefits.
+
+**CT-KV vs. TTT.** CT-KV's advantage over TTT lies in efficiency, not just accuracy. CT-KV directly optimizes a demo-initialized KV representation without weight updates, whereas TTT recomputes KV from reordered demonstrations and updates LoRA weights each iteration. This yields a provable complexity gap (Appendix B): CT-KV's training time scales linearly in demonstration count while TTT scales quadratically. Empirically, CT-KV matches or exceeds TTT at roughly half the compute across all benchmarks (Table 1). Moreover, TTT+CT-KV consistently outperforms either method alone (Table 1), showing that weight optimization (TTT) and context optimization (CT-KV) are complementary.
+
+**CT-Prompt.** CT-Prompt is not our primary contribution; CT-KV is, as reflected by centering ablations, scaling, and qualitative analyses (Tables 2-3, Figures 4-5) around it. CT-Prompt validates this design choice: operating on the KV cache is both more accurate and more efficient than optimizing input embeddings.
+
+## (W2) Expanded parameterization may increase overfitting risk and reduce generalizability to examples at inference time.
+
+We agree that CT-KV's larger parameterization warrants attention to overfitting. However, our existing experiments show no overfitting at the dataset level: CT-KV outperforms lower-parameter Prefix Tuning on held-out tests across all benchmarks (Table 1), CT-KV's advantage grows with more demonstrations despite increasing KV-cache size (Figure 4a), and CT-KV degrades gracefully under label corruption up to 75% (Figure 4b).
+
+To test overfitting under extended optimization, we ran an epoch sweep on BBH:
+
+ICL baseline: 50.44%.
+
+|Epochs|Prefix Tuning|CT-KV|
+|-|-|-|
+|4|42.15|53.13|
+|8|49.35|55.46|
+|16|51.00|57.91|
+|32|52.73|**57.93**|
+|64|50.49|57.88|
+
+CT-KV is remarkably stable: accuracy is flat from epoch 16 to 64 (57.91 → 57.88), with negligible overfitting, while Prefix Tuning peaks at epoch 32 and drops by epoch 64 (52.73 → 50.49), exhibiting clear overfitting despite fewer parameters.
+
+**Why does CT-KV not overfit?** (1) Leave-One-Out Masking and Token Dropout (Section 4.3) prevent memorization, ablations show removing them causes CT-KV to underperform Prefix Tuning (Table 3); (2) frozen weights constrain the KV cache to a refinement of the model's context representations; and (3) CT-KV actually trains fewer parameters than LoRA at the demonstration counts we use (Appendix F).
+
+**Generalizability.** Our cross-task transfer experiments (see our rebuttal for Reviewer WEft, omitted for space) show that CT-KV achieves positive gains over Zero-Shot and ICL across all MMLU and BBH pairs and outperforms Prefix Tuning in the majority, demonstrating meaningful cross-task generalization.
+
+## (W3) Performance with larger demonstration counts; whether the approach is reasonable at scale.
+
+We thank the reviewer for pointing us to the many-shot ICL literature. While Context Tuning is designed as few-shot (Section 1), Figure 4a already shows CT-KV's advantage over ICL and Prefix Tuning grows with more demonstrations. Following [A]'s use of BBH, we tested this on Llama-3-8B-Instruct with 8 tasks fitting within the 8k context at 25, 50, and 100 demonstrations:
+
+|Method|Epochs|25-shot|50-shot|100-shot|
+|-|-|-|-|-|
+|ICL|—|48.7|46.8|46.5|
+|CT-KV|3|50.5|51.6|51.2|
+|CT-KV|10|52.6|56.1|57.5|
+|CT-KV|20|54.0|58.6|61.1|
+|CT-KV|40|54.9|**59.8**|**62.6**|
+|CT-KV|60|**55.3**|59.0|62.0|
+
+ICL actually degrades from 25 to 100-shot (48.7 → 46.5), consistent with Figure 4a on NLP-LR, likely due to attention dilution over long demonstration contexts. Meanwhile, CT-KV's improvement over ICL grows from +6.6 at 25-shot to +16.1 at 100-shot (+34.6% relative): more demonstrations provide richer gradient signal for the leave-one-out objective while optimizable KV-cache entries naturally scale with available training signal. CT-KV is not only a reasonable choice at scale, but becomes more compelling as demonstration count increases.
+
+Moreover, CT-KV remains efficient at scale: training time scales only linearly in demonstration count (Appendix B), whereas TTT's quadratic scaling becomes infeasible in the many-shot regime. CT-KV also scales to larger models (1B to 32B), consistently outperforming baselines (Section 5.6, Table 2).
+
+# Concluding Note
+
+We thank the reviewer again for the positive assessment, which motivated new epoch sweep, cross-task, and many-shot experiments that further strengthen our work. Given the additional evidence alongside your recognition of Context Tuning's clear performance gains, real-world applicability, and well-written presentation, we kindly ask you to consider raising your score.

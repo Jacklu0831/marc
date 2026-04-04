@@ -527,6 +527,7 @@ def test_time_evaluate(
     gs_num_layer: int,
     gs_loss_on_input: bool,
     gs_dropout: str,
+    gs_loo_min_demos: int,
     gs_token_dropout: float,
     gs_detach: bool,
     gs_freeze_instruct: bool,
@@ -606,6 +607,8 @@ def test_time_evaluate(
     # dt
     dt_iters: int,
     dt_lr: int,
+    # cross-task transfer
+    demo_source_task: Optional[str] = None,
 ) -> Tuple[float, float, float, float, float, float, float, float, List]:
 
     model.eval()
@@ -628,7 +631,7 @@ def test_time_evaluate(
     acc_list = []
 
     assert set(len(v) for v in dataset.task_to_demonstrations.values()) == {dataset.num_demonstrations}
-    assert len(TASKS) >= accelerator.num_processes # avoid padding issue
+    assert len(dataset.task_names) >= accelerator.num_processes # avoid padding issue
 
     # we need to cache model in case of ttt or gs with trainable lora
     cached_model = copy.deepcopy(model).cpu()
@@ -637,16 +640,18 @@ def test_time_evaluate(
     task_to_ttt_paths = {}
     if ttt_weight_dir is not None:
         ttt_weight_dir = os.path.join(ttt_weight_root_dir, ttt_weight_dir)
-        for task in list(TASKS.keys()):
+        for task in dataset.task_names:
             task_to_ttt_paths[task] = os.path.join(ttt_weight_dir, f'{task}.pt')
             # assert os.path.exists(task_to_ttt_paths[task]), task_to_ttt_paths[task]
 
     distributed_state = PartialState()
-    with distributed_state.split_between_processes(list(TASKS.keys())) as process_tasks:
+    with distributed_state.split_between_processes(dataset.task_names) as process_tasks:
         assert isinstance(process_tasks, list)
 
         for task in tqdm(process_tasks, desc='Task'):
             # data: get demonstration ids and indices, hacky
+            # cross-task transfer: use source task's demos for KV init and optimization
+            demo_task = demo_source_task if demo_source_task is not None else task
             if dataset.debug_max_len:
                 demon_len = dataset.max_seq_len * 8 // dataset.num_demonstrations
                 demon_input_ids = torch.randint(0, 30, (1, demon_len), dtype=torch.int64, device=accelerator.device)
@@ -655,15 +660,16 @@ def test_time_evaluate(
                 demon_input_ids = None
                 demon_start_idxs = None
                 for data in dataset.data:
-                    if data['task'] == task:
+                    if data['task'] == demo_task:
                         demon_input_ids = data["demon_input_ids"].unsqueeze(0).to(accelerator.device)
                         demon_start_idxs = data["demon_start_idxs"]
                         break
 
-            if demon_input_ids == None:
+            if demon_input_ids is None:
                 continue
 
-            assert demon_input_ids is not None and demon_start_idxs is not None
+            assert demon_input_ids is not None and demon_start_idxs is not None, \
+                f"Could not find demon_input_ids for demo_task='{demo_task}'"
             assert demon_input_ids.shape[1] <= dataset.max_seq_len
 
             answer_format = TASKS[task]['answer_format']
@@ -718,8 +724,8 @@ def test_time_evaluate(
                     start_time = time.time()
                     ttt_save_path = os.path.join(output_dir, f'{task}.pt') if ttt_save else None
                     model, ttt_num_data, ttt_num_params, ttt_memory = run_ttt(
-                        task=task,
-                        demonstration_pairs=dataset.task_to_demonstrations[task],
+                        task=demo_task,
+                        demonstration_pairs=dataset.task_to_demonstrations[demo_task],
                         eval_dataset=dataset,
                         accelerator=accelerator,
                         model=model,
@@ -749,11 +755,14 @@ def test_time_evaluate(
                     gc.collect()
 
             # initialize kv
+            # cross-task transfer: reset seed so KV optimization is identical for all targets
+            if demo_source_task is not None:
+                set_seed(accelerator.process_index)
             start_time = time.time()
 
             if gs_curriculum_epochs > 0:
                 past_key_values = run_gs_curriculum(
-                    demonstration_pairs=dataset.task_to_demonstrations[task],
+                    demonstration_pairs=dataset.task_to_demonstrations[demo_task],
                     eval_dataset=dataset,
                     accelerator=accelerator,
                     model=model,
@@ -833,8 +842,16 @@ def test_time_evaluate(
                             (layer_k.to(torch.bfloat16), layer_v.to(torch.bfloat16))
                             for layer_k, layer_v in past_key_values
                         )
+                    # adaptive LOO: override dropout per-task based on demo count
+                    n_demos = len(demon_start_idxs)
+                    if gs_loo_min_demos > 0:
+                        effective_gs_dropout = 'train' if n_demos >= gs_loo_min_demos else 'none'
+                        logger.info(f"Adaptive LOO: {n_demos} demos, threshold {gs_loo_min_demos}, dropout='{effective_gs_dropout}'")
+                    else:
+                        effective_gs_dropout = gs_dropout
+
                     model, past_key_values, gs_num_data, gs_num_params, attn_logger, fisher_vals, gs_memory = run_gs(
-                        demonstration_pairs=dataset.task_to_demonstrations[task],
+                        demonstration_pairs=dataset.task_to_demonstrations[demo_task],
                         eval_dataset=dataset,
                         accelerator=accelerator,
                         model=model,
@@ -855,7 +872,7 @@ def test_time_evaluate(
                         no_value=gs_no_value,
                         num_layer=gs_num_layer,
                         loss_on_input=gs_loss_on_input,
-                        dropout=gs_dropout,
+                        dropout=effective_gs_dropout,
                         token_dropout=gs_token_dropout,
                         detach=gs_detach,
                         freeze_instruct=gs_freeze_instruct,
@@ -1086,17 +1103,19 @@ def test_time_evaluate(
     # assert len(output_list) == len(dataset), (len(output_list), len(dataset)) # dataset length, not num task
     # assert len(acc_list) == len(TASKS), (len(acc_list), len(TASKS))
 
-    # average others
-    ttt_num_data = sum(ttt_num_data_list) / len(ttt_num_data_list)
-    gs_num_data = sum(gs_num_data_list) / len(gs_num_data_list)
-    ttt_num_params = sum(ttt_num_params_list) / len(ttt_num_params_list)
-    gs_num_params = sum(gs_num_params_list) / len(gs_num_params_list)
-    ttt_time = sum(ttt_time_list) / len(ttt_time_list)
-    ttt_memory = sum(ttt_memory_list) / len(ttt_memory_list)
-    gs_time = sum(gs_time_list) / len(gs_time_list)
-    gs_memory = sum(gs_memory_list) / len(gs_memory_list)
-    init_kv_time = sum(init_kv_time_list) / len(init_kv_time_list)
-    score = sum(acc_list) / len(acc_list)
+    # average others (guard against empty lists when all tasks were skipped, e.g. cross-task with degenerate source)
+    def _safe_mean(lst: list) -> float:
+        return sum(lst) / len(lst) if lst else 0.0
+    ttt_num_data = _safe_mean(ttt_num_data_list)
+    gs_num_data = _safe_mean(gs_num_data_list)
+    ttt_num_params = _safe_mean(ttt_num_params_list)
+    gs_num_params = _safe_mean(gs_num_params_list)
+    ttt_time = _safe_mean(ttt_time_list)
+    ttt_memory = _safe_mean(ttt_memory_list)
+    gs_time = _safe_mean(gs_time_list)
+    gs_memory = _safe_mean(gs_memory_list)
+    init_kv_time = _safe_mean(init_kv_time_list)
+    score = _safe_mean(acc_list)
 
     return score, ttt_num_data, gs_num_data, ttt_num_params, gs_num_params, ttt_time, ttt_memory, gs_time, gs_memory, init_kv_time, output_list
 
@@ -1892,7 +1911,7 @@ def run_gs(
             bs = pair_input_ids.shape[0]
 
             # construct full attention mask for past key values first
-            batch_past_key_values_attention_mask = torch.ones((batch_size, past_key_values[0][0].shape[2]), device=accelerator.device, dtype=torch.int64)
+            batch_past_key_values_attention_mask = torch.ones((bs, past_key_values[0][0].shape[2]), device=accelerator.device, dtype=torch.int64)
 
             if detach:
                 # use the same past key values and attention mask, but detach untrained parts
@@ -2005,8 +2024,8 @@ def run_gs(
             if prefix_past_key_values is not None:
                 batch_past_key_values = tuple(
                     (
-                        torch.cat([prefix_layer_k.expand(batch_size, *prefix_layer_k.shape[1:]), layer_k], dim=2),
-                        torch.cat([prefix_layer_v.expand(batch_size, *prefix_layer_v.shape[1:]), layer_v], dim=2),
+                        torch.cat([prefix_layer_k.expand(bs, *prefix_layer_k.shape[1:]), layer_k], dim=2),
+                        torch.cat([prefix_layer_v.expand(bs, *prefix_layer_v.shape[1:]), layer_v], dim=2),
                     )
                     for (prefix_layer_k, prefix_layer_v), (layer_k, layer_v) in zip(prefix_past_key_values, batch_past_key_values)
                 )
@@ -2028,7 +2047,7 @@ def run_gs(
 
             with accelerator.autocast():
                 # build position ids
-                position_ids = torch.zeros((batch_size, pair_input_ids.shape[1]), device=device, dtype=torch.int64)
+                position_ids = torch.zeros((bs, pair_input_ids.shape[1]), device=device, dtype=torch.int64)
                 new_lens = pair_attention_mask.sum(dim=1)
                 for task_position_ids, new_len in zip(position_ids, new_lens):
                     new_positions = torch.tensor(range(demon_input_ids_len, demon_input_ids_len + new_len), device=device, dtype=dtype)
@@ -2390,6 +2409,11 @@ def main():
     # limit eval
     parser.add_argument('--eval_ratio', type=float, default=1.0)
     parser.add_argument('--eval_on_demonstrations', action='store_true')
+    parser.add_argument('--select_tasks', nargs='+', type=str, default=None)
+    parser.add_argument('--demo_source_task', type=str, default=None,
+                        help='Task whose demos to use for KV init and optimization (cross-task transfer)')
+    parser.add_argument('--demo_shuffle_seed', type=int, default=None,
+                        help='Separate seed to re-shuffle demo ordering (keeps same demos, changes order). None = no re-shuffle')
     parser.add_argument('--zero_shot', action='store_true')
 
     # compress
@@ -2433,6 +2457,7 @@ def main():
     parser.add_argument("--gs_num_layer", type=int, default=-1) # tune top layers only
     parser.add_argument("--gs_loss_on_input", action='store_true')
     parser.add_argument("--gs_dropout", choices=['none', 'train', 'suffix', 'power', 'power_with_train'], type=str, default='train')
+    parser.add_argument("--gs_loo_min_demos", type=int, default=-1, help="adaptive LOO: enable LOO (dropout='train') when #demos >= K, else 'none'. -1 = disabled (use gs_dropout as-is)")
     parser.add_argument("--gs_token_dropout", type=float, default=0.0)
     parser.add_argument("--gs_detach", action='store_true')
     parser.add_argument("--gs_freeze_instruct", action='store_true')
@@ -2629,10 +2654,19 @@ def main():
         num_demonstrations=args.num_demonstrations,
         eval_ratio=args.eval_ratio,
         eval_on_demonstrations=args.eval_on_demonstrations,
+        select_tasks=args.select_tasks,
+        demo_source_task=args.demo_source_task,
+        demo_shuffle_seed=args.demo_shuffle_seed,
     )
     collate_fn = partial(collate_fn_eval, dataset=dataset)
     if args.debug_max_len:
         collate_fn = partial(collate_fn_eval_dummy, dataset=dataset)
+
+    # Validate demo_source_task exists in the dataset
+    if args.demo_source_task is not None:
+        assert args.demo_source_task in dataset.task_to_demonstrations, \
+            f"demo_source_task '{args.demo_source_task}' not found. Available: {list(dataset.task_to_demonstrations.keys())}"
+        logger.info(f"Cross-task transfer: using demos from '{args.demo_source_task}' for all tasks")
 
     # update this, no redundant memory
     args.max_seq_len = dataset.max_seq_len
@@ -2668,6 +2702,7 @@ def main():
         gs_num_layer=args.gs_num_layer,
         gs_loss_on_input=args.gs_loss_on_input,
         gs_dropout=args.gs_dropout,
+        gs_loo_min_demos=args.gs_loo_min_demos,
         gs_token_dropout=args.gs_token_dropout,
         gs_detach=args.gs_detach,
         gs_freeze_instruct=args.gs_freeze_instruct,
@@ -2747,6 +2782,8 @@ def main():
         # dt
         dt_iters=args.dt_iters,
         dt_lr=args.dt_lr,
+        # cross-task transfer
+        demo_source_task=args.demo_source_task,
     )
 
     if accelerator.is_main_process:
@@ -2776,4 +2813,12 @@ def main():
 
 
 if __name__ == "__main__":
+    # In-process GPU keepalive — prevents HPC auto-kill (<80% util after 2h).
+    # Must be in-process, NOT a separate process: a separate keepalive's CUDA context
+    # races with training on cold GPUs and causes 75x slowdown via MPS contention.
+    import sys
+    sys.path.insert(0, "/scratch/yl11330")  # hardcoded: lets other users reuse this keepalive
+    import gpu_keepalive
+    gpu_keepalive.start()
+
     main()

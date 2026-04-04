@@ -1,0 +1,48 @@
+We thank the reviewer for the constructive assessment and recognition of Context Tuning as easy to implement, consistently effective, and scalable.
+## (W1) The method builds on existing prompt/prefix tuning techniques.
+
+We highlight that CT-KV learns a new form of task representation at test time: an optimized KV cache grounded in the model's own activations on demonstrations and refined via gradient descent. This representation is distinct from what ICL, TTT, or Prompt/Prefix Tuning produce, and outperforms all of them from 1B to 32B (Table 1, Section 5.6):
+- Relative to Prefix/Prompt Tuning, CT-KV's representation is grounded in demonstrations rather than learned from scratch. We introduce **Leave-One-Out Masking** to prevent trivial answer retrieval from the trainable context and **Token Dropout** to regularize training (Section 4.3). Table 3 validates their importance: without them, CT-KV is only competitive with Prefix Tuning.
+- Relative to ICL, CT-KV optimizes the demo-initialized KV cache via gradient descent, trading compute for significantly increased performance (Table 1).
+- Relative to TTT, CT-KV's representation lives in context rather than model weights, yielding linear vs. quadratic training time (Appendix B), and matching TTT at much less compute (Table 1).
+## (W2 + Q1) ICO framework boundaries.
+
+We clarify that ICO is not a method, but a framework (Section 4.1) encompassing few-shot methods that leverage both demonstrations and gradient-based optimization. Not all inference-time optimization methods qualify; e.g., Prefix Tuning lacks demonstration context, ICL lacks gradient optimization. Within ICO, TTT optimizes model weights while Context Tuning optimizes context representations. The ICO formalization directly motivated TTT+CT-KV by identifying weights and context as complementary targets, which consistently outperforms either method alone (Table 1).
+## (W3) The experiments focus mainly on reasoning benchmarks.
+
+Of our four benchmarks, only BBH and ARC are reasoning benchmarks. NLP-LR (26 tasks) tests realistic deployment tasks like sentiment analysis and paraphrasing, and MMLU (57 subjects) is primarily a knowledge and factual recall benchmark (Section 5.1, Figure 3).
+## (W4) Sensitivity to demonstration quality, ordering, selection.
+
+**Quality.** Section 5.5 and Figure 4b show CT-KV outperforms all baselines under label corruption up to 75% on NLP-LR and MMLU, degrading gracefully.
+
+**Selection.** All results in Table 1 are averaged over 5 random seeds with different demonstrations. CT-KV exhibits lower variance than Prefix Tuning (Section 5.4).
+
+**Ordering.** We conduct new experiments: 5 random orderings on BBH and MMLU with fixed few-shot demonstrations (Table 1 hyperparameters).
+
+|Method|MMLU Mean|MMLU Std|BBH Mean|BBH Std|
+|-|-|-|-|-|
+|ICL|40.86|0.33|49.60|0.44|
+|Prefix|41.23|0.38|51.31|0.46|
+|CT-KV|43.95|0.32|57.59|0.44|
+
+All methods show low variance (std < 0.5), with CT-KV maintaining its advantage across orderings.
+## (Q3) Evaluating with larger LLMs on more complex tasks.
+
+In Section 5.6 and Table 2, we evaluate CT-KV on five models above 10B (Mistral-12B, DeepSeek-14B/32B, Qwen-14B/32B). CT-KV consistently outperforms baselines.
+
+Our benchmarks span varying complexity from NLP tasks to spatial reasoning (see W3). ARC in particular is among the most challenging in LLM evaluation, where even state-of-the-art models achieve low accuracy. We welcome dataset suggestions.
+## (Q4) Practical latency or computational overhead.
+
+We report latency in Table 1 and derive time complexity in Appendix B. CT-KV's training time scales linearly in demonstration count, compared to quadratically for TTT. Empirically, CT-KV adds minimal latency overhead over Prefix Tuning for a large performance gain, matching or exceeding TTT at roughly half the compute (Table 1).
+
+## (Q5) Performance on tasks different from the demonstration distribution.
+
+Context Tuning is designed as a few-shot adaptation method where demonstrations are generally expected to be in-distribution to the query. None of the baselines we compare against were designed or evaluated for out-of-distribution generalization either. That said, our cross-task transfer experiments on MMLU and BBH (see our rebuttal for Reviewer WEft, omitted for space) show CT-KV transfers meaningfully across related domains and difficulty levels.
+
+## Limitations
+
+Most concerns are addressed in our submission: benchmark diversity (Section 5.1, Figure 3), model scaling to 32B (Section 5.6, Table 2), and demonstration sensitivity (Section 5.4, 5.5, Figure 4b). Our new ordering experiment completes the analysis.
+
+# Concluding Note
+
+We thank the reviewer again for the assessment. Given that the majority of raised concerns are addressed in our paper, alongside new experiments on ordering and cross-task generalization, and your recognition of Context Tuning as easy to implement, consistently effective, and scalable, we kindly ask you to consider raising your score.

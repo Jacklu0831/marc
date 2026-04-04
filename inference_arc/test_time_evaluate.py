@@ -480,6 +480,7 @@ def test_time_evaluate(
     gs_num_layer: int,
     gs_loss_on_input: bool,
     gs_dropout: str,
+    gs_loo_min_demos: int,
     gs_token_dropout: float,
     gs_detach: bool,
     gs_ntokens: int,
@@ -748,6 +749,14 @@ def test_time_evaluate(
                             (layer_k.to(torch.bfloat16), layer_v.to(torch.bfloat16))
                             for layer_k, layer_v in past_key_values
                         )
+                    # adaptive LOO: override dropout per-task based on demo count
+                    n_demos = len(demon_start_idxs)
+                    if gs_loo_min_demos > 0:
+                        effective_gs_dropout = 'train' if n_demos >= gs_loo_min_demos else 'none'
+                        logger.info(f"Adaptive LOO: {n_demos} demos, threshold {gs_loo_min_demos}, dropout='{effective_gs_dropout}'")
+                    else:
+                        effective_gs_dropout = gs_dropout
+
                     model, past_key_values, gs_num_data, gs_num_params, attn_logger, fisher_vals, gs_memory = run_gs(
                         task=dataset.eval_tasks[task_idx],
                         eval_dataset=dataset,
@@ -770,7 +779,7 @@ def test_time_evaluate(
                         no_value=gs_no_value,
                         num_layer=gs_num_layer,
                         loss_on_input=gs_loss_on_input,
-                        dropout=gs_dropout,
+                        dropout=effective_gs_dropout,
                         token_dropout=gs_token_dropout,
                         detach=gs_detach,
                         log_attention=gs_log_attention,
@@ -1845,7 +1854,7 @@ def run_gs(
             bs = pair_input_ids.shape[0]
 
             # construct full attention mask for past key values first
-            batch_past_key_values_attention_mask = torch.ones((batch_size, past_key_values[0][0].shape[2]), device=accelerator.device, dtype=torch.int64)
+            batch_past_key_values_attention_mask = torch.ones((bs, past_key_values[0][0].shape[2]), device=accelerator.device, dtype=torch.int64)
 
             if detach:
                 # use the same past key values and attention mask, but detach untrained parts
@@ -1958,8 +1967,8 @@ def run_gs(
             if prefix_past_key_values is not None:
                 batch_past_key_values = tuple(
                     (
-                        torch.cat([prefix_layer_k.expand(batch_size, *prefix_layer_k.shape[1:]), layer_k], dim=2),
-                        torch.cat([prefix_layer_v.expand(batch_size, *prefix_layer_v.shape[1:]), layer_v], dim=2),
+                        torch.cat([prefix_layer_k.expand(bs, *prefix_layer_k.shape[1:]), layer_k], dim=2),
+                        torch.cat([prefix_layer_v.expand(bs, *prefix_layer_v.shape[1:]), layer_v], dim=2),
                     )
                     for (prefix_layer_k, prefix_layer_v), (layer_k, layer_v) in zip(prefix_past_key_values, batch_past_key_values)
                 )
@@ -1981,7 +1990,7 @@ def run_gs(
 
             with accelerator.autocast():
                 # build position ids
-                position_ids = torch.zeros((batch_size, pair_input_ids.shape[1]), device=device, dtype=torch.int64)
+                position_ids = torch.zeros((bs, pair_input_ids.shape[1]), device=device, dtype=torch.int64)
                 new_lens = pair_attention_mask.sum(dim=1)
                 for task_position_ids, new_len in zip(position_ids, new_lens):
                     new_positions = torch.tensor(range(demon_input_ids_len, demon_input_ids_len + new_len), device=device, dtype=dtype)
@@ -2170,6 +2179,7 @@ def main():
     parser.add_argument("--gs_num_layer", type=int, default=-1) # tune top layers only
     parser.add_argument("--gs_loss_on_input", action='store_true')
     parser.add_argument("--gs_dropout", choices=['none', 'train', 'suffix', 'power', 'power_with_train'], type=str, default='none')
+    parser.add_argument("--gs_loo_min_demos", type=int, default=-1, help="adaptive LOO: enable LOO (dropout='train') when #demos >= K, else 'none'. -1 = disabled (use gs_dropout as-is)")
     parser.add_argument("--gs_token_dropout", type=float, default=0.0)
     parser.add_argument("--gs_detach", action='store_true')
     parser.add_argument("--gs_ntokens", type=int, default=-1)
@@ -2371,6 +2381,7 @@ def main():
         eos_token=tokenizer.eos_token, # type: ignore
         pad_token="pad",
     )
+
     del tokenizer
     tokenizer = arc_tokenizer
 
@@ -2453,6 +2464,7 @@ def main():
         gs_num_layer=args.gs_num_layer,
         gs_loss_on_input=args.gs_loss_on_input,
         gs_dropout=args.gs_dropout,
+        gs_loo_min_demos=args.gs_loo_min_demos,
         gs_token_dropout=args.gs_token_dropout,
         gs_detach=args.gs_detach,
         gs_ntokens=args.gs_ntokens,
@@ -2560,4 +2572,8 @@ def main():
 
 
 if __name__ == "__main__":
+    import sys
+    sys.path.insert(0, "/scratch/yl11330")  # hardcoded: lets other users reuse this keepalive
+    import gpu_keepalive
+    gpu_keepalive.start()
     main()

@@ -200,6 +200,7 @@ class EvalDataset:
         filter_based_on_ndemo: int,
         wrong_label: float,
         eval_on_demonstrations: bool,
+        demo_shuffle_seed: Optional[int] = None,
     ):
         self.tokenizer = tokenizer
         self.debug_random_pad = debug_random_pad
@@ -240,6 +241,11 @@ class EvalDataset:
             random.seed(seed)
             random.shuffle(task_data)
             task_to_demonstrations[task] = task_data[:filter_based_on_ndemo]
+
+            # optionally re-shuffle demo ordering with a separate seed (keeps same demos, changes order)
+            if demo_shuffle_seed is not None:
+                random.seed(demo_shuffle_seed)
+                random.shuffle(task_to_demonstrations[task])
 
             # get test
             if eval_on_demonstrations:

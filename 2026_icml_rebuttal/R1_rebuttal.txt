@@ -1,0 +1,64 @@
+We thank the reviewer for the positive assessment and recognition of Context Tuning as technically sound and highly practical for inference-time adaptation.
+
+## (W1) The work is largely incremental, primarily unifying and refining established techniques.
+
+We highlight that CT-KV learns a new form of task representation at test time: an optimized KV cache grounded in the model's own activations on demonstrations and refined through gradient descent. This representation is distinct from what ICL, TTT, or Prefix Tuning produce, and outperforms all of them across four benchmarks and scales from 1B to 32B (Table 1, Section 5.6):
+
+- Relative to ICL, CT-KV optimizes the demo-initialized KV cache into a strong task representation via gradient descent on a leave-one-out objective, trading test-time compute for significantly increased performance (Table 1).
+- Relative to TTT, CT-KV's task representation lives entirely in the context rather than in model weights. This yields provable efficiency gains: linear vs. quadratic training time in demonstration count (Appendix B), matching or exceeding TTT at roughly half the compute (Table 1).
+- Relative to Prefix/Prompt Tuning, CT-KV's representation is grounded in demonstrations rather than learned from scratch. Crucially, we introduce **Leave-One-Out Masking** to address the failure mode where the model trivially retrieves answers from its trainable context and **Token Dropout** to regularize training (Section 4.3). Table 3 validates their importance: without them, CT-KV is only competitive with Prefix Tuning. These mechanisms target a failure mode specific to demo-initialized context optimization and are essential to making Context Tuning effective.
+
+## (Q1) Have the authors explored whether optimized contexts can generalize across related tasks or datasets?
+
+Context Tuning is designed as an inference-time method where demonstrations are expected to be in-distribution, but cross-task generalization is valuable when demonstrations do not perfectly match the target. We conduct new transfer experiments on MMLU and BBH using source task demonstrations to evaluate on different target tasks.
+
+**MMLU Cross-Task Transfer.** We select 4 related subject pairs (Math, Physics, Economics, Biology). Each cell shows CT-KV's accuracy gain (%) over baselines.
+
+|Transfer direction|CT-KV - Zero-shot|CT-KV - ICL|CT-KV - Prefix|
+|-|-|-|-|
+|Math: abstract_algebra → college_math|+1.2|+1.2|+2.4|
+|Math: college_math → abstract_algebra|+0.3|+2.4|+1.2|
+|Physics: college → high_school|+3.7|+1.5|+0.0|
+|Physics: high_school → college|+3.5|+0.1|-0.3|
+|Econ: macro → micro|+0.9|+0.9|+0.5|
+|Econ: micro → macro|+4.0|+1.3|+1.6|
+|Bio: college → high_school|+3.7|+2.4|+0.3|
+|Bio: high_school → college|+7.8|+3.1|+3.9|
+
+CT-KV achieves positive gains over Zero-Shot and ICL across all 8 pairs and outperforms Prefix Tuning in 6 of 8 (one tie), showing that even out-of-distribution demonstrations improve performance rather than hurting it.
+
+**BBH Difficulty Generalization.** We select BBH's Logical Deduction family (3, 5, and 7 objects), which tests the same reasoning skill at increasing difficulty. Each cell shows CT-KV gains over Zero-Shot / ICL / Prefix Tuning.
+
+|Source ↓ Target →|3 objects|5 objects|7 objects|
+|-|-|-|-|
+|3 objects|+5.4 / +3.3 / +2.1|+12.9 / +2.5 / +0.8|+16.2 / +0.8 / +0.1|
+|5 objects|+19.6 / +10.8 / +8.0|+17.5 / +11.7 / +3.8|+22.5 / +5.8 / +2.9|
+|7 objects|+5.4 / +1.7 / -0.2|+10.8 / +1.7 / +5.0|+17.9 / +0.4 / +0.2|
+
+CT-KV surpasses baselines on both diagonal (in-distribution) and off-diagonal (out-of-distribution) entries. The 5-objects source is particularly strong, achieving up to +19.6% over Zero-Shot when transferring to 3-objects.
+
+## (Q2) Sensitivity to noisy or mislabeled demonstration pairs.
+
+We studied this in Section 5.5 and Figure 4b, corrupting demonstration labels with probability $p$ on NLP-LR and MMLU. We additionally evaluate CT-Prompt here.
+
+**NLP-LR Results:**
+|Method|p=0%|p=25%|p=50%|p=75%|p=100%|
+|-|-|-|-|-|-|
+|ICL|35.6|36.1|35.4|34.7|**31.7**|
+|Prefix Tuning|42.0|41.2|38.7|34.9|31.4|
+|CT-Prompt|43.2|41.8|39.1|35.2|31.3|
+|CT-KV|**44.2**|**42.2**|**39.9**|**35.6**|31.4|
+
+**MMLU Results:**
+|Method|p=0%|p=25%|p=50%|p=75%|p=100%|
+|-|-|-|-|-|-|
+|ICL|41.2|41.3|40.7|40.4|**40.2**|
+|Prefix Tuning|39.9|39.4|38.7|38.3|37.4|
+|CT-Prompt|43.6|42.3|41.5|**40.5**|38.8|
+|CT-KV|**43.7**|**42.5**|**41.6**|**40.5**|39.1|
+
+Both variants outperform baselines for $p$ up to 75% (only 1 in 4 labels correct), which we attribute to regularization from Leave-One-Out Masking and Token Dropout (Section 4.3).
+
+# Concluding Note
+
+We thank the reviewer again for the thoughtful questions, which led to new cross-task generalization and CT-Prompt robustness experiments. Given your positive assessment of Context Tuning as technically sound, highly practical, and efficient, along with the additional evidence provided, we kindly ask you to consider raising your score.

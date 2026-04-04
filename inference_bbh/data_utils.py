@@ -79,6 +79,9 @@ class EvalDataset:
         num_demonstrations: int,
         eval_ratio: float,
         eval_on_demonstrations: bool,
+        select_tasks: Optional[List[str]] = None,
+        demo_source_task: Optional[str] = None,
+        demo_shuffle_seed: Optional[int] = None,
     ):
         self.data_dir = data_dir
         self.tokenizer = tokenizer
@@ -92,11 +95,26 @@ class EvalDataset:
         self.eval_ratio = eval_ratio
         self.eval_on_demonstrations = eval_on_demonstrations
 
+        # task selection
+        if select_tasks is not None:
+            for t in select_tasks:
+                assert t in TASKS, f"unknown task: {t}"
+            self.task_names = select_tasks
+        else:
+            self.task_names = list(TASKS.keys())
+
+        # cross-task transfer: ensure source task's demos are loaded even if not in select_tasks
+        load_tasks = list(self.task_names)
+        if demo_source_task is not None:
+            assert demo_source_task in TASKS, f"unknown demo_source_task: {demo_source_task}"
+            if demo_source_task not in load_tasks:
+                load_tasks.append(demo_source_task)
+
         # data stuff
         self.task_to_demonstrations = {}
         task_to_test_pairs = {}
 
-        for task_name in TASKS:
+        for task_name in load_tasks:
             # load data
             task_file = f"{data_dir}/{task_name}.json"
             with open(task_file, "r") as f:
@@ -109,7 +127,14 @@ class EvalDataset:
             random.shuffle(all_examples)
             self.task_to_demonstrations[task_name] = all_examples[:num_demonstrations]
 
-            # subset test pairs
+            # optionally re-shuffle demo ordering with a separate seed (keeps same demos, changes order)
+            if demo_shuffle_seed is not None:
+                random.seed(demo_shuffle_seed)
+                random.shuffle(self.task_to_demonstrations[task_name])
+
+            # subset test pairs (skip for demo-only source tasks not in evaluation set)
+            if task_name not in self.task_names:
+                continue
             test_pairs = all_examples[num_demonstrations:]
             test_pairs = test_pairs[:math.ceil(len(test_pairs) * eval_ratio)]
             if eval_on_demonstrations:
