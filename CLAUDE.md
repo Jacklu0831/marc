@@ -143,17 +143,3 @@ The `inference_*` directories contain duplicated-but-divergent copies of the sam
 
 **DO NOT REFACTOR.** The codebase is spaghetti and there are many obvious improvements, but the rebuttal deadline is <1 week. Any structural refactoring risks introducing regressions in a codebase with no test suite, where correctness bugs silently produce wrong numbers. Make minimal, targeted changes to the specific files needed for new experiments. Copy-paste between benchmark directories is acceptable and expected.
 
-## Writing
-
-When writing papers, articles, blogs, peer-review rebuttals, here are some guidelines you should follow well.
-
-- No dashes (hyphens like Few-Shot are fine)
-- Toot our own horns, talk about how good results are (if they actually are)
-- Be on point with strong experimental support
-
-If doing rebuttal specifically:
-- Praise reviewer sincerely, not formulaic
-- Don't put words in the reviewer's mouth / don't paraphrase what they didn't say
-- When the reviewer doesn't ask for an experiment or hint at one, respond with arguments, not new experiments
-- If available, don't over-index on past rebuttal results; past rebuttals were likely good and can be borrowed/copied
-- Quality over speed, one reviewer concern at a time

@@ -1,0 +1,5 @@
+We thank the reviewer for the acknowledgement. We notice that it is marked as "partially resolved" with additional questions. Could you kindly specify them? We would be happy to provide further clarification or experiments.
+
+To summarize our response: we addressed the originality concern (W1) by showing that CT-KV learns a new form of task representation that is both distinct from and superior in either performance or efficiency to ICL, TTT, and Prefix Tuning. For cross-task generalization (Q1), our rebuttal provided new experiments on MMLU (cross-task transfer) and BBH (difficulty generalization), showing positive gains over all baselines. For noise robustness (Q2), we pointed to existing results (Section 5.5, Figure 4b) showing CT-KV outperforms baselines under label corruption up to 75%, and additionally provided new CT-Prompt robustness results on both NLP-LR and MMLU.
+
+Alongside your recognition of Context Tuning as technically sound, well-motivated, efficient, and highly practical for inference-time adaptation, we hope you will consider raising your score.

@@ -1,15 +1,47 @@
-We thank the reviewer for the continued engagement and the encouraging assessment that our work has merit for acceptance.
+We thank the reviewer for the thoughtful acknowledgement and for emphasizing our work's merit for acceptance. We answer each remaining concern with concise clarifications and new experiments.
 
-## (W1 + Q1) Stronger Models for ARC.
+## (W1 + Q1 follow-up) Stronger Models for ARC.
 
-We appreciate the suggestion and scale our ARC evaluation to Qwen3-14B and Qwen3-32B, both fully off-the-shelf with **no task-specific fine-tuning**. These are among the strongest open-source dense models available. For reference, GPT-4o achieves approximately 5% on ARC-AGI-1 with direct few-shot prompting [1], establishing that low absolute accuracy on ARC is characteristic of all LLMs under direct generation (without Chain-of-Thought or program synthesis), not a limitation of any particular method.
+We hope to clarify that our previous Qwen3-8B result (3.5% ICL → 4.8% CT-KV) uses a strong model for this setting. GPT-4o achieves 5% on ARC-AGI-1 [1], establishing that low absolute accuracy on ARC is characteristic of even strong LLMs. Following the reviewer's suggestion, we now further scale to Qwen3-14B and Qwen3-32B, the strongest open-source models given our available compute. All results use no task-specific fine-tuning, with hyperparameters following our Qwen3-8B results.
 
-|Model|ICL|CT-KV (LOO)|
+|Method|Qwen3-14B|Qwen3-32B|
 |-|-|-|
-|Qwen3-8B|3.5%|4.5%|
-|Qwen3-14B|5.1%|5.6%|
-|Qwen3-32B|6.6%|**7.1%**|
+|ICL|4.8%|6.3%|
+|CT-KV|**6.0%**|**7.8%**|
 
-CT-KV consistently improves over ICL at every scale. Notably, Qwen3-32B's ICL accuracy (6.6%) already exceeds GPT-4o's published ~5%, and CT-KV pushes it further to 7.1%. Combined with our existing results scaling from 1B to 32B on BBH and MMLU (Section 5.6, Table 2), CT-KV demonstrates consistent gains across model scales and benchmarks.
+Notably, Qwen3-32B's ICL (6.3%) exceeds GPT-4o's 5%, and CT-KV pushes it further with a 23.8% relative improvement. Combined with our scaling results up to 32B on BBH and MMLU (Section 5.6, Table 2), CT-KV demonstrates consistent gains across all model scales and benchmarks.
 
-[1] ARC Prize, "OpenAI o3 Breakthrough High Score on ARC-AGI-Pub," December 2024. https://arcprize.org/blog/oai-o3-pub-breakthrough
+## (W2 + Q2 follow-up) Practical Guidance on Leave-One-Out Masking (LOO).
+
+Regarding the reviewer's concern on whether LOO should be enabled in extreme few-shot settings, the user guidance is simply: **always enable LOO for any off-the-shelf model and any task**.
+
+We summarize the evidence from our previous response: we compared CT-KV with and without LOO, where CT-KV with LOO always outperforms without LOO at extremely low demonstration counts ($k$=2,3,4,6). LOO also helps on off-the-shelf models for ARC (Qwen3-8B: 4.8% with LOO vs 4.0% without). The only setting where LOO underperformed was the fine-tuned Llama3.2-1B on ARC, which we attribute to task-specific fine-tuning and addressed with the reviewer-suggested adaptive masking technique in our previous response. In conclusion, users should always enable LOO for off-the-shelf models.
+
+## (Q3 follow-up) Serving Scalability.
+
+If ICL stores the KV cache computed from its demonstration tokens (as many serving systems do), CT-KV would store a KV prefix identical in size to ICL's, meaning storage, swapping, and inference time are **exactly identical**. However, the reviewer assumes that ICL stores raw text tokens instead; **the yes-or-no answer in this case is that CT-KV has higher storage and lower latency**, as quantified below. All results are averaged across 10 runs on BBH and MMLU, run on an L40S GPU.
+
+**Storage.**
+
+|Method|BBH|MMLU|
+|-|-|-|
+|ICL (text tokens)|4 KB|3 KB|
+|CT-KV (KV prefix)|28 MB|21 MB|
+
+For reference, when the same demonstrations are reused across queries, storing only text tokens is less common in LLM deployment due to the inference latency cost (quantified below). Additionally, TTT's LoRA adapter (rank 64) requires 92 MB regardless of task, more than both ICL and CT-KV. Therefore, despite CT-KV's KV prefix being larger than raw text tokens, it is small compared to existing adapters like LoRA. For even a thousand user tasks, the total storage of CT-KV would only be 28 GB.
+
+**Inference latency.** LLM generation has a *prefill* phase (process input tokens, produce first output token) and a *decoding* phase (generate subsequent tokens). ICL prefills all demonstration tokens and the query. CT-KV swaps in a precomputed KV prefix and prefills only the query. After prefill, both have the same KV cache size, so decoding cost is identical. The only difference is the time-to-first-token (TTFT), which we measure below in two scenarios for CT-KV's prefix storage: on disk (slowest) and in CPU memory (typical for serving systems that keep hot data in RAM).
+
+|Method|BBH|MMLU|
+|-|-|-|
+|ICL|17.55 ms|13.75 ms|
+|CT-KV (swapped from disk)|15.72 ms|11.34 ms|
+|CT-KV (swapped from CPU)|**11.07 ms**|**9.96 ms**|
+
+CT-KV is significantly faster in all settings. The speedup comes from skipping the demonstration prefill, so it grows with more demonstrations (longer prefill length) and with larger models (more computation saved per token).
+
+# Concluding Note
+
+We have now validated CT-KV on LLMs up to Qwen3-32B with consistent improvements, provided practical guidance on LOO, and presented quantitative serving comparisons. Together with our initial rebuttal and the paper's model scaling experiments (Section 5.6, Table 2), CT-KV is thoroughly validated on current large-scale LLMs for both accuracy and serving efficiency. As the reviewer noted, such validation would make the work very strong, and we kindly ask the reviewer to consider raising the score.
+
+[1] ARC Prize 2024: Technical Report, arXiv:2412.04604, 2024.

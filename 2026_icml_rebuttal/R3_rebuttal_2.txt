@@ -1,3 +1,5 @@
 We thank the reviewer for the acknowledgement. We notice that it is marked as "partially resolved" with additional questions. Could you kindly specify them? We would be happy to provide further clarification or experiments.
 
 To summarize our response: our submission addresses demonstration quality robustness (Section 5.5, Figure 4b), demonstration selection sensitivity (Section 5.4), scaling to models up to 32B parameters (Section 5.6, Table 2), and training time analysis both empirically (Table 1) and theoretically (Appendix B). Our rebuttal additionally provided new experiments on demonstration ordering sensitivity and cross-task generalization.
+
+Alongside your recognition of Context Tuning's consistent improvements, ease of implementation, and scalable design, we hope you will consider raising your score.
